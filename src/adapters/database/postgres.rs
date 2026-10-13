@@ -47,14 +47,14 @@ impl PostgresTaskStore {
             .get(0);
         match version {
             None => {
-                tx.batch_execute(include_str!("../../migrations/postgres/001_tasks.sql"))?;
+                tx.batch_execute(include_str!("../../../migrations/postgres/001_tasks.sql"))?;
                 tx.execute("INSERT INTO schema_migrations(version) VALUES (1)", &[])?;
             }
             Some(1 | 2) => {}
             Some(other) => bail!("unsupported database version {other}; expected 2"),
         }
         if version.unwrap_or(0) < 2 {
-            tx.batch_execute(include_str!("../../migrations/postgres/002_notify.sql"))?;
+            tx.batch_execute(include_str!("../../../migrations/postgres/002_notify.sql"))?;
             tx.execute("INSERT INTO schema_migrations(version) VALUES (2)", &[])?;
         }
         tx.commit()?;

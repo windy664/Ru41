@@ -1,5 +1,5 @@
 use ru41::{
-    adapters::sqlite::SqliteTaskStore,
+    adapters::database::sqlite::SqliteTaskStore,
     app::store::TaskStore,
     domain::{AgentResult, TaskStatus},
 };

@@ -1,5 +1,5 @@
 use ru41::{
-    adapters::postgres::PostgresTaskStore,
+    adapters::database::postgres::PostgresTaskStore,
     app::store::TaskStore,
     domain::{AgentResult, TaskStatus},
 };

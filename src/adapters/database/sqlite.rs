@@ -28,18 +28,18 @@ impl SqliteTaskStore {
         let version: i64 = tx.query_row("PRAGMA user_version", [], |row| row.get(0))?;
         match version {
             0 => {
-                tx.execute_batch(include_str!("../../migrations/001_tasks.sql"))?;
-                tx.execute_batch(include_str!("../../migrations/002_execution.sql"))?;
+                tx.execute_batch(include_str!("../../../migrations/001_tasks.sql"))?;
+                tx.execute_batch(include_str!("../../../migrations/002_execution.sql"))?;
             }
-            1 => tx.execute_batch(include_str!("../../migrations/002_execution.sql"))?,
+            1 => tx.execute_batch(include_str!("../../../migrations/002_execution.sql"))?,
             2..=4 => {}
             other => bail!("unsupported database version {other}; expected 4"),
         }
         if version < 3 {
-            tx.execute_batch(include_str!("../../migrations/003_backends.sql"))?;
+            tx.execute_batch(include_str!("../../../migrations/003_backends.sql"))?;
         }
         if version < 4 {
-            tx.execute_batch(include_str!("../../migrations/004_notify.sql"))?;
+            tx.execute_batch(include_str!("../../../migrations/004_notify.sql"))?;
         }
         tx.commit()?;
         Ok(Self {

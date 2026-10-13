@@ -1,7 +1,10 @@
 use anyhow::{Context, Result};
 use clap::Parser;
 use ru41::{
-    adapters::{codex, postgres::PostgresTaskStore, sqlite::SqliteTaskStore},
+    adapters::{
+        codex,
+        database::{postgres::PostgresTaskStore, sqlite::SqliteTaskStore},
+    },
     app::{
         agent_service::BackendRegistry,
         store::TaskStore,

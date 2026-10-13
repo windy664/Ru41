@@ -1,5 +1,5 @@
 use ru41::{
-    adapters::sqlite::SqliteTaskStore,
+    adapters::database::sqlite::SqliteTaskStore,
     app::{
         agent_service::{AgentBackend, AgentOutput, AgentRequest, BackendDescriptor},
         store::TaskStore,
