@@ -8,9 +8,13 @@ use ru41::{
         task_service::TaskService,
         worker::{Worker, WorkerConfig},
     },
-    ingress::cli::{Cli, Command, TaskCommand},
+    ingress::{
+        cli::{Cli, Command, QqCommand, TaskCommand},
+        qq::{QqBot, api::QqApiClient},
+    },
 };
 use std::{path::PathBuf, sync::Arc};
+use tokio::sync::watch;
 
 #[tokio::main]
 async fn main() -> Result<()> {
@@ -52,19 +56,7 @@ async fn main() -> Result<()> {
                     retry_delay_secs: 10,
                 },
             };
-            let (shutdown, receiver) = tokio::sync::watch::channel(false);
-            let signal_task = tokio::spawn(async move {
-                #[cfg(unix)]
-                {
-                    let mut terminate =
-                        tokio::signal::unix::signal(tokio::signal::unix::SignalKind::terminate())?;
-                    tokio::select! { r = tokio::signal::ctrl_c() => { r?; }, _ = terminate.recv() => {} }
-                }
-                #[cfg(not(unix))]
-                tokio::signal::ctrl_c().await?;
-                let _ = shutdown.send(true);
-                Ok::<_, std::io::Error>(())
-            });
+            let receiver = shutdown_channel()?;
             loop {
                 if *receiver.borrow() {
                     break;
@@ -82,9 +74,32 @@ async fn main() -> Result<()> {
                     tokio::time::sleep(std::time::Duration::from_secs(1)).await;
                 }
             }
-            signal_task.abort();
             return Ok(());
         }
+        Command::Qq { command } => match command {
+            QqCommand::Run {
+                credentials,
+                backend,
+            } => {
+                registry(codex::CodexAgent::default())?.get(&backend)?;
+                let bot = QqBot {
+                    api: Arc::new(QqApiClient::new(credentials.app_id, credentials.app_secret)),
+                    store: open_store(&store_config)?,
+                    backend,
+                };
+                let receiver = shutdown_channel()?;
+                bot.run(receiver).await?;
+                return Ok(());
+            }
+            QqCommand::Send {
+                credentials,
+                group_openid,
+                text,
+            } => {
+                let api = QqApiClient::new(credentials.app_id, credentials.app_secret);
+                serde_json::to_value(api.send_group_text(&group_openid, &text, None, 1).await?)?
+            }
+        },
         Command::Task { command } => {
             let mut service = TaskService::new(open_store(&store_config)?);
             match command {
@@ -130,4 +145,22 @@ fn registry(codex: codex::CodexAgent) -> Result<BackendRegistry> {
     let mut backends = BackendRegistry::default();
     backends.register(codex)?;
     Ok(backends)
+}
+
+/// SIGINT/SIGTERM 触发的优雅关闭信号。
+fn shutdown_channel() -> Result<watch::Receiver<bool>> {
+    let (shutdown, receiver) = watch::channel(false);
+    tokio::spawn(async move {
+        #[cfg(unix)]
+        {
+            let mut terminate =
+                tokio::signal::unix::signal(tokio::signal::unix::SignalKind::terminate())?;
+            tokio::select! { r = tokio::signal::ctrl_c() => { r?; }, _ = terminate.recv() => {} }
+        }
+        #[cfg(not(unix))]
+        tokio::signal::ctrl_c().await?;
+        let _ = shutdown.send(true);
+        Ok::<_, std::io::Error>(())
+    });
+    Ok(receiver)
 }

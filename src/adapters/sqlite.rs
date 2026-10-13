@@ -32,11 +32,14 @@ impl SqliteTaskStore {
                 tx.execute_batch(include_str!("../../migrations/002_execution.sql"))?;
             }
             1 => tx.execute_batch(include_str!("../../migrations/002_execution.sql"))?,
-            2 | 3 => {}
-            other => bail!("unsupported database version {other}; expected 3"),
+            2..=4 => {}
+            other => bail!("unsupported database version {other}; expected 4"),
         }
         if version < 3 {
             tx.execute_batch(include_str!("../../migrations/003_backends.sql"))?;
+        }
+        if version < 4 {
+            tx.execute_batch(include_str!("../../migrations/004_notify.sql"))?;
         }
         tx.commit()?;
         Ok(Self {
@@ -193,6 +196,64 @@ impl TaskStore for SqliteTaskStore {
         Ok(())
     }
 
+    fn enqueue_with_notify(
+        &self,
+        request_key: &str,
+        prompt: &str,
+        backend: &str,
+        contract: RunContract,
+        notify: &crate::domain::NotifyRoute,
+    ) -> Result<EnqueueResult> {
+        anyhow::ensure!(
+            !notify.channel.trim().is_empty() && notify.channel.len() <= 64,
+            "invalid notify channel"
+        );
+        anyhow::ensure!(!notify.target.trim().is_empty(), "invalid notify target");
+        let mut connection = self.connection()?;
+        let tx = connection.transaction_with_behavior(TransactionBehavior::Immediate)?;
+        let changed = tx.execute(
+            "INSERT INTO tasks (request_key, prompt, backend_id, contract, notify_channel, notify_target, notify_msg_id) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7) ON CONFLICT(request_key) DO NOTHING",
+            params![request_key, prompt, backend, contract.as_str(), notify.channel, notify.target, notify.msg_id],
+        )?;
+        let task = tx.query_row(
+            "SELECT * FROM tasks WHERE request_key = ?1",
+            [request_key],
+            task_from_row,
+        )?;
+        if task.prompt != prompt
+            || task.backend_id != backend
+            || task.contract != contract
+            || task.notify.as_ref() != Some(notify)
+        {
+            bail!(
+                "request key already belongs to a different prompt or backend contract; use a new key"
+            );
+        }
+        tx.commit()?;
+        Ok(EnqueueResult {
+            created: changed == 1,
+            task,
+        })
+    }
+
+    fn list_unnotified(&self, limit: u32) -> Result<Vec<Task>> {
+        let connection = self.connection()?;
+        let mut statement = connection.prepare(
+            "SELECT * FROM tasks WHERE notify_channel IS NOT NULL AND notified_at IS NULL AND status IN ('succeeded','failed') ORDER BY id LIMIT ?1",
+        )?;
+        let tasks = statement
+            .query_map([limit], task_from_row)?
+            .collect::<rusqlite::Result<Vec<_>>>()?;
+        Ok(tasks)
+    }
+
+    fn mark_notified(&self, id: i64) -> Result<bool> {
+        Ok(self.connection()?.execute(
+            "UPDATE tasks SET notified_at=strftime('%Y-%m-%dT%H:%M:%fZ','now') WHERE id=?1 AND notified_at IS NULL",
+            [id],
+        )? == 1)
+    }
+
     fn succeed(
         &self,
         claim: &Claim,
@@ -266,7 +327,18 @@ fn task_from_row(row: &Row<'_>) -> rusqlite::Result<Task> {
         available_at: row.get("available_at")?,
         result: json_column(row, "result_json")?,
         last_error: row.get("last_error")?,
+        notify: notify_column(row)?,
+        notified_at: row.get("notified_at")?,
     })
+}
+
+fn notify_column(row: &Row<'_>) -> rusqlite::Result<Option<crate::domain::NotifyRoute>> {
+    let channel: Option<String> = row.get("notify_channel")?;
+    Ok(channel.map(|channel| crate::domain::NotifyRoute {
+        channel,
+        target: row.get("notify_target").unwrap_or_default(),
+        msg_id: row.get("notify_msg_id").unwrap_or(None),
+    }))
 }
 
 fn get_task(conn: &Connection, id: i64) -> Result<Option<Task>> {

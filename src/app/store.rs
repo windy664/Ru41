@@ -1,4 +1,4 @@
-use crate::domain::{AgentResult, Attempt, Claim, EnqueueResult, RunContract, Task};
+use crate::domain::{AgentResult, Attempt, Claim, EnqueueResult, NotifyRoute, RunContract, Task};
 use anyhow::Result;
 use std::sync::Arc;
 
@@ -29,6 +29,19 @@ pub trait TaskStore: Send + Sync {
     ) -> Result<Option<Claim>>;
     fn heartbeat(&self, claim: &Claim, now: i64, lease_secs: i64) -> Result<bool>;
     fn attach_run(&self, claim: &Claim, dir: &str, now: i64) -> Result<()>;
+    /// 附带终态通知路由的入队，幂等规则与 enqueue_for 相同。
+    fn enqueue_with_notify(
+        &self,
+        request_key: &str,
+        prompt: &str,
+        backend: &str,
+        contract: RunContract,
+        notify: &NotifyRoute,
+    ) -> Result<EnqueueResult>;
+    /// 已到终态、带通知路由且尚未通知的任务，按 id 升序。
+    fn list_unnotified(&self, limit: u32) -> Result<Vec<Task>>;
+    /// 标记已通知；并发下最多一个调用者得到 true。
+    fn mark_notified(&self, id: i64) -> Result<bool>;
     fn succeed(
         &self,
         claim: &Claim,
@@ -102,6 +115,22 @@ impl<T: TaskStore + ?Sized> TaskStore for Arc<T> {
     }
     fn attach_run(&self, claim: &Claim, dir: &str, now: i64) -> Result<()> {
         (**self).attach_run(claim, dir, now)
+    }
+    fn enqueue_with_notify(
+        &self,
+        request_key: &str,
+        prompt: &str,
+        backend: &str,
+        contract: RunContract,
+        notify: &NotifyRoute,
+    ) -> Result<EnqueueResult> {
+        (**self).enqueue_with_notify(request_key, prompt, backend, contract, notify)
+    }
+    fn list_unnotified(&self, limit: u32) -> Result<Vec<Task>> {
+        (**self).list_unnotified(limit)
+    }
+    fn mark_notified(&self, id: i64) -> Result<bool> {
+        (**self).mark_notified(id)
     }
     fn succeed(
         &self,

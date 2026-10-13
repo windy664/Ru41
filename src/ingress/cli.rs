@@ -44,6 +44,42 @@ pub enum Command {
         #[command(subcommand)]
         command: TaskCommand,
     },
+    /// QQ 官方机器人消息网关：收消息入队任务，完成后回复原会话。
+    Qq {
+        #[command(subcommand)]
+        command: QqCommand,
+    },
+}
+
+#[derive(clap::Args)]
+pub struct QqCredentials {
+    /// QQ 开放平台 AppID（也可用环境变量 RU41_QQ_APP_ID）。
+    #[arg(long, env = "RU41_QQ_APP_ID")]
+    pub app_id: String,
+    /// QQ 开放平台 ClientSecret（也可用环境变量 RU41_QQ_APP_SECRET）。
+    #[arg(long, env = "RU41_QQ_APP_SECRET")]
+    pub app_secret: String,
+}
+
+#[derive(Subcommand)]
+pub enum QqCommand {
+    /// 长驻运行消息网关（WebSocket 收消息 + 结果通知循环）。
+    Run {
+        #[command(flatten)]
+        credentials: QqCredentials,
+        /// 消息任务路由到的底座。
+        #[arg(long, default_value = "codex")]
+        backend: String,
+    },
+    /// 手动向群发送一条主动文本消息（用于测试连通性）。
+    Send {
+        #[command(flatten)]
+        credentials: QqCredentials,
+        #[arg(long)]
+        group_openid: String,
+        #[arg(long)]
+        text: String,
+    },
 }
 
 #[derive(Subcommand)]

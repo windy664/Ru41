@@ -16,7 +16,8 @@ const TASK_COLUMNS: &str = "id, request_key, prompt, status, \
     to_char(created_at AT TIME ZONE 'UTC','YYYY-MM-DD\"T\"HH24:MI:SS.MS\"Z\"') AS created_at, \
     to_char(updated_at AT TIME ZONE 'UTC','YYYY-MM-DD\"T\"HH24:MI:SS.MS\"Z\"') AS updated_at, \
     attempt_count, max_attempts, active_attempt_id, lease_until, available_at, \
-    result_json, last_error, backend_id, contract";
+    result_json, last_error, backend_id, contract, \
+    notify_channel, notify_target, notify_msg_id, notified_at";
 
 /// `TaskStore` 的 PostgreSQL 适配器，语义与 SQLite 实现一致。
 pub struct PostgresTaskStore {
@@ -49,8 +50,12 @@ impl PostgresTaskStore {
                 tx.batch_execute(include_str!("../../migrations/postgres/001_tasks.sql"))?;
                 tx.execute("INSERT INTO schema_migrations(version) VALUES (1)", &[])?;
             }
-            Some(1) => {}
-            Some(other) => bail!("unsupported database version {other}; expected 1"),
+            Some(1 | 2) => {}
+            Some(other) => bail!("unsupported database version {other}; expected 2"),
+        }
+        if version.unwrap_or(0) < 2 {
+            tx.batch_execute(include_str!("../../migrations/postgres/002_notify.sql"))?;
+            tx.execute("INSERT INTO schema_migrations(version) VALUES (2)", &[])?;
         }
         tx.commit()?;
         Ok(Self {
@@ -236,6 +241,69 @@ impl TaskStore for PostgresTaskStore {
         })
     }
 
+    fn enqueue_with_notify(
+        &self,
+        request_key: &str,
+        prompt: &str,
+        backend: &str,
+        contract: RunContract,
+        notify: &crate::domain::NotifyRoute,
+    ) -> Result<EnqueueResult> {
+        outside_runtime(|| {
+            anyhow::ensure!(
+                !notify.channel.trim().is_empty() && notify.channel.len() <= 64,
+                "invalid notify channel"
+            );
+            anyhow::ensure!(!notify.target.trim().is_empty(), "invalid notify target");
+            let mut client = self.client()?;
+            let mut tx = client.transaction()?;
+            let changed = tx.execute(
+                "INSERT INTO tasks (request_key, prompt, backend_id, contract, notify_channel, notify_target, notify_msg_id) VALUES ($1, $2, $3, $4, $5, $6, $7) ON CONFLICT(request_key) DO NOTHING",
+                &[&request_key, &prompt, &backend, &contract.as_str(), &notify.channel, &notify.target, &notify.msg_id],
+            )?;
+            let task = task_from_row(&tx.query_one(
+                &format!("SELECT {TASK_COLUMNS} FROM tasks WHERE request_key = $1"),
+                &[&request_key],
+            )?)?;
+            if task.prompt != prompt
+                || task.backend_id != backend
+                || task.contract != contract
+                || task.notify.as_ref() != Some(notify)
+            {
+                bail!(
+                    "request key already belongs to a different prompt or backend contract; use a new key"
+                );
+            }
+            tx.commit()?;
+            Ok(EnqueueResult {
+                created: changed == 1,
+                task,
+            })
+        })
+    }
+
+    fn list_unnotified(&self, limit: u32) -> Result<Vec<Task>> {
+        outside_runtime(|| {
+            self.client()?
+                .query(
+                    &format!("SELECT {TASK_COLUMNS} FROM tasks WHERE notify_channel IS NOT NULL AND notified_at IS NULL AND status IN ('succeeded','failed') ORDER BY id LIMIT $1"),
+                    &[&(limit as i64)],
+                )?
+                .iter()
+                .map(task_from_row)
+                .collect()
+        })
+    }
+
+    fn mark_notified(&self, id: i64) -> Result<bool> {
+        outside_runtime(|| {
+            Ok(self.client()?.execute(
+                "UPDATE tasks SET notified_at=now() WHERE id=$1 AND notified_at IS NULL",
+                &[&id],
+            )? == 1)
+        })
+    }
+
     fn succeed(
         &self,
         claim: &Claim,
@@ -313,6 +381,14 @@ fn task_from_row(row: &Row) -> Result<Task> {
         available_at: row.get("available_at"),
         result: json_column(row, "result_json")?,
         last_error: row.get("last_error"),
+        notify: row
+            .get::<_, Option<String>>("notify_channel")
+            .map(|channel| crate::domain::NotifyRoute {
+                channel,
+                target: row.get("notify_target"),
+                msg_id: row.get("notify_msg_id"),
+            }),
+        notified_at: row.get("notified_at"),
     })
 }
 

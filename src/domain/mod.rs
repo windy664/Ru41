@@ -45,6 +45,17 @@ pub struct Task {
     pub available_at: i64,
     pub result: Option<AgentResult>,
     pub last_error: Option<String>,
+    pub notify: Option<NotifyRoute>,
+    pub notified_at: Option<String>,
+}
+
+/// 任务终态后的渠道通知路由；target 格式由各渠道适配器定义。
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct NotifyRoute {
+    pub channel: String,
+    pub target: String,
+    /// 被动回复锚点（如 QQ 的 msg_id），主动推送渠道可为空。
+    pub msg_id: Option<String>,
 }
 
 #[derive(Debug, Serialize)]

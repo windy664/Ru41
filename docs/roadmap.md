@@ -9,6 +9,7 @@
 - [x] 通用 AgentBackend、启动注册、任务按底座路由
 - [x] 数据库 v1/v2 到 v3 的迁移
 - [x] TaskStore 存储抽象，SQLite 为默认实现，PostgreSQL 适配器（`--store postgres`，同步 `postgres` crate 驱动）
+- [x] 任务终态通知路由（notify_channel/target/msg_id/notified_at）与 QQ 官方机器人消息网关（收消息幂等入队、终态被动回复）
 - [x] 自动行为测试及一次真实 Codex 分析任务验证
 
 ## 核心后续
@@ -29,7 +30,7 @@
 ## P1 信息与消息
 
 - [ ] 论文/RSS 来源记录、筛选和来源笔记
-- [ ] 一个消息渠道的身份绑定、记录想法、任务查询和回复
+- [x] 一个消息渠道（QQ 官方机器人）：记录想法入队任务、终态结果回复；身份绑定与任务查询指令后续补充
 
 ## 后续
 

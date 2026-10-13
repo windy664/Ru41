@@ -12,7 +12,8 @@ Rust 编写的个人自动化助手，围绕 Obsidian 组织个人想法、一�
 - Codex CLI 子进程：stdin 输入、JSONL 事件、受限大小的日志、结构化结果校验。
 - 独立尝试目录；Unix 上取消/超时清理子进程组，其他平台仅保证直接子进程终止。
 - 通用底座注册、能力声明、任务按后端路由，以及后端/模型/会话记录。
-- 旧版数据库自动迁移；20 个行为测试与 GitHub Actions。
+- QQ 官方机器人消息网关：群@/单聊消息幂等入队为任务，任务到终态后被动回复原会话。
+- 旧版数据库自动迁移；自动行为测试与 GitHub Actions。
 
 目前唯一真实适配器是 **Codex**。两个模拟后端验证了公共接口与路由；其他 Agent 不会因接口存在而自动可用。当前适配器不提供会话续接或外部写入工具。
 
@@ -59,6 +60,23 @@ cargo run --locked -- task retry 1
 - 同一次输入重试使用相同 `--key`、内容和底座；改变其中内容或底座要使用新键。
 - `worker --once` 返回的是一次调度报告，请检查 JSON 的 `status`；一次业务失败不等于 Worker 命令异常退出。
 
+## QQ 消息网关
+
+接入 QQ 官方机器人开放平台（需在平台后台创建机器人并开启「群聊@消息 / C2C 消息」权限）。网关只负责收消息入队和结果回复，任务执行仍需 Worker 进程：
+
+```bash
+# 终端 1：网关（凭证也可用环境变量 RU41_QQ_APP_ID / RU41_QQ_APP_SECRET）
+cargo run --locked -- qq run --qq-app-id <APP_ID> --qq-app-secret <SECRET>
+# 终端 2：照常运行 Worker 执行任务
+cargo run --locked -- worker
+# 手动发一条主动群消息测试连通性
+cargo run --locked -- qq send --qq-app-id <APP_ID> --qq-app-secret <SECRET> --group-openid <GID> --text "ping"
+```
+
+- 群里 @机器人 或单聊发送的文本会以 `qq:msg:{msg_id}` 为键幂等入队（`analysis_v1` 契约，默认 `codex` 底座，可 `qq run --backend` 改）；重复投递不会产生重复任务。
+- 任务进入 `succeeded`/`failed` 后，网关把结果摘要或错误作为**被动回复**发回原群/原单聊，并记录 `notified_at` 保证不重复发送。
+- QQ 被动回复要求带原消息的 `msg_id` 且约 5 分钟内有效；超过窗口或重启较晚的任务可能回复失败（日志可见，任务结果不受影响）。QQ 对主动推送有配额与频控限制，本网关以被动回复为主。协议细节与限制见 [QQ 渠道说明](docs/channels-qq.md)。
+
 运行数据默认位于 `.ru41/state.db` 和 `.ru41/runs/`，可以分别通过 `--db`、`--runs-dir` 指定。不要将运行数据放进 Vault。日志包含任务内容及模型输出，需要按私人数据管理；当前没有自动清理策略。
 
 使用 PostgreSQL 作为存储时，通过 `--store postgres --pg-url`（或环境变量 `RU41_PG_URL`）指定连接串，启动时自动执行 `migrations/postgres/` 下的迁移：
@@ -71,7 +89,7 @@ cargo run --locked -- --store postgres worker --once
 ## 核心架构
 
 ```text
-CLI / 后续 Git、定时器与消息入口
+CLI / QQ 网关 / 后续 Git、定时器与消息入口
                   ↓
         TaskService + TaskStore（默认 SQLite 实现，可选 PostgreSQL）
                   ↓
@@ -82,6 +100,8 @@ CLI / 后续 Git、定时器与消息入口
        CodexAdapter（首个实现）
                   ↓
         结果校验与事务保存
+                  ↓
+       渠道通知（QQ 被动回复）
 ```
 
 任务绑定 `backend_id` 与版本化 `analysis_v1` 契约。Worker 只领取对应底座、兼容契约的任务；失败时不自动换底座。`session_id` 是该底座内部的不透明标识，不能跨底座续接。
@@ -95,7 +115,7 @@ src/
 │   ├── store.rs          # TaskStore 存储接口（SQLite 为默认实现，可选 PostgreSQL）
 │   └── worker.rs
 ├── adapters/         # SQLite、PostgreSQL 与 Codex 协议
-├── ingress/          # CLI
+├── ingress/          # CLI 与 QQ 消息网关
 ├── lib.rs
 └── main.rs           # 注册并装配具体底座
 ```

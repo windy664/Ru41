@@ -9,7 +9,7 @@ use std::sync::{Arc, Barrier, Mutex, MutexGuard};
 static DB_LOCK: Mutex<()> = Mutex::new(());
 
 fn lock() -> MutexGuard<'static, ()> {
-    DB_LOCK.lock().unwrap()
+    DB_LOCK.lock().unwrap_or_else(|e| e.into_inner())
 }
 
 /// 未设置 RU41_TEST_PG_URL 时跳过；设置时真实连库并清空表。
@@ -137,4 +137,43 @@ fn retry_delay_budget_and_manual_retry_preserve_attempts() {
     let claim = store.claim("worker", 501, 30).unwrap().unwrap();
     assert_eq!(claim.task.attempt_count, 4);
     assert_eq!(store.attempts(id).unwrap().len(), 4);
+}
+
+#[test]
+fn notify_route_roundtrip_and_mark_once() {
+    let _guard = lock();
+    let Some(store) = store() else { return };
+    let route = ru41::domain::NotifyRoute {
+        channel: "qq".into(),
+        target: "user:U1".into(),
+        msg_id: Some("msg-9".into()),
+    };
+    let added = store
+        .enqueue_with_notify(
+            "qq:msg:msg-9",
+            "hello",
+            "codex",
+            ru41::domain::RunContract::AnalysisV1,
+            &route,
+        )
+        .unwrap();
+    assert!(added.created);
+    assert_eq!(added.task.notify.as_ref(), Some(&route));
+    assert!(store.list_unnotified(10).unwrap().is_empty());
+    let claim = store.claim("worker", 100, 30).unwrap().unwrap();
+    store.fail(&claim, "offline", 101, 0, false).unwrap();
+    // 预算耗尽进 failed 后应出现在通知队列。
+    for i in 1..3 {
+        let now = 100 + i * 20;
+        let claim = store.claim("worker", now, 30).unwrap().unwrap();
+        store.fail(&claim, "offline", now + 1, 0, false).unwrap();
+    }
+    let claim = store.claim("worker", 500, 30).unwrap();
+    assert!(claim.is_none());
+    let pending = store.list_unnotified(10).unwrap();
+    assert_eq!(pending.len(), 1);
+    assert_eq!(pending[0].status, TaskStatus::Failed);
+    assert!(store.mark_notified(added.task.id).unwrap());
+    assert!(!store.mark_notified(added.task.id).unwrap());
+    assert!(store.list_unnotified(10).unwrap().is_empty());
 }

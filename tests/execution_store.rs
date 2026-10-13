@@ -143,3 +143,87 @@ fn retry_delay_budget_and_manual_retry_preserve_attempts() {
     assert_eq!(claim.task.attempt_count, 4);
     assert_eq!(store.attempts(id).unwrap().len(), 4);
 }
+
+#[test]
+fn notify_route_is_enqueued_once_and_marked_after_terminal_state() {
+    let dir = tempfile::tempdir().unwrap();
+    let store = SqliteTaskStore::open(&dir.path().join("state.db")).unwrap();
+    let route = ru41::domain::NotifyRoute {
+        channel: "qq".into(),
+        target: "group:G1".into(),
+        msg_id: Some("msg-1".into()),
+    };
+    let added = store
+        .enqueue_with_notify(
+            "qq:msg:msg-1",
+            "hello",
+            "codex",
+            ru41::domain::RunContract::AnalysisV1,
+            &route,
+        )
+        .unwrap();
+    assert!(added.created);
+    assert_eq!(added.task.notify.as_ref(), Some(&route));
+    // 重复投递幂等，路由不同的同键请求被拒绝。
+    let retry = store
+        .enqueue_with_notify(
+            "qq:msg:msg-1",
+            "hello",
+            "codex",
+            ru41::domain::RunContract::AnalysisV1,
+            &route,
+        )
+        .unwrap();
+    assert!(!retry.created);
+    let other = ru41::domain::NotifyRoute {
+        channel: "qq".into(),
+        target: "group:G2".into(),
+        msg_id: Some("msg-1".into()),
+    };
+    assert!(
+        store
+            .enqueue_with_notify(
+                "qq:msg:msg-1",
+                "hello",
+                "codex",
+                ru41::domain::RunContract::AnalysisV1,
+                &other,
+            )
+            .is_err()
+    );
+    // 运行中的任务不进入通知队列；完成后进入，标记后不重复。
+    assert!(store.list_unnotified(10).unwrap().is_empty());
+    let claim = store.claim("worker", 100, 30).unwrap().unwrap();
+    assert!(store.list_unnotified(10).unwrap().is_empty());
+    store
+        .succeed(
+            &claim,
+            &AgentResult {
+                summary: "done".into(),
+            },
+            None,
+            101,
+        )
+        .unwrap();
+    let pending = store.list_unnotified(10).unwrap();
+    assert_eq!(pending.len(), 1);
+    assert_eq!(pending[0].id, added.task.id);
+    assert!(store.mark_notified(added.task.id).unwrap());
+    assert!(!store.mark_notified(added.task.id).unwrap());
+    assert!(store.list_unnotified(10).unwrap().is_empty());
+    // 无通知路由的普通任务永远不会出现在通知队列里。
+    let plain = store.enqueue("plain", "hello").unwrap().task;
+    let claim = store.claim("worker", 102, 30).unwrap().unwrap();
+    store
+        .succeed(
+            &claim,
+            &AgentResult {
+                summary: "done".into(),
+            },
+            None,
+            103,
+        )
+        .unwrap();
+    assert!(store.list_unnotified(10).unwrap().is_empty());
+    assert!(store.get(plain.id).unwrap().unwrap().notify.is_none());
+}
