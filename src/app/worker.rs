@@ -81,7 +81,7 @@ impl<A: AgentBackend> Worker<A> {
             let interrupted = *shutdown.borrow();
             let multiplier = 1_i64 << (claim.task.attempt_count - 1).clamp(0, 10);
             let delay = (self.config.retry_delay_secs * multiplier).min(86400);
-            // Fenced: a cancelled or reassigned task is never overwritten here.
+            // fenced 写入：已取消或转交的任务不会在这里被覆盖。
             self.store
                 .fail(&claim, &format!("{error:#}"), now(), delay, interrupted)?;
         }
@@ -104,7 +104,7 @@ impl<A: AgentBackend> Worker<A> {
     ) -> Result<()> {
         std::fs::create_dir_all(&self.config.runs_dir)?;
         let root = std::fs::canonicalize(&self.config.runs_dir)?;
-        // Unique, private attempt directories also avoid cross-database ID collisions.
+        // 唯一且私有的尝试目录也避免跨数据库的 ID 冲突。
         let run_dir = tempfile::Builder::new()
             .prefix(&format!(
                 "task-{}-attempt-{}-",

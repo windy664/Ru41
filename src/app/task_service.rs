@@ -5,7 +5,7 @@ use crate::{
 use anyhow::{Result, ensure};
 use std::sync::Arc;
 
-/// Entry points share the same validation and persistence boundary.
+/// 各入口共享同一套校验与持久化边界。
 pub struct TaskService {
     store: Arc<dyn TaskStore>,
 }

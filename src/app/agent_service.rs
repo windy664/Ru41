@@ -5,11 +5,11 @@ use std::{collections::BTreeMap, future::Future, path::PathBuf, pin::Pin, sync::
 
 #[derive(Clone, Debug, Serialize)]
 pub struct BackendDescriptor {
-    /// Stable routing key, independent of the model selected inside the backend.
+    /// 稳定的路由键，与底座内部选用的模型无关。
     pub id: String,
     pub model: Option<String>,
     pub contracts: Vec<RunContract>,
-    /// Declares adapter support, not everything the underlying provider can do.
+    /// 仅声明适配器支持的能力，不代表底层提供方的全部能力。
     pub supports_resume: bool,
 }
 
@@ -21,14 +21,14 @@ pub struct AgentRequest {
 
 pub struct AgentOutput {
     pub result: AgentResult,
-    /// Opaque provider identifier; not portable between backends.
+    /// 不透明的提供方标识；不能跨底座移植。
     pub session_id: Option<String>,
 }
 
-/// A runtime backend, not merely a text-completion API.
-/// Implementations translate their protocol into the requested contract.
-/// Dropping the run future must stop owned work; external APIs must document
-/// any server-side cancellation limitations. No automatic backend fallback.
+/// 一个运行时底座，而不仅是文本补全 API。
+/// 实现负责把各自协议翻译为请求的契约。
+/// 丢弃运行 future 必须停止其持有的工作；外部 API 必须说明
+/// 服务端取消的限制。不做自动底座降级。
 pub trait AgentBackend: Send + Sync {
     fn descriptor(&self) -> BackendDescriptor;
     fn run(
@@ -49,7 +49,7 @@ impl<T: AgentBackend + ?Sized> AgentBackend for Arc<T> {
     }
 }
 
-/// Explicit startup assembly; this is not a dynamic plugin loader.
+/// 启动时显式装配；不是动态插件加载器。
 #[derive(Default)]
 pub struct BackendRegistry {
     backends: BTreeMap<String, Arc<dyn AgentBackend>>,

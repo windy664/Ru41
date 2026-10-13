@@ -10,7 +10,7 @@ use std::{
     time::Duration,
 };
 
-/// Default `TaskStore` adapter backed by a single SQLite database file.
+/// 默认 `TaskStore` 适配器，基于单个 SQLite 数据库文件。
 pub struct SqliteTaskStore {
     connection: Mutex<Connection>,
 }
@@ -23,7 +23,7 @@ impl SqliteTaskStore {
         let mut connection = Connection::open(path).context("cannot open task database")?;
         connection.pragma_update(None, "foreign_keys", "ON")?;
         connection.busy_timeout(Duration::from_secs(5))?;
-        // Serialize startup migration with other processes before reading the version.
+        // 在读取版本号前，先与其他进程串行化启动迁移。
         let tx = connection.transaction_with_behavior(TransactionBehavior::Immediate)?;
         let version: i64 = tx.query_row("PRAGMA user_version", [], |row| row.get(0))?;
         match version {
@@ -164,7 +164,7 @@ impl TaskStore for SqliteTaskStore {
         );
         let mut connection = self.connection()?;
         let tx = connection.transaction_with_behavior(TransactionBehavior::Immediate)?;
-        // Recovery and claim share a transaction. An expired owner cannot commit later.
+        // 恢复与认领共享同一事务。租约过期的原属主无法再提交。
         tx.execute("UPDATE attempts SET status='interrupted', finished_at=?1, error='worker lease expired' WHERE id IN (SELECT active_attempt_id FROM tasks WHERE status='running' AND lease_until<=?1)", [now])?;
         tx.execute("UPDATE tasks SET status=CASE WHEN attempt_count<max_attempts THEN 'retry_scheduled' ELSE 'failed' END, available_at=?1, active_attempt_id=NULL, lease_until=NULL, last_error='worker lease expired', updated_at=strftime('%Y-%m-%dT%H:%M:%fZ','now') WHERE status='running' AND lease_until<=?1", [now])?;
         let task = tx.query_row("SELECT * FROM tasks WHERE backend_id=?2 AND contract=?3 AND status IN ('queued','retry_scheduled') AND available_at<=?1 AND attempt_count<max_attempts ORDER BY id LIMIT 1", params![now,backend,contract.as_str()], task_from_row).optional()?;

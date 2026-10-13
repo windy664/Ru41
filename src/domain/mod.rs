@@ -91,8 +91,8 @@ pub struct Claim {
     pub attempt_id: i64,
 }
 
-/// Versioned host-level result and execution contract.
-/// New action types need their own validation/approval semantics.
+/// 版本化的宿主级结果与执行契约。
+/// 新的动作类型需要各自的校验/审批语义。
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum RunContract {

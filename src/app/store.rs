@@ -2,8 +2,8 @@ use crate::domain::{AgentResult, Attempt, Claim, EnqueueResult, RunContract, Tas
 use anyhow::Result;
 use std::sync::Arc;
 
-/// Persistence boundary for tasks and attempts; SQLite is the default adapter.
-/// Implementations must apply the fencing and leasing rules atomically.
+/// 任务与尝试的持久化边界；SQLite 是默认适配器。
+/// 实现必须原子地执行 fencing 与租约规则。
 pub trait TaskStore: Send + Sync {
     fn enqueue_for(
         &self,
@@ -15,7 +15,7 @@ pub trait TaskStore: Send + Sync {
     fn get(&self, id: i64) -> Result<Option<Task>>;
     fn list(&self, limit: u32) -> Result<Vec<Task>>;
     fn cancel(&self, id: i64) -> Result<Task>;
-    /// Manual retry grants a new three-attempt budget without removing history.
+    /// 手动重试授予新的三次尝试预算，不删除历史。
     fn retry(&self, id: i64) -> Result<Task>;
     fn attempts(&self, id: i64) -> Result<Vec<Attempt>>;
     fn claim_for(

@@ -7,7 +7,7 @@ Rust 编写的个人自动化助手，围绕 Obsidian 组织个人想法、一�
 ## 已实现
 
 - 任务创建、去重、查询、取消、失败重试和每次执行的历史。
-- SQLite 原子领取、租约续期、过期接管和旧 Worker 写入拦截；存储经 `TaskStore` trait 抽象，SQLite 为默认实现，PostgreSQL 等后端按接口扩展。
+- SQLite 原子领取、租约续期、过期接管和旧 Worker 写入拦截；存储经 `TaskStore` trait 抽象，SQLite 为默认实现，另提供 PostgreSQL 适配器（`--store postgres`）。
 - 常驻 Worker / 单次执行，超时、退避重试和 SIGINT/SIGTERM 停止。
 - Codex CLI 子进程：stdin 输入、JSONL 事件、受限大小的日志、结构化结果校验。
 - 独立尝试目录；Unix 上取消/超时清理子进程组，其他平台仅保证直接子进程终止。
@@ -61,12 +61,19 @@ cargo run --locked -- task retry 1
 
 运行数据默认位于 `.ru41/state.db` 和 `.ru41/runs/`，可以分别通过 `--db`、`--runs-dir` 指定。不要将运行数据放进 Vault。日志包含任务内容及模型输出，需要按私人数据管理；当前没有自动清理策略。
 
+使用 PostgreSQL 作为存储时，通过 `--store postgres --pg-url`（或环境变量 `RU41_PG_URL`）指定连接串，启动时自动执行 `migrations/postgres/` 下的迁移：
+
+```bash
+cargo run --locked -- --store postgres --pg-url postgres://user:pass@localhost:5432/ru41 task list
+cargo run --locked -- --store postgres worker --once
+```
+
 ## 核心架构
 
 ```text
 CLI / 后续 Git、定时器与消息入口
                   ↓
-        TaskService + TaskStore（默认 SQLite 实现）
+        TaskService + TaskStore（默认 SQLite 实现，可选 PostgreSQL）
                   ↓
        Worker：租约、重试、恢复
                   ↓
@@ -85,9 +92,9 @@ src/
 ├── app/
 │   ├── task_service.rs
 │   ├── agent_service.rs  # AgentBackend + BackendRegistry
-│   ├── store.rs          # TaskStore 存储接口（SQLite 为默认实现，预留 PostgreSQL 等后端）
+│   ├── store.rs          # TaskStore 存储接口（SQLite 为默认实现，可选 PostgreSQL）
 │   └── worker.rs
-├── adapters/         # SQLite 与 Codex 协议
+├── adapters/         # SQLite、PostgreSQL 与 Codex 协议
 ├── ingress/          # CLI
 ├── lib.rs
 └── main.rs           # 注册并装配具体底座

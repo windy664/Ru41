@@ -1,19 +1,21 @@
-use anyhow::Result;
+use anyhow::{Context, Result};
 use clap::Parser;
 use ru41::{
-    adapters::{codex, sqlite::SqliteTaskStore},
+    adapters::{codex, postgres::PostgresTaskStore, sqlite::SqliteTaskStore},
     app::{
         agent_service::BackendRegistry,
+        store::TaskStore,
         task_service::TaskService,
         worker::{Worker, WorkerConfig},
     },
     ingress::cli::{Cli, Command, TaskCommand},
 };
-use std::sync::Arc;
+use std::{path::PathBuf, sync::Arc};
 
 #[tokio::main]
 async fn main() -> Result<()> {
     let cli = Cli::parse();
+    let store_config = (cli.store, cli.pg_url, cli.db);
     let output = match cli.command {
         Command::Doctor => serde_json::json!({
             "codex_version": codex::version()?,
@@ -32,7 +34,7 @@ async fn main() -> Result<()> {
             model,
             timeout_secs,
         } => {
-            // Resolve explicit relative executable paths before changing the child cwd.
+            // 在切换子进程工作目录前，先解析显式的相对可执行路径。
             let executable = if codex_bin.components().count() > 1 {
                 std::fs::canonicalize(codex_bin)?
             } else {
@@ -40,7 +42,7 @@ async fn main() -> Result<()> {
             };
             let backends = registry(codex::CodexAgent { executable, model })?;
             let mut worker = Worker {
-                store: Arc::new(SqliteTaskStore::open(&cli.db)?),
+                store: open_store(&store_config)?,
                 agent: backends.get(&backend)?,
                 config: WorkerConfig {
                     worker_id: format!("worker-{}", std::process::id()),
@@ -84,7 +86,7 @@ async fn main() -> Result<()> {
             return Ok(());
         }
         Command::Task { command } => {
-            let mut service = TaskService::new(Arc::new(SqliteTaskStore::open(&cli.db)?));
+            let mut service = TaskService::new(open_store(&store_config)?);
             match command {
                 TaskCommand::Add {
                     key,
@@ -104,6 +106,24 @@ async fn main() -> Result<()> {
     };
     println!("{}", serde_json::to_string_pretty(&output)?);
     Ok(())
+}
+
+fn open_store(
+    (kind, pg_url, db): &(String, Option<String>, PathBuf),
+) -> Result<Arc<dyn TaskStore>> {
+    match kind.as_str() {
+        "sqlite" => Ok(Arc::new(SqliteTaskStore::open(db)?)),
+        "postgres" => {
+            let url = pg_url
+                .as_deref()
+                .context("--store postgres requires --pg-url or RU41_PG_URL")?;
+            // postgres 同步客户端内部会 block_on，需离开当前 runtime 上下文。
+            Ok(Arc::new(tokio::task::block_in_place(|| {
+                PostgresTaskStore::open(url)
+            })?))
+        }
+        other => anyhow::bail!("unknown store backend: {other}"),
+    }
 }
 
 fn registry(codex: codex::CodexAgent) -> Result<BackendRegistry> {

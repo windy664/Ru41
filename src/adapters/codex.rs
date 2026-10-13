@@ -1,7 +1,7 @@
 use anyhow::{Context, Result, bail};
 use std::process::Command;
 
-/// Checks the installed CLI only. Does not authenticate or invoke a model.
+/// 只检查已安装的 CLI，不做认证也不调用模型。
 pub fn version() -> Result<String> {
     let output = Command::new("codex")
         .arg("--version")
@@ -98,7 +98,7 @@ impl CodexAgent {
             cmd.process_group(0);
         }
         let mut child = cmd.spawn().context("cannot start Codex CLI")?;
-        // A separate process group also allows cleanup of descendants on cancellation.
+        // 独立进程组也便于取消时清理子孙进程。
         let _group = ProcessGroup(child.id());
         let mut stdin = child.stdin.take().context("missing Codex stdin")?;
         let stdout = child.stdout.take().context("missing Codex stdout")?;
@@ -144,7 +144,7 @@ impl CodexAgent {
             }
         }
         anyhow::ensure!(completed, "Codex did not report turn.completed");
-        // Bounded reads even if the subprocess produces a malformed oversized file.
+        // 即使子进程产出畸形的超大文件，也做有界读取。
         let file = tokio::fs::File::open(&output_file)
             .await
             .context("Codex did not create a final result")?;
@@ -161,7 +161,7 @@ impl CodexAgent {
     }
 }
 
-/// Drain both streams concurrently; stop the run if its logs exceed the bound.
+/// 并发地排空两个流；日志超过上限则停止运行。
 async fn capture(mut reader: impl AsyncRead + Unpin, path: &Path) -> Result<Vec<u8>> {
     let mut file = tokio::fs::File::create(path).await?;
     let mut data = Vec::new();
@@ -187,7 +187,7 @@ impl Drop for ProcessGroup {
     fn drop(&mut self) {
         #[cfg(unix)]
         if let Some(pid) = self.0 {
-            // SAFETY: pid is a child-created process group; no pointers are involved.
+            // SAFETY: pid 是子进程创建的进程组；不涉及任何指针。
             unsafe {
                 libc::kill(-(pid as i32), libc::SIGKILL);
             }

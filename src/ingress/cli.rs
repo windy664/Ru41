@@ -2,26 +2,32 @@ use clap::{Parser, Subcommand};
 use std::path::PathBuf;
 
 #[derive(Parser)]
-#[command(version, about = "Ru41: Rust + Codex personal automation foundation")]
+#[command(version, about = "Ru41: Rust + Codex 个人自动化底座")]
 pub struct Cli {
-    /// Path to local runtime data; never use a database inside your Vault.
+    /// 本地运行数据路径；不要把数据库放在 Vault 里。
     #[arg(long, global = true, default_value = ".ru41/state.db")]
     pub db: PathBuf,
+    /// 存储后端：sqlite（默认）或 postgres。
+    #[arg(long, global = true, default_value = "sqlite", value_parser = ["sqlite", "postgres"])]
+    pub store: String,
+    /// PostgreSQL 连接串（--store postgres 时使用，也可用环境变量 RU41_PG_URL）。
+    #[arg(long, global = true, env = "RU41_PG_URL")]
+    pub pg_url: Option<String>,
     #[command(subcommand)]
     pub command: Command,
 }
 
 #[derive(Subcommand)]
 pub enum Command {
-    /// Check local Codex CLI availability; does not invoke a model.
+    /// 检查本地 Codex CLI 是否可用；不调用模型。
     Doctor,
-    /// List registered runtime backends and their supported contracts.
+    /// 列出已注册的运行时底座及其支持的契约。
     Backends,
-    /// Execute queued analysis tasks through Codex (uses your Codex authentication).
+    /// 通过 Codex 执行队列中的分析任务（使用你的 Codex 认证）。
     Worker {
         #[arg(long, default_value = "codex")]
         backend: String,
-        /// Run at most one ready task, then exit.
+        /// 最多运行一个就绪任务后退出。
         #[arg(long)]
         once: bool,
         #[arg(long, default_value = ".ru41/runs")]
@@ -33,7 +39,7 @@ pub enum Command {
         #[arg(long, default_value_t = 300, value_parser = clap::value_parser!(u64).range(1..=86400))]
         timeout_secs: u64,
     },
-    /// Store and inspect analysis requests and their execution history.
+    /// 存储和查看分析请求及其执行历史。
     Task {
         #[command(subcommand)]
         command: TaskCommand,
@@ -42,7 +48,7 @@ pub enum Command {
 
 #[derive(Subcommand)]
 pub enum TaskCommand {
-    /// Enqueue a request. Retry the same event with the same key and prompt.
+    /// 入队一个请求。相同事件用相同的 key 与 prompt 重试。
     Add {
         #[arg(long, default_value = "codex")]
         backend: String,
@@ -58,15 +64,15 @@ pub enum TaskCommand {
     Show {
         id: i64,
     },
-    /// Show all execution attempts, including errors and local artifact paths.
+    /// 显示全部执行尝试，包括错误与本地产物路径。
     Attempts {
         id: i64,
     },
-    /// Retry a failed task with a fresh attempt budget.
+    /// 手动重试失败任务，追加新的尝试预算。
     Retry {
         id: i64,
     },
-    /// Cancel a queued or running request. Repeated cancellation is safe.
+    /// 取消排队中或运行中的请求。重复取消是安全的。
     Cancel {
         id: i64,
     },
