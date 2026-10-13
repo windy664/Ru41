@@ -1,12 +1,13 @@
 use ru41::{
-    adapters::sqlite::TaskStore,
+    adapters::sqlite::SqliteTaskStore,
     app::{
         agent_service::{AgentBackend, AgentOutput, AgentRequest, BackendDescriptor},
+        store::TaskStore,
         worker::{Worker, WorkerConfig},
     },
     domain::{AgentResult, TaskStatus},
 };
-use std::{future::Future, pin::Pin, time::Duration};
+use std::{future::Future, pin::Pin, sync::Arc, time::Duration};
 use tokio::sync::watch;
 
 struct FakeAgent {
@@ -39,7 +40,7 @@ impl AgentBackend for FakeAgent {
 }
 fn worker(dir: &std::path::Path, delay: Duration, summary: &'static str) -> Worker<FakeAgent> {
     Worker {
-        store: TaskStore::open(&dir.join("state.db")).unwrap(),
+        store: Arc::new(SqliteTaskStore::open(&dir.join("state.db")).unwrap()),
         agent: FakeAgent { delay, summary },
         config: WorkerConfig {
             worker_id: "test".into(),
@@ -116,7 +117,7 @@ async fn external_cancellation_is_observed_before_saving_result() {
     let path = dir.path().join("state.db");
     let cancel = async move {
         tokio::time::sleep(Duration::from_millis(30)).await;
-        TaskStore::open(&path).unwrap().cancel(id).unwrap();
+        SqliteTaskStore::open(&path).unwrap().cancel(id).unwrap();
     };
     let (report, ()) = tokio::join!(w.run_once(receiver), cancel);
     assert_eq!(report.unwrap().unwrap().status, TaskStatus::Cancelled);

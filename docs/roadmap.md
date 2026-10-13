@@ -8,6 +8,7 @@
 - [x] Codex CLI 运行接入、JSONL 与结构化结果校验、超时清理
 - [x] 通用 AgentBackend、启动注册、任务按底座路由
 - [x] 数据库 v1/v2 到 v3 的迁移
+- [x] TaskStore 存储抽象，SQLite 为默认实现，预留 PostgreSQL 等后端接口
 - [x] 自动行为测试及一次真实 Codex 分析任务验证
 
 ## 核心后续

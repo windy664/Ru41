@@ -1,16 +1,17 @@
 use crate::{
-    adapters::sqlite::TaskStore,
+    app::store::TaskStore,
     domain::{EnqueueResult, Task},
 };
 use anyhow::{Result, ensure};
+use std::sync::Arc;
 
 /// Entry points share the same validation and persistence boundary.
 pub struct TaskService {
-    store: TaskStore,
+    store: Arc<dyn TaskStore>,
 }
 
 impl TaskService {
-    pub fn new(store: TaskStore) -> Self {
+    pub fn new(store: Arc<dyn TaskStore>) -> Self {
         Self { store }
     }
 

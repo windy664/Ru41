@@ -359,7 +359,7 @@ X 接入需要实测，不预设完整覆盖或实时性。先评估可用 API�
 2. 外部信息采集 → 筛选与摘要 → 来源笔记 → 消息推送。
 3. 聊天交办 → 执行任务 → 必要时审核 → 结果回复。
 
-采用 **Rust 常驻服务 + AgentBackend（首个实现 Codex）+ SQLite 运行状态 + Obsidian/Git 内容存储**。先部署一个服务进程，Codex 由接入层管理；代码按职责组织，暂不确定业务插件 SDK、动态加载或独立服务拆分。
+采用 **Rust 常驻服务 + AgentBackend（首个实现 Codex）+ TaskStore 运行状态（默认 SQLite 实现，PostgreSQL 等后端预留接口）+ Obsidian/Git 内容存储**。先部署一个服务进程，Codex 由接入层管理；代码按职责组织，暂不确定业务插件 SDK、动态加载或独立服务拆分。
 
 ### 8.2 核心结构
 

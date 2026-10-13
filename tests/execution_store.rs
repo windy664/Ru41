@@ -1,5 +1,6 @@
 use ru41::{
-    adapters::sqlite::TaskStore,
+    adapters::sqlite::SqliteTaskStore,
+    app::store::TaskStore,
     domain::{AgentResult, TaskStatus},
 };
 use std::sync::{Arc, Barrier};
@@ -17,7 +18,7 @@ fn upgrade_preserves_v1_ids_and_cancelled_requests() {
     )
     .unwrap();
     drop(conn);
-    let mut store = TaskStore::open(&path).unwrap();
+    let store = SqliteTaskStore::open(&path).unwrap();
     assert_eq!(
         store.get(42).unwrap().unwrap().status,
         TaskStatus::Cancelled
@@ -32,7 +33,7 @@ fn upgrade_preserves_v1_ids_and_cancelled_requests() {
 fn multiple_workers_cannot_claim_the_same_task() {
     let dir = tempfile::tempdir().unwrap();
     let path = dir.path().join("state.db");
-    TaskStore::open(&path)
+    SqliteTaskStore::open(&path)
         .unwrap()
         .enqueue("event", "hello")
         .unwrap();
@@ -42,7 +43,7 @@ fn multiple_workers_cannot_claim_the_same_task() {
             let path = path.clone();
             let barrier = Arc::clone(&barrier);
             std::thread::spawn(move || {
-                let mut store = TaskStore::open(&path).unwrap();
+                let store = SqliteTaskStore::open(&path).unwrap();
                 barrier.wait();
                 store
                     .claim(&format!("worker-{i}"), 100, 30)
@@ -64,11 +65,11 @@ fn multiple_workers_cannot_claim_the_same_task() {
 fn expired_owner_is_fenced_and_recovery_keeps_history() {
     let dir = tempfile::tempdir().unwrap();
     let path = dir.path().join("state.db");
-    let mut a = TaskStore::open(&path).unwrap();
+    let a = SqliteTaskStore::open(&path).unwrap();
     a.enqueue("event", "hello").unwrap();
     let old = a.claim("old", 100, 10).unwrap().unwrap();
     assert!(!a.heartbeat(&old, 110, 10).unwrap());
-    let mut b = TaskStore::open(&path).unwrap();
+    let b = SqliteTaskStore::open(&path).unwrap();
     let new = b.claim("new", 111, 30).unwrap().unwrap();
     let result = AgentResult {
         summary: "done".into(),
@@ -89,7 +90,7 @@ fn expired_owner_is_fenced_and_recovery_keeps_history() {
 #[test]
 fn cancellation_fences_completion_and_success_cannot_be_cancelled() {
     let dir = tempfile::tempdir().unwrap();
-    let mut store = TaskStore::open(&dir.path().join("state.db")).unwrap();
+    let store = SqliteTaskStore::open(&dir.path().join("state.db")).unwrap();
     let task = store.enqueue("event", "hello").unwrap().task;
     let claim = store.claim("worker", 100, 30).unwrap().unwrap();
     store.cancel(task.id).unwrap();
@@ -127,7 +128,7 @@ fn cancellation_fences_completion_and_success_cannot_be_cancelled() {
 #[test]
 fn retry_delay_budget_and_manual_retry_preserve_attempts() {
     let dir = tempfile::tempdir().unwrap();
-    let mut store = TaskStore::open(&dir.path().join("state.db")).unwrap();
+    let store = SqliteTaskStore::open(&dir.path().join("state.db")).unwrap();
     let id = store.enqueue("event", "hello").unwrap().task.id;
     for i in 0..3 {
         let now = 100 + i * 20;

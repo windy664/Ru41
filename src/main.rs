@@ -1,7 +1,7 @@
 use anyhow::Result;
 use clap::Parser;
 use ru41::{
-    adapters::{codex, sqlite::TaskStore},
+    adapters::{codex, sqlite::SqliteTaskStore},
     app::{
         agent_service::BackendRegistry,
         task_service::TaskService,
@@ -9,6 +9,7 @@ use ru41::{
     },
     ingress::cli::{Cli, Command, TaskCommand},
 };
+use std::sync::Arc;
 
 #[tokio::main]
 async fn main() -> Result<()> {
@@ -39,7 +40,7 @@ async fn main() -> Result<()> {
             };
             let backends = registry(codex::CodexAgent { executable, model })?;
             let mut worker = Worker {
-                store: TaskStore::open(&cli.db)?,
+                store: Arc::new(SqliteTaskStore::open(&cli.db)?),
                 agent: backends.get(&backend)?,
                 config: WorkerConfig {
                     worker_id: format!("worker-{}", std::process::id()),
@@ -83,7 +84,7 @@ async fn main() -> Result<()> {
             return Ok(());
         }
         Command::Task { command } => {
-            let mut service = TaskService::new(TaskStore::open(&cli.db)?);
+            let mut service = TaskService::new(Arc::new(SqliteTaskStore::open(&cli.db)?));
             match command {
                 TaskCommand::Add {
                     key,

@@ -1,4 +1,4 @@
-use ru41::{adapters::sqlite::TaskStore, app::task_service::TaskService, domain::TaskStatus};
+use ru41::{adapters::sqlite::SqliteTaskStore, app::task_service::TaskService, domain::TaskStatus};
 use std::sync::{Arc, Barrier};
 
 #[test]
@@ -6,7 +6,7 @@ fn requests_survive_restart_and_retries_do_not_resurrect_cancelled_tasks() {
     let dir = tempfile::tempdir().unwrap();
     let path = dir.path().join("state.db");
     let id = {
-        let mut service = TaskService::new(TaskStore::open(&path).unwrap());
+        let mut service = TaskService::new(Arc::new(SqliteTaskStore::open(&path).unwrap()));
         let first = service.enqueue("git:abc:note", "整理笔记").unwrap();
         assert!(first.created);
         let retry = service.enqueue("git:abc:note", "整理笔记").unwrap();
@@ -15,7 +15,7 @@ fn requests_survive_restart_and_retries_do_not_resurrect_cancelled_tasks() {
         service.cancel(first.task.id).unwrap();
         first.task.id
     };
-    let mut service = TaskService::new(TaskStore::open(&path).unwrap());
+    let mut service = TaskService::new(Arc::new(SqliteTaskStore::open(&path).unwrap()));
     assert_eq!(service.get(id).unwrap().status, TaskStatus::Cancelled);
     assert_eq!(service.cancel(id).unwrap().status, TaskStatus::Cancelled);
     let retry = service.enqueue("git:abc:note", "整理笔记").unwrap();
@@ -27,7 +27,9 @@ fn requests_survive_restart_and_retries_do_not_resurrect_cancelled_tasks() {
 #[test]
 fn conflicting_keys_and_invalid_inputs_do_not_mutate_existing_tasks() {
     let dir = tempfile::tempdir().unwrap();
-    let mut service = TaskService::new(TaskStore::open(&dir.path().join("state.db")).unwrap());
+    let mut service = TaskService::new(Arc::new(
+        SqliteTaskStore::open(&dir.path().join("state.db")).unwrap(),
+    ));
     let first = service.enqueue("event:1", "original").unwrap();
     assert!(service.enqueue("event:1", "different").is_err());
     assert!(service.enqueue(" ", "valid").is_err());
@@ -50,7 +52,7 @@ fn concurrent_deliveries_create_exactly_one_request() {
             let barrier = Arc::clone(&barrier);
             std::thread::spawn(move || {
                 barrier.wait();
-                let mut service = TaskService::new(TaskStore::open(&path).unwrap());
+                let mut service = TaskService::new(Arc::new(SqliteTaskStore::open(&path).unwrap()));
                 service.enqueue("qq:event:1", "remember this").unwrap()
             })
         })
@@ -66,7 +68,7 @@ fn future_database_version_is_rejected_without_downgrading() {
     let path = dir.path().join("state.db");
     let conn = rusqlite::Connection::open(&path).unwrap();
     conn.pragma_update(None, "user_version", 999).unwrap();
-    assert!(TaskStore::open(&path).is_err());
+    assert!(SqliteTaskStore::open(&path).is_err());
     let version: i64 = conn
         .query_row("PRAGMA user_version", [], |row| row.get(0))
         .unwrap();

@@ -1,13 +1,21 @@
-use crate::domain::{AgentResult, Attempt, Claim, EnqueueResult, RunContract, Task};
+use crate::{
+    app::store::TaskStore,
+    domain::{AgentResult, Attempt, Claim, EnqueueResult, RunContract, Task},
+};
 use anyhow::{Context, Result, bail};
 use rusqlite::{Connection, OptionalExtension, Row, TransactionBehavior, params};
-use std::{path::Path, time::Duration};
+use std::{
+    path::Path,
+    sync::{Mutex, MutexGuard},
+    time::Duration,
+};
 
-pub struct TaskStore {
-    connection: Connection,
+/// Default `TaskStore` adapter backed by a single SQLite database file.
+pub struct SqliteTaskStore {
+    connection: Mutex<Connection>,
 }
 
-impl TaskStore {
+impl SqliteTaskStore {
     pub fn open(path: &Path) -> Result<Self> {
         if let Some(parent) = path.parent().filter(|p| !p.as_os_str().is_empty()) {
             std::fs::create_dir_all(parent).context("cannot create database directory")?;
@@ -31,15 +39,21 @@ impl TaskStore {
             tx.execute_batch(include_str!("../../migrations/003_backends.sql"))?;
         }
         tx.commit()?;
-        Ok(Self { connection })
+        Ok(Self {
+            connection: Mutex::new(connection),
+        })
     }
 
-    pub fn enqueue(&mut self, request_key: &str, prompt: &str) -> Result<EnqueueResult> {
-        self.enqueue_for(request_key, prompt, "codex", RunContract::AnalysisV1)
+    fn connection(&self) -> Result<MutexGuard<'_, Connection>> {
+        self.connection
+            .lock()
+            .map_err(|_| anyhow::anyhow!("task store lock poisoned"))
     }
+}
 
-    pub fn enqueue_for(
-        &mut self,
+impl TaskStore for SqliteTaskStore {
+    fn enqueue_for(
+        &self,
         request_key: &str,
         prompt: &str,
         backend: &str,
@@ -49,9 +63,8 @@ impl TaskStore {
             !backend.trim().is_empty() && backend.len() <= 128,
             "invalid backend ID"
         );
-        let tx = self
-            .connection
-            .transaction_with_behavior(TransactionBehavior::Immediate)?;
+        let mut connection = self.connection()?;
+        let tx = connection.transaction_with_behavior(TransactionBehavior::Immediate)?;
         let changed = tx.execute(
             "INSERT INTO tasks (request_key, prompt, backend_id, contract) VALUES (?1, ?2, ?3, ?4) ON CONFLICT(request_key) DO NOTHING",
             params![request_key, prompt, backend, contract.as_str()],
@@ -73,27 +86,25 @@ impl TaskStore {
         })
     }
 
-    pub fn get(&self, id: i64) -> Result<Option<Task>> {
+    fn get(&self, id: i64) -> Result<Option<Task>> {
         Ok(self
-            .connection
+            .connection()?
             .query_row("SELECT * FROM tasks WHERE id = ?1", [id], task_from_row)
             .optional()?)
     }
 
-    pub fn list(&self, limit: u32) -> Result<Vec<Task>> {
-        let mut statement = self
-            .connection
-            .prepare("SELECT * FROM tasks ORDER BY id DESC LIMIT ?1")?;
+    fn list(&self, limit: u32) -> Result<Vec<Task>> {
+        let connection = self.connection()?;
+        let mut statement = connection.prepare("SELECT * FROM tasks ORDER BY id DESC LIMIT ?1")?;
         let tasks = statement
             .query_map([limit], task_from_row)?
             .collect::<rusqlite::Result<Vec<_>>>()?;
         Ok(tasks)
     }
 
-    pub fn cancel(&mut self, id: i64) -> Result<Task> {
-        let tx = self
-            .connection
-            .transaction_with_behavior(TransactionBehavior::Immediate)?;
+    fn cancel(&self, id: i64) -> Result<Task> {
+        let mut connection = self.connection()?;
+        let tx = connection.transaction_with_behavior(TransactionBehavior::Immediate)?;
         let task = get_task(&tx, id)?.context("task not found")?;
         if matches!(
             task.status,
@@ -108,18 +119,16 @@ impl TaskStore {
         Ok(task)
     }
 
-    /// Manual retry grants a new three-attempt budget without removing history.
-    pub fn retry(&mut self, id: i64) -> Result<Task> {
-        let changed = self.connection.execute("UPDATE tasks SET status='queued', available_at=0, max_attempts=attempt_count+3, last_error=NULL, updated_at=strftime('%Y-%m-%dT%H:%M:%fZ','now') WHERE id=?1 AND status='failed'", [id])?;
+    fn retry(&self, id: i64) -> Result<Task> {
+        let changed = self.connection()?.execute("UPDATE tasks SET status='queued', available_at=0, max_attempts=attempt_count+3, last_error=NULL, updated_at=strftime('%Y-%m-%dT%H:%M:%fZ','now') WHERE id=?1 AND status='failed'", [id])?;
         anyhow::ensure!(changed == 1, "only a failed task can be retried");
         self.get(id)?.context("task not found")
     }
 
-    pub fn attempts(&self, id: i64) -> Result<Vec<Attempt>> {
+    fn attempts(&self, id: i64) -> Result<Vec<Attempt>> {
         self.get(id)?.context("task not found")?;
-        let mut q = self
-            .connection
-            .prepare("SELECT * FROM attempts WHERE task_id=?1 ORDER BY id")?;
+        let connection = self.connection()?;
+        let mut q = connection.prepare("SELECT * FROM attempts WHERE task_id=?1 ORDER BY id")?;
         Ok(q.query_map([id], |r| {
             Ok(Attempt {
                 id: r.get("id")?,
@@ -140,19 +149,8 @@ impl TaskStore {
         .collect::<rusqlite::Result<Vec<_>>>()?)
     }
 
-    pub fn claim(&mut self, worker: &str, now: i64, lease_secs: i64) -> Result<Option<Claim>> {
-        self.claim_for(
-            worker,
-            "codex",
-            None,
-            RunContract::AnalysisV1,
-            now,
-            lease_secs,
-        )
-    }
-
-    pub fn claim_for(
-        &mut self,
+    fn claim_for(
+        &self,
         worker: &str,
         backend: &str,
         model: Option<&str>,
@@ -164,9 +162,8 @@ impl TaskStore {
             !worker.is_empty() && (1..=86400).contains(&lease_secs),
             "invalid worker or lease"
         );
-        let tx = self
-            .connection
-            .transaction_with_behavior(TransactionBehavior::Immediate)?;
+        let mut connection = self.connection()?;
+        let tx = connection.transaction_with_behavior(TransactionBehavior::Immediate)?;
         // Recovery and claim share a transaction. An expired owner cannot commit later.
         tx.execute("UPDATE attempts SET status='interrupted', finished_at=?1, error='worker lease expired' WHERE id IN (SELECT active_attempt_id FROM tasks WHERE status='running' AND lease_until<=?1)", [now])?;
         tx.execute("UPDATE tasks SET status=CASE WHEN attempt_count<max_attempts THEN 'retry_scheduled' ELSE 'failed' END, available_at=?1, active_attempt_id=NULL, lease_until=NULL, last_error='worker lease expired', updated_at=strftime('%Y-%m-%dT%H:%M:%fZ','now') WHERE status='running' AND lease_until<=?1", [now])?;
@@ -186,18 +183,18 @@ impl TaskStore {
         Ok(Some(Claim { task, attempt_id }))
     }
 
-    pub fn heartbeat(&mut self, claim: &Claim, now: i64, lease_secs: i64) -> Result<bool> {
-        Ok(self.connection.execute("UPDATE tasks SET lease_until=?3 WHERE id=?1 AND active_attempt_id=?2 AND status='running' AND lease_until>?4", params![claim.task.id,claim.attempt_id,now+lease_secs,now])? == 1)
+    fn heartbeat(&self, claim: &Claim, now: i64, lease_secs: i64) -> Result<bool> {
+        Ok(self.connection()?.execute("UPDATE tasks SET lease_until=?3 WHERE id=?1 AND active_attempt_id=?2 AND status='running' AND lease_until>?4", params![claim.task.id,claim.attempt_id,now+lease_secs,now])? == 1)
     }
 
-    pub fn attach_run(&mut self, claim: &Claim, dir: &str, now: i64) -> Result<()> {
-        let changed = self.connection.execute("UPDATE attempts SET run_dir=?3 WHERE id=?2 AND task_id=?1 AND status='running' AND EXISTS(SELECT 1 FROM tasks WHERE id=?1 AND active_attempt_id=?2 AND status='running' AND lease_until>?4)", params![claim.task.id,claim.attempt_id,dir,now])?;
+    fn attach_run(&self, claim: &Claim, dir: &str, now: i64) -> Result<()> {
+        let changed = self.connection()?.execute("UPDATE attempts SET run_dir=?3 WHERE id=?2 AND task_id=?1 AND status='running' AND EXISTS(SELECT 1 FROM tasks WHERE id=?1 AND active_attempt_id=?2 AND status='running' AND lease_until>?4)", params![claim.task.id,claim.attempt_id,dir,now])?;
         anyhow::ensure!(changed == 1, "task lease lost");
         Ok(())
     }
 
-    pub fn succeed(
-        &mut self,
+    fn succeed(
+        &self,
         claim: &Claim,
         result: &AgentResult,
         session: Option<&str>,
@@ -205,9 +202,8 @@ impl TaskStore {
     ) -> Result<bool> {
         result.validate().map_err(anyhow::Error::msg)?;
         let json = serde_json::to_string(result)?;
-        let tx = self
-            .connection
-            .transaction_with_behavior(TransactionBehavior::Immediate)?;
+        let mut connection = self.connection()?;
+        let tx = connection.transaction_with_behavior(TransactionBehavior::Immediate)?;
         let changed = tx.execute("UPDATE tasks SET status='succeeded', result_json=?3, last_error=NULL, active_attempt_id=NULL, lease_until=NULL, updated_at=strftime('%Y-%m-%dT%H:%M:%fZ','now') WHERE id=?1 AND active_attempt_id=?2 AND status='running' AND lease_until>?4", params![claim.task.id,claim.attempt_id,json,now])?;
         if changed == 1 {
             tx.execute("UPDATE attempts SET status='succeeded', result_json=?2, session_id=?3, finished_at=?4 WHERE id=?1", params![claim.attempt_id,json,session,now])?;
@@ -216,8 +212,8 @@ impl TaskStore {
         Ok(changed == 1)
     }
 
-    pub fn fail(
-        &mut self,
+    fn fail(
+        &self,
         claim: &Claim,
         error: &str,
         now: i64,
@@ -226,9 +222,8 @@ impl TaskStore {
     ) -> Result<bool> {
         anyhow::ensure!(delay_secs >= 0, "retry delay must not be negative");
         let error: String = error.chars().take(2000).collect();
-        let tx = self
-            .connection
-            .transaction_with_behavior(TransactionBehavior::Immediate)?;
+        let mut connection = self.connection()?;
+        let tx = connection.transaction_with_behavior(TransactionBehavior::Immediate)?;
         let changed = tx.execute("UPDATE tasks SET status=CASE WHEN attempt_count<max_attempts THEN 'retry_scheduled' ELSE 'failed' END, available_at=?3, last_error=?4, active_attempt_id=NULL, lease_until=NULL, updated_at=strftime('%Y-%m-%dT%H:%M:%fZ','now') WHERE id=?1 AND active_attempt_id=?2 AND status='running' AND lease_until>?5", params![claim.task.id,claim.attempt_id,now+delay_secs,error,now])?;
         if changed == 1 {
             tx.execute(

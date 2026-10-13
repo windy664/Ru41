@@ -1,12 +1,15 @@
 use crate::{
-    adapters::sqlite::TaskStore,
-    app::agent_service::{AgentBackend, AgentRequest},
+    app::{
+        agent_service::{AgentBackend, AgentRequest},
+        store::TaskStore,
+    },
     domain::{Claim, RunContract, TaskStatus},
 };
 use anyhow::{Context, Result, ensure};
 use serde::Serialize;
 use std::{
     path::PathBuf,
+    sync::Arc,
     time::{Duration, SystemTime, UNIX_EPOCH},
 };
 use tokio::sync::watch;
@@ -43,7 +46,7 @@ pub struct WorkReport {
 }
 
 pub struct Worker<A> {
-    pub store: TaskStore,
+    pub store: Arc<dyn TaskStore>,
     pub agent: A,
     pub config: WorkerConfig,
 }

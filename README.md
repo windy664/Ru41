@@ -7,7 +7,7 @@ Rust 编写的个人自动化助手，围绕 Obsidian 组织个人想法、一�
 ## 已实现
 
 - 任务创建、去重、查询、取消、失败重试和每次执行的历史。
-- SQLite 原子领取、租约续期、过期接管和旧 Worker 写入拦截。
+- SQLite 原子领取、租约续期、过期接管和旧 Worker 写入拦截；存储经 `TaskStore` trait 抽象，SQLite 为默认实现，PostgreSQL 等后端按接口扩展。
 - 常驻 Worker / 单次执行，超时、退避重试和 SIGINT/SIGTERM 停止。
 - Codex CLI 子进程：stdin 输入、JSONL 事件、受限大小的日志、结构化结果校验。
 - 独立尝试目录；Unix 上取消/超时清理子进程组，其他平台仅保证直接子进程终止。
@@ -66,7 +66,7 @@ cargo run --locked -- task retry 1
 ```text
 CLI / 后续 Git、定时器与消息入口
                   ↓
-        TaskService + SQLite
+        TaskService + TaskStore（默认 SQLite 实现）
                   ↓
        Worker：租约、重试、恢复
                   ↓
@@ -85,6 +85,7 @@ src/
 ├── app/
 │   ├── task_service.rs
 │   ├── agent_service.rs  # AgentBackend + BackendRegistry
+│   ├── store.rs          # TaskStore 存储接口（SQLite 为默认实现，预留 PostgreSQL 等后端）
 │   └── worker.rs
 ├── adapters/         # SQLite 与 Codex 协议
 ├── ingress/          # CLI
