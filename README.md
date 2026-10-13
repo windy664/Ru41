@@ -1,91 +1,98 @@
 # Ru41
 
-基于 **Rust + Codex** 的个人自动化助手，围绕 Obsidian 组织个人想法、一手信息和任务，面向学习、科研、项目与校园生活。
+Rust 编写的个人自动化助手，围绕 Obsidian 组织个人想法、一手信息和任务。**Codex 是首个 Agent 底座，核心通过 `AgentBackend` 接口接入运行时。**
 
-> 当前是 **v0.1 开发起点**：产品设计、核心代码结构、持久化任务 CLI 和 Codex 环境检查。任务暂时只保存为 `queued`，没有执行 Worker，不会自动调用模型、读取或修改你的 Vault。
+> 当前 v0.2 已实现持久化任务、Worker 和 Codex 分析任务执行链。尚未接入真实 Vault、Git 自动归档、消息平台或需要审批的外部动作。`succeeded` 表示分析结果已校验并保存，不表示已完成用户描述的任意外部操作。
 
 ## 已实现
 
-- Rust 单 package，按 domain / app / adapters / ingress 分层。
-- SQLite 保存任务，提供创建、列表、详情和取消命令。
-- 相同请求键与内容重复提交返回已有任务；同键不同内容明确报错。
-- 已取消任务不会因重复投递重新排队。
-- 数据库迁移版本检查、事务与并发去重。
-- `doctor` 检查本地 Codex CLI 版本，不验证登录、不调用模型。
-- 生命周期、进程重开后的持久化、并发投递和版本兼容测试；GitHub Actions 检查格式、Clippy 与测试。
+- 任务创建、去重、查询、取消、失败重试和每次执行的历史。
+- SQLite 原子领取、租约续期、过期接管和旧 Worker 写入拦截。
+- 常驻 Worker / 单次执行，超时、退避重试和 SIGINT/SIGTERM 停止。
+- Codex CLI 子进程：stdin 输入、JSONL 事件、受限大小的日志、结构化结果校验。
+- 独立尝试目录；Unix 上取消/超时清理子进程组，其他平台仅保证直接子进程终止。
+- 通用底座注册、能力声明、任务按后端路由，以及后端/模型/会话记录。
+- 旧版数据库自动迁移；20 个行为测试与 GitHub Actions。
+
+目前唯一真实适配器是 **Codex**。两个模拟后端验证了公共接口与路由；其他 Agent 不会因接口存在而自动可用。当前适配器不提供会话续接或外部写入工具。
 
 ## 快速开始
 
-需要支持 Rust 2024 edition 的 Rust 工具链；本地验证使用 Rust 1.98.0。仅运行 `doctor` 需要已安装 Codex CLI。
+需要支持 Rust 2024 edition 的工具链；本地验证使用 Rust 1.98.0、Codex CLI 0.162.1。Codex 需提前安装并完成登录。
 
 ```bash
 git clone https://github.com/windy664/Ru41.git
 cd Ru41
 cargo build --locked
-cargo run --locked -- --help
 cargo run --locked -- doctor
+cargo run --locked -- backends
 ```
 
-创建和查看任务（目前不会执行任务）：
+`doctor` 仅检查 CLI 版本，不验证登录，也不调用模型。`backends` 列出当前编译注册的底座和支持的契约。
+
+创建分析任务并执行：
 
 ```bash
-cargo run --locked -- task add --key demo:inbox:1 --prompt "整理 Inbox 中的临时想法"
-cargo run --locked -- task list
+cargo run --locked -- task add --key demo:1 --backend codex --prompt "给个人论文阅读计划列出三个建议"
+cargo run --locked -- worker --once
 cargo run --locked -- task show 1
-cargo run --locked -- task cancel 1
+cargo run --locked -- task attempts 1
 ```
 
-默认数据库为当前目录下 `.ru41/state.db`，可用全局参数指定：
+Worker 会实际调用 Codex，使用已有认证并消耗对应额度。适配器使用 `--ignore-user-config`、`--sandbox read-only` 和独立尝试目录；不加载用户自定义模型后端或 MCP 配置。可通过 `--model` 显式选择账户可用模型。只读沙箱不是独立机器或完整数据隔离。
+
+常驻运行、取消和手动重试：
 
 ```bash
-cargo run --locked -- --db /path/to/runtime/state.db task list
+cargo run --locked -- worker --timeout-secs 300
+# 另一个终端
+cargo run --locked -- task list
+cargo run --locked -- task cancel 1
+# 仅 failed 任务支持手动重试
+cargo run --locked -- task retry 1
 ```
 
-`--key` 标识一次输入事件：同一次投递重试使用相同键，新任务使用新键。CLI 输出 JSON，出错返回非零退出码。列表默认返回最近 20 条，可用 `--limit` 调整（1–1000）。
+- `--once` 最多领取一个就绪任务；重试调度后的任务需再次运行 Worker 或使用常驻模式。
+- 每轮最多尝试 3 次，失败后等待 10、20 秒再重试；耗尽预算进入 `failed`。手动重试追加 3 次预算，保留历史。
+- 运行中取消在下一次状态轮询时处理，通常约 1 秒；超时和停止会丢弃运行 future 并清理本地子进程。
+- Worker 被强制杀死后，其他 Worker 在 30 秒租约过期后可接管。强杀宿主无法保证旧进程树立即结束，但其结果不能再提交；此版本只支持可重跑的分析任务。
+- 同一次输入重试使用相同 `--key`、内容和底座；改变其中内容或底座要使用新键。
+- `worker --once` 返回的是一次调度报告，请检查 JSON 的 `status`；一次业务失败不等于 Worker 命令异常退出。
 
-运行数据放在独立目录，避免放进 Obsidian Vault。数据库、认证信息和私人笔记不应提交到代码仓库。
+运行数据默认位于 `.ru41/state.db` 和 `.ru41/runs/`，可以分别通过 `--db`、`--runs-dir` 指定。不要将运行数据放进 Vault。日志包含任务内容及模型输出，需要按私人数据管理；当前没有自动清理策略。
 
 ## 核心架构
 
 ```text
-CLI / Git 更新 / 定时采集 / 消息网关
-                     ↓
-             TaskService + SQLite
-                     ↓
-              Worker（计划中）
-                     ↓
-          Rust 操作 / Codex Agent
-                     ↓
-           校验 → 自动执行或审核
-                     ↓
-          Obsidian / 外部动作 / 回复
+CLI / 后续 Git、定时器与消息入口
+                  ↓
+        TaskService + SQLite
+                  ↓
+       Worker：租约、重试、恢复
+                  ↓
+       AgentBackend 通用接口
+                  ↓
+       CodexAdapter（首个实现）
+                  ↓
+        结果校验与事务保存
 ```
 
-所有入口共用任务系统；Codex 负责理解和任务内推理；Rust 负责持久状态、工具、权限、写入和结果核验。先验证核心与两个真实流程，再设计模块注册和插件机制。
+任务绑定 `backend_id` 与版本化 `analysis_v1` 契约。Worker 只领取对应底座、兼容契约的任务；失败时不自动换底座。`session_id` 是该底座内部的不透明标识，不能跨底座续接。
 
 ```text
 src/
-├── domain/         # 任务类型与状态
-├── app/            # TaskService
-├── adapters/       # SQLite、Codex CLI 环境检查
-├── ingress/        # CLI
+├── domain/           # 任务、尝试、结果与执行契约
+├── app/
+│   ├── task_service.rs
+│   ├── agent_service.rs  # AgentBackend + BackendRegistry
+│   └── worker.rs
+├── adapters/         # SQLite 与 Codex 协议
+├── ingress/          # CLI
 ├── lib.rs
-└── main.rs
-migrations/         # 数据库迁移
-tests/             # 行为测试
-docs/              # 产品设计与开发路线
+└── main.rs           # 注册并装配具体底座
 ```
 
-## 下一步
-
-1. Worker、任务尝试记录、租约及中断恢复。
-2. Codex 运行接入、结构化结果、超时和执行记录。
-3. Git 更新触发 Inbox 整理、链接修复和可恢复归档。
-4. 论文/RSS 一手信息进入同一 Obsidian 知识库。
-5. QQ、飞书或钉钉先完成一个双向消息入口。
-6. 核心稳定后再提炼模块与插件接口。
-
-详细说明：[产品设计](docs/product-design.md) · [开发路线](docs/roadmap.md)。设计文档描述目标能力，实际实现范围以本 README 为准。
+接口接入规则见 [Agent 底座契约](docs/agent-backends.md)。完整目标见 [产品设计](docs/product-design.md)，实现进度见 [开发路线](docs/roadmap.md)。
 
 ## 开发检查
 
@@ -95,4 +102,4 @@ cargo clippy --locked --all-targets -- -D warnings
 cargo test --locked
 ```
 
-测试不调用模型或访问真实 Vault。
+自动测试使用模拟 Agent 或本地假进程，不调用付费模型、不访问真实 Vault。覆盖数据库升级、并发领取、租约接管、取消竞态、重试预算、协议错误、日志上限、进程清理与多底座路由。

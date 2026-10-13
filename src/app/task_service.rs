@@ -15,6 +15,15 @@ impl TaskService {
     }
 
     pub fn enqueue(&mut self, request_key: &str, prompt: &str) -> Result<EnqueueResult> {
+        self.enqueue_for(request_key, prompt, "codex")
+    }
+
+    pub fn enqueue_for(
+        &mut self,
+        request_key: &str,
+        prompt: &str,
+        backend: &str,
+    ) -> Result<EnqueueResult> {
         ensure!(
             !request_key.trim().is_empty(),
             "request key must not be empty"
@@ -22,7 +31,12 @@ impl TaskService {
         ensure!(request_key.len() <= 512, "request key exceeds 512 bytes");
         ensure!(!prompt.trim().is_empty(), "prompt must not be empty");
         ensure!(prompt.len() <= 65_536, "prompt exceeds 65536 bytes");
-        self.store.enqueue(request_key, prompt)
+        self.store.enqueue_for(
+            request_key,
+            prompt,
+            backend,
+            crate::domain::RunContract::AnalysisV1,
+        )
     }
 
     pub fn get(&self, id: i64) -> Result<Task> {
@@ -43,5 +57,11 @@ impl TaskService {
     pub fn cancel(&mut self, id: i64) -> Result<Task> {
         ensure!(id > 0, "task id must be positive");
         self.store.cancel(id)
+    }
+    pub fn retry(&mut self, id: i64) -> Result<Task> {
+        self.store.retry(id)
+    }
+    pub fn attempts(&self, id: i64) -> Result<Vec<crate::domain::Attempt>> {
+        self.store.attempts(id)
     }
 }
