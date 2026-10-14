@@ -1,6 +1,6 @@
 use ru41::{
     adapters::database::sqlite::SqliteTaskStore,
-    app::{notify_service::NotifyChannel, notify_service::NotifyDispatcher, store::TaskStore},
+    app::{notify::NotifyChannel, notify::NotifyDispatcher, store::TaskStore},
     domain::{AgentResult, NotifyRoute, RunContract, TaskStatus},
 };
 use std::{

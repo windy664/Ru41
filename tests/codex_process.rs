@@ -1,7 +1,7 @@
 #![cfg(unix)]
 use ru41::{
     adapters::agent::codex::CodexAgent,
-    app::agent_service::{AgentBackend, AgentRequest},
+    app::agent::{AgentBackend, AgentRequest},
 };
 use std::{
     os::unix::fs::PermissionsExt,

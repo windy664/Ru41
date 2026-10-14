@@ -1,7 +1,6 @@
-pub mod agent_service;
+pub mod agent;
 pub mod config;
-pub mod notify_service;
+pub mod notify;
 pub mod sanitize;
 pub mod store;
-pub mod task_service;
-pub mod worker;
+pub mod task;

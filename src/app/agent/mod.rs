@@ -1,3 +1,5 @@
+pub mod approval;
+
 use crate::domain::{AgentResult, RunContract};
 use anyhow::{Result, ensure};
 use serde::Serialize;

@@ -2,10 +2,10 @@ use regex::Regex;
 use ru41::{
     adapters::database::sqlite::SqliteTaskStore,
     app::{
-        agent_service::{AgentBackend, AgentOutput, AgentRequest, BackendDescriptor},
+        agent::{AgentBackend, AgentOutput, AgentRequest, BackendDescriptor},
         sanitize::{Mapping, NoopSanitizer, RandomSanitizer, Sanitizer},
         store::TaskStore,
-        worker::{Worker, WorkerConfig},
+        task::{Worker, WorkerConfig},
     },
     domain::{AgentResult, RunContract},
 };
@@ -177,7 +177,7 @@ async fn agent_sees_masked_prompt_and_store_keeps_restored_result() {
     let dir = tempfile::tempdir().unwrap();
     let store = Arc::new(SqliteTaskStore::open(&dir.path().join("state.db")).unwrap());
     let seen = Arc::new(Mutex::new(None));
-    let mut backends = ru41::app::agent_service::BackendRegistry::default();
+    let mut backends = ru41::app::agent::BackendRegistry::default();
     backends
         .register(CapturingAgent { seen: seen.clone() })
         .unwrap();

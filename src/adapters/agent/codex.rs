@@ -17,7 +17,7 @@ pub fn version() -> Result<String> {
 }
 
 use crate::{
-    app::agent_service::{AgentBackend, AgentOutput, AgentRequest, BackendDescriptor},
+    app::agent::{AgentBackend, AgentOutput, AgentRequest, BackendDescriptor},
     domain::{AgentResult, RunContract},
 };
 use std::{

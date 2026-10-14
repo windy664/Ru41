@@ -407,9 +407,12 @@ ru41/
 │   ├── config.rs               # 配置加载与校验
 │   ├── domain/                 # 任务、输入、结果、审核、笔记变更类型
 │   ├── app/
-│   │   ├── task_service.rs     # 创建、查询、取消与恢复任务
-│   │   ├── worker.rs           # 领取任务并推进步骤
-│   │   ├── agent_service.rs    # 上下文、Codex 调用与结果校验
+│   │   ├── agent/              # AgentBackend 契约、底座注册与审批转发契约
+│   │   ├── task/               # TaskService 任务生命周期与 Worker 执行器
+│   │   ├── notify/             # NotifyChannel 渠道契约与终态通知派发
+│   │   ├── sanitize.rs         # Agent 调用前信息脱敏
+│   │   ├── store.rs            # TaskStore 存储接口
+│   │   ├── config.rs           # 配置加载与合并
 │   │   ├── vault_service.rs    # 归档计划、冲突检查、写入与同步
 │   │   ├── review_service.rs   # 审核版本与执行授权
 │   │   └── delivery_service.rs # 结果入发送队列与投递状态

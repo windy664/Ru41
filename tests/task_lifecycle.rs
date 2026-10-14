@@ -1,5 +1,5 @@
 use ru41::{
-    adapters::database::sqlite::SqliteTaskStore, app::task_service::TaskService, domain::TaskStatus,
+    adapters::database::sqlite::SqliteTaskStore, app::task::TaskService, domain::TaskStatus,
 };
 use std::sync::{Arc, Barrier};
 

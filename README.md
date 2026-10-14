@@ -116,16 +116,18 @@ CLI / QQ 网关 / 后续 Git、定时器与消息入口
        渠道通知（QQ 被动回复）
 ```
 
-任务绑定 `backend_id` 与版本化 `analysis_v1` 契约。Worker 持有 `BackendRegistry`，按任务绑定的 `backend_id` 路由到对应底座执行；未注册的底座任务留在队列中。`session_id` 是该底座内部的不透明标识，不能跨底座续接。任务终态通知由 `NotifyDispatcher`（`src/app/notify_service.rs`）统一轮询派发：按 `notify_channel` 路由到已注册的 `NotifyChannel` 渠道（当前为 QQ），发送失败不标记、下轮重试；新增渠道只需实现 `NotifyChannel` 并注册。
+任务绑定 `backend_id` 与版本化 `analysis_v1` 契约。Worker 持有 `BackendRegistry`，按任务绑定的 `backend_id` 路由到对应底座执行；未注册的底座任务留在队列中。`session_id` 是该底座内部的不透明标识，不能跨底座续接。任务终态通知由 `NotifyDispatcher`（`src/app/notify/`）统一轮询派发：按 `notify_channel` 路由到已注册的 `NotifyChannel` 渠道（当前为 QQ），发送失败不标记、下轮重试；新增渠道只需实现 `NotifyChannel` 并注册。
 
 ```text
 src/
 ├── domain/           # 任务、尝试、结果与执行契约
 ├── app/
-│   ├── task_service.rs
-│   ├── agent_service.rs  # AgentBackend + BackendRegistry
+│   ├── agent/            # 底座契约：AgentBackend + BackendRegistry + 审批转发契约
+│   ├── task/             # TaskService 与 Worker
+│   ├── notify/           # NotifyChannel + NotifyDispatcher
+│   ├── sanitize.rs       # Agent 调用前的信息脱敏
 │   ├── store.rs          # TaskStore 存储接口（SQLite 为默认实现，可选 PostgreSQL）
-│   └── worker.rs
+│   └── config.rs         # 配置加载与合并
 ├── adapters/
 │   ├── agent/            # Agent 底座实现（Codex，预留 Kimi Code 等）
 │   └── database/         # TaskStore 实现（SQLite、PostgreSQL）

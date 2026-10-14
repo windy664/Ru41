@@ -1,11 +1,9 @@
 use ru41::{
     adapters::database::sqlite::SqliteTaskStore,
     app::{
-        agent_service::{
-            AgentBackend, AgentOutput, AgentRequest, BackendDescriptor, BackendRegistry,
-        },
+        agent::{AgentBackend, AgentOutput, AgentRequest, BackendDescriptor, BackendRegistry},
         store::TaskStore,
-        worker::{Worker, WorkerConfig},
+        task::{Worker, WorkerConfig},
     },
     domain::{AgentResult, RunContract, TaskStatus},
 };

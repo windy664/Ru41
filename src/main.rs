@@ -6,13 +6,13 @@ use ru41::{
         database::{postgres::PostgresTaskStore, sqlite::SqliteTaskStore},
     },
     app::{
-        agent_service::BackendRegistry,
+        agent::BackendRegistry,
         config::Config,
-        notify_service::NotifyDispatcher,
+        notify::NotifyDispatcher,
         sanitize::{NoopSanitizer, RandomSanitizer, Sanitizer},
         store::TaskStore,
-        task_service::TaskService,
-        worker::{Worker, WorkerConfig},
+        task::TaskService,
+        task::{Worker, WorkerConfig},
     },
     ingress::{
         cli::{Cli, Command, QqCommand, QqCredentials, TaskCommand},

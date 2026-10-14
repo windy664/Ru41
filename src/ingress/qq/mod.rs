@@ -2,7 +2,7 @@ pub mod api;
 pub mod gateway;
 
 use crate::{
-    app::{notify_service::NotifyChannel, store::TaskStore},
+    app::{notify::NotifyChannel, store::TaskStore},
     domain::NotifyRoute,
 };
 use anyhow::{Result, bail};
@@ -76,7 +76,7 @@ impl NotifyChannel for QqNotifier {
     }
 }
 
-/// QQ 网关：收消息幂等入队任务；终态回复由 app::notify_service 的 dispatcher 统一负责。
+/// QQ 网关：收消息幂等入队任务；终态回复由 app::notify 的 dispatcher 统一负责。
 pub struct QqBot {
     pub api: Arc<QqApiClient>,
     pub store: Arc<dyn TaskStore>,

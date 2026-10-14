@@ -1,6 +1,6 @@
 use crate::{
     app::{
-        agent_service::{AgentBackend, AgentOutput, AgentRequest, BackendRegistry},
+        agent::{AgentBackend, AgentOutput, AgentRequest, BackendRegistry},
         sanitize::Sanitizer,
         store::TaskStore,
     },
