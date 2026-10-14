@@ -1,4 +1,5 @@
 pub mod error;
+pub mod events;
 pub mod records;
 use serde::{Deserialize, Serialize};
 use std::str::FromStr;

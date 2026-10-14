@@ -1,3 +1,5 @@
+mod events;
+use events::events;
 mod openapi;
 use crate::{
     app::interactions::InteractionService,
@@ -9,16 +11,13 @@ use axum::{
     extract::{DefaultBodyLimit, Path, Query, Request, State},
     http::StatusCode,
     middleware::{self, Next},
-    response::{
-        IntoResponse, Response, Sse,
-        sse::{Event, KeepAlive},
-    },
+    response::{IntoResponse, Response},
     routing::{get, post},
 };
 use openapi::openapi_spec;
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
-use std::{convert::Infallible, sync::Arc, time::Duration};
+use std::sync::Arc;
 
 #[derive(Clone)]
 /// HTTP 入口的共享状态：存储、底座注册表与 Bearer 令牌。
@@ -230,21 +229,6 @@ async fn reply(
     .map_err(|_| ApiError(StatusCode::INTERNAL_SERVER_ERROR, "internal_error"))?;
     result.map_err(|_| ApiError(StatusCode::CONFLICT, "invalid_or_stale_interaction"))?;
     Ok(StatusCode::NO_CONTENT)
-}
-async fn events(
-    State(s): State<ApiState>,
-) -> Sse<impl futures_util::Stream<Item = Result<Event, Infallible>>> {
-    let stream = futures_util::stream::unfold(s, |s| async move {
-        tokio::time::sleep(Duration::from_secs(1)).await;
-        let store = s.store.clone();
-        let result=tokio::task::spawn_blocking(move||->anyhow::Result<Value>{Ok(json!({"tasks":store.list(100)?.into_iter().map(TaskDto::from).collect::<Vec<_>>(),"interactions":store.documents("interaction",100)?}))}).await;
-        let event = match result {
-            Ok(Ok(value)) => Event::default().event("snapshot").data(value.to_string()),
-            _ => Event::default().event("error").data("snapshot_unavailable"),
-        };
-        Some((Ok(event), s))
-    });
-    Sse::new(stream).keep_alive(KeepAlive::default())
 }
 /// OpenAPI 契约：schema 由 schemars 从 DTO 类型生成（单一事实来源），
 /// paths 在此集中维护。

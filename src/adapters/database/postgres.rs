@@ -50,8 +50,8 @@ impl PostgresTaskStore {
                 tx.batch_execute(include_str!("../../../migrations/postgres/001_tasks.sql"))?;
                 tx.execute("INSERT INTO schema_migrations(version) VALUES (1)", &[])?;
             }
-            Some(1..=3) => {}
-            Some(other) => bail!("unsupported database version {other}; expected 3"),
+            Some(1..=4) => {}
+            Some(other) => bail!("unsupported database version {other}; expected 4"),
         }
         if version.unwrap_or(0) < 2 {
             tx.batch_execute(include_str!("../../../migrations/postgres/002_notify.sql"))?;
@@ -60,6 +60,10 @@ impl PostgresTaskStore {
         if version.unwrap_or(0) < 3 {
             tx.batch_execute(include_str!("../../../migrations/postgres/003_records.sql"))?;
             tx.execute("INSERT INTO schema_migrations(version) VALUES (3)", &[])?;
+        }
+        if version.unwrap_or(0) < 4 {
+            tx.batch_execute(include_str!("../../../migrations/postgres/004_events.sql"))?;
+            tx.execute("INSERT INTO schema_migrations(version) VALUES (4)", &[])?;
         }
         tx.commit()?;
         Ok(Self {
@@ -538,4 +542,46 @@ fn json_column(row: &Row, name: &str) -> Result<Option<AgentResult>> {
     let raw: Option<String> = row.get(name);
     raw.map(|s| serde_json::from_str(&s).map_err(anyhow::Error::from))
         .transpose()
+}
+
+impl crate::ports::events::EventStore for PostgresTaskStore {
+    fn events_after(
+        &self,
+        after: i64,
+        limit: u32,
+    ) -> Result<Vec<crate::domain::events::DomainEvent>> {
+        anyhow::ensure!(
+            after >= 0 && (1..=1000).contains(&limit),
+            "invalid event cursor or limit"
+        );
+        outside_runtime(|| {
+            Ok(self
+                .client()?
+                .query(
+                    "SELECT * FROM events WHERE id>$1 ORDER BY id LIMIT $2",
+                    &[&after, &i64::from(limit)],
+                )?
+                .into_iter()
+                .map(|row| crate::domain::events::DomainEvent {
+                    id: row.get("id"),
+                    version: row.get("version"),
+                    kind: row.get("kind"),
+                    occurred_at: row.get("occurred_at"),
+                    resource_id: row.get("resource_id"),
+                    task_id: row.get("task_id"),
+                    attempt_id: row.get("attempt_id"),
+                    run_id: row.get("run_id"),
+                    status: row.get("status"),
+                })
+                .collect())
+        })
+    }
+    fn event_cursor(&self) -> Result<i64> {
+        outside_runtime(|| {
+            Ok(self
+                .client()?
+                .query_one("SELECT COALESCE(MAX(id),0) FROM events", &[])?
+                .get(0))
+        })
+    }
 }

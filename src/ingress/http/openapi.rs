@@ -23,7 +23,8 @@ pub(super) fn openapi_spec() -> Value {
                 "CreateTaskRequest": component_schema::<CreateTask>(),
                 "Backend": component_schema::<crate::ports::agent::BackendDescriptor>(),
                 "Record": component_schema::<crate::domain::records::Document>(),
-                "Interaction": component_schema::<crate::domain::records::Interaction>()
+                "Interaction": component_schema::<crate::domain::records::Interaction>(),
+                "DomainEvent": component_schema::<crate::domain::events::DomainEvent>()
             }
         },
         "paths": {
@@ -73,9 +74,13 @@ pub(super) fn openapi_spec() -> Value {
                     "responses": {"204": {"description": "已记录"}, "409": {"description": "无效或过期的交互"}, "401": {"description": "未认证"}}}
             },
             "/events": {
-                "get": {"summary": "SSE 事件流（任务与交互快照）",
-                    "description": "每秒推送 snapshot 事件，内容为 {tasks:[Task], interactions:[Record]}。",
-                    "responses": {"200": {"description": "text/event-stream", "content": {"text/event-stream": {"schema": {"type": "string"}}}}}}
+                "get": {"summary": "SSE 持久化业务事件流",
+                    "description": "按提交顺序推送增量事件；SSE id 是数据库内游标，event 是 kind，data 为 DomainEvent JSON。Last-Event-ID 优先于 after；缺省从 0 回放。无历史快照或原始 Agent 正文。迁移前事件不补录。",
+                    "parameters": [
+                        {"name":"after","in":"query","schema":{"type":"integer","format":"int64","minimum":0,"default":0}},
+                        {"name":"Last-Event-ID","in":"header","schema":{"type":"string","pattern":"^[0-9]+$"}}
+                    ],
+                    "responses": {"400":{"description":"无效、负数或超前于当前数据库的游标"},"200": {"description": "text/event-stream；每个 data 对应 DomainEvent，错误事件 events_unavailable 不推进游标", "content": {"text/event-stream": {"schema": {"type": "string"}}}}}}
             },
             "/openapi.json": {
                 "get": {"summary": "本规范", "responses": {"200": {"description": "OpenAPI 文档"}}}

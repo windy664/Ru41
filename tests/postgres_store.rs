@@ -20,7 +20,7 @@ fn store() -> Option<PostgresTaskStore> {
     };
     let mut client = postgres::Client::connect(&url, postgres::NoTls).unwrap();
     client
-        .batch_execute("DROP TABLE IF EXISTS schema_migrations, attempts, tasks, records CASCADE")
+        .batch_execute("DROP TABLE IF EXISTS schema_migrations, attempts, tasks, records, events, event_clock CASCADE")
         .unwrap();
     drop(client);
     Some(PostgresTaskStore::open(&url).unwrap())
@@ -244,4 +244,69 @@ fn interaction_reply_is_fenced_by_current_attempt() {
             .reply_interaction("interaction-2", &serde_json::json!("yes"), 112)
             .unwrap()
     );
+}
+
+#[path = "common/event_contract.rs"]
+mod event_contract;
+
+#[test]
+fn persistent_events_follow_the_shared_contract() {
+    let _guard = lock();
+    let Some(store) = store() else { return };
+    event_contract::assert_event_contract(&store);
+}
+
+#[test]
+fn event_cursor_follows_commit_order_and_rollback() {
+    use ru41::ports::events::EventStore;
+    use std::{sync::mpsc, time::Duration};
+    let _guard = lock();
+    let Some(store) = store() else { return };
+    let url = std::env::var("RU41_TEST_PG_URL").unwrap();
+    let mut first = postgres::Client::connect(&url, postgres::NoTls).unwrap();
+    let mut tx = first.transaction().unwrap();
+    tx.execute(
+        "INSERT INTO tasks(request_key,prompt) VALUES('first','private')",
+        &[],
+    )
+    .unwrap();
+    assert_eq!(store.event_cursor().unwrap(), 0);
+    let (ready_tx, ready_rx) = mpsc::channel();
+    let (inserted_tx, inserted_rx) = mpsc::channel();
+    let (commit_tx, commit_rx) = mpsc::channel();
+    let thread = std::thread::spawn(move || {
+        let mut second = postgres::Client::connect(&url, postgres::NoTls).unwrap();
+        let mut tx = second.transaction().unwrap();
+        ready_tx.send(()).unwrap();
+        tx.execute(
+            "INSERT INTO tasks(request_key,prompt) VALUES('second','private')",
+            &[],
+        )
+        .unwrap();
+        inserted_tx.send(()).unwrap();
+        commit_rx.recv_timeout(Duration::from_secs(10)).unwrap();
+        tx.commit().unwrap();
+    });
+    ready_rx.recv_timeout(Duration::from_secs(10)).unwrap();
+    assert!(matches!(
+        inserted_rx.recv_timeout(Duration::from_millis(100)),
+        Err(mpsc::RecvTimeoutError::Timeout)
+    ));
+    tx.commit().unwrap();
+    inserted_rx.recv_timeout(Duration::from_secs(10)).unwrap();
+    let cursor = store.event_cursor().unwrap();
+    assert_eq!(store.events_after(0, 100).unwrap().len(), 1);
+    commit_tx.send(()).unwrap();
+    thread.join().unwrap();
+    assert_eq!(store.events_after(cursor, 100).unwrap().len(), 1);
+    let before = store.event_cursor().unwrap();
+    let mut tx = first.transaction().unwrap();
+    tx.execute(
+        "INSERT INTO tasks(request_key,prompt) VALUES('rolledback','private')",
+        &[],
+    )
+    .unwrap();
+    tx.rollback().unwrap();
+    assert_eq!(store.event_cursor().unwrap(), before);
+    assert!(store.events_after(before, 100).unwrap().is_empty());
 }

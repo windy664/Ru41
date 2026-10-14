@@ -32,8 +32,8 @@ impl SqliteTaskStore {
                 tx.execute_batch(include_str!("../../../migrations/002_execution.sql"))?;
             }
             1 => tx.execute_batch(include_str!("../../../migrations/002_execution.sql"))?,
-            2..=5 => {}
-            other => bail!("unsupported database version {other}; expected 5"),
+            2..=6 => {}
+            other => bail!("unsupported database version {other}; expected 6"),
         }
         if version < 3 {
             tx.execute_batch(include_str!("../../../migrations/003_backends.sql"))?;
@@ -43,6 +43,9 @@ impl SqliteTaskStore {
         }
         if version < 5 {
             tx.execute_batch(include_str!("../../../migrations/005_records.sql"))?;
+        }
+        if version < 6 {
+            tx.execute_batch(include_str!("../../../migrations/006_events.sql"))?;
         }
         tx.commit()?;
         Ok(Self {
@@ -481,4 +484,39 @@ fn contract_column(row: &Row<'_>) -> rusqlite::Result<RunContract> {
             Box::new(std::io::Error::new(std::io::ErrorKind::InvalidData, e)),
         )
     })
+}
+
+impl crate::ports::events::EventStore for SqliteTaskStore {
+    fn events_after(
+        &self,
+        after: i64,
+        limit: u32,
+    ) -> Result<Vec<crate::domain::events::DomainEvent>> {
+        anyhow::ensure!(
+            after >= 0 && (1..=1000).contains(&limit),
+            "invalid event cursor or limit"
+        );
+        let conn = self.connection()?;
+        let mut query = conn.prepare("SELECT * FROM events WHERE id>?1 ORDER BY id LIMIT ?2")?;
+        Ok(query
+            .query_map(params![after, limit], |row| {
+                Ok(crate::domain::events::DomainEvent {
+                    id: row.get("id")?,
+                    version: row.get("version")?,
+                    kind: row.get("kind")?,
+                    occurred_at: row.get("occurred_at")?,
+                    resource_id: row.get("resource_id")?,
+                    task_id: row.get("task_id")?,
+                    attempt_id: row.get("attempt_id")?,
+                    run_id: row.get("run_id")?,
+                    status: row.get("status")?,
+                })
+            })?
+            .collect::<rusqlite::Result<Vec<_>>>()?)
+    }
+    fn event_cursor(&self) -> Result<i64> {
+        Ok(self
+            .connection()?
+            .query_row("SELECT COALESCE(MAX(id),0) FROM events", [], |r| r.get(0))?)
+    }
 }
