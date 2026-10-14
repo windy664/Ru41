@@ -1,10 +1,8 @@
 use crate::{
-    app::{
-        agent::{AgentBackend, AgentOutput, AgentRequest, BackendRegistry},
-        sanitize::Sanitizer,
-        store::TaskStore,
-    },
     domain::{AgentResult, Claim, RunContract, TaskStatus},
+    ports::agent::{AgentBackend, AgentOutput, AgentRequest, BackendRegistry},
+    ports::storage::TaskStore,
+    privacy::Sanitizer,
 };
 use anyhow::{Context, Result, ensure};
 use serde::Serialize;
@@ -102,7 +100,33 @@ impl Worker {
                 }));
             }
         };
+        let run_id = format!("run-{}-{}", claim.task.id, claim.attempt_id);
+        let mut run = crate::domain::records::AgentRun {
+            id: run_id.clone(),
+            task_id: claim.task.id,
+            attempt_id: claim.attempt_id,
+            backend_id: claim.task.backend_id.clone(),
+            status: "running".into(),
+            session_id: None,
+        };
+        self.store
+            .put_document("run", &run_id, None, &serde_json::to_value(&run)?)?;
         let result = self.run_claim(&claim, agent, &mut shutdown).await;
+        run.status = if result.is_ok() {
+            "succeeded"
+        } else {
+            "failed"
+        }
+        .into();
+        if let Some(doc) = self.store.document("run", &run_id)? {
+            self.store.put_document(
+                "run",
+                &run_id,
+                Some(doc.revision),
+                &serde_json::to_value(&run)?,
+            )?;
+        }
+
         if let Err(error) = result {
             let interrupted = *shutdown.borrow();
             let multiplier = 1_i64 << (claim.task.attempt_count - 1).clamp(0, 10);
@@ -144,10 +168,6 @@ impl Worker {
         // 脱敏在 Agent 边界完成：映射表只写入本地尝试目录（即审计记录）。
         let (prompt, mapping) = self.sanitizer.sanitize(&claim.task.prompt);
         if !mapping.is_empty() {
-            std::fs::write(
-                run_dir.join("mapping.json"),
-                serde_json::to_string_pretty(&mapping)?,
-            )?;
             eprintln!(
                 "[sanitize] task {} masked rules: {:?}",
                 claim.task.id,
@@ -155,6 +175,12 @@ impl Worker {
             );
         }
         let request = AgentRequest {
+            context: Some(crate::ports::agent::RunContext {
+                run_id: format!("run-{}-{}", claim.task.id, claim.attempt_id),
+                interactions: Arc::new(crate::app::interactions::InteractionService {
+                    store: self.store.clone(),
+                }),
+            }),
             prompt,
             run_dir,
             contract: claim.task.contract,

@@ -101,42 +101,65 @@ cargo run --locked -- --store postgres worker --once
 ## 核心架构
 
 ```text
-CLI / QQ 网关 / 后续 Git、定时器与消息入口
+HTTP API / CLI / QQ 网关 / 后续 Git、定时器入口
                   ↓
-        TaskService + TaskStore（默认 SQLite 实现，可选 PostgreSQL）
+        应用服务（TaskService / InteractionService）
                   ↓
-       Worker：租约、重试、恢复
+     TaskStore（SQLite 默认，可选 PostgreSQL）+ 运行/交互/投递记录
                   ↓
-       AgentBackend 通用接口
+       Worker：租约、重试、恢复；按任务 backend_id 路由
                   ↓
-       CodexAdapter（首个实现）
+       AgentBackend 通用接口（ports）
                   ↓
-        结果校验与事务保存
+    Codex exec 适配器（批处理）/ Codex app-server 适配器（含审批转发）
                   ↓
-       渠道通知（QQ 被动回复）
+   结果校验与事务保存；交互请求持久化等待用户决定
+                  ↓
+   NotifyDispatcher：独立投递记录、按渠道派发（QQ 等）
 ```
 
-任务绑定 `backend_id` 与版本化 `analysis_v1` 契约。Worker 持有 `BackendRegistry`，按任务绑定的 `backend_id` 路由到对应底座执行；未注册的底座任务留在队列中。`session_id` 是该底座内部的不透明标识，不能跨底座续接。任务终态通知由 `NotifyDispatcher`（`src/app/notify/`）统一轮询派发：按 `notify_channel` 路由到已注册的 `NotifyChannel` 渠道（当前为 QQ），发送失败不标记、下轮重试；新增渠道只需实现 `NotifyChannel` 并注册。
+核心概念分离：**Task 是要完成的工作，AgentRun 是一次底座运行（含状态与 session），Interaction 是底座发出的审批/补充信息请求**。一个任务可多次运行；底座运行成功不等于任务成功。审批由底座触发、Ru41 转发：交互记录持久化到数据库，QQ/HTTP 任一入口可回复，回复校验选项、有效期与运行状态后经适配器回传底座。
+
+脱敏在 Agent 边界完成：prompt 出站前替换为随机同类假值，映射只保留在宿主内存与运行日志摘要中，**不落入 Agent 可访问的运行目录**；结果回填真值后落库。
 
 ```text
 src/
-├── domain/           # 任务、尝试、结果与执行契约
-├── app/
-│   ├── agent/            # 底座契约：AgentBackend + BackendRegistry + 审批转发契约
-│   ├── task/             # TaskService 与 Worker
-│   ├── notify/           # NotifyChannel + NotifyDispatcher
-│   ├── sanitize.rs       # Agent 调用前的信息脱敏
-│   ├── store.rs          # TaskStore 存储接口（SQLite 为默认实现，可选 PostgreSQL）
-│   └── config.rs         # 配置加载与合并
+├── domain/           # 任务、尝试、运行、交互与投递的数据与规则
+├── app/              # 公共用例：TaskService、InteractionService
+├── ports/            # 可替换能力接口：AgentBackend、TaskStore、NotifyChannel、InteractionHandler
+├── runtime/          # 长驻执行机制：Worker、NotifyDispatcher
+├── privacy/          # 脱敏与回填
 ├── adapters/
-│   ├── agent/            # Agent 底座实现（Codex，预留 Kimi Code 等）
-│   └── database/         # TaskStore 实现（SQLite、PostgreSQL）
-├── ingress/          # CLI 与 QQ 消息网关
-├── lib.rs
-└── main.rs           # 注册并装配具体底座
+│   ├── agent/            # 底座实现：codex（exec 批处理）、codex_session（app-server 会话）
+│   ├── database/         # 存储实现：SQLite、PostgreSQL
+│   └── messaging/        # 渠道协议：QQ gateway/api/notifier
+├── ingress/
+│   ├── http/             # HTTP API（axum，/api/v1，Bearer 认证，SSE 事件流）
+│   ├── cli/              # CLI 命令
+│   └── qq/               # QQ 消息接收（转公共用例入队）
+├── bootstrap/        # 配置加载
+├── util/             # 少量无业务规则的工具
+└── main.rs           # 装配：配置 → 存储 → 底座注册表 → 入口
 ```
 
-接口接入规则见 [Agent 底座契约](docs/agent-backends.md)。完整目标见 [产品设计](docs/product-design.md)，实现进度见 [开发路线](docs/roadmap.md)。
+职责约束：`app` 只描述“做什么”；`runtime` 负责“如何持续执行”；`ports` 定义可替换边界；`adapters` 翻译外部协议，不决定业务成功或审核通过；所有入口（HTTP/CLI/QQ）调用同一套应用服务。
+
+## HTTP API
+
+```bash
+export RU41_API_TOKEN=$(openssl rand -hex 24)   # 至少 24 字节
+cargo run --locked -- serve --listen 127.0.0.1:4141
+
+curl -H "Authorization: Bearer $RU41_API_TOKEN" http://127.0.0.1:4141/api/v1/tasks
+curl -X POST -H "Authorization: Bearer $RU41_API_TOKEN" -H "Content-Type: application/json" \
+  -d '{"key":"api:1","prompt":"整理收件箱","backend":"codex"}' \
+  http://127.0.0.1:4141/api/v1/tasks
+curl -X POST -H "Authorization: Bearer $RU41_API_TOKEN" -H "Content-Type: application/json" \
+  -d '{"decision":"accept"}' \
+  http://127.0.0.1:4141/api/v1/interactions/{id}/reply
+```
+
+端点：`GET/POST /api/v1/tasks`、`GET /api/v1/tasks/{id}`、`POST /api/v1/tasks/{id}/cancel|retry`、`GET /api/v1/backends`、`GET /api/v1/runs`、`GET /api/v1/interactions`、`POST /api/v1/interactions/{id}/reply`、`GET /api/v1/events`（SSE）、`GET /api/v1/openapi.json`。API 与 CLI、QQ 共用同一套应用服务与存储；任务由独立 worker 进程执行，serve 只做入口。
 
 ## 开发检查
 

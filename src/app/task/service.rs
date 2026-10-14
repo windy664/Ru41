@@ -1,6 +1,6 @@
 use crate::{
-    app::store::TaskStore,
-    domain::{EnqueueResult, Task},
+    domain::{EnqueueResult, NotifyRoute, Task},
+    ports::storage::TaskStore,
 };
 use anyhow::{Result, ensure};
 use std::sync::Arc;
@@ -25,18 +25,33 @@ impl TaskService {
         prompt: &str,
         backend: &str,
     ) -> Result<EnqueueResult> {
-        ensure!(
-            !request_key.trim().is_empty(),
-            "request key must not be empty"
-        );
-        ensure!(request_key.len() <= 512, "request key exceeds 512 bytes");
-        ensure!(!prompt.trim().is_empty(), "prompt must not be empty");
-        ensure!(prompt.len() <= 65_536, "prompt exceeds 65536 bytes");
+        validate_input(request_key, prompt, backend)?;
         self.store.enqueue_for(
             request_key,
             prompt,
             backend,
             crate::domain::RunContract::AnalysisV1,
+        )
+    }
+
+    pub fn enqueue_with_notify(
+        &self,
+        request_key: &str,
+        prompt: &str,
+        backend: &str,
+        notify: &NotifyRoute,
+    ) -> Result<EnqueueResult> {
+        validate_input(request_key, prompt, backend)?;
+        ensure!(
+            !notify.channel.trim().is_empty() && !notify.target.trim().is_empty(),
+            "notification route is required"
+        );
+        self.store.enqueue_with_notify(
+            request_key,
+            prompt,
+            backend,
+            crate::domain::RunContract::AnalysisV1,
+            notify,
         )
     }
 
@@ -65,4 +80,20 @@ impl TaskService {
     pub fn attempts(&self, id: i64) -> Result<Vec<crate::domain::Attempt>> {
         self.store.attempts(id)
     }
+}
+
+fn validate_input(key: &str, prompt: &str, backend: &str) -> Result<()> {
+    ensure!(
+        !key.trim().is_empty() && key.len() <= 512,
+        "request key must contain 1..512 bytes"
+    );
+    ensure!(
+        !prompt.trim().is_empty() && prompt.len() <= 65_536,
+        "prompt must contain 1..65536 bytes"
+    );
+    ensure!(
+        !backend.trim().is_empty() && backend.len() <= 128,
+        "backend must contain 1..128 bytes"
+    );
+    Ok(())
 }

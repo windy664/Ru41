@@ -1,4 +1,4 @@
-use ru41::app::config::Config;
+use ru41::bootstrap::config::Config;
 use std::path::PathBuf;
 
 #[test]

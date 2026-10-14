@@ -1,7 +1,7 @@
 #![cfg(unix)]
 use ru41::{
     adapters::agent::codex::CodexAgent,
-    app::agent::{AgentBackend, AgentRequest},
+    ports::agent::{AgentBackend, AgentRequest},
 };
 use std::{
     os::unix::fs::PermissionsExt,
@@ -31,6 +31,7 @@ fn request(dir: &Path) -> AgentRequest {
     let run = dir.join("run");
     std::fs::create_dir_all(&run).unwrap();
     AgentRequest {
+        context: None,
         prompt: "hello".into(),
         run_dir: run,
         contract: ru41::domain::RunContract::AnalysisV1,

@@ -1,3 +1,4 @@
+pub mod records;
 use serde::{Deserialize, Serialize};
 use std::str::FromStr;
 

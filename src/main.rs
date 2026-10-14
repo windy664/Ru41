@@ -5,19 +5,17 @@ use ru41::{
         agent::codex::{self, CodexAgent},
         database::{postgres::PostgresTaskStore, sqlite::SqliteTaskStore},
     },
-    app::{
-        agent::BackendRegistry,
-        config::Config,
-        notify::NotifyDispatcher,
-        sanitize::{NoopSanitizer, RandomSanitizer, Sanitizer},
-        store::TaskStore,
-        task::TaskService,
-        task::{Worker, WorkerConfig},
-    },
+    app::task::TaskService,
+    bootstrap::config::Config,
     ingress::{
         cli::{Cli, Command, QqCommand, QqCredentials, TaskCommand},
         qq::{QqBot, QqNotifier, api::QqApiClient},
     },
+    ports::agent::BackendRegistry,
+    ports::storage::TaskStore,
+    privacy::{NoopSanitizer, RandomSanitizer, Sanitizer},
+    runtime::dispatcher::NotifyDispatcher,
+    runtime::worker::{Worker, WorkerConfig},
 };
 use std::{path::PathBuf, sync::Arc, time::Duration};
 use tokio::sync::watch;
@@ -43,6 +41,25 @@ async fn main() -> Result<()> {
     }
     let store_config = (store_kind, store_db, store_pg_url);
     let output = match cli.command {
+        Command::Serve { listen } => {
+            let token = std::env::var("RU41_API_TOKEN").context("RU41_API_TOKEN is required")?;
+            let state = ru41::ingress::http::ApiState::new(
+                open_store(&store_config)?,
+                Arc::new(registry(&codex_agent(
+                    default_codex_bin(&config),
+                    default_model(&config),
+                )?)?),
+                token,
+            )?;
+            let listener = tokio::net::TcpListener::bind(listen).await?;
+            let mut shutdown = shutdown_channel()?;
+            axum::serve(listener, ru41::ingress::http::router(state))
+                .with_graceful_shutdown(async move {
+                    let _ = shutdown.changed().await;
+                })
+                .await?;
+            return Ok(());
+        }
         Command::Doctor => serde_json::json!({
             "codex_version": codex::version()?,
             "model_invoked": false,
@@ -222,6 +239,10 @@ fn codex_agent(bin: PathBuf, model: Option<String>) -> Result<CodexAgent> {
 fn registry(codex: &CodexAgent) -> Result<BackendRegistry> {
     let mut backends = BackendRegistry::default();
     backends.register(CodexAgent {
+        executable: codex.executable.clone(),
+        model: codex.model.clone(),
+    })?;
+    backends.register(ru41::adapters::agent::codex_session::CodexSession {
         executable: codex.executable.clone(),
         model: codex.model.clone(),
     })?;

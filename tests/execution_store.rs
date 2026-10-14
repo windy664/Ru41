@@ -1,7 +1,7 @@
 use ru41::{
     adapters::database::sqlite::SqliteTaskStore,
-    app::store::TaskStore,
     domain::{AgentResult, TaskStatus},
+    ports::storage::TaskStore,
 };
 use std::sync::{Arc, Barrier};
 

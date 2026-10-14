@@ -1,11 +1,9 @@
 use ru41::{
     adapters::database::sqlite::SqliteTaskStore,
-    app::{
-        agent::{AgentBackend, AgentOutput, AgentRequest, BackendDescriptor, BackendRegistry},
-        store::TaskStore,
-        task::{Worker, WorkerConfig},
-    },
     domain::{AgentResult, RunContract, TaskStatus},
+    ports::agent::{AgentBackend, AgentOutput, AgentRequest, BackendDescriptor, BackendRegistry},
+    ports::storage::TaskStore,
+    runtime::worker::{Worker, WorkerConfig},
 };
 use std::{future::Future, pin::Pin, sync::Arc, time::Duration};
 use tokio::sync::watch;
@@ -64,7 +62,7 @@ async fn two_backends_share_worker_but_never_take_each_others_tasks() {
     let mut worker = Worker {
         store: Arc::new(SqliteTaskStore::open(&path).unwrap()),
         backends: Arc::new(registry),
-        sanitizer: Arc::new(ru41::app::sanitize::RandomSanitizer::default()),
+        sanitizer: Arc::new(ru41::privacy::RandomSanitizer::default()),
         config: WorkerConfig {
             worker_id: "shared-worker".into(),
             runs_dir: dir.path().join("runs"),

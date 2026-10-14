@@ -404,37 +404,25 @@ ru41/
 ├── src/
 │   ├── main.rs                 # 启动、装配、关闭
 │   ├── lib.rs                  # 暴露内部可测试服务
-│   ├── config.rs               # 配置加载与校验
-│   ├── domain/                 # 任务、输入、结果、审核、笔记变更类型
-│   ├── app/
-│   │   ├── agent/              # AgentBackend 契约、底座注册与审批转发契约
-│   │   ├── task/               # TaskService 任务生命周期与 Worker 执行器
-│   │   ├── notify/             # NotifyChannel 渠道契约与终态通知派发
-│   │   ├── sanitize.rs         # Agent 调用前信息脱敏
-│   │   ├── store.rs            # TaskStore 存储接口
-│   │   ├── config.rs           # 配置加载与合并
-│   │   ├── vault_service.rs    # 归档计划、冲突检查、写入与同步
-│   │   ├── review_service.rs   # 审核版本与执行授权
-│   │   └── delivery_service.rs # 结果入发送队列与投递状态
-│   ├── workflows/
-│   │   ├── inbox.rs            # Inbox 整理流程
-│   │   ├── intelligence.rs     # 外部信息入库流程
-│   │   └── assistant.rs        # 聊天交办流程
+│   ├── domain/                 # 任务、运行、交互、投递、结果契约
+│   ├── app/                    # 公共用例：TaskService、InteractionService
+│   ├── ports/                  # 可替换能力接口：agent、storage、channel、interaction
+│   ├── runtime/                # Worker 与投递 dispatcher 等长驻机制
+│   ├── privacy/                # 脱敏、回填（映射只留宿主侧）
 │   ├── adapters/
-│   │   ├── codex/             # Codex 进程/会话、事件解析
-│   │   ├── git/               # 远端同步、差异、提交、推送
-│   │   ├── sqlite/            # 查询、事务与迁移
-│   │   ├── markdown/          # frontmatter、双链、内容处理
-│   │   ├── sources/           # RSS、论文、校园接口
-│   │   └── messaging/         # QQ、飞书、钉钉协议适配
-│   ├── ingress/               # CLI、定时扫描、消息接收入口
-│   └── tools/                 # Codex 可调用的受限 Rust 工具
-├── migrations/
-├── prompts/                   # 分类、摘要、归档等任务说明
-├── config/
-└── tests/                     # 核心端到端场景与失败恢复
+│   │   ├── agent/              # codex exec（批处理）、codex_session（会话+审批转发）
+│   │   ├── database/           # sqlite、postgres
+│   │   └── messaging/          # QQ、飞书、钉钉协议适配
+│   ├── ingress/
+│   │   ├── http/               # HTTP API、认证、SSE、OpenAPI
+│   │   ├── cli/                # CLI 入口
+│   │   └── qq/                 # 消息接收转公共用例
+│   ├── bootstrap/              # 配置加载
+│   └── util/                   # 无业务规则的小工具
+├── migrations/                 # sqlite 与 postgres 方言各一份
+├── docs/openapi.json           # HTTP API 契约
+└── tests/                      # 核心端到端场景与失败恢复
 ```
-
 职责约束：
 
 - `domain` 定义业务数据与状态规则，不引用具体数据库、消息平台和 Codex 协议类型。
@@ -449,6 +437,9 @@ ru41/
 | 对象 | 核心内容 | 用途 |
 |---|---|---|
 | InputEvent | 事件 ID、来源、操作者、内容引用、接收时间、去重键 | 统一 Git、消息与定时输入 |
+| AgentRun | 运行 ID、任务/尝试引用、底座、状态、底座会话 | 一次底座运行的独立记录 |
+| Interaction | 运行引用、底座请求、选项、有效期、状态与回复 | 底座审批/补充信息的转发与裁决 |
+| Delivery | 任务引用、渠道、目标、状态、重试与领取记录 | 独立投递记录，防正常并发重复发送 |
 | Task | 任务 ID、类型、用户、输入、状态、当前步骤、重试时间 | 描述需要完成的工作 |
 | TaskAttempt | 尝试 ID、领取标识、开始/结束时间、错误、Agent 运行引用 | 保留每次执行，不覆盖失败历史 |
 | AgentRun | 所属任务、上下文版本、会话标识、输出、执行状态 | 管理 Codex 的一次运行 |

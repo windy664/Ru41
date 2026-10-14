@@ -5,6 +5,16 @@ use std::sync::Arc;
 /// 任务与尝试的持久化边界；SQLite 是默认适配器。
 /// 实现必须原子地执行 fencing 与租约规则。
 pub trait TaskStore: Send + Sync {
+    fn document(&self, kind: &str, id: &str) -> Result<Option<crate::domain::records::Document>>;
+    fn documents(&self, kind: &str, limit: u32) -> Result<Vec<crate::domain::records::Document>>;
+    fn put_document(
+        &self,
+        kind: &str,
+        id: &str,
+        expected: Option<i64>,
+        value: &serde_json::Value,
+    ) -> Result<bool>;
+
     fn enqueue_for(
         &self,
         request_key: &str,
@@ -75,6 +85,22 @@ pub trait TaskStore: Send + Sync {
 }
 
 impl<T: TaskStore + ?Sized> TaskStore for Arc<T> {
+    fn document(&self, kind: &str, id: &str) -> Result<Option<crate::domain::records::Document>> {
+        (**self).document(kind, id)
+    }
+    fn documents(&self, kind: &str, limit: u32) -> Result<Vec<crate::domain::records::Document>> {
+        (**self).documents(kind, limit)
+    }
+    fn put_document(
+        &self,
+        kind: &str,
+        id: &str,
+        expected: Option<i64>,
+        value: &serde_json::Value,
+    ) -> Result<bool> {
+        (**self).put_document(kind, id, expected, value)
+    }
+
     fn enqueue_for(
         &self,
         request_key: &str,

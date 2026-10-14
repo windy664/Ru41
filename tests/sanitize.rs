@@ -1,13 +1,11 @@
 use regex::Regex;
 use ru41::{
     adapters::database::sqlite::SqliteTaskStore,
-    app::{
-        agent::{AgentBackend, AgentOutput, AgentRequest, BackendDescriptor},
-        sanitize::{Mapping, NoopSanitizer, RandomSanitizer, Sanitizer},
-        store::TaskStore,
-        task::{Worker, WorkerConfig},
-    },
     domain::{AgentResult, RunContract},
+    ports::agent::{AgentBackend, AgentOutput, AgentRequest, BackendDescriptor},
+    ports::storage::TaskStore,
+    privacy::{Mapping, NoopSanitizer, RandomSanitizer, Sanitizer},
+    runtime::worker::{Worker, WorkerConfig},
 };
 use std::{
     future::Future,
@@ -177,7 +175,7 @@ async fn agent_sees_masked_prompt_and_store_keeps_restored_result() {
     let dir = tempfile::tempdir().unwrap();
     let store = Arc::new(SqliteTaskStore::open(&dir.path().join("state.db")).unwrap());
     let seen = Arc::new(Mutex::new(None));
-    let mut backends = ru41::app::agent::BackendRegistry::default();
+    let mut backends = ru41::ports::agent::BackendRegistry::default();
     backends
         .register(CapturingAgent { seen: seen.clone() })
         .unwrap();
@@ -204,12 +202,9 @@ async fn agent_sees_masked_prompt_and_store_keeps_restored_result() {
     assert!(prompt.contains("帮我回电"));
     let result = store.get(task.id).unwrap().unwrap().result.unwrap();
     assert!(result.summary.contains("13812345678"));
-    // 审计：映射表随尝试目录落盘，且只含假值与真值的对应关系。
+    // 真值映射仅存在于宿主内存，不能成为 Agent 可读取的工作目录产物。
     let attempts = store.attempts(task.id).unwrap();
     let mapping_file =
         std::path::Path::new(attempts[0].run_dir.as_deref().unwrap()).join("mapping.json");
-    let mapping: Mapping =
-        serde_json::from_str(&std::fs::read_to_string(mapping_file).unwrap()).unwrap();
-    assert_eq!(mapping.entries.len(), 1);
-    assert_eq!(mapping.entries[0].real, "13812345678");
+    assert!(!mapping_file.exists());
 }

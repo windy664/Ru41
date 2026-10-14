@@ -1,7 +1,9 @@
 use ru41::{
     adapters::database::sqlite::SqliteTaskStore,
-    app::{notify::NotifyChannel, notify::NotifyDispatcher, store::TaskStore},
     domain::{AgentResult, NotifyRoute, RunContract, TaskStatus},
+    ports::channel::NotifyChannel,
+    ports::storage::TaskStore,
+    runtime::dispatcher::NotifyDispatcher,
 };
 use std::{
     future::Future,
@@ -147,4 +149,27 @@ async fn task_without_registered_channel_is_left_pending() {
     let d = dispatcher(store.clone(), vec![qq]);
     assert_eq!(d.run_once().await.unwrap(), 0);
     assert_eq!(store.list_unnotified(10).unwrap().len(), 1);
+}
+
+#[tokio::test]
+async fn delivery_record_prevents_double_send_across_dispatchers() {
+    let dir = tempfile::tempdir().unwrap();
+    let route = NotifyRoute {
+        channel: "qq".into(),
+        target: "group:G9".into(),
+        msg_id: Some("m9".into()),
+    };
+    let store = store_with_terminal_task(&dir, route);
+    let qq = Arc::new(MockChannel {
+        id: "qq",
+        ..Default::default()
+    });
+    let a = dispatcher(store.clone(), vec![qq.clone()]);
+    a.run_once().await.unwrap();
+    // 另一个 dispatcher 实例处理同一批：delivery 记录为 sent，不得重发。
+    let b = dispatcher(store.clone(), vec![qq.clone()]);
+    b.run_once().await.unwrap();
+    assert_eq!(qq.sent.lock().unwrap().len(), 1);
+    let doc = store.document("delivery", "task-1-1").unwrap().unwrap();
+    assert_eq!(doc.value["status"], "sent");
 }

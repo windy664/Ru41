@@ -1,10 +1,6 @@
-pub mod api;
-pub mod gateway;
+pub use crate::adapters::messaging::qq::{api, gateway};
 
-use crate::{
-    app::{notify::NotifyChannel, store::TaskStore},
-    domain::NotifyRoute,
-};
+use crate::{domain::NotifyRoute, ports::channel::NotifyChannel, ports::storage::TaskStore};
 use anyhow::{Result, bail};
 use api::QqApiClient;
 use gateway::{GatewayEvent, GatewaySession};
@@ -76,7 +72,7 @@ impl NotifyChannel for QqNotifier {
     }
 }
 
-/// QQ 网关：收消息幂等入队任务；终态回复由 app::notify 的 dispatcher 统一负责。
+/// QQ 网关：收消息幂等入队任务；终态回复由 runtime::dispatcher 的 dispatcher 统一负责。
 pub struct QqBot {
     pub api: Arc<QqApiClient>,
     pub store: Arc<dyn TaskStore>,
@@ -159,11 +155,10 @@ impl QqBot {
             } => (msg_id, content, format!("{TARGET_C2C_PREFIX}{user_openid}")),
             _ => return Ok(()),
         };
-        self.store.enqueue_with_notify(
+        crate::app::task::TaskService::new(self.store.clone()).enqueue_with_notify(
             &msg_request_key(msg_id),
             content,
             &self.backend,
-            crate::domain::RunContract::AnalysisV1,
             &NotifyRoute {
                 channel: "qq".into(),
                 target,

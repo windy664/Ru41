@@ -1,0 +1,2 @@
+CREATE TABLE records (kind TEXT NOT NULL, id TEXT NOT NULL, revision INTEGER NOT NULL DEFAULT 1, body TEXT NOT NULL, PRIMARY KEY(kind,id));
+PRAGMA user_version = 5;

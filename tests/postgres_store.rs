@@ -1,7 +1,7 @@
 use ru41::{
     adapters::database::postgres::PostgresTaskStore,
-    app::store::TaskStore,
     domain::{AgentResult, TaskStatus},
+    ports::storage::TaskStore,
 };
 use std::sync::{Arc, Barrier, Mutex, MutexGuard};
 
@@ -20,7 +20,7 @@ fn store() -> Option<PostgresTaskStore> {
     };
     let mut client = postgres::Client::connect(&url, postgres::NoTls).unwrap();
     client
-        .batch_execute("DROP TABLE IF EXISTS schema_migrations, attempts, tasks CASCADE")
+        .batch_execute("DROP TABLE IF EXISTS schema_migrations, attempts, tasks, records CASCADE")
         .unwrap();
     drop(client);
     Some(PostgresTaskStore::open(&url).unwrap())

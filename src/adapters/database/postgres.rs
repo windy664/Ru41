@@ -1,6 +1,6 @@
 use crate::{
-    app::store::TaskStore,
     domain::{AgentResult, Attempt, Claim, EnqueueResult, RunContract, Task, TaskStatus},
+    ports::storage::TaskStore,
 };
 use anyhow::{Context, Result, bail};
 use postgres::{Client, NoTls, Row};
@@ -50,12 +50,16 @@ impl PostgresTaskStore {
                 tx.batch_execute(include_str!("../../../migrations/postgres/001_tasks.sql"))?;
                 tx.execute("INSERT INTO schema_migrations(version) VALUES (1)", &[])?;
             }
-            Some(1 | 2) => {}
-            Some(other) => bail!("unsupported database version {other}; expected 2"),
+            Some(1..=3) => {}
+            Some(other) => bail!("unsupported database version {other}; expected 3"),
         }
         if version.unwrap_or(0) < 2 {
             tx.batch_execute(include_str!("../../../migrations/postgres/002_notify.sql"))?;
             tx.execute("INSERT INTO schema_migrations(version) VALUES (2)", &[])?;
+        }
+        if version.unwrap_or(0) < 3 {
+            tx.batch_execute(include_str!("../../../migrations/postgres/003_records.sql"))?;
+            tx.execute("INSERT INTO schema_migrations(version) VALUES (3)", &[])?;
         }
         tx.commit()?;
         Ok(Self {
@@ -83,6 +87,63 @@ impl Drop for PostgresTaskStore {
 }
 
 impl TaskStore for PostgresTaskStore {
+    fn document(&self, kind: &str, id: &str) -> Result<Option<crate::domain::records::Document>> {
+        outside_runtime(|| {
+            self.client()?
+                .query_opt(
+                    "SELECT revision,body FROM records WHERE kind=$1 AND id=$2",
+                    &[&kind, &id],
+                )?
+                .map(|r| {
+                    Ok(crate::domain::records::Document {
+                        id: id.into(),
+                        revision: r.get(0),
+                        value: serde_json::from_str(r.get::<_, &str>(1))?,
+                    })
+                })
+                .transpose()
+        })
+    }
+    fn documents(&self, kind: &str, limit: u32) -> Result<Vec<crate::domain::records::Document>> {
+        outside_runtime(|| {
+            self.client()?
+                .query(
+                    "SELECT id,revision,body FROM records WHERE kind=$1 ORDER BY id LIMIT $2",
+                    &[&kind, &i64::from(limit)],
+                )?
+                .into_iter()
+                .map(|r| {
+                    Ok(crate::domain::records::Document {
+                        id: r.get(0),
+                        revision: r.get(1),
+                        value: serde_json::from_str(r.get::<_, &str>(2))?,
+                    })
+                })
+                .collect()
+        })
+    }
+    fn put_document(
+        &self,
+        kind: &str,
+        id: &str,
+        expected: Option<i64>,
+        value: &serde_json::Value,
+    ) -> Result<bool> {
+        outside_runtime(|| {
+            let body = serde_json::to_string(value)?;
+            let mut c = self.client()?;
+            let n = if let Some(rev) = expected {
+                c.execute("UPDATE records SET body=$3,revision=revision+1 WHERE kind=$1 AND id=$2 AND revision=$4", &[&kind,&id,&body,&rev])?
+            } else {
+                c.execute(
+                    "INSERT INTO records(kind,id,body) VALUES ($1,$2,$3) ON CONFLICT DO NOTHING",
+                    &[&kind, &id, &body],
+                )?
+            };
+            Ok(n == 1)
+        })
+    }
+
     fn enqueue_for(
         &self,
         request_key: &str,

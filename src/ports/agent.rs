@@ -1,5 +1,3 @@
-pub mod approval;
-
 use crate::domain::{AgentResult, RunContract};
 use anyhow::{Result, ensure};
 use serde::Serialize;
@@ -16,6 +14,7 @@ pub struct BackendDescriptor {
 }
 
 pub struct AgentRequest {
+    pub context: Option<RunContext>,
     pub prompt: String,
     pub run_dir: PathBuf,
     pub contract: RunContract,
@@ -81,4 +80,10 @@ impl BackendRegistry {
     pub fn descriptors(&self) -> Vec<BackendDescriptor> {
         self.backends.values().map(|b| b.descriptor()).collect()
     }
+}
+
+#[derive(Clone)]
+pub struct RunContext {
+    pub run_id: String,
+    pub interactions: Arc<dyn crate::ports::interaction::InteractionHandler>,
 }

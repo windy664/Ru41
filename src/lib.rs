@@ -1,5 +1,9 @@
 pub mod adapters;
 pub mod app;
+pub mod bootstrap;
 pub mod domain;
 pub mod ingress;
+pub mod ports;
+pub mod privacy;
+pub mod runtime;
 pub mod util;

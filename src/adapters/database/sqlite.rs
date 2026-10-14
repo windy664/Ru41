@@ -1,6 +1,6 @@
 use crate::{
-    app::store::TaskStore,
     domain::{AgentResult, Attempt, Claim, EnqueueResult, RunContract, Task},
+    ports::storage::TaskStore,
 };
 use anyhow::{Context, Result, bail};
 use rusqlite::{Connection, OptionalExtension, Row, TransactionBehavior, params};
@@ -32,14 +32,17 @@ impl SqliteTaskStore {
                 tx.execute_batch(include_str!("../../../migrations/002_execution.sql"))?;
             }
             1 => tx.execute_batch(include_str!("../../../migrations/002_execution.sql"))?,
-            2..=4 => {}
-            other => bail!("unsupported database version {other}; expected 4"),
+            2..=5 => {}
+            other => bail!("unsupported database version {other}; expected 5"),
         }
         if version < 3 {
             tx.execute_batch(include_str!("../../../migrations/003_backends.sql"))?;
         }
         if version < 4 {
             tx.execute_batch(include_str!("../../../migrations/004_notify.sql"))?;
+        }
+        if version < 5 {
+            tx.execute_batch(include_str!("../../../migrations/005_records.sql"))?;
         }
         tx.commit()?;
         Ok(Self {
@@ -55,6 +58,65 @@ impl SqliteTaskStore {
 }
 
 impl TaskStore for SqliteTaskStore {
+    fn document(&self, kind: &str, id: &str) -> Result<Option<crate::domain::records::Document>> {
+        let conn = self.connection()?;
+        let row: Option<(i64, String)> = conn
+            .query_row(
+                "SELECT revision,body FROM records WHERE kind=?1 AND id=?2",
+                params![kind, id],
+                |r| Ok((r.get(0)?, r.get(1)?)),
+            )
+            .optional()?;
+        row.map(|(revision, body)| {
+            Ok(crate::domain::records::Document {
+                id: id.into(),
+                revision,
+                value: serde_json::from_str(&body)?,
+            })
+        })
+        .transpose()
+    }
+    fn documents(&self, kind: &str, limit: u32) -> Result<Vec<crate::domain::records::Document>> {
+        let conn = self.connection()?;
+        let mut stmt = conn
+            .prepare("SELECT id,revision,body FROM records WHERE kind=?1 ORDER BY id LIMIT ?2")?;
+        let rows = stmt.query_map(params![kind, limit], |r| {
+            Ok((
+                r.get::<_, String>(0)?,
+                r.get::<_, i64>(1)?,
+                r.get::<_, String>(2)?,
+            ))
+        })?;
+        rows.map(|r| {
+            let (id, revision, body) = r?;
+            Ok(crate::domain::records::Document {
+                id,
+                revision,
+                value: serde_json::from_str(&body)?,
+            })
+        })
+        .collect()
+    }
+    fn put_document(
+        &self,
+        kind: &str,
+        id: &str,
+        expected: Option<i64>,
+        value: &serde_json::Value,
+    ) -> Result<bool> {
+        let conn = self.connection()?;
+        let body = serde_json::to_string(value)?;
+        let n = if let Some(rev) = expected {
+            conn.execute("UPDATE records SET body=?3,revision=revision+1 WHERE kind=?1 AND id=?2 AND revision=?4",params![kind,id,body,rev])?
+        } else {
+            conn.execute(
+                "INSERT INTO records(kind,id,body) VALUES (?1,?2,?3) ON CONFLICT DO NOTHING",
+                params![kind, id, body],
+            )?
+        };
+        Ok(n == 1)
+    }
+
     fn enqueue_for(
         &self,
         request_key: &str,

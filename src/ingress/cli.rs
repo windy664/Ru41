@@ -22,6 +22,11 @@ pub struct Cli {
 
 #[derive(Subcommand)]
 pub enum Command {
+    /// 启动 HTTP API；任务由独立 worker 执行。
+    Serve {
+        #[arg(long, default_value = "127.0.0.1:4141")]
+        listen: std::net::SocketAddr,
+    },
     /// 检查本地 Codex CLI 是否可用；不调用模型。
     Doctor,
     /// 列出已注册的运行时底座及其支持的契约。

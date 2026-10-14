@@ -1,11 +1,9 @@
 use ru41::{
     adapters::database::sqlite::SqliteTaskStore,
-    app::{
-        agent::{AgentBackend, AgentOutput, AgentRequest, BackendDescriptor, BackendRegistry},
-        store::TaskStore,
-        task::{Worker, WorkerConfig},
-    },
     domain::{AgentResult, TaskStatus},
+    ports::agent::{AgentBackend, AgentOutput, AgentRequest, BackendDescriptor, BackendRegistry},
+    ports::storage::TaskStore,
+    runtime::worker::{Worker, WorkerConfig},
 };
 use std::{future::Future, pin::Pin, sync::Arc, time::Duration};
 use tokio::sync::watch;
@@ -44,7 +42,7 @@ fn worker(dir: &std::path::Path, delay: Duration, summary: &'static str) -> Work
     Worker {
         store: Arc::new(SqliteTaskStore::open(&dir.join("state.db")).unwrap()),
         backends: Arc::new(backends),
-        sanitizer: Arc::new(ru41::app::sanitize::RandomSanitizer::default()),
+        sanitizer: Arc::new(ru41::privacy::RandomSanitizer::default()),
         config: WorkerConfig {
             worker_id: "test".into(),
             runs_dir: dir.join("runs"),
