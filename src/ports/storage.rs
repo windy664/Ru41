@@ -5,6 +5,10 @@ use std::sync::Arc;
 /// 任务与尝试的持久化边界；SQLite 是默认适配器。
 /// 实现必须原子地执行 fencing 与租约规则。
 pub trait TaskStore: Send + Sync {
+    /// 在同一事务中校验交互、所属运行、当前 attempt 与租约，并记录回复。
+    /// 不存在、过期、已回答或失效运行返回 false；存储故障返回错误。
+    fn reply_interaction(&self, id: &str, response: &serde_json::Value, now: i64) -> Result<bool>;
+
     fn document(&self, kind: &str, id: &str) -> Result<Option<crate::domain::records::Document>>;
     fn documents(&self, kind: &str, limit: u32) -> Result<Vec<crate::domain::records::Document>>;
     fn put_document(
@@ -87,6 +91,10 @@ pub trait TaskStore: Send + Sync {
 }
 
 impl<T: TaskStore + ?Sized> TaskStore for Arc<T> {
+    fn reply_interaction(&self, id: &str, response: &serde_json::Value, now: i64) -> Result<bool> {
+        (**self).reply_interaction(id, response, now)
+    }
+
     fn document(&self, kind: &str, id: &str) -> Result<Option<crate::domain::records::Document>> {
         (**self).document(kind, id)
     }

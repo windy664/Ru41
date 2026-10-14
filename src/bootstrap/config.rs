@@ -45,6 +45,7 @@ pub struct WorkerSection {
 #[derive(Debug, Default, Deserialize)]
 #[serde(default, deny_unknown_fields)]
 pub struct AgentSection {
+    pub pi: PiSection,
     pub codex: CodexSection,
 }
 
@@ -124,4 +125,14 @@ impl Config {
         }
         Ok((Self::default(), None))
     }
+}
+
+/// Pi RPC 分析配置；默认不注册，认证与自定义模型由 Pi 原生配置管理。
+#[derive(Debug, Default, Deserialize)]
+#[serde(default, deny_unknown_fields)]
+pub struct PiSection {
+    pub enabled: bool,
+    pub bin: Option<PathBuf>,
+    pub model: Option<String>,
+    pub provider: Option<String>,
 }

@@ -58,6 +58,58 @@ impl SqliteTaskStore {
 }
 
 impl TaskStore for SqliteTaskStore {
+    fn reply_interaction(&self, id: &str, response: &serde_json::Value, now: i64) -> Result<bool> {
+        let mut connection = self.connection()?;
+        let tx = connection.transaction_with_behavior(TransactionBehavior::Immediate)?;
+        let body: Option<String> = tx
+            .query_row(
+                "SELECT body FROM records WHERE kind='interaction' AND id=?1",
+                [id],
+                |r| r.get(0),
+            )
+            .optional()?;
+        let Some(body) = body else {
+            return Ok(false);
+        };
+        let mut request: crate::domain::records::Interaction = serde_json::from_str(&body)?;
+        if request.status != "pending"
+            || request.expires_at <= now
+            || !request.options.contains(response)
+        {
+            return Ok(false);
+        }
+        let run_body: Option<String> = tx
+            .query_row(
+                "SELECT body FROM records WHERE kind='run' AND id=?1",
+                [&request.run_id],
+                |r| r.get(0),
+            )
+            .optional()?;
+        let Some(run_body) = run_body else {
+            return Ok(false);
+        };
+        let run: serde_json::Value = serde_json::from_str(&run_body)?;
+        let (Some(task), Some(attempt)) = (run["task_id"].as_i64(), run["attempt_id"].as_i64())
+        else {
+            return Ok(false);
+        };
+        if run["status"] != "running" {
+            return Ok(false);
+        }
+        let active: bool = tx.query_row("SELECT EXISTS(SELECT 1 FROM tasks WHERE id=?1 AND active_attempt_id=?2 AND status='running' AND lease_until>?3)", params![task,attempt,now], |r| r.get(0))?;
+        if !active {
+            return Ok(false);
+        }
+        request.status = "answered".into();
+        request.response = Some(response.clone());
+        tx.execute(
+            "UPDATE records SET body=?2,revision=revision+1 WHERE kind='interaction' AND id=?1",
+            params![id, serde_json::to_string(&request)?],
+        )?;
+        tx.commit()?;
+        Ok(true)
+    }
+
     fn document(&self, kind: &str, id: &str) -> Result<Option<crate::domain::records::Document>> {
         let conn = self.connection()?;
         let row: Option<(i64, String)> = conn

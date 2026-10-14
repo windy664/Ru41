@@ -2,3 +2,4 @@
 pub mod codex;
 pub mod codex_provider;
 pub mod codex_session;
+pub mod pi;

@@ -87,6 +87,55 @@ impl Drop for PostgresTaskStore {
 }
 
 impl TaskStore for PostgresTaskStore {
+    fn reply_interaction(&self, id: &str, response: &serde_json::Value, now: i64) -> Result<bool> {
+        outside_runtime(|| {
+            let mut client = self.client()?;
+            let mut tx = client.transaction()?;
+            let Some(row) = tx.query_opt(
+                "SELECT body FROM records WHERE kind='interaction' AND id=$1 FOR UPDATE",
+                &[&id],
+            )?
+            else {
+                return Ok(false);
+            };
+            let mut request: crate::domain::records::Interaction =
+                serde_json::from_str(row.get::<_, &str>(0))?;
+            if request.status != "pending"
+                || request.expires_at <= now
+                || !request.options.contains(response)
+            {
+                return Ok(false);
+            }
+            let Some(row) = tx.query_opt(
+                "SELECT body FROM records WHERE kind='run' AND id=$1 FOR UPDATE",
+                &[&request.run_id],
+            )?
+            else {
+                return Ok(false);
+            };
+            let run: serde_json::Value = serde_json::from_str(row.get::<_, &str>(0))?;
+            let (Some(task), Some(attempt)) = (run["task_id"].as_i64(), run["attempt_id"].as_i64())
+            else {
+                return Ok(false);
+            };
+            if run["status"] != "running" {
+                return Ok(false);
+            }
+            let active = tx.query_opt("SELECT id FROM tasks WHERE id=$1 AND active_attempt_id=$2 AND status='running' AND lease_until>$3 FOR UPDATE", &[&task,&attempt,&now])?;
+            if active.is_none() {
+                return Ok(false);
+            }
+            request.status = "answered".into();
+            request.response = Some(response.clone());
+            tx.execute(
+                "UPDATE records SET body=$2,revision=revision+1 WHERE kind='interaction' AND id=$1",
+                &[&id, &serde_json::to_string(&request)?],
+            )?;
+            tx.commit()?;
+            Ok(true)
+        })
+    }
+
     fn document(&self, kind: &str, id: &str) -> Result<Option<crate::domain::records::Document>> {
         outside_runtime(|| {
             self.client()?

@@ -10,41 +10,9 @@ pub struct InteractionService {
 impl InteractionService {
     /// 记录用户对交互的回复；违反任一裁决规则时返回错误且不落库。
     pub fn reply(&self, id: &str, response: Value) -> Result<()> {
-        let doc = self
-            .store
-            .document("interaction", id)?
-            .context("interaction not found")?;
-        let mut request: Interaction = serde_json::from_value(doc.value)?;
         ensure!(
-            request.status == "pending" && request.expires_at > now(),
-            "interaction is no longer pending"
-        );
-        let run = self
-            .store
-            .document("run", &request.run_id)?
-            .context("run not found")?;
-        ensure!(run.value["status"] == "running", "run is no longer active");
-        let task_id = run.value["task_id"].as_i64().context("invalid run task")?;
-        let task = self.store.get(task_id)?.context("task not found")?;
-        ensure!(
-            task.status == crate::domain::TaskStatus::Running
-                && task.lease_until.is_some_and(|v| v > now()),
-            "task is no longer active"
-        );
-        ensure!(
-            request.options.contains(&response),
-            "response is not an offered option"
-        );
-        request.status = "answered".into();
-        request.response = Some(response);
-        ensure!(
-            self.store.put_document(
-                "interaction",
-                id,
-                Some(doc.revision),
-                &serde_json::to_value(request)?
-            )?,
-            "interaction already answered"
+            self.store.reply_interaction(id, &response, now())?,
+            "interaction is invalid, already answered, expired or belongs to an inactive attempt"
         );
         Ok(())
     }

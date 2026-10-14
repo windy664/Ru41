@@ -55,11 +55,14 @@ async fn main() -> Result<()> {
                 listen.parse().context("invalid api listen address")?;
             let state = ru41::ingress::http::ApiState::new(
                 open_store(&store_config)?,
-                Arc::new(registry(&codex_agent(
-                    default_codex_bin(&config),
-                    default_model(&config),
-                    config.agent.codex.provider.as_ref(),
-                )?)?),
+                Arc::new(registry(
+                    &codex_agent(
+                        default_codex_bin(&config),
+                        default_model(&config),
+                        config.agent.codex.provider.as_ref(),
+                    )?,
+                    &config.agent.pi,
+                )?),
                 token,
             )?;
             let listener = tokio::net::TcpListener::bind(listen).await?;
@@ -78,11 +81,14 @@ async fn main() -> Result<()> {
             "stage": "task-execution"
         }),
         Command::Backends => serde_json::to_value(
-            registry(&codex_agent(
-                default_codex_bin(&config),
-                default_model(&config),
-                config.agent.codex.provider.as_ref(),
-            )?)?
+            registry(
+                &codex_agent(
+                    default_codex_bin(&config),
+                    default_model(&config),
+                    config.agent.codex.provider.as_ref(),
+                )?,
+                &config.agent.pi,
+            )?
             .descriptors(),
         )?,
         Command::Worker {
@@ -97,11 +103,10 @@ async fn main() -> Result<()> {
                 .or_else(|| config.agent.codex.bin.clone())
                 .unwrap_or_else(|| PathBuf::from("codex"));
             let model = model.or_else(|| config.agent.codex.model.clone());
-            let backends = registry(&codex_agent(
-                bin,
-                model,
-                config.agent.codex.provider.as_ref(),
-            )?)?;
+            let backends = registry(
+                &codex_agent(bin, model, config.agent.codex.provider.as_ref())?,
+                &config.agent.pi,
+            )?;
             let sanitize = if no_sanitize {
                 false
             } else {
@@ -191,11 +196,14 @@ async fn main() -> Result<()> {
                     prompt,
                     backend,
                 } => {
-                    registry(&codex_agent(
-                        default_codex_bin(&config),
-                        default_model(&config),
-                        config.agent.codex.provider.as_ref(),
-                    )?)?
+                    registry(
+                        &codex_agent(
+                            default_codex_bin(&config),
+                            default_model(&config),
+                            config.agent.codex.provider.as_ref(),
+                        )?,
+                        &config.agent.pi,
+                    )?
                     .get(&backend)?;
                     serde_json::to_value(service.enqueue_for(&key, &prompt, &backend)?)?
                 }
@@ -265,7 +273,10 @@ fn codex_agent(
     })
 }
 
-fn registry(codex: &CodexAgent) -> Result<BackendRegistry> {
+fn registry(
+    codex: &CodexAgent,
+    pi: &ru41::bootstrap::config::PiSection,
+) -> Result<BackendRegistry> {
     let mut backends = BackendRegistry::default();
     backends.register(CodexAgent {
         executable: codex.executable.clone(),
@@ -277,6 +288,23 @@ fn registry(codex: &CodexAgent) -> Result<BackendRegistry> {
         model: codex.model.clone(),
         config_overrides: codex.config_overrides.clone(),
     })?;
+    if pi.enabled {
+        anyhow::ensure!(
+            pi.provider.is_none() || pi.model.is_some(),
+            "agent.pi.provider requires model"
+        );
+        let bin = pi.bin.clone().unwrap_or_else(|| PathBuf::from("pi"));
+        let executable = if bin.components().count() > 1 {
+            std::fs::canonicalize(bin)?
+        } else {
+            bin
+        };
+        backends.register(ru41::adapters::agent::pi::PiAgent {
+            executable,
+            model: pi.model.clone(),
+            provider: pi.provider.clone(),
+        })?;
+    }
     Ok(backends)
 }
 

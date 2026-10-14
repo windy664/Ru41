@@ -181,3 +181,67 @@ fn notify_route_roundtrip_and_mark_once() {
     assert!(!store.mark_notified(added.task.id).unwrap());
     assert!(store.list_unnotified(10).unwrap().is_empty());
 }
+
+#[test]
+fn interaction_reply_is_fenced_by_current_attempt() {
+    let _guard = lock();
+    let Some(store) = store() else { return };
+    let task = store.enqueue("approval", "hello").unwrap().task;
+    let old = store.claim("old", 100, 10).unwrap().unwrap();
+    let request = ru41::domain::records::Interaction {
+        id: "interaction".into(),
+        run_id: "run".into(),
+        request_id: serde_json::json!(1),
+        method: "approval".into(),
+        detail: serde_json::json!({}),
+        options: vec![serde_json::json!("yes")],
+        expires_at: 200,
+        status: "pending".into(),
+        response: None,
+    };
+    store
+        .put_document(
+            "run",
+            "run",
+            None,
+            &serde_json::json!({"task_id":task.id,"attempt_id":old.attempt_id,"status":"running"}),
+        )
+        .unwrap();
+    store
+        .put_document(
+            "interaction",
+            "interaction",
+            None,
+            &serde_json::to_value(&request).unwrap(),
+        )
+        .unwrap();
+    assert!(
+        !store
+            .reply_interaction("interaction", &serde_json::json!("invalid"), 101)
+            .unwrap()
+    );
+    assert!(
+        store
+            .reply_interaction("interaction", &serde_json::json!("yes"), 101)
+            .unwrap()
+    );
+    assert!(
+        !store
+            .reply_interaction("interaction", &serde_json::json!("yes"), 101)
+            .unwrap()
+    );
+    store
+        .put_document(
+            "interaction",
+            "interaction-2",
+            None,
+            &serde_json::to_value(&request).unwrap(),
+        )
+        .unwrap();
+    store.claim("new", 111, 30).unwrap().unwrap();
+    assert!(
+        !store
+            .reply_interaction("interaction-2", &serde_json::json!("yes"), 112)
+            .unwrap()
+    );
+}

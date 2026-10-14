@@ -46,7 +46,7 @@ async fn reply_roundtrip_answers_pending_request() {
             "run",
             "run-1-1",
             None,
-            &serde_json::json!({"id":"run-1-1","task_id":task.id,"status":"running"}),
+            &serde_json::json!({"id":"run-1-1","task_id":task.id,"attempt_id":_claim.attempt_id,"status":"running"}),
         )
         .unwrap();
 
@@ -82,7 +82,7 @@ async fn reply_rejects_unoffered_option_and_unknown_request() {
             "run",
             "run-1-1",
             None,
-            &serde_json::json!({"id":"run-1-1","task_id":task.id,"status":"running"}),
+            &serde_json::json!({"id":"run-1-1","task_id":task.id,"attempt_id":_claim.attempt_id,"status":"running"}),
         )
         .unwrap();
     store
