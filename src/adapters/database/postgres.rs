@@ -335,7 +335,7 @@ impl TaskStore for PostgresTaskStore {
     ) -> Result<bool> {
         outside_runtime(|| {
             anyhow::ensure!(delay_secs >= 0, "retry delay must not be negative");
-            let error: String = error.chars().take(2000).collect();
+            let error = crate::util::truncate_chars(error, crate::util::ERROR_MAX_CHARS);
             let mut client = self.client()?;
             let mut tx = client.transaction()?;
             let changed = tx.execute("UPDATE tasks SET status=CASE WHEN attempt_count<max_attempts THEN 'retry_scheduled' ELSE 'failed' END, available_at=$3, last_error=$4, active_attempt_id=NULL, lease_until=NULL, updated_at=now() WHERE id=$1 AND active_attempt_id=$2 AND status='running' AND lease_until>$5", &[&claim.task.id,&claim.attempt_id,&(now+delay_secs),&error,&now])?;
