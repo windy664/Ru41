@@ -33,3 +33,7 @@ app_secret = ""
 
 # HTTP API（ru41 serve）。令牌经环境变量 RU41_API_TOKEN 注入，不写入配置文件。
 # listen 地址通过 CLI 参数指定：ru41 serve --listen 127.0.0.1:4141
+
+[api]
+# listen = "127.0.0.1:4141"
+# token 也可写在这里；环境变量 RU41_API_TOKEN 优先级更高（推荐）

@@ -24,8 +24,9 @@ pub struct Cli {
 pub enum Command {
     /// 启动 HTTP API；任务由独立 worker 执行。
     Serve {
-        #[arg(long, default_value = "127.0.0.1:4141")]
-        listen: std::net::SocketAddr,
+        /// 监听地址；缺省取配置 [api].listen 或 127.0.0.1:4141。
+        #[arg(long)]
+        listen: Option<std::net::SocketAddr>,
     },
     /// 检查本地 Codex CLI 是否可用；不调用模型。
     Doctor,

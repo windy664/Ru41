@@ -42,7 +42,17 @@ async fn main() -> Result<()> {
     let store_config = (store_kind, store_db, store_pg_url);
     let output = match cli.command {
         Command::Serve { listen } => {
-            let token = std::env::var("RU41_API_TOKEN").context("RU41_API_TOKEN is required")?;
+            // 令牌优先级：环境变量 > 配置文件。
+            let token = std::env::var("RU41_API_TOKEN")
+                .ok()
+                .or_else(|| config.api.token.clone())
+                .context("API token required: RU41_API_TOKEN or api.token in config")?;
+            let listen = listen
+                .map(|addr| addr.to_string())
+                .or_else(|| config.api.listen.clone())
+                .unwrap_or_else(|| "127.0.0.1:4141".into());
+            let listen: std::net::SocketAddr =
+                listen.parse().context("invalid api listen address")?;
             let state = ru41::ingress::http::ApiState::new(
                 open_store(&store_config)?,
                 Arc::new(registry(&codex_agent(

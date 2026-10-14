@@ -10,6 +10,17 @@ pub struct Config {
     pub worker: WorkerSection,
     pub agent: AgentSection,
     pub channel: ChannelSection,
+    pub api: ApiSection,
+}
+
+/// HTTP API 配置；令牌也允许环境变量 RU41_API_TOKEN 注入（优先级更高）。
+#[derive(Debug, Default, Deserialize)]
+#[serde(default, deny_unknown_fields)]
+pub struct ApiSection {
+    /// 监听地址，如 "127.0.0.1:4141"。
+    pub listen: Option<String>,
+    /// Bearer 令牌（至少 24 字节）；密钥类首选环境变量。
+    pub token: Option<String>,
 }
 
 #[derive(Debug, Default, Deserialize)]
