@@ -1,3 +1,4 @@
+use super::super::process::ProcessGroup;
 use crate::{
     domain::{AgentResult, RunContract, error::Ru41Error, records::Interaction},
     ports::agent::{AgentBackend, AgentOutput, AgentRequest, BackendDescriptor},
@@ -51,7 +52,7 @@ impl CodexSession {
         #[cfg(unix)]
         command.process_group(0);
         let mut child = command.spawn().context("cannot start Codex app-server")?;
-        let _guard = Group(child.id());
+        let _guard = ProcessGroup(child.id());
         let mut writer = child.stdin.take().context("missing stdin")?;
         let mut reader = BufReader::new(child.stdout.take().context("missing stdout")?).lines();
         send(&mut writer,json!({"id":1,"method":"initialize","params":{"clientInfo":{"name":"ru41","version":"0.3.0"},"capabilities":{"experimentalApi":false}}})).await?;
@@ -138,16 +139,5 @@ impl CodexSession {
             }
         }
         Err(Ru41Error::AgentProcess("Codex app-server ended before turn completion".into()).into())
-    }
-}
-struct Group(Option<u32>);
-impl Drop for Group {
-    fn drop(&mut self) {
-        #[cfg(unix)]
-        if let Some(pid) = self.0 {
-            unsafe {
-                libc::kill(-(pid as i32), libc::SIGKILL);
-            }
-        }
     }
 }

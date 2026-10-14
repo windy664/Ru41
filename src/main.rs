@@ -1,8 +1,9 @@
 use anyhow::{Context, Result};
 use clap::Parser;
+use ru41::bootstrap::agents::{AgentOverrides, registry};
 use ru41::{
     adapters::{
-        agent::codex::{self, CodexAgent},
+        agent::codex,
         database::{postgres::PostgresTaskStore, sqlite::SqliteTaskStore},
     },
     app::task::TaskService,
@@ -11,7 +12,6 @@ use ru41::{
         cli::{Cli, Command, QqCommand, QqCredentials, TaskCommand},
         qq::{QqBot, QqNotifier, api::QqApiClient},
     },
-    ports::agent::BackendRegistry,
     ports::storage::TaskStore,
     privacy::{NoopSanitizer, RandomSanitizer, Sanitizer},
     runtime::dispatcher::NotifyDispatcher,
@@ -55,14 +55,7 @@ async fn main() -> Result<()> {
                 listen.parse().context("invalid api listen address")?;
             let state = ru41::ingress::http::ApiState::new(
                 open_store(&store_config)?,
-                Arc::new(registry(
-                    &codex_agent(
-                        default_codex_bin(&config),
-                        default_model(&config),
-                        config.agent.codex.provider.as_ref(),
-                    )?,
-                    &config.agent.pi,
-                )?),
+                Arc::new(registry(&config.agent, AgentOverrides::default())?),
                 token,
             )?;
             let listener = tokio::net::TcpListener::bind(listen).await?;
@@ -80,17 +73,9 @@ async fn main() -> Result<()> {
             "authentication_checked": false,
             "stage": "task-execution"
         }),
-        Command::Backends => serde_json::to_value(
-            registry(
-                &codex_agent(
-                    default_codex_bin(&config),
-                    default_model(&config),
-                    config.agent.codex.provider.as_ref(),
-                )?,
-                &config.agent.pi,
-            )?
-            .descriptors(),
-        )?,
+        Command::Backends => {
+            serde_json::to_value(registry(&config.agent, AgentOverrides::default())?.descriptors())?
+        }
         Command::Worker {
             once,
             runs_dir,
@@ -99,13 +84,12 @@ async fn main() -> Result<()> {
             no_sanitize,
             timeout_secs,
         } => {
-            let bin = codex_bin
-                .or_else(|| config.agent.codex.bin.clone())
-                .unwrap_or_else(|| PathBuf::from("codex"));
-            let model = model.or_else(|| config.agent.codex.model.clone());
             let backends = registry(
-                &codex_agent(bin, model, config.agent.codex.provider.as_ref())?,
-                &config.agent.pi,
+                &config.agent,
+                AgentOverrides {
+                    codex_bin,
+                    codex_model: model,
+                },
             )?;
             let sanitize = if no_sanitize {
                 false
@@ -196,15 +180,7 @@ async fn main() -> Result<()> {
                     prompt,
                     backend,
                 } => {
-                    registry(
-                        &codex_agent(
-                            default_codex_bin(&config),
-                            default_model(&config),
-                            config.agent.codex.provider.as_ref(),
-                        )?,
-                        &config.agent.pi,
-                    )?
-                    .get(&backend)?;
+                    registry(&config.agent, AgentOverrides::default())?.get(&backend)?;
                     serde_json::to_value(service.enqueue_for(&key, &prompt, &backend)?)?
                 }
                 TaskCommand::List { limit } => serde_json::to_value(service.list(limit)?)?,
@@ -236,76 +212,6 @@ fn open_store(
         }
         other => anyhow::bail!("unknown store backend: {other}"),
     }
-}
-
-fn default_codex_bin(config: &Config) -> PathBuf {
-    config
-        .agent
-        .codex
-        .bin
-        .clone()
-        .unwrap_or_else(|| PathBuf::from("codex"))
-}
-
-fn default_model(config: &Config) -> Option<String> {
-    config.agent.codex.model.clone()
-}
-
-fn codex_agent(
-    bin: PathBuf,
-    model: Option<String>,
-    provider: Option<&ru41::bootstrap::config::CodexProviderSection>,
-) -> Result<CodexAgent> {
-    // 在切换子进程工作目录前，先解析显式的相对可执行路径。
-    let executable = if bin.components().count() > 1 {
-        std::fs::canonicalize(bin)?
-    } else {
-        bin.clone()
-    };
-    let config_overrides = match provider {
-        Some(section) => ru41::adapters::agent::codex_provider::overrides(section)?,
-        None => Vec::new(),
-    };
-    Ok(CodexAgent {
-        executable,
-        model,
-        config_overrides,
-    })
-}
-
-fn registry(
-    codex: &CodexAgent,
-    pi: &ru41::bootstrap::config::PiSection,
-) -> Result<BackendRegistry> {
-    let mut backends = BackendRegistry::default();
-    backends.register(CodexAgent {
-        executable: codex.executable.clone(),
-        model: codex.model.clone(),
-        config_overrides: codex.config_overrides.clone(),
-    })?;
-    backends.register(ru41::adapters::agent::codex_session::CodexSession {
-        executable: codex.executable.clone(),
-        model: codex.model.clone(),
-        config_overrides: codex.config_overrides.clone(),
-    })?;
-    if pi.enabled {
-        anyhow::ensure!(
-            pi.provider.is_none() || pi.model.is_some(),
-            "agent.pi.provider requires model"
-        );
-        let bin = pi.bin.clone().unwrap_or_else(|| PathBuf::from("pi"));
-        let executable = if bin.components().count() > 1 {
-            std::fs::canonicalize(bin)?
-        } else {
-            bin
-        };
-        backends.register(ru41::adapters::agent::pi::PiAgent {
-            executable,
-            model: pi.model.clone(),
-            provider: pi.provider.clone(),
-        })?;
-    }
-    Ok(backends)
 }
 
 fn qq_api(credentials: &QqCredentials, config: &Config) -> Result<QqApiClient> {

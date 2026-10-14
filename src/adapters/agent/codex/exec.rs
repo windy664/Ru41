@@ -1,3 +1,4 @@
+use super::super::process::ProcessGroup;
 use anyhow::{Context, Result, bail};
 use std::process::Command;
 
@@ -199,17 +200,4 @@ async fn capture(mut reader: impl AsyncRead + Unpin, path: &Path) -> Result<Vec<
     }
     file.flush().await?;
     Ok(data)
-}
-
-struct ProcessGroup(Option<u32>);
-impl Drop for ProcessGroup {
-    fn drop(&mut self) {
-        #[cfg(unix)]
-        if let Some(pid) = self.0 {
-            // SAFETY: pid 是子进程创建的进程组；不涉及任何指针。
-            unsafe {
-                libc::kill(-(pid as i32), libc::SIGKILL);
-            }
-        }
-    }
 }

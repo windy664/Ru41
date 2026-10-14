@@ -57,21 +57,7 @@ pub struct CodexSection {
     pub provider: Option<CodexProviderSection>,
 }
 
-/// 自定义模型提供方：写入 codex 的 model_providers.<id>，
-/// 密钥经 api_key_env 指定的环境变量注入，不落入配置文件。
-#[derive(Debug, Default, Deserialize)]
-#[serde(default, deny_unknown_fields)]
-pub struct CodexProviderSection {
-    /// provider 标识，也是 model_provider 选择键。
-    pub id: Option<String>,
-    pub name: Option<String>,
-    /// 兼容端点地址，如 https://api.example.com/v1。
-    pub base_url: Option<String>,
-    /// 存放 API 密钥的环境变量名（如 OPENROUTER_API_KEY）。
-    pub api_key_env: Option<String>,
-    /// chat（OpenAI Chat Completions 兼容）或 responses（Responses API）。
-    pub wire_api: Option<String>,
-}
+pub use crate::adapters::agent::codex::provider::CodexProviderSection;
 
 #[derive(Debug, Default, Deserialize)]
 #[serde(default, deny_unknown_fields)]

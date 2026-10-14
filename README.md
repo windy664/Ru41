@@ -130,7 +130,7 @@ src/
 ├── runtime/          # 长驻执行机制：Worker、NotifyDispatcher
 ├── privacy/          # 脱敏与回填
 ├── adapters/
-│   ├── agent/            # 底座实现：codex（exec 批处理）、codex_session（app-server 会话）
+│   ├── agent/            # 底座实现：codex/（exec 与 app-server）、pi/（RPC）
 │   ├── database/         # 存储实现：SQLite、PostgreSQL
 │   └── messaging/        # 渠道协议：QQ gateway/api/notifier
 ├── ingress/
@@ -160,7 +160,7 @@ api_key_env = "DEEPSEEK_API_KEY"   # export DEEPSEEK_API_KEY=sk-...
 wire_api = "chat"
 ```
 
-实现方式是 codex 官方的 `-c model_providers.<id>={...}` 与 `-c model_provider=<id>` 启动覆盖，`exec` 与 `app-server`（会话+审批）两种模式都生效。密钥只经环境变量由 codex 子进程自读，宿主与配置文件不接触密钥值。参数由 `adapters/agent/codex_provider.rs` 校验并生成。
+实现方式是 codex 官方的 `-c model_providers.<id>={...}` 与 `-c model_provider=<id>` 启动覆盖，`exec` 与 `app-server`（会话+审批）两种模式都生效。密钥只经环境变量由 codex 子进程自读，宿主与配置文件不接触密钥值。参数由 `adapters/agent/codex/provider.rs` 校验并生成。
 
 ## HTTP API
 
