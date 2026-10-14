@@ -14,6 +14,7 @@ fn executable(dir: &Path, body: &str) -> PathBuf {
     let script = format!(
         r#"#!/bin/sh
 set -eu
+printf '%s\n' "$@" > received-args.txt
 output=''
 while [ "$#" -gt 0 ]; do
   if [ "$1" = '--output-last-message' ]; then shift; output="$1"; fi
@@ -50,6 +51,7 @@ echo 'diagnostic' >&2
 "#,
     );
     let agent = CodexAgent {
+        config_overrides: Vec::new(),
         executable: bin,
         model: None,
     };
@@ -77,6 +79,7 @@ async fn rejects_nonzero_exit_bad_json_and_missing_completion() {
     for body in cases {
         let dir = tempfile::tempdir().unwrap();
         let agent = CodexAgent {
+            config_overrides: Vec::new(),
             executable: executable(dir.path(), body),
             model: None,
         };
@@ -91,6 +94,7 @@ async fn rejects_nonzero_exit_bad_json_and_missing_completion() {
 async fn drains_stderr_concurrently_and_limits_log_size() {
     let dir = tempfile::tempdir().unwrap();
     let agent = CodexAgent {
+        config_overrides: Vec::new(),
         executable: executable(
             dir.path(),
             r#"
@@ -115,6 +119,7 @@ sleep 60
 async fn dropping_run_terminates_subprocess_group() {
     let dir = tempfile::tempdir().unwrap();
     let agent = CodexAgent {
+        config_overrides: Vec::new(),
         executable: executable(dir.path(), "sleep 60 &\necho $! > child.pid\nwait"),
         model: None,
     };
@@ -142,4 +147,49 @@ async fn dropping_run_terminates_subprocess_group() {
     })
     .await
     .expect("descendant still running");
+}
+
+#[tokio::test]
+async fn config_overrides_and_model_precede_stdin_positional() {
+    // 假脚本回显收到的完整参数列表，断言 `-c` 覆盖项位于 stdin 位置参数之前。
+    let dir = tempfile::tempdir().unwrap();
+    let bin = executable(
+        dir.path(),
+        r#"
+printf '%s\n' "$@" > args.txt
+printf '%s\n' '{"type":"turn.completed"}'
+printf '%s' '{"summary":"ok"}' > "$output"
+"#,
+    );
+    let agent = CodexAgent {
+        config_overrides: vec![
+            "model_providers.x={name=\"x\",base_url=\"https://a.b\",wire_api=\"chat\"}".into(),
+            "model_provider=\"x\"".into(),
+        ],
+        executable: bin,
+        model: Some("gpt-test".into()),
+    };
+    agent.run(request(dir.path())).await.unwrap();
+    let args = std::fs::read_to_string(dir.path().join("run/received-args.txt")).unwrap();
+    let argv: Vec<&str> = args.lines().collect();
+    let stdin_pos = argv
+        .iter()
+        .position(|a| *a == "-")
+        .expect("stdin marker present");
+    let model_pos = argv
+        .iter()
+        .position(|a| *a == "--model")
+        .expect("--model present");
+    let provider_pos = argv
+        .iter()
+        .position(|a| a.starts_with("model_provider="))
+        .expect("provider override present");
+    assert!(
+        model_pos < stdin_pos,
+        "model flag must precede stdin marker: {argv:?}"
+    );
+    assert!(
+        provider_pos < stdin_pos,
+        "provider overrides must precede stdin marker: {argv:?}"
+    );
 }

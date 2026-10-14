@@ -48,6 +48,7 @@ async fn main() -> Result<()> {
                 Arc::new(registry(&codex_agent(
                     default_codex_bin(&config),
                     default_model(&config),
+                    config.agent.codex.provider.as_ref(),
                 )?)?),
                 token,
             )?;
@@ -70,6 +71,7 @@ async fn main() -> Result<()> {
             registry(&codex_agent(
                 default_codex_bin(&config),
                 default_model(&config),
+                config.agent.codex.provider.as_ref(),
             )?)?
             .descriptors(),
         )?,
@@ -85,7 +87,11 @@ async fn main() -> Result<()> {
                 .or_else(|| config.agent.codex.bin.clone())
                 .unwrap_or_else(|| PathBuf::from("codex"));
             let model = model.or_else(|| config.agent.codex.model.clone());
-            let backends = registry(&codex_agent(bin, model)?)?;
+            let backends = registry(&codex_agent(
+                bin,
+                model,
+                config.agent.codex.provider.as_ref(),
+            )?)?;
             let sanitize = if no_sanitize {
                 false
             } else {
@@ -178,6 +184,7 @@ async fn main() -> Result<()> {
                     registry(&codex_agent(
                         default_codex_bin(&config),
                         default_model(&config),
+                        config.agent.codex.provider.as_ref(),
                     )?)?
                     .get(&backend)?;
                     serde_json::to_value(service.enqueue_for(&key, &prompt, &backend)?)?
@@ -226,14 +233,26 @@ fn default_model(config: &Config) -> Option<String> {
     config.agent.codex.model.clone()
 }
 
-fn codex_agent(bin: PathBuf, model: Option<String>) -> Result<CodexAgent> {
+fn codex_agent(
+    bin: PathBuf,
+    model: Option<String>,
+    provider: Option<&ru41::bootstrap::config::CodexProviderSection>,
+) -> Result<CodexAgent> {
     // 在切换子进程工作目录前，先解析显式的相对可执行路径。
     let executable = if bin.components().count() > 1 {
         std::fs::canonicalize(bin)?
     } else {
         bin.clone()
     };
-    Ok(CodexAgent { executable, model })
+    let config_overrides = match provider {
+        Some(section) => ru41::adapters::agent::codex_provider::overrides(section)?,
+        None => Vec::new(),
+    };
+    Ok(CodexAgent {
+        executable,
+        model,
+        config_overrides,
+    })
 }
 
 fn registry(codex: &CodexAgent) -> Result<BackendRegistry> {
@@ -241,10 +260,12 @@ fn registry(codex: &CodexAgent) -> Result<BackendRegistry> {
     backends.register(CodexAgent {
         executable: codex.executable.clone(),
         model: codex.model.clone(),
+        config_overrides: codex.config_overrides.clone(),
     })?;
     backends.register(ru41::adapters::agent::codex_session::CodexSession {
         executable: codex.executable.clone(),
         model: codex.model.clone(),
+        config_overrides: codex.config_overrides.clone(),
     })?;
     Ok(backends)
 }

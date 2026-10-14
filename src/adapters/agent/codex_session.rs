@@ -11,6 +11,8 @@ use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
 pub struct CodexSession {
     pub executable: PathBuf,
     pub model: Option<String>,
+    /// 附加的 `-c key=value` 覆盖项（自定义 provider 等）。
+    pub config_overrides: Vec<String>,
 }
 impl AgentBackend for CodexSession {
     fn descriptor(&self) -> BackendDescriptor {
@@ -43,6 +45,9 @@ impl CodexSession {
             .stdout(Stdio::piped())
             .stderr(Stdio::null())
             .kill_on_drop(true);
+        for override_ in &self.config_overrides {
+            command.arg("-c").arg(override_);
+        }
         #[cfg(unix)]
         command.process_group(0);
         let mut child = command.spawn().context("cannot start Codex app-server")?;

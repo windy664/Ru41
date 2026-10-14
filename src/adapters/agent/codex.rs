@@ -31,6 +31,8 @@ use tokio::io::{AsyncRead, AsyncReadExt, AsyncWriteExt};
 pub struct CodexAgent {
     pub executable: PathBuf,
     pub model: Option<String>,
+    /// 附加的 `-c key=value` 覆盖项（自定义 provider 等）。
+    pub config_overrides: Vec<String>,
 }
 
 impl Default for CodexAgent {
@@ -38,6 +40,7 @@ impl Default for CodexAgent {
         Self {
             executable: "codex".into(),
             model: None,
+            config_overrides: Vec::new(),
         }
     }
 }
@@ -85,7 +88,6 @@ impl CodexAgent {
             .arg(&schema)
             .arg("--output-last-message")
             .arg(&output_file)
-            .arg("-")
             .stdin(Stdio::piped())
             .stdout(Stdio::piped())
             .stderr(Stdio::piped())
@@ -93,6 +95,11 @@ impl CodexAgent {
         if let Some(model) = &self.model {
             cmd.arg("--model").arg(model);
         }
+        for override_ in &self.config_overrides {
+            cmd.arg("-c").arg(override_);
+        }
+        // `-` 是 stdin 提示词的位置参数，必须排在全部选项之后。
+        cmd.arg("-");
         #[cfg(unix)]
         {
             cmd.process_group(0);

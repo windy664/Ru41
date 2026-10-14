@@ -144,6 +144,24 @@ src/
 
 职责约束：`app` 只描述“做什么”；`runtime` 负责“如何持续执行”；`ports` 定义可替换边界；`adapters` 翻译外部协议，不决定业务成功或审核通过；所有入口（HTTP/CLI/QQ）调用同一套应用服务。
 
+## 自定义模型 API
+
+底座默认用你本机的 Codex 登录；也可以让 codex 走任意 OpenAI 兼容端点（OpenRouter、DeepSeek、本地 vLLM 等）：
+
+```toml
+# ru41.toml
+[agent.codex]
+model = "deepseek-chat"
+
+[agent.codex.provider]
+id = "deepseek"
+base_url = "https://api.deepseek.com/v1"
+api_key_env = "DEEPSEEK_API_KEY"   # export DEEPSEEK_API_KEY=sk-...
+wire_api = "chat"
+```
+
+实现方式是 codex 官方的 `-c model_providers.<id>={...}` 与 `-c model_provider=<id>` 启动覆盖，`exec` 与 `app-server`（会话+审批）两种模式都生效。密钥只经环境变量由 codex 子进程自读，宿主与配置文件不接触密钥值。参数由 `adapters/agent/codex_provider.rs` 校验并生成。
+
 ## HTTP API
 
 ```bash
