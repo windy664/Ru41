@@ -1,6 +1,6 @@
 #![cfg(unix)]
 use ru41::{
-    adapters::codex::CodexAgent,
+    adapters::agent::codex::CodexAgent,
     app::agent_service::{AgentBackend, AgentRequest},
 };
 use std::{

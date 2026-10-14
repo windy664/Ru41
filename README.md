@@ -114,7 +114,9 @@ src/
 │   ├── agent_service.rs  # AgentBackend + BackendRegistry
 │   ├── store.rs          # TaskStore 存储接口（SQLite 为默认实现，可选 PostgreSQL）
 │   └── worker.rs
-├── adapters/         # SQLite、PostgreSQL 与 Codex 协议
+├── adapters/
+│   ├── agent/            # Agent 底座实现（Codex，预留 Kimi Code 等）
+│   └── database/         # TaskStore 实现（SQLite、PostgreSQL）
 ├── ingress/          # CLI 与 QQ 消息网关
 ├── lib.rs
 └── main.rs           # 注册并装配具体底座

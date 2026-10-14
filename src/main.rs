@@ -2,7 +2,7 @@ use anyhow::{Context, Result};
 use clap::Parser;
 use ru41::{
     adapters::{
-        codex,
+        agent::codex,
         database::{postgres::PostgresTaskStore, sqlite::SqliteTaskStore},
     },
     app::{
