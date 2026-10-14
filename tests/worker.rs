@@ -65,6 +65,16 @@ async fn validated_result_is_persisted_and_not_run_twice() {
     let a = w.store.attempts(report.task_id).unwrap();
     assert!(a[0].run_dir.is_some());
     assert_eq!(a[0].result.as_ref().unwrap().summary, "done");
+    let run = w
+        .store
+        .document(
+            "run",
+            &format!("run-{}-{}", report.task_id, report.attempt_id),
+        )
+        .unwrap()
+        .unwrap();
+    assert_eq!(run.value["session_id"], "test-thread");
+    assert_eq!(run.value["status"], "succeeded");
 }
 #[tokio::test]
 async fn invalid_agent_result_is_not_success() {
@@ -74,7 +84,7 @@ async fn invalid_agent_result_is_not_success() {
     let (_sender, receiver) = watch::channel(false);
     assert_eq!(
         w.run_once(receiver).await.unwrap().unwrap().status,
-        TaskStatus::RetryScheduled
+        TaskStatus::Failed
     );
 }
 #[tokio::test]

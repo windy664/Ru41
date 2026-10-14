@@ -198,3 +198,62 @@ async fn replying_unknown_interaction_conflicts() {
         .unwrap();
     assert_eq!(response.status(), StatusCode::CONFLICT);
 }
+
+#[tokio::test]
+async fn openapi_references_resolve_and_match_authenticated_record_routes() {
+    let (router, store) = setup();
+    store
+        .put_document(
+            "interaction",
+            "contract-example",
+            None,
+            &serde_json::json!({"status":"pending"}),
+        )
+        .unwrap();
+    let (_, body) = get(&router, "/api/v1/openapi.json").await;
+    let spec: serde_json::Value = serde_json::from_str(&body).unwrap();
+    fn check(value: &serde_json::Value, root: &serde_json::Value) {
+        match value {
+            serde_json::Value::Object(fields) => {
+                if let Some(reference) = fields.get("$ref").and_then(|v| v.as_str()) {
+                    assert!(reference.starts_with("#/"), "unexpected external reference");
+                    assert!(
+                        root.pointer(&reference[1..]).is_some(),
+                        "unresolved reference: {reference}"
+                    );
+                }
+                for child in fields.values() {
+                    check(child, root);
+                }
+            }
+            serde_json::Value::Array(items) => {
+                for child in items {
+                    check(child, root);
+                }
+            }
+            _ => {}
+        }
+    }
+    check(&spec, &spec);
+    assert_eq!(spec["servers"][0]["url"], "/api/v1");
+    assert!(
+        spec["paths"]["/openapi.json"]["get"]
+            .get("security")
+            .is_none()
+    );
+    assert_eq!(
+        spec["paths"]["/interactions"]["get"]["responses"]["200"]["content"]["application/json"]["schema"]
+            ["items"]["$ref"],
+        "#/components/schemas/Record"
+    );
+    let (_, body) = get(&router, "/api/v1/interactions").await;
+    let records: serde_json::Value = serde_json::from_str(&body).unwrap();
+    for field in ["id", "revision", "value"] {
+        assert!(records[0].get(field).is_some());
+        assert!(
+            spec["components"]["schemas"]["Record"]["properties"]
+                .get(field)
+                .is_some()
+        );
+    }
+}

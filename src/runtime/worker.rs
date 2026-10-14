@@ -117,6 +117,9 @@ impl Worker {
         self.store
             .put_document("run", &run_id, None, &serde_json::to_value(&run)?)?;
         let result = self.run_claim(&claim, agent, &mut shutdown).await;
+        if let Ok(session_id) = &result {
+            run.session_id = session_id.clone();
+        }
         run.status = if result.is_ok() {
             "succeeded"
         } else {
@@ -169,7 +172,7 @@ impl Worker {
         claim: &Claim,
         agent: Arc<dyn AgentBackend>,
         shutdown: &mut watch::Receiver<bool>,
-    ) -> Result<()> {
+    ) -> Result<Option<String>> {
         std::fs::create_dir_all(&self.config.runs_dir)?;
         let root = std::fs::canonicalize(&self.config.runs_dir)?;
         // 唯一且私有的尝试目录也避免跨数据库的 ID 冲突。
@@ -182,7 +185,7 @@ impl Worker {
             .keep();
         self.store
             .attach_run(claim, &run_dir.to_string_lossy(), now())?;
-        // 脱敏在 Agent 边界完成：映射表只写入本地尝试目录（即审计记录）。
+        // 映射仅留宿主内存，不作为 Agent 工作目录中的文件暴露。
         let (prompt, mapping) = self.sanitizer.sanitize(&claim.task.prompt);
         if !mapping.is_empty() {
             eprintln!(
@@ -226,9 +229,9 @@ impl Worker {
                         },
                         session_id: output.session_id,
                     };
-                    output.result.validate().map_err(anyhow::Error::msg)?;
+                    output.result.validate().map_err(Ru41Error::InvalidOutput)?;
                     ensure!(self.store.succeed(claim, &output.result, output.session_id.as_deref(), now())?, "task cancelled or lease lost before commit");
-                    return Ok(());
+                    return Ok(output.session_id);
                 }
             }
         }
