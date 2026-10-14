@@ -17,7 +17,7 @@ pub fn version() -> Result<String> {
 }
 
 use crate::{
-    domain::{AgentResult, RunContract},
+    domain::{AgentResult, RunContract, error::Ru41Error},
     ports::agent::{AgentBackend, AgentOutput, AgentRequest, BackendDescriptor},
 };
 use std::{
@@ -64,10 +64,11 @@ impl AgentBackend for CodexAgent {
 
 impl CodexAgent {
     async fn execute(&self, request: AgentRequest) -> Result<AgentOutput> {
-        anyhow::ensure!(
-            self.descriptor().contracts.contains(&request.contract),
-            "unsupported Codex run contract"
-        );
+        if !self.descriptor().contracts.contains(&request.contract) {
+            return Err(
+                Ru41Error::UnsupportedContract(request.contract.as_str().to_string()).into(),
+            );
+        }
         let schema = request.run_dir.join("result.schema.json");
         let output_file = request.run_dir.join("result.json");
         tokio::fs::write(&schema, r#"{"type":"object","properties":{"summary":{"type":"string"}},"required":["summary"],"additionalProperties":false}"#).await?;
@@ -127,10 +128,12 @@ impl CodexAgent {
             capture(stdout, &events_path),
             capture(stderr, &stderr_path),
         )?;
-        anyhow::ensure!(
-            status.success(),
-            "Codex exited with {status}; inspect the attempt stderr.log"
-        );
+        if !status.success() {
+            return Err(Ru41Error::AgentProcess(format!(
+                "Codex exited with {status}; inspect the attempt stderr.log"
+            ))
+            .into());
+        }
         let mut thread_id = None;
         let mut completed = false;
         for line in events.split(|b| *b == b'\n').filter(|l| !l.is_empty()) {
@@ -145,12 +148,19 @@ impl CodexAgent {
                 }
                 Some("turn.completed") => completed = true,
                 Some("turn.failed" | "error") => {
-                    bail!("Codex reported an error; inspect the attempt events.jsonl")
+                    return Err(Ru41Error::AgentProcess(
+                        "Codex reported an error; inspect the attempt events.jsonl".into(),
+                    )
+                    .into());
                 }
                 _ => {}
             }
         }
-        anyhow::ensure!(completed, "Codex did not report turn.completed");
+        if !completed {
+            return Err(
+                Ru41Error::AgentProcess("Codex did not report turn.completed".into()).into(),
+            );
+        }
         // 即使子进程产出畸形的超大文件，也做有界读取。
         let file = tokio::fs::File::open(&output_file)
             .await
@@ -158,9 +168,11 @@ impl CodexAgent {
         let mut bytes = Vec::new();
         file.take(131_073).read_to_end(&mut bytes).await?;
         anyhow::ensure!(bytes.len() <= 131_072, "Codex result exceeds size limit");
-        let result: AgentResult =
-            serde_json::from_slice(&bytes).context("invalid Codex result JSON")?;
-        result.validate().map_err(anyhow::Error::msg)?;
+        let result: AgentResult = serde_json::from_slice(&bytes)
+            .map_err(|e| Ru41Error::InvalidOutput(format!("invalid Codex result JSON: {e}")))?;
+        result
+            .validate()
+            .map_err(|e| anyhow::Error::new(Ru41Error::InvalidOutput(e)))?;
         Ok(AgentOutput {
             result,
             session_id: thread_id,

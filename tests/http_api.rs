@@ -130,7 +130,54 @@ async fn backends_and_openapi_are_served() {
     assert!(body.contains("codex"));
     let (status, body) = get(&router, "/api/v1/openapi.json").await;
     assert_eq!(status, StatusCode::OK);
-    assert!(body.contains("\"openapi\""));
+    let spec: serde_json::Value = serde_json::from_str(&body).unwrap();
+    // 契约必须覆盖全部核心路由与 schema（schema 由 schemars 从类型生成）。
+    for path in [
+        "/tasks",
+        "/tasks/{id}",
+        "/tasks/{id}/cancel",
+        "/tasks/{id}/retry",
+        "/backends",
+        "/runs",
+        "/interactions",
+        "/interactions/{id}/reply",
+        "/events",
+        "/openapi.json",
+    ] {
+        assert!(spec["paths"][path].is_object(), "missing path {path}");
+    }
+    for schema in [
+        "Task",
+        "TaskStatus",
+        "CreateTaskRequest",
+        "Backend",
+        "Record",
+        "Interaction",
+        "Error",
+    ] {
+        assert!(
+            spec["components"]["schemas"][schema].is_object(),
+            "missing schema {schema}"
+        );
+    }
+    // TaskStatus 枚举与领域类型一致，防 schema 与实现漂移。
+    let statuses: Vec<&str> = spec["components"]["schemas"]["TaskStatus"]["enum"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|v| v.as_str().unwrap())
+        .collect();
+    assert_eq!(
+        statuses,
+        vec![
+            "queued",
+            "running",
+            "retry_scheduled",
+            "succeeded",
+            "failed",
+            "cancelled"
+        ]
+    );
 }
 
 #[tokio::test]

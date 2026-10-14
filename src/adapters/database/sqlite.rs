@@ -342,12 +342,13 @@ impl TaskStore for SqliteTaskStore {
         now: i64,
         delay_secs: i64,
         interrupted: bool,
+        retryable: bool,
     ) -> Result<bool> {
         anyhow::ensure!(delay_secs >= 0, "retry delay must not be negative");
         let error = crate::util::truncate_chars(error, crate::util::ERROR_MAX_CHARS);
         let mut connection = self.connection()?;
         let tx = connection.transaction_with_behavior(TransactionBehavior::Immediate)?;
-        let changed = tx.execute("UPDATE tasks SET status=CASE WHEN attempt_count<max_attempts THEN 'retry_scheduled' ELSE 'failed' END, available_at=?3, last_error=?4, active_attempt_id=NULL, lease_until=NULL, updated_at=strftime('%Y-%m-%dT%H:%M:%fZ','now') WHERE id=?1 AND active_attempt_id=?2 AND status='running' AND lease_until>?5", params![claim.task.id,claim.attempt_id,now+delay_secs,error,now])?;
+        let changed = tx.execute("UPDATE tasks SET status=CASE WHEN ?6 AND attempt_count<max_attempts THEN 'retry_scheduled' ELSE 'failed' END, available_at=?3, last_error=?4, active_attempt_id=NULL, lease_until=NULL, updated_at=strftime('%Y-%m-%dT%H:%M:%fZ','now') WHERE id=?1 AND active_attempt_id=?2 AND status='running' AND lease_until>?5", params![claim.task.id,claim.attempt_id,now+delay_secs,error,now,retryable])?;
         if changed == 1 {
             tx.execute(
                 "UPDATE attempts SET status=?2, error=?3, finished_at=?4 WHERE id=?1",

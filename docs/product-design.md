@@ -420,7 +420,6 @@ ru41/
 │   ├── bootstrap/              # 配置加载
 │   └── util/                   # 无业务规则的小工具
 ├── migrations/                 # sqlite 与 postgres 方言各一份
-├── docs/openapi.json           # HTTP API 契约
 └── tests/                      # 核心端到端场景与失败恢复
 ```
 职责约束：

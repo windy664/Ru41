@@ -1,8 +1,9 @@
+pub mod error;
 pub mod records;
 use serde::{Deserialize, Serialize};
 use std::str::FromStr;
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
 #[serde(rename_all = "snake_case")]
 pub enum TaskStatus {
     Queued,
@@ -105,7 +106,7 @@ pub struct Claim {
 
 /// 版本化的宿主级结果与执行契约。
 /// 新的动作类型需要各自的校验/审批语义。
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
 #[serde(rename_all = "snake_case")]
 pub enum RunContract {
     AnalysisV1,

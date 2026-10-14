@@ -70,7 +70,7 @@ fn expired_owner_is_fenced_and_recovery_keeps_history() {
         summary: "done".into(),
     };
     assert!(!a.succeed(&old, &result, None, 112).unwrap());
-    assert!(!a.fail(&old, "late failure", 112, 10, false).unwrap());
+    assert!(!a.fail(&old, "late failure", 112, 10, false, true).unwrap());
     assert!(b.succeed(&new, &result, Some("thread"), 112).unwrap());
     let attempts = b.attempts(new.task.id).unwrap();
     assert_eq!(attempts.len(), 2);
@@ -128,7 +128,9 @@ fn retry_delay_budget_and_manual_retry_preserve_attempts() {
     for i in 0..3 {
         let now = 100 + i * 20;
         let claim = store.claim("worker", now, 30).unwrap().unwrap();
-        store.fail(&claim, "offline", now + 1, 10, false).unwrap();
+        store
+            .fail(&claim, "offline", now + 1, 10, false, true)
+            .unwrap();
         assert!(store.claim("worker", now + 2, 30).unwrap().is_none());
     }
     assert_eq!(store.get(id).unwrap().unwrap().status, TaskStatus::Failed);
@@ -161,12 +163,14 @@ fn notify_route_roundtrip_and_mark_once() {
     assert_eq!(added.task.notify.as_ref(), Some(&route));
     assert!(store.list_unnotified(10).unwrap().is_empty());
     let claim = store.claim("worker", 100, 30).unwrap().unwrap();
-    store.fail(&claim, "offline", 101, 0, false).unwrap();
+    store.fail(&claim, "offline", 101, 0, false, true).unwrap();
     // 预算耗尽进 failed 后应出现在通知队列。
     for i in 1..3 {
         let now = 100 + i * 20;
         let claim = store.claim("worker", now, 30).unwrap().unwrap();
-        store.fail(&claim, "offline", now + 1, 0, false).unwrap();
+        store
+            .fail(&claim, "offline", now + 1, 0, false, true)
+            .unwrap();
     }
     let claim = store.claim("worker", 500, 30).unwrap();
     assert!(claim.is_none());

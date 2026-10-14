@@ -1,8 +1,9 @@
 use ru41::{
     adapters::database::sqlite::SqliteTaskStore,
-    domain::{AgentResult, TaskStatus},
+    domain::{AgentResult, RunContract, TaskStatus},
     ports::agent::{AgentBackend, AgentOutput, AgentRequest, BackendDescriptor, BackendRegistry},
     ports::storage::TaskStore,
+    privacy::NoopSanitizer,
     runtime::worker::{Worker, WorkerConfig},
 };
 use std::{future::Future, pin::Pin, sync::Arc, time::Duration};
@@ -122,4 +123,57 @@ async fn external_cancellation_is_observed_before_saving_result() {
     };
     let (report, ()) = tokio::join!(w.run_once(receiver), cancel);
     assert_eq!(report.unwrap().unwrap().status, TaskStatus::Cancelled);
+}
+
+#[tokio::test]
+async fn permanent_failure_skips_retry_budget() {
+    // 非法输出是永久失败：不进 retry_scheduled，直接终态 failed。
+    let dir = tempfile::tempdir().unwrap();
+    let store: Arc<dyn TaskStore> =
+        Arc::new(SqliteTaskStore::open(&dir.path().join("state.db")).unwrap());
+    struct BadOutput;
+    impl AgentBackend for BadOutput {
+        fn descriptor(&self) -> BackendDescriptor {
+            BackendDescriptor {
+                id: "codex".into(),
+                model: None,
+                contracts: vec![RunContract::AnalysisV1],
+                supports_resume: false,
+            }
+        }
+        fn run(
+            &self,
+            _request: AgentRequest,
+        ) -> Pin<Box<dyn Future<Output = anyhow::Result<AgentOutput>> + Send + '_>> {
+            Box::pin(async {
+                Err(ru41::domain::error::Ru41Error::InvalidOutput("not json".into()).into())
+            })
+        }
+    }
+    let mut backends = BackendRegistry::default();
+    backends.register(BadOutput).unwrap();
+    let mut worker = Worker {
+        store: store.clone(),
+        backends: Arc::new(backends),
+        sanitizer: Arc::new(NoopSanitizer),
+        config: WorkerConfig {
+            worker_id: "test".into(),
+            runs_dir: dir.path().join("runs"),
+            timeout: Duration::from_secs(2),
+            lease_secs: 60,
+            retry_delay_secs: 10,
+        },
+    };
+    store.enqueue("event", "hello").unwrap();
+    let (_sender, receiver) = watch::channel(false);
+    let report = worker.run_once(receiver).await.unwrap().unwrap();
+    assert_eq!(report.status, TaskStatus::Failed);
+    let task = store.get(report.task_id).unwrap().unwrap();
+    assert_eq!(task.status, TaskStatus::Failed);
+    assert!(
+        task.last_error
+            .as_deref()
+            .unwrap()
+            .contains("invalid agent output")
+    );
 }

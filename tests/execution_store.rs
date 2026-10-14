@@ -75,7 +75,7 @@ fn expired_owner_is_fenced_and_recovery_keeps_history() {
         summary: "done".into(),
     };
     assert!(!a.succeed(&old, &result, None, 112).unwrap());
-    assert!(!a.fail(&old, "late failure", 112, 10, false).unwrap());
+    assert!(!a.fail(&old, "late failure", 112, 10, false, true).unwrap());
     assert!(b.succeed(&new, &result, Some("thread"), 112).unwrap());
     let attempts = b.attempts(new.task.id).unwrap();
     assert_eq!(attempts.len(), 2);
@@ -133,7 +133,9 @@ fn retry_delay_budget_and_manual_retry_preserve_attempts() {
     for i in 0..3 {
         let now = 100 + i * 20;
         let claim = store.claim("worker", now, 30).unwrap().unwrap();
-        store.fail(&claim, "offline", now + 1, 10, false).unwrap();
+        store
+            .fail(&claim, "offline", now + 1, 10, false, true)
+            .unwrap();
         assert!(store.claim("worker", now + 2, 30).unwrap().is_none());
     }
     assert_eq!(store.get(id).unwrap().unwrap().status, TaskStatus::Failed);

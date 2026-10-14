@@ -1,5 +1,8 @@
 use crate::{
-    domain::{AgentResult, Claim, RunContract, TaskStatus},
+    domain::{
+        error::{FailureKind, Ru41Error, classify},
+        {AgentResult, Claim, RunContract, TaskStatus},
+    },
     ports::agent::{AgentBackend, AgentOutput, AgentRequest, BackendRegistry},
     ports::storage::TaskStore,
     privacy::Sanitizer,
@@ -89,7 +92,7 @@ impl Worker {
             // 认领按注册底座过滤，正常不会走到这里；防御性记为失败。
             Err(error) => {
                 self.store
-                    .fail(&claim, &format!("{error:#}"), now(), 86400, false)?;
+                    .fail(&claim, &format!("{error:#}"), now(), 86400, false, false)?;
                 let status = self
                     .store
                     .get(claim.task.id)?
@@ -131,11 +134,23 @@ impl Worker {
 
         if let Err(error) = result {
             let interrupted = *shutdown.borrow();
+            // 永久失败不消耗重试预算；未知错误默认瞬态。
+            let kind = classify(&error);
             let multiplier = 1_i64 << (claim.task.attempt_count - 1).clamp(0, 10);
             let delay = (self.config.retry_delay_secs * multiplier).min(86400);
+            eprintln!(
+                "[worker] task {} attempt {} failed ({kind:?}): {error:#}",
+                claim.task.id, claim.attempt_id
+            );
             // fenced 写入：已取消或转交的任务不会在这里被覆盖。
-            self.store
-                .fail(&claim, &format!("{error:#}"), now(), delay, interrupted)?;
+            self.store.fail(
+                &claim,
+                &format!("{error:#}"),
+                now(),
+                delay,
+                interrupted,
+                kind == FailureKind::Transient,
+            )?;
         }
         let status = self
             .store
@@ -197,7 +212,7 @@ impl Worker {
             tokio::select! {
                 biased;
                 _ = shutdown.changed() => anyhow::bail!("worker shutting down"),
-                _ = &mut timeout => anyhow::bail!("Agent execution timed out"),
+                _ = &mut timeout => return Err(Ru41Error::Timeout.into()),
                 _ = poll.tick() => {
                     ensure!(!*shutdown.borrow(), "worker shutting down");
                     ensure!(self.store.heartbeat(claim, now(), self.config.lease_secs)?, "task cancelled or lease lost");

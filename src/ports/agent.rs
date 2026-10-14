@@ -3,7 +3,7 @@ use anyhow::{Result, ensure};
 use serde::Serialize;
 use std::{collections::BTreeMap, future::Future, path::PathBuf, pin::Pin, sync::Arc};
 
-#[derive(Clone, Debug, Serialize)]
+#[derive(Clone, Debug, Serialize, schemars::JsonSchema)]
 pub struct BackendDescriptor {
     /// 稳定的路由键，与底座内部选用的模型无关。
     pub id: String,

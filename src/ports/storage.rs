@@ -59,6 +59,7 @@ pub trait TaskStore: Send + Sync {
         session: Option<&str>,
         now: i64,
     ) -> Result<bool>;
+    /// 终态写入失败记录；`retryable=false` 时跳过重试预算直接 failed。
     fn fail(
         &self,
         claim: &Claim,
@@ -66,6 +67,7 @@ pub trait TaskStore: Send + Sync {
         now: i64,
         delay_secs: i64,
         interrupted: bool,
+        retryable: bool,
     ) -> Result<bool>;
 
     fn enqueue(&self, request_key: &str, prompt: &str) -> Result<EnqueueResult> {
@@ -174,7 +176,8 @@ impl<T: TaskStore + ?Sized> TaskStore for Arc<T> {
         now: i64,
         delay_secs: i64,
         interrupted: bool,
+        retryable: bool,
     ) -> Result<bool> {
-        (**self).fail(claim, error, now, delay_secs, interrupted)
+        (**self).fail(claim, error, now, delay_secs, interrupted, retryable)
     }
 }

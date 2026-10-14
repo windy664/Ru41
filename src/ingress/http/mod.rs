@@ -100,14 +100,14 @@ async fn blocking<T: Send + 'static>(
             ApiError(StatusCode::INTERNAL_SERVER_ERROR, "internal_error")
         })
 }
-#[derive(Deserialize)]
+#[derive(Deserialize, schemars::JsonSchema)]
 #[serde(deny_unknown_fields)]
 struct CreateTask {
     key: String,
     prompt: String,
     backend: String,
 }
-#[derive(Serialize)]
+#[derive(Serialize, schemars::JsonSchema)]
 struct TaskDto {
     id: i64,
     backend: String,
@@ -244,9 +244,91 @@ async fn events(
     });
     Sse::new(stream).keep_alive(KeepAlive::default())
 }
+/// OpenAPI 契约：schema 由 schemars 从 DTO 类型生成（单一事实来源），
+/// paths 在此集中维护。
 async fn openapi() -> Json<Value> {
-    Json(
-        serde_json::from_str(include_str!("../../../docs/openapi.json"))
-            .expect("embedded OpenAPI validated by tests"),
-    )
+    Json(openapi_spec())
+}
+
+fn openapi_spec() -> Value {
+    use schemars::schema_for;
+    let err = json!({"type": "object", "required": ["error"], "properties": {"error": {"type": "string"}}});
+    let task_array = json!({"type": "array", "items": {"$ref": "#/components/schemas/Task"}});
+    json!({
+        "openapi": "3.1.0",
+        "info": {
+            "title": "Ru41 API",
+            "version": "0.3.0",
+            "description": "Ru41 个人自动化底座的 HTTP API。与 CLI、QQ 网关共用同一套应用服务与存储；任务由独立 worker 进程执行。"
+        },
+        "security": [{"bearerAuth": []}],
+        "components": {
+            "securitySchemes": {"bearerAuth": {"type": "http", "scheme": "bearer",
+                "description": "环境变量 RU41_API_TOKEN 或配置 [api].token（至少 24 字节）"}},
+            "schemas": {
+                "Error": err,
+                "Task": schema_for!(TaskDto),
+                "TaskStatus": schema_for!(crate::domain::TaskStatus),
+                "CreateTaskRequest": schema_for!(CreateTask),
+                "Backend": schema_for!(crate::ports::agent::BackendDescriptor),
+                "Record": schema_for!(crate::domain::records::Document),
+                "Interaction": schema_for!(crate::domain::records::Interaction)
+            }
+        },
+        "paths": {
+            "/tasks": {
+                "get": {"summary": "列出最近任务", "parameters": [
+                    {"name": "limit", "in": "query", "schema": {"type": "integer", "default": 20, "minimum": 1, "maximum": 1000}}],
+                    "responses": {"200": {"description": "任务列表（id 降序）", "content": {"application/json": {"schema": task_array}}}}},
+                "post": {"summary": "提交任务（幂等）",
+                    "requestBody": {"required": true, "content": {"application/json": {"schema": {"$ref": "#/components/schemas/CreateTaskRequest"}}}},
+                    "responses": {"201": {"description": "已创建", "content": {"application/json": {"schema": {"$ref": "#/components/schemas/Task"}}}},
+                                  "200": {"description": "幂等命中既有任务", "content": {"application/json": {"schema": {"$ref": "#/components/schemas/Task"}}}},
+                                  "400": {"description": "输入或底座非法"}, "401": {"description": "未认证"}}}
+            },
+            "/tasks/{id}": {
+                "get": {"summary": "查询单个任务",
+                    "parameters": [{"name": "id", "in": "path", "required": true, "schema": {"type": "integer", "format": "int64"}}],
+                    "responses": {"200": {"description": "任务", "content": {"application/json": {"schema": {"$ref": "#/components/schemas/Task"}}}},
+                                  "404": {"description": "不存在"}, "401": {"description": "未认证"}}}
+            },
+            "/tasks/{id}/cancel": {
+                "post": {"summary": "取消任务（重复取消安全）",
+                    "parameters": [{"name": "id", "in": "path", "required": true, "schema": {"type": "integer", "format": "int64"}}],
+                    "responses": {"200": {"description": "取消后的任务", "content": {"application/json": {"schema": {"$ref": "#/components/schemas/Task"}}}}, "401": {"description": "未认证"}}}
+            },
+            "/tasks/{id}/retry": {
+                "post": {"summary": "手动重试失败任务（追加三次预算）",
+                    "parameters": [{"name": "id", "in": "path", "required": true, "schema": {"type": "integer", "format": "int64"}}],
+                    "responses": {"200": {"description": "重试后的任务", "content": {"application/json": {"schema": {"$ref": "#/components/schemas/Task"}}}}, "401": {"description": "未认证"}}}
+            },
+            "/backends": {
+                "get": {"summary": "已注册的 Agent 底座及能力",
+                    "responses": {"200": {"description": "底座列表", "content": {"application/json": {"schema": {"type": "array", "items": {"$ref": "#/components/schemas/Backend"}}}}}, "401": {"description": "未认证"}}}
+            },
+            "/runs": {
+                "get": {"summary": "最近的 AgentRun 记录",
+                    "responses": {"200": {"description": "运行记录", "content": {"application/json": {"schema": {"type": "array", "items": {"$ref": "#/components/schemas/Record"}}}}}, "401": {"description": "未认证"}}}
+            },
+            "/interactions": {
+                "get": {"summary": "交互请求记录（含 pending 待回复）",
+                    "responses": {"200": {"description": "交互列表", "content": {"application/json": {"schema": {"type": "array", "items": {"$ref": "#/components/schemas/Interaction"}}}}}, "401": {"description": "未认证"}}}
+            },
+            "/interactions/{id}/reply": {
+                "post": {"summary": "回复交互请求（审批决定等）",
+                    "description": "回复必须是该交互 options 之一；请求过期、已回答、运行不活跃时返回 409。",
+                    "parameters": [{"name": "id", "in": "path", "required": true, "schema": {"type": "string"}}],
+                    "requestBody": {"required": true, "content": {"application/json": {"schema": {"description": "交互允许的选项之一，如 {\"decision\":\"accept\"}"}}}},
+                    "responses": {"204": {"description": "已记录"}, "409": {"description": "无效或过期的交互"}, "401": {"description": "未认证"}}}
+            },
+            "/events": {
+                "get": {"summary": "SSE 事件流（任务与交互快照）",
+                    "description": "每秒推送 snapshot 事件，内容为 {tasks:[Task], interactions:[Record]}。",
+                    "responses": {"200": {"description": "text/event-stream", "content": {"text/event-stream": {"schema": {"type": "string"}}}}}}
+            },
+            "/openapi.json": {
+                "get": {"summary": "本规范", "security": [], "responses": {"200": {"description": "OpenAPI 文档"}}}
+            }
+        }
+    })
 }

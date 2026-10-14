@@ -1,9 +1,9 @@
 use crate::{
-    domain::{AgentResult, RunContract, records::Interaction},
+    domain::{AgentResult, RunContract, error::Ru41Error, records::Interaction},
     ports::agent::{AgentBackend, AgentOutput, AgentRequest, BackendDescriptor},
     runtime::worker::now,
 };
-use anyhow::{Context, Result, bail, ensure};
+use anyhow::{Context, Result, ensure};
 use serde_json::{Value, json};
 use std::{future::Future, path::PathBuf, pin::Pin, process::Stdio};
 use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
@@ -61,7 +61,9 @@ impl CodexSession {
             ensure!(line.len() <= 2 * 1024 * 1024, "oversized app-server frame");
             let frame: Value = serde_json::from_str(&line)?;
             if frame.get("error").is_some() {
-                bail!("Codex app-server request failed");
+                return Err(
+                    Ru41Error::AgentProcess("Codex app-server request failed".into()).into(),
+                );
             }
             match frame.get("id").and_then(Value::as_u64) {
                 Some(1) if frame.get("method").is_none() => {
@@ -135,7 +137,7 @@ impl CodexSession {
                 });
             }
         }
-        bail!("Codex app-server ended before turn completion")
+        Err(Ru41Error::AgentProcess("Codex app-server ended before turn completion".into()).into())
     }
 }
 struct Group(Option<u32>);
