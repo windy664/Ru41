@@ -42,6 +42,7 @@ fn worker(dir: &std::path::Path, delay: Duration, summary: &'static str) -> Work
     Worker {
         store: Arc::new(SqliteTaskStore::open(&dir.join("state.db")).unwrap()),
         agent: FakeAgent { delay, summary },
+        sanitizer: Arc::new(ru41::app::sanitize::RandomSanitizer::default()),
         config: WorkerConfig {
             worker_id: "test".into(),
             runs_dir: dir.join("runs"),

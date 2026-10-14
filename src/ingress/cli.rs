@@ -36,6 +36,9 @@ pub enum Command {
         codex_bin: PathBuf,
         #[arg(long)]
         model: Option<String>,
+        /// 关闭 Agent 调用前的信息脱敏（调试用）。
+        #[arg(long)]
+        no_sanitize: bool,
         #[arg(long, default_value_t = 300, value_parser = clap::value_parser!(u64).range(1..=86400))]
         timeout_secs: u64,
     },

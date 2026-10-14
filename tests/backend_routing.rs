@@ -67,6 +67,7 @@ async fn two_backends_share_worker_but_never_take_each_others_tasks() {
         let mut worker = Worker {
             store: Arc::new(SqliteTaskStore::open(&path).unwrap()),
             agent: registry.get(backend).unwrap(),
+            sanitizer: Arc::new(ru41::app::sanitize::RandomSanitizer::default()),
             config: WorkerConfig {
                 worker_id: "shared-worker".into(),
                 runs_dir: dir.path().join("runs"),

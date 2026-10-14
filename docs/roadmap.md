@@ -10,6 +10,7 @@
 - [x] 数据库 v1/v2 到 v3 的迁移
 - [x] TaskStore 存储抽象，SQLite 为默认实现，PostgreSQL 适配器（`--store postgres`，同步 `postgres` crate 驱动）
 - [x] 任务终态通知路由（notify_channel/target/msg_id/notified_at）与 QQ 官方机器人消息网关（收消息幂等入队、终态被动回复）
+- [x] Agent 调用前信息脱敏管线（随机同类假数据替换 + 结果回填，映射表仅存本地尝试目录）
 - [x] 自动行为测试及一次真实 Codex 分析任务验证
 
 ## 核心后续

@@ -1,9 +1,10 @@
 use crate::{
     app::{
-        agent_service::{AgentBackend, AgentRequest},
+        agent_service::{AgentBackend, AgentOutput, AgentRequest},
+        sanitize::Sanitizer,
         store::TaskStore,
     },
-    domain::{Claim, RunContract, TaskStatus},
+    domain::{AgentResult, Claim, RunContract, TaskStatus},
 };
 use anyhow::{Context, Result, ensure};
 use serde::Serialize;
@@ -48,6 +49,7 @@ pub struct WorkReport {
 pub struct Worker<A> {
     pub store: Arc<dyn TaskStore>,
     pub agent: A,
+    pub sanitizer: Arc<dyn Sanitizer>,
     pub config: WorkerConfig,
 }
 
@@ -114,8 +116,21 @@ impl<A: AgentBackend> Worker<A> {
             .keep();
         self.store
             .attach_run(claim, &run_dir.to_string_lossy(), now())?;
+        // 脱敏在 Agent 边界完成：映射表只写入本地尝试目录（即审计记录）。
+        let (prompt, mapping) = self.sanitizer.sanitize(&claim.task.prompt);
+        if !mapping.is_empty() {
+            std::fs::write(
+                run_dir.join("mapping.json"),
+                serde_json::to_string_pretty(&mapping)?,
+            )?;
+            eprintln!(
+                "[sanitize] task {} masked rules: {:?}",
+                claim.task.id,
+                mapping.rule_counts()
+            );
+        }
         let request = AgentRequest {
-            prompt: claim.task.prompt.clone(),
+            prompt,
             run_dir,
             contract: claim.task.contract,
         };
@@ -136,6 +151,13 @@ impl<A: AgentBackend> Worker<A> {
                 }
                 result = &mut execution => {
                     let output = result?;
+                    // 回填真值后再校验落库，库里与渠道通知都是真实内容。
+                    let output = AgentOutput {
+                        result: AgentResult {
+                            summary: self.sanitizer.restore(&output.result.summary, &mapping),
+                        },
+                        session_id: output.session_id,
+                    };
                     output.result.validate().map_err(anyhow::Error::msg)?;
                     ensure!(self.store.succeed(claim, &output.result, output.session_id.as_deref(), now())?, "task cancelled or lease lost before commit");
                     return Ok(());

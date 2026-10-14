@@ -7,6 +7,7 @@ use ru41::{
     },
     app::{
         agent_service::BackendRegistry,
+        sanitize::{NoopSanitizer, RandomSanitizer, Sanitizer},
         store::TaskStore,
         task_service::TaskService,
         worker::{Worker, WorkerConfig},
@@ -40,6 +41,7 @@ async fn main() -> Result<()> {
             codex_bin,
             model,
             timeout_secs,
+            no_sanitize,
         } => {
             // 在切换子进程工作目录前，先解析显式的相对可执行路径。
             let executable = if codex_bin.components().count() > 1 {
@@ -48,9 +50,15 @@ async fn main() -> Result<()> {
                 codex_bin
             };
             let backends = registry(codex::CodexAgent { executable, model })?;
+            let sanitizer: Arc<dyn Sanitizer> = if no_sanitize {
+                Arc::new(NoopSanitizer)
+            } else {
+                Arc::new(RandomSanitizer::default())
+            };
             let mut worker = Worker {
                 store: open_store(&store_config)?,
                 agent: backends.get(&backend)?,
+                sanitizer,
                 config: WorkerConfig {
                     worker_id: format!("worker-{}", std::process::id()),
                     runs_dir,
