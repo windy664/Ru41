@@ -257,3 +257,76 @@ async fn openapi_references_resolve_and_match_authenticated_record_routes() {
         );
     }
 }
+
+#[tokio::test]
+async fn consumer_inspection_and_explicit_retry_are_authenticated() {
+    use ru41::{
+        domain::consumers::{ConsumerSpec, DeliveryFailure},
+        ports::consumers::ConsumerStore,
+    };
+    let (app, store) = setup();
+    store.enqueue("consume", "private").unwrap();
+    store
+        .register_consumer(&ConsumerSpec {
+            name: "test.consumer".into(),
+            start_after: 0,
+            max_attempts: 1,
+        })
+        .unwrap();
+    let delivery = store
+        .claim_event("test.consumer", 100, 30)
+        .unwrap()
+        .unwrap();
+    store
+        .fail_event(&delivery, 101, 110, DeliveryFailure::Handler)
+        .unwrap();
+    let (status, body) = get(&app, "/api/v1/consumers/test.consumer").await;
+    assert_eq!(status, StatusCode::OK);
+    let state: serde_json::Value = serde_json::from_str(&body).unwrap();
+    assert_eq!(state["blocked"], true);
+    assert_eq!(state["cursor"], 0);
+    assert_eq!(
+        get(&app, "/api/v1/consumers/missing").await.0,
+        StatusCode::NOT_FOUND
+    );
+    for path in [
+        "/api/v1/consumers/test.consumer",
+        "/api/v1/consumers/test.consumer/retry",
+    ] {
+        let response = app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .method(if path.ends_with("retry") {
+                        "POST"
+                    } else {
+                        "GET"
+                    })
+                    .uri(path)
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::UNAUTHORIZED);
+    }
+    for expected in [StatusCode::NO_CONTENT, StatusCode::CONFLICT] {
+        let response = app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri("/api/v1/consumers/test.consumer/retry")
+                    .header(header::AUTHORIZATION, "Bearer test-token-0123456789abcdef")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(response.status(), expected);
+    }
+    let state = store.consumer("test.consumer").unwrap().unwrap();
+    assert!(!state.blocked);
+    assert_eq!(state.cursor, 0);
+    assert_eq!(state.active_event_id, Some(delivery.event.id));
+}

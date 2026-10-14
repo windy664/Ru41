@@ -20,7 +20,7 @@ fn store() -> Option<PostgresTaskStore> {
     };
     let mut client = postgres::Client::connect(&url, postgres::NoTls).unwrap();
     client
-        .batch_execute("DROP TABLE IF EXISTS schema_migrations, attempts, tasks, records, events, event_clock CASCADE")
+        .batch_execute("DROP TABLE IF EXISTS schema_migrations, attempts, tasks, records, events, event_clock, event_consumers CASCADE")
         .unwrap();
     drop(client);
     Some(PostgresTaskStore::open(&url).unwrap())
@@ -309,4 +309,49 @@ fn event_cursor_follows_commit_order_and_rollback() {
     tx.rollback().unwrap();
     assert_eq!(store.event_cursor().unwrap(), before);
     assert!(store.events_after(before, 100).unwrap().is_empty());
+}
+
+#[path = "common/consumer_contract.rs"]
+mod consumer_contract;
+
+#[test]
+fn postgres_consumer_contract() {
+    let _guard = lock();
+    let Some(store) = store() else { return };
+    consumer_contract::assert_consumer_contract(&store);
+}
+
+#[test]
+fn concurrent_consumers_share_one_lease() {
+    use ru41::{domain::consumers::ConsumerSpec, ports::consumers::ConsumerStore};
+    let _guard = lock();
+    let Some(store) = store() else { return };
+    store.enqueue("event", "x").unwrap();
+    store
+        .register_consumer(&ConsumerSpec {
+            name: "shared".into(),
+            start_after: 0,
+            max_attempts: 3,
+        })
+        .unwrap();
+    let url = std::env::var("RU41_TEST_PG_URL").unwrap();
+    let barrier = Arc::new(Barrier::new(4));
+    let threads: Vec<_> = (0..4)
+        .map(|_| {
+            let url = url.clone();
+            let barrier = barrier.clone();
+            std::thread::spawn(move || {
+                let store = PostgresTaskStore::open(&url).unwrap();
+                barrier.wait();
+                store.claim_event("shared", 100, 30).unwrap()
+            })
+        })
+        .collect();
+    assert_eq!(
+        threads
+            .into_iter()
+            .filter_map(|t| t.join().unwrap())
+            .count(),
+        1
+    );
 }

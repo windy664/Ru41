@@ -4,7 +4,7 @@ use std::sync::Arc;
 
 /// 任务与尝试的持久化边界；SQLite 是默认适配器。
 /// 实现必须原子地执行 fencing 与租约规则；任务和审核状态变化的事件也必须同事务写入。
-pub trait TaskStore: super::events::EventStore {
+pub trait TaskStore: super::consumers::ConsumerStore {
     /// 在同一事务中校验交互、所属运行、当前 attempt 与租约，并记录回复。
     /// 不存在、过期、已回答或失效运行返回 false；存储故障返回错误。
     fn reply_interaction(&self, id: &str, response: &serde_json::Value, now: i64) -> Result<bool>;

@@ -1,3 +1,4 @@
+mod consumers;
 use crate::{
     domain::{AgentResult, Attempt, Claim, EnqueueResult, RunContract, Task, TaskStatus},
     ports::storage::TaskStore,
@@ -50,8 +51,8 @@ impl PostgresTaskStore {
                 tx.batch_execute(include_str!("../../../migrations/postgres/001_tasks.sql"))?;
                 tx.execute("INSERT INTO schema_migrations(version) VALUES (1)", &[])?;
             }
-            Some(1..=4) => {}
-            Some(other) => bail!("unsupported database version {other}; expected 4"),
+            Some(1..=5) => {}
+            Some(other) => bail!("unsupported database version {other}; expected 5"),
         }
         if version.unwrap_or(0) < 2 {
             tx.batch_execute(include_str!("../../../migrations/postgres/002_notify.sql"))?;
@@ -64,6 +65,12 @@ impl PostgresTaskStore {
         if version.unwrap_or(0) < 4 {
             tx.batch_execute(include_str!("../../../migrations/postgres/004_events.sql"))?;
             tx.execute("INSERT INTO schema_migrations(version) VALUES (4)", &[])?;
+        }
+        if version.unwrap_or(0) < 5 {
+            tx.batch_execute(include_str!(
+                "../../../migrations/postgres/005_consumers.sql"
+            ))?;
+            tx.execute("INSERT INTO schema_migrations(version) VALUES (5)", &[])?;
         }
         tx.commit()?;
         Ok(Self {

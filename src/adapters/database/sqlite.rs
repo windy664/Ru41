@@ -1,3 +1,4 @@
+mod consumers;
 use crate::{
     domain::{AgentResult, Attempt, Claim, EnqueueResult, RunContract, Task},
     ports::storage::TaskStore,
@@ -32,8 +33,8 @@ impl SqliteTaskStore {
                 tx.execute_batch(include_str!("../../../migrations/002_execution.sql"))?;
             }
             1 => tx.execute_batch(include_str!("../../../migrations/002_execution.sql"))?,
-            2..=6 => {}
-            other => bail!("unsupported database version {other}; expected 6"),
+            2..=7 => {}
+            other => bail!("unsupported database version {other}; expected 7"),
         }
         if version < 3 {
             tx.execute_batch(include_str!("../../../migrations/003_backends.sql"))?;
@@ -46,6 +47,9 @@ impl SqliteTaskStore {
         }
         if version < 6 {
             tx.execute_batch(include_str!("../../../migrations/006_events.sql"))?;
+        }
+        if version < 7 {
+            tx.execute_batch(include_str!("../../../migrations/007_consumers.sql"))?;
         }
         tx.commit()?;
         Ok(Self {

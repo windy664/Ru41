@@ -24,7 +24,8 @@ pub(super) fn openapi_spec() -> Value {
                 "Backend": component_schema::<crate::ports::agent::BackendDescriptor>(),
                 "Record": component_schema::<crate::domain::records::Document>(),
                 "Interaction": component_schema::<crate::domain::records::Interaction>(),
-                "DomainEvent": component_schema::<crate::domain::events::DomainEvent>()
+                "DomainEvent": component_schema::<crate::domain::events::DomainEvent>(),
+                "ConsumerState": component_schema::<crate::domain::consumers::ConsumerState>()
             }
         },
         "paths": {
@@ -72,6 +73,17 @@ pub(super) fn openapi_spec() -> Value {
                     "parameters": [{"name": "id", "in": "path", "required": true, "schema": {"type": "string"}}],
                     "requestBody": {"required": true, "content": {"application/json": {"schema": {"description": "交互允许的选项之一，如 {\"decision\":\"accept\"}"}}}},
                     "responses": {"204": {"description": "已记录"}, "409": {"description": "无效或过期的交互"}, "401": {"description": "未认证"}}}
+            },
+            "/consumers/{name}": {
+                "get": {"summary":"查看持久消费者进度、租约与失败状态",
+                    "parameters":[{"name":"name","in":"path","required":true,"schema":{"type":"string"}}],
+                    "responses":{"200":{"description":"消费者状态","content":{"application/json":{"schema":{"$ref":"#/components/schemas/ConsumerState"}}}},"404":{"description":"消费者不存在"}}}
+            },
+            "/consumers/{name}/retry": {
+                "post": {"summary":"恢复重试耗尽的消费者",
+                    "description":"保留当前事件与游标，重新授予尝试预算；不跳过事件。",
+                    "parameters":[{"name":"name","in":"path","required":true,"schema":{"type":"string"}}],
+                    "responses":{"204":{"description":"已恢复"},"409":{"description":"不存在或尚未阻塞"}}}
             },
             "/events": {
                 "get": {"summary": "SSE 持久化业务事件流",

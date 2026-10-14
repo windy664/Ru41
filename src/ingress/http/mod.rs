@@ -1,3 +1,4 @@
+mod consumers;
 mod events;
 use events::events;
 mod openapi;
@@ -57,6 +58,11 @@ pub fn router(state: ApiState) -> Router {
         .route("/api/v1/interactions", get(interactions))
         .route("/api/v1/interactions/{id}/reply", post(reply))
         .route("/api/v1/events", get(events))
+        .route("/api/v1/consumers/{name}", get(consumers::get_consumer))
+        .route(
+            "/api/v1/consumers/{name}/retry",
+            post(consumers::retry_consumer),
+        )
         .route("/api/v1/openapi.json", get(openapi))
         .layer(DefaultBodyLimit::max(128 * 1024))
         .layer(middleware::from_fn_with_state(state.clone(), authenticate))
