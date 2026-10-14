@@ -8,6 +8,7 @@ pub struct InteractionService {
     pub store: Arc<dyn TaskStore>,
 }
 impl InteractionService {
+    /// 记录用户对交互的回复；违反任一裁决规则时返回错误且不落库。
     pub fn reply(&self, id: &str, response: Value) -> Result<()> {
         let doc = self
             .store
@@ -47,6 +48,8 @@ impl InteractionService {
         );
         Ok(())
     }
+    /// 供适配器侧调用：持久化交互请求并轮询等待回复；
+    /// 过期时把状态置为 expired 并返回错误，绝不无限阻塞。
     pub async fn request(&self, mut request: Interaction) -> Result<Value> {
         ensure!(
             self.store.put_document(

@@ -2,136 +2,573 @@
   "openapi": "3.1.0",
   "info": {
     "title": "Ru41 API",
-    "version": "0.3.0"
+    "version": "0.3.0",
+    "description": "Ru41 个人自动化底座的 HTTP API。与 CLI、QQ 网关共用同一套应用服务与存储；任务由独立 worker 进程执行，本 API 只负责提交、查询与交互回复。"
   },
   "security": [
     {
       "bearerAuth": []
     }
   ],
+  "servers": [
+    {
+      "url": "/api/v1"
+    }
+  ],
   "components": {
     "securitySchemes": {
       "bearerAuth": {
         "type": "http",
-        "scheme": "bearer"
+        "scheme": "bearer",
+        "description": "环境变量 RU41_API_TOKEN 注入的静态令牌（>=24 字节）"
+      }
+    },
+    "schemas": {
+      "Error": {
+        "type": "object",
+        "required": [
+          "error"
+        ],
+        "properties": {
+          "error": {
+            "type": "string"
+          }
+        }
+      },
+      "TaskStatus": {
+        "type": "string",
+        "enum": [
+          "queued",
+          "running",
+          "retry_scheduled",
+          "succeeded",
+          "failed",
+          "cancelled"
+        ]
+      },
+      "Task": {
+        "type": "object",
+        "required": [
+          "id",
+          "backend",
+          "status"
+        ],
+        "properties": {
+          "id": {
+            "type": "integer",
+            "format": "int64"
+          },
+          "backend": {
+            "type": "string",
+            "description": "执行底座标识，如 codex"
+          },
+          "status": {
+            "$ref": "#/components/schemas/TaskStatus"
+          },
+          "summary": {
+            "type": "string",
+            "nullable": true,
+            "description": "终态结果摘要；未完成为 null"
+          }
+        }
+      },
+      "CreateTaskRequest": {
+        "type": "object",
+        "required": [
+          "key",
+          "prompt",
+          "backend"
+        ],
+        "properties": {
+          "key": {
+            "type": "string",
+            "maxLength": 512,
+            "description": "调用方幂等键；同 key 重复提交返回既有任务"
+          },
+          "prompt": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 65536
+          },
+          "backend": {
+            "type": "string",
+            "description": "已注册底座 id，见 GET /backends"
+          }
+        }
+      },
+      "Backend": {
+        "type": "object",
+        "required": [
+          "id",
+          "contracts",
+          "supports_resume"
+        ],
+        "properties": {
+          "id": {
+            "type": "string"
+          },
+          "model": {
+            "type": "string",
+            "nullable": true
+          },
+          "contracts": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            },
+            "description": "支持的运行契约，如 analysis_v1"
+          },
+          "supports_resume": {
+            "type": "boolean"
+          }
+        }
+      },
+      "Record": {
+        "type": "object",
+        "required": [
+          "id",
+          "revision"
+        ],
+        "properties": {
+          "id": {
+            "type": "string"
+          },
+          "revision": {
+            "type": "integer",
+            "format": "int64"
+          }
+        }
+      },
+      "Interaction": {
+        "type": "object",
+        "required": [
+          "id",
+          "run_id",
+          "method",
+          "options",
+          "expires_at",
+          "status"
+        ],
+        "properties": {
+          "id": {
+            "type": "string"
+          },
+          "run_id": {
+            "type": "string",
+            "description": "关联的 AgentRun 记录"
+          },
+          "method": {
+            "type": "string",
+            "description": "底座原生请求方法，如 item/commandExecution/requestApproval"
+          },
+          "detail": {
+            "description": "底座请求原始内容（JSON）"
+          },
+          "options": {
+            "type": "array",
+            "items": {},
+            "description": "允许的回复选项；回复必须与其中一项相等"
+          },
+          "expires_at": {
+            "type": "integer",
+            "format": "int64",
+            "description": "Unix 秒；过期后回复被拒绝"
+          },
+          "status": {
+            "type": "string",
+            "enum": [
+              "pending",
+              "answered",
+              "expired"
+            ]
+          },
+          "response": {
+            "description": "用户回复（已回答时）",
+            "nullable": true
+          }
+        }
+      },
+      "InteractionReply": {
+        "type": "object",
+        "required": [],
+        "description": "必须是 Interaction.options 之一的 JSON 值，如 {\"decision\":\"accept\"}",
+        "additionalProperties": true
       }
     }
   },
   "paths": {
-    "/api/v1/tasks": {
+    "/tasks": {
       "get": {
+        "summary": "列出最近任务",
+        "parameters": [
+          {
+            "name": "limit",
+            "in": "query",
+            "schema": {
+              "type": "integer",
+              "default": 20,
+              "minimum": 1,
+              "maximum": 1000
+            }
+          }
+        ],
         "responses": {
           "200": {
-            "description": "Success"
+            "description": "任务列表（id 降序）",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "array",
+                  "items": {
+                    "$ref": "#/components/schemas/Task"
+                  }
+                }
+              }
+            }
           },
           "401": {
-            "description": "Unauthorized"
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
           }
         }
       },
       "post": {
+        "summary": "提交任务（幂等）",
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/CreateTaskRequest"
+              }
+            }
+          }
+        },
         "responses": {
+          "201": {
+            "description": "已创建",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Task"
+                }
+              }
+            }
+          },
           "200": {
-            "description": "Success"
+            "description": "幂等命中既有任务",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Task"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "输入或底座非法",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
           },
           "401": {
-            "description": "Unauthorized"
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
           }
         }
       }
     },
-    "/api/v1/tasks/{id}": {
+    "/tasks/{id}": {
       "get": {
+        "summary": "查询单个任务",
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "integer",
+              "format": "int64"
+            }
+          }
+        ],
         "responses": {
           "200": {
-            "description": "Success"
+            "description": "任务",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Task"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "不存在",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
           },
           "401": {
-            "description": "Unauthorized"
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
           }
         }
       }
     },
-    "/api/v1/tasks/{id}/cancel": {
+    "/tasks/{id}/cancel": {
       "post": {
+        "summary": "取消任务（重复取消安全）",
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "integer",
+              "format": "int64"
+            }
+          }
+        ],
         "responses": {
           "200": {
-            "description": "Success"
+            "description": "取消后的任务",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Task"
+                }
+              }
+            }
           },
           "401": {
-            "description": "Unauthorized"
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
           }
         }
       }
     },
-    "/api/v1/tasks/{id}/retry": {
+    "/tasks/{id}/retry": {
       "post": {
+        "summary": "手动重试失败任务（追加三次预算）",
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "integer",
+              "format": "int64"
+            }
+          }
+        ],
         "responses": {
           "200": {
-            "description": "Success"
+            "description": "重试后的任务",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Task"
+                }
+              }
+            }
           },
           "401": {
-            "description": "Unauthorized"
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
           }
         }
       }
     },
-    "/api/v1/backends": {
+    "/backends": {
       "get": {
+        "summary": "已注册的 Agent 底座及能力",
         "responses": {
           "200": {
-            "description": "Success"
+            "description": "底座列表",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "array",
+                  "items": {
+                    "$ref": "#/components/schemas/Backend"
+                  }
+                }
+              }
+            }
           },
           "401": {
-            "description": "Unauthorized"
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
           }
         }
       }
     },
-    "/api/v1/runs": {
+    "/runs": {
       "get": {
+        "summary": "最近的 AgentRun 记录",
         "responses": {
           "200": {
-            "description": "Success"
+            "description": "运行记录列表",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Record"
+                }
+              }
+            }
           },
           "401": {
-            "description": "Unauthorized"
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
           }
         }
       }
     },
-    "/api/v1/interactions": {
+    "/interactions": {
       "get": {
+        "summary": "交互请求记录（含 pending 待回复）",
         "responses": {
           "200": {
-            "description": "Success"
+            "description": "交互列表",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Interaction"
+                }
+              }
+            }
           },
           "401": {
-            "description": "Unauthorized"
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
           }
         }
       }
     },
-    "/api/v1/interactions/{id}/reply": {
+    "/interactions/{id}/reply": {
       "post": {
+        "summary": "回复交互请求（审批决定等）",
+        "description": "回复必须是该交互 options 之一；请求过期、已回答、运行不活跃时返回 409。",
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/InteractionReply"
+              }
+            }
+          }
+        },
         "responses": {
-          "200": {
-            "description": "Success"
+          "204": {
+            "description": "已记录"
+          },
+          "409": {
+            "description": "无效或过期的交互",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
           },
           "401": {
-            "description": "Unauthorized"
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
           }
         }
       }
     },
-    "/api/v1/events": {
+    "/events": {
       "get": {
+        "summary": "SSE 事件流（任务与交互快照）",
+        "description": "每秒推送 snapshot 事件，内容为 {tasks:[Task], interactions:[Record]}；连接需保持 Bearer 认证。",
         "responses": {
           "200": {
-            "description": "Success"
-          },
-          "401": {
-            "description": "Unauthorized"
+            "description": "text/event-stream",
+            "content": {
+              "text/event-stream": {
+                "schema": {
+                  "type": "string"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/openapi.json": {
+      "get": {
+        "summary": "本规范",
+        "security": [],
+        "responses": {
+          "200": {
+            "description": "OpenAPI 文档"
           }
         }
       }

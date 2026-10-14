@@ -6,15 +6,19 @@ use anyhow::{Result, ensure};
 use std::sync::Arc;
 
 /// 各入口共享同一套校验与持久化边界。
+/// 任务用例：所有入口（CLI/QQ/HTTP）共享的入队、查询与状态操作边界。
+/// 输入校验集中在这里，渠道不得绕过本服务直写存储。
 pub struct TaskService {
     store: Arc<dyn TaskStore>,
 }
 
 impl TaskService {
+    /// 以给定的存储实现构造服务。
     pub fn new(store: Arc<dyn TaskStore>) -> Self {
         Self { store }
     }
 
+    /// 以默认底座（codex）入队；同 key 重复提交幂等返回既有任务。
     pub fn enqueue(&mut self, request_key: &str, prompt: &str) -> Result<EnqueueResult> {
         self.enqueue_for(request_key, prompt, "codex")
     }
@@ -55,6 +59,7 @@ impl TaskService {
         )
     }
 
+    /// 查询单个任务；不存在时报错。
     pub fn get(&self, id: i64) -> Result<Task> {
         ensure!(id > 0, "task id must be positive");
         self.store
@@ -62,6 +67,7 @@ impl TaskService {
             .ok_or_else(|| anyhow::anyhow!("task not found"))
     }
 
+    /// 按 id 降序列出最近任务。
     pub fn list(&self, limit: u32) -> Result<Vec<Task>> {
         ensure!(
             (1..=1000).contains(&limit),
@@ -70,13 +76,16 @@ impl TaskService {
         self.store.list(limit)
     }
 
+    /// 取消排队或运行中的任务；重复取消安全。
     pub fn cancel(&mut self, id: i64) -> Result<Task> {
         ensure!(id > 0, "task id must be positive");
         self.store.cancel(id)
     }
+    /// 手动重试失败任务，追加三次尝试预算。
     pub fn retry(&mut self, id: i64) -> Result<Task> {
         self.store.retry(id)
     }
+    /// 列出任务的全部执行尝试（含错误与运行目录）。
     pub fn attempts(&self, id: i64) -> Result<Vec<crate::domain::Attempt>> {
         self.store.attempts(id)
     }

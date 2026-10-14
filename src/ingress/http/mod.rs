@@ -19,12 +19,14 @@ use serde_json::{Value, json};
 use std::{convert::Infallible, sync::Arc, time::Duration};
 
 #[derive(Clone)]
+/// HTTP 入口的共享状态：存储、底座注册表与 Bearer 令牌。
 pub struct ApiState {
     pub store: Arc<dyn TaskStore>,
     pub backends: Arc<BackendRegistry>,
     token: Arc<str>,
 }
 impl ApiState {
+    /// 构造 API 状态；令牌至少 24 字节，防弱令牌误配。
     pub fn new(
         store: Arc<dyn TaskStore>,
         backends: Arc<BackendRegistry>,
@@ -41,6 +43,8 @@ impl ApiState {
         })
     }
 }
+/// 构建 `/api/v1` 路由：任务 CRUD、底座、运行、交互回复、SSE、OpenAPI。
+/// 全部经 Bearer 认证；与 CLI/QQ 共用同一应用服务。
 pub fn router(state: ApiState) -> Router {
     Router::new()
         .route("/api/v1/tasks", get(list_tasks).post(create_task))

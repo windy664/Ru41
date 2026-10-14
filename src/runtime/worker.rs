@@ -13,6 +13,7 @@ use std::{
 };
 use tokio::sync::watch;
 
+/// Worker 执行配置：标识、运行目录、超时与租约/重试参数。
 pub struct WorkerConfig {
     pub worker_id: String,
     pub runs_dir: PathBuf,
@@ -38,6 +39,7 @@ impl WorkerConfig {
 }
 
 #[derive(Debug, Serialize)]
+/// 一次任务执行的报告（任务、尝试与终态）。
 pub struct WorkReport {
     pub task_id: i64,
     pub attempt_id: i64,
@@ -218,6 +220,7 @@ impl Worker {
     }
 }
 
+/// 当前 Unix 秒；全库统一用它，避免各处时间源不一致。
 pub fn now() -> i64 {
     SystemTime::now()
         .duration_since(UNIX_EPOCH)
