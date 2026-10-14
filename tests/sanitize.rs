@@ -177,9 +177,13 @@ async fn agent_sees_masked_prompt_and_store_keeps_restored_result() {
     let dir = tempfile::tempdir().unwrap();
     let store = Arc::new(SqliteTaskStore::open(&dir.path().join("state.db")).unwrap());
     let seen = Arc::new(Mutex::new(None));
+    let mut backends = ru41::app::agent_service::BackendRegistry::default();
+    backends
+        .register(CapturingAgent { seen: seen.clone() })
+        .unwrap();
     let mut worker = Worker {
         store: store.clone() as Arc<dyn TaskStore>,
-        agent: CapturingAgent { seen: seen.clone() },
+        backends: Arc::new(backends),
         sanitizer: Arc::new(RandomSanitizer::default()),
         config: WorkerConfig {
             worker_id: "test".into(),

@@ -1,7 +1,9 @@
 use ru41::{
     adapters::database::sqlite::SqliteTaskStore,
     app::{
-        agent_service::{AgentBackend, AgentOutput, AgentRequest, BackendDescriptor},
+        agent_service::{
+            AgentBackend, AgentOutput, AgentRequest, BackendDescriptor, BackendRegistry,
+        },
         store::TaskStore,
         worker::{Worker, WorkerConfig},
     },
@@ -38,10 +40,12 @@ impl AgentBackend for FakeAgent {
         })
     }
 }
-fn worker(dir: &std::path::Path, delay: Duration, summary: &'static str) -> Worker<FakeAgent> {
+fn worker(dir: &std::path::Path, delay: Duration, summary: &'static str) -> Worker {
+    let mut backends = BackendRegistry::default();
+    backends.register(FakeAgent { delay, summary }).unwrap();
     Worker {
         store: Arc::new(SqliteTaskStore::open(&dir.join("state.db")).unwrap()),
-        agent: FakeAgent { delay, summary },
+        backends: Arc::new(backends),
         sanitizer: Arc::new(ru41::app::sanitize::RandomSanitizer::default()),
         config: WorkerConfig {
             worker_id: "test".into(),

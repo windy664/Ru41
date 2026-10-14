@@ -1,6 +1,6 @@
 use crate::{
     app::{
-        agent_service::{AgentBackend, AgentOutput, AgentRequest},
+        agent_service::{AgentBackend, AgentOutput, AgentRequest, BackendRegistry},
         sanitize::Sanitizer,
         store::TaskStore,
     },
@@ -46,14 +46,15 @@ pub struct WorkReport {
     pub status: TaskStatus,
 }
 
-pub struct Worker<A> {
+/// Worker 持有底座注册表，按任务绑定的 backend_id 路由执行。
+pub struct Worker {
     pub store: Arc<dyn TaskStore>,
-    pub agent: A,
+    pub backends: Arc<BackendRegistry>,
     pub sanitizer: Arc<dyn Sanitizer>,
     pub config: WorkerConfig,
 }
 
-impl<A: AgentBackend> Worker<A> {
+impl Worker {
     pub async fn run_once(
         &mut self,
         mut shutdown: watch::Receiver<bool>,
@@ -62,23 +63,46 @@ impl<A: AgentBackend> Worker<A> {
         if *shutdown.borrow() {
             return Ok(None);
         }
-        let backend = self.agent.descriptor();
-        ensure!(
-            backend.contracts.contains(&RunContract::AnalysisV1),
-            "backend does not support analysis_v1"
-        );
-        let Some(claim) = self.store.claim_for(
-            &self.config.worker_id,
-            &backend.id,
-            backend.model.as_deref(),
-            RunContract::AnalysisV1,
-            now(),
-            self.config.lease_secs,
-        )?
-        else {
+        // 依次按各底座的契约认领任务；任务执行时按其 backend_id 取底座。
+        let mut claim = None;
+        for descriptor in self.backends.descriptors() {
+            if !descriptor.contracts.contains(&RunContract::AnalysisV1) {
+                continue;
+            }
+            claim = self.store.claim_for(
+                &self.config.worker_id,
+                &descriptor.id,
+                descriptor.model.as_deref(),
+                RunContract::AnalysisV1,
+                now(),
+                self.config.lease_secs,
+            )?;
+            if claim.is_some() {
+                break;
+            }
+        }
+        let Some(claim) = claim else {
             return Ok(None);
         };
-        let result = self.run_claim(&claim, &mut shutdown).await;
+        let agent = match self.backends.get(&claim.task.backend_id) {
+            Ok(agent) => agent,
+            // 认领按注册底座过滤，正常不会走到这里；防御性记为失败。
+            Err(error) => {
+                self.store
+                    .fail(&claim, &format!("{error:#}"), now(), 86400, false)?;
+                let status = self
+                    .store
+                    .get(claim.task.id)?
+                    .context("task disappeared")?
+                    .status;
+                return Ok(Some(WorkReport {
+                    task_id: claim.task.id,
+                    attempt_id: claim.attempt_id,
+                    status,
+                }));
+            }
+        };
+        let result = self.run_claim(&claim, agent, &mut shutdown).await;
         if let Err(error) = result {
             let interrupted = *shutdown.borrow();
             let multiplier = 1_i64 << (claim.task.attempt_count - 1).clamp(0, 10);
@@ -102,6 +126,7 @@ impl<A: AgentBackend> Worker<A> {
     async fn run_claim(
         &mut self,
         claim: &Claim,
+        agent: Arc<dyn AgentBackend>,
         shutdown: &mut watch::Receiver<bool>,
     ) -> Result<()> {
         std::fs::create_dir_all(&self.config.runs_dir)?;
@@ -134,7 +159,7 @@ impl<A: AgentBackend> Worker<A> {
             run_dir,
             contract: claim.task.contract,
         };
-        let execution = self.agent.run(request);
+        let execution = agent.run(request);
         tokio::pin!(execution);
         let timeout = tokio::time::sleep(self.config.timeout);
         tokio::pin!(timeout);

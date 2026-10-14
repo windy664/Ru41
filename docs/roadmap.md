@@ -11,6 +11,9 @@
 - [x] TaskStore 存储抽象，SQLite 为默认实现，PostgreSQL 适配器（`--store postgres`，同步 `postgres` crate 驱动）
 - [x] 任务终态通知路由（notify_channel/target/msg_id/notified_at）与 QQ 官方机器人消息网关（收消息幂等入队、终态被动回复）
 - [x] Agent 调用前信息脱敏管线（随机同类假数据替换 + 结果回填，映射表仅存本地尝试目录）
+- [x] Worker 按任务 backend_id 路由底座（持有 BackendRegistry，移除 `worker --backend`）
+- [x] TOML 配置体系（`--config`/./ru41.toml/ ~/.config，CLI > 环境变量 > 配置文件 > 默认值）
+- [x] 终态通知 dispatcher 上移至应用层（NotifyChannel trait + NotifyDispatcher，QQ 为首个渠道实现）
 - [x] 自动行为测试及一次真实 Codex 分析任务验证
 
 ## 核心后续

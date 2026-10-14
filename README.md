@@ -80,7 +80,18 @@ cargo run --locked -- qq send --qq-app-id <APP_ID> --qq-app-secret <SECRET> --gr
 
 运行数据默认位于 `.ru41/state.db` 和 `.ru41/runs/`，可以分别通过 `--db`、`--runs-dir` 指定。不要将运行数据放进 Vault。日志包含任务内容及模型输出，需要按私人数据管理；当前没有自动清理策略。
 
-使用 PostgreSQL 作为存储时，通过 `--store postgres --pg-url`（或环境变量 `RU41_PG_URL`）指定连接串，启动时自动执行 `migrations/postgres/` 下的迁移：
+## 配置文件
+
+除 CLI 参数外，也可以用 TOML 配置文件。加载顺序：`--config <路径>` > `./ru41.toml` > `~/.config/ru41/config.toml`；都没有则用内置默认值。同一配置的取值优先级为 **CLI 参数 > 环境变量 > 配置文件 > 默认值**。`ru41.toml` 已在 `.gitignore` 中（密钥不要进 git），样例见 `ru41.example.toml`：
+
+```toml
+[store]        # kind = "sqlite"|"postgres"、path、url
+[worker]       # timeout_secs、runs_dir、sanitize
+[agent.codex]  # bin、model
+[channel.qq]   # app_id、app_secret（建议改用 RU41_QQ_APP_ID / RU41_QQ_APP_SECRET 环境变量）
+```
+
+使用 PostgreSQL 作为存储时，通过 `--store postgres --pg-url`（或环境变量 `RU41_PG_URL`、配置 `store.url`）指定连接串，启动时自动执行 `migrations/postgres/` 下的迁移：
 
 ```bash
 cargo run --locked -- --store postgres --pg-url postgres://user:pass@localhost:5432/ru41 task list
@@ -105,7 +116,7 @@ CLI / QQ 网关 / 后续 Git、定时器与消息入口
        渠道通知（QQ 被动回复）
 ```
 
-任务绑定 `backend_id` 与版本化 `analysis_v1` 契约。Worker 只领取对应底座、兼容契约的任务；失败时不自动换底座。`session_id` 是该底座内部的不透明标识，不能跨底座续接。
+任务绑定 `backend_id` 与版本化 `analysis_v1` 契约。Worker 持有 `BackendRegistry`，按任务绑定的 `backend_id` 路由到对应底座执行；未注册的底座任务留在队列中。`session_id` 是该底座内部的不透明标识，不能跨底座续接。任务终态通知由 `NotifyDispatcher`（`src/app/notify_service.rs`）统一轮询派发：按 `notify_channel` 路由到已注册的 `NotifyChannel` 渠道（当前为 QQ），发送失败不标记、下轮重试；新增渠道只需实现 `NotifyChannel` 并注册。
 
 ```text
 src/

@@ -1,11 +1,20 @@
 pub mod api;
 pub mod gateway;
 
-use crate::{app::store::TaskStore, domain::NotifyRoute};
+use crate::{
+    app::{notify_service::NotifyChannel, store::TaskStore},
+    domain::NotifyRoute,
+};
 use anyhow::{Result, bail};
 use api::QqApiClient;
 use gateway::{GatewayEvent, GatewaySession};
-use std::{collections::HashMap, sync::Arc, time::Duration};
+use std::{
+    collections::HashMap,
+    future::Future,
+    pin::Pin,
+    sync::{Arc, Mutex},
+    time::Duration,
+};
 use tokio::sync::{mpsc, watch};
 
 /// notify_target 的前缀：区分群会话与单聊。
@@ -17,7 +26,57 @@ pub fn msg_request_key(msg_id: &str) -> String {
     format!("qq:msg:{msg_id}")
 }
 
-/// QQ 网关：收消息入队任务，任务到终态后被动回复原会话。
+/// QQ 通知渠道：把终态结果作为被动回复发回原会话。
+pub struct QqNotifier {
+    api: Arc<QqApiClient>,
+    /// 同一 msg_id 多条回复需 msg_seq 自增。
+    seq_by_msg: Mutex<HashMap<String, i64>>,
+}
+
+impl QqNotifier {
+    pub fn new(api: Arc<QqApiClient>) -> Self {
+        Self {
+            api,
+            seq_by_msg: Mutex::new(HashMap::new()),
+        }
+    }
+}
+
+impl NotifyChannel for QqNotifier {
+    fn channel_id(&self) -> &str {
+        "qq"
+    }
+
+    fn send<'a>(
+        &'a self,
+        target: &'a str,
+        msg_id: Option<&'a str>,
+        text: &'a str,
+    ) -> Pin<Box<dyn Future<Output = Result<()>> + Send + 'a>> {
+        Box::pin(async move {
+            let key = msg_id.unwrap_or_default();
+            let seq = {
+                let mut seqs = self
+                    .seq_by_msg
+                    .lock()
+                    .map_err(|_| anyhow::anyhow!("qq seq lock poisoned"))?;
+                let seq = seqs.get(key).copied().unwrap_or(0) + 1;
+                seqs.insert(key.to_owned(), seq);
+                seq
+            };
+            if let Some(group) = target.strip_prefix(TARGET_GROUP_PREFIX) {
+                self.api.send_group_text(group, text, msg_id, seq).await?;
+            } else if let Some(user) = target.strip_prefix(TARGET_C2C_PREFIX) {
+                self.api.send_c2c_text(user, text, msg_id, seq).await?;
+            } else {
+                bail!("unknown qq notify target: {target}");
+            }
+            Ok(())
+        })
+    }
+}
+
+/// QQ 网关：收消息幂等入队任务；终态回复由 app::notify_service 的 dispatcher 统一负责。
 pub struct QqBot {
     pub api: Arc<QqApiClient>,
     pub store: Arc<dyn TaskStore>,
@@ -25,11 +84,10 @@ pub struct QqBot {
 }
 
 impl QqBot {
-    /// 长驻运行：gateway 事件循环 + 通知 dispatcher，收到 shutdown 后优雅退出。
+    /// 长驻运行 gateway 事件循环，收到 shutdown 后优雅退出。
     pub async fn run(&self, mut shutdown: watch::Receiver<bool>) -> Result<()> {
         let (events, mut receiver) = mpsc::channel::<GatewayEvent>(256);
         let gateway = self.gateway_loop(events, shutdown.clone());
-        let dispatcher = self.dispatcher_loop(shutdown.clone());
         let ingest = async {
             while let Some(event) = receiver.recv().await {
                 if let Err(error) = self.ingest(&event) {
@@ -43,7 +101,6 @@ impl QqBot {
             biased;
             _ = shutdown.changed() => {}
             result = gateway => result?,
-            result = dispatcher => result?,
             result = ingest => result?,
         }
         Ok(())
@@ -77,56 +134,6 @@ impl QqBot {
                         _ = shutdown.changed() => return Ok(()),
                         _ = tokio::time::sleep(delay) => {}
                     }
-                }
-            }
-        }
-    }
-
-    /// 轮询已到终态但未通知的任务，发被动回复并标记。
-    async fn dispatcher_loop(&self, mut shutdown: watch::Receiver<bool>) -> Result<()> {
-        let mut seq_by_msg: HashMap<String, i64> = HashMap::new();
-        let mut poll = tokio::time::interval(Duration::from_secs(2));
-        loop {
-            tokio::select! {
-                biased;
-                _ = shutdown.changed() => return Ok(()),
-                _ = poll.tick() => {}
-            }
-            let tasks = self.store.list_unnotified(20)?;
-            for task in tasks {
-                let Some(notify) = &task.notify else { continue };
-                if notify.channel != "qq" {
-                    continue;
-                }
-                let content = match &task.result {
-                    Some(result) => result.summary.clone(),
-                    None => format!(
-                        "任务失败：{}",
-                        task.last_error.as_deref().unwrap_or("未知错误")
-                    ),
-                };
-                let seq = seq_by_msg
-                    .get(notify.msg_id.as_deref().unwrap_or_default())
-                    .copied()
-                    .unwrap_or(0)
-                    + 1;
-                let send = if let Some(group) = notify.target.strip_prefix(TARGET_GROUP_PREFIX) {
-                    self.api
-                        .send_group_text(group, &content, notify.msg_id.as_deref(), seq)
-                        .await
-                } else if let Some(user) = notify.target.strip_prefix(TARGET_C2C_PREFIX) {
-                    self.api
-                        .send_c2c_text(user, &content, notify.msg_id.as_deref(), seq)
-                        .await
-                } else {
-                    bail!("unknown qq notify target: {}", notify.target)
-                };
-                match send {
-                    Ok(_) => {
-                        seq_by_msg.insert(notify.msg_id.clone().unwrap_or_default(), seq);
-                        self.store.mark_notified(task.id)?;
-                    }
-                    Err(error) => eprintln!("[qq] notify task {} failed: {error:#}", task.id),
                 }
             }
         }

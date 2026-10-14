@@ -232,7 +232,7 @@ X 接入需要实测，不预设完整覆盖或实时性。先评估可用 API�
 
 ### 3.10 消息网关：QQ、飞书与钉钉
 
-**目标：从日常聊天工具记录想法、交办任务、查询状态、审核结果，并接收主动简报。** 三个平台共享同一套 Ru41 能力，分别作为可启停的渠道模块接入。QQ 渠道已实现（`src/ingress/qq/`）：群@与单聊消息以 `qq:msg:{msg_id}` 幂等入队，任务终态后经 `notify_channel/notify_target/notify_msg_id` 路由被动回复；协议与限制见 [QQ 渠道说明](channels-qq.md)。
+**目标：从日常聊天工具记录想法、交办任务、查询状态、审核结果，并接收主动简报。** 三个平台共享同一套 Ru41 能力，分别作为可启停的渠道模块接入。QQ 渠道已实现（`src/ingress/qq/`）：群@与单聊消息以 `qq:msg:{msg_id}` 幂等入队；终态通知由应用层 `NotifyDispatcher`（`NotifyChannel` trait）统一轮询 `notify_channel/notify_target/notify_msg_id` 路由派发，QQ 以 `QqNotifier` 注册为首个渠道，飞书/钉钉接入时复用同一机制。协议与限制见 [QQ 渠道说明](channels-qq.md)。
 
 | 用户消息或场景 | 产品行为 |
 |---|---|
@@ -360,6 +360,8 @@ X 接入需要实测，不预设完整覆盖或实时性。先评估可用 API�
 3. 聊天交办 → 执行任务 → 必要时审核 → 结果回复。
 
 采用 **Rust 常驻服务 + AgentBackend（首个实现 Codex）+ TaskStore 运行状态（默认 SQLite 实现，可选 PostgreSQL 适配器）+ Obsidian/Git 内容存储**。先部署一个服务进程，Codex 由接入层管理；代码按职责组织，暂不确定业务插件 SDK、动态加载或独立服务拆分。
+
+配置经 TOML 文件（`--config` > `./ru41.toml` > `~/.config/ru41/config.toml`）与 CLI/环境变量合并，取值优先级为 CLI > 环境变量 > 配置文件 > 默认值；密钥类只允许环境变量或配置文件（`ru41.toml` 不入 git，样例 `ru41.example.toml`）。Worker 持有底座注册表，按任务的 `backend_id` 路由执行；终态通知由 `NotifyDispatcher` 按 `notify_channel` 路由到各渠道实现。
 
 ### 8.2 核心结构
 

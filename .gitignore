@@ -10,3 +10,4 @@
 *.sqlite-shm
 *.sqlite-wal
 /config/local.toml
+/ru41.toml

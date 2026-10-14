@@ -63,28 +63,29 @@ async fn two_backends_share_worker_but_never_take_each_others_tasks() {
     assert!(registry.register(TestBackend("alpha")).is_err());
     assert!(registry.get("missing").is_err());
     let (_sender, receiver) = watch::channel(false);
-    for (backend, id) in [("beta", second), ("alpha", first)] {
-        let mut worker = Worker {
-            store: Arc::new(SqliteTaskStore::open(&path).unwrap()),
-            agent: registry.get(backend).unwrap(),
-            sanitizer: Arc::new(ru41::app::sanitize::RandomSanitizer::default()),
-            config: WorkerConfig {
-                worker_id: "shared-worker".into(),
-                runs_dir: dir.path().join("runs"),
-                timeout: Duration::from_secs(1),
-                lease_secs: 10,
-                retry_delay_secs: 1,
-            },
-        };
+    let mut worker = Worker {
+        store: Arc::new(SqliteTaskStore::open(&path).unwrap()),
+        backends: Arc::new(registry),
+        sanitizer: Arc::new(ru41::app::sanitize::RandomSanitizer::default()),
+        config: WorkerConfig {
+            worker_id: "shared-worker".into(),
+            runs_dir: dir.path().join("runs"),
+            timeout: Duration::from_secs(1),
+            lease_secs: 10,
+            retry_delay_secs: 1,
+        },
+    };
+    // 同一个 Worker 按任务绑定的 backend_id 路由到对应底座。
+    for (backend, id) in [("alpha", first), ("beta", second)] {
         let report = worker.run_once(receiver.clone()).await.unwrap().unwrap();
         assert_eq!(report.task_id, id);
         assert_eq!(report.status, TaskStatus::Succeeded);
-        assert!(worker.run_once(receiver.clone()).await.unwrap().is_none());
         let history = store.attempts(id).unwrap();
         assert_eq!(history[0].backend_id, backend);
         assert_eq!(history[0].model.as_deref(), Some("test-model"));
         assert_eq!(history[0].session_id.as_deref(), Some("opaque-session"));
     }
+    assert!(worker.run_once(receiver.clone()).await.unwrap().is_none());
 }
 
 #[test]
