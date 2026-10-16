@@ -47,7 +47,7 @@ fn home_config_used_when_cwd_has_none() {
     std::fs::create_dir_all(home.path().join(".config/ru41")).unwrap();
     std::fs::write(
         home.path().join(".config/ru41/config.toml"),
-        "[agent.codex]\nbin = \"/opt/codex\"\nmodel = \"gpt-5\"\n[channel.qq]\napp_id = \"123\"\n",
+        "[agent.codex]\nbin = \"/opt/codex\"\nmodel = \"gpt-5\"\n[channel.qq]\napp_id = \"123\"\nbind_secret = \"s3cret\"\n",
     )
     .unwrap();
     let (config, path) = Config::load_from(None, cwd.path(), Some(home.path())).unwrap();
@@ -58,6 +58,67 @@ fn home_config_used_when_cwd_has_none() {
     );
     assert_eq!(config.agent.codex.model.as_deref(), Some("gpt-5"));
     assert_eq!(config.channel.qq.app_id.as_deref(), Some("123"));
+    assert_eq!(config.channel.qq.bind_secret.as_deref(), Some("s3cret"));
+}
+
+#[test]
+fn parses_arxiv_sources_section() {
+    let cwd = tempfile::tempdir().unwrap();
+    std::fs::write(
+        cwd.path().join("ru41.toml"),
+        "[sources.arxiv]\ncategories = [\"cs.CR\", \"cs.AI\"]\nkeywords = [\"prompt injection\"]\ninterests = \"AI 安全\"\ninterval_secs = 3600\nnotify = true\n",
+    )
+    .unwrap();
+    let (config, _) = Config::load_from(None, cwd.path(), None).unwrap();
+    let arxiv = &config.sources.arxiv;
+    assert_eq!(
+        arxiv.categories.as_deref(),
+        Some(&["cs.CR".to_owned(), "cs.AI".to_owned()][..])
+    );
+    assert_eq!(
+        arxiv.keywords.as_deref(),
+        Some(&["prompt injection".to_owned()][..])
+    );
+    assert_eq!(arxiv.interests.as_deref(), Some("AI 安全"));
+    assert_eq!(arxiv.interval_secs, Some(3600));
+    assert_eq!(arxiv.notify, Some(true));
+    assert_eq!(arxiv.max_results, None);
+}
+
+#[test]
+fn parses_notify_section() {
+    let cwd = tempfile::tempdir().unwrap();
+    std::fs::write(
+        cwd.path().join("ru41.toml"),
+        "[notify]\nchannel = \"qq\"\n[channel.qq]\ndefault_notify_target = \"user:U1\"\n",
+    )
+    .unwrap();
+    let (config, _) = Config::load_from(None, cwd.path(), None).unwrap();
+    assert_eq!(config.notify.channel.as_deref(), Some("qq"));
+    assert_eq!(
+        config.channel.qq.default_notify_target.as_deref(),
+        Some("user:U1")
+    );
+}
+
+#[test]
+fn parses_rss_sources_section() {
+    let cwd = tempfile::tempdir().unwrap();
+    std::fs::write(
+        cwd.path().join("ru41.toml"),
+        "[sources.rss]\nfeeds = [\"https://example.com/feed.xml\"]\nkeywords = [\"agent\"]\nmax_items_per_feed = 20\nnotify = false\n",
+    )
+    .unwrap();
+    let (config, _) = Config::load_from(None, cwd.path(), None).unwrap();
+    let rss = &config.sources.rss;
+    assert_eq!(
+        rss.feeds.as_deref(),
+        Some(&["https://example.com/feed.xml".to_owned()][..])
+    );
+    assert_eq!(rss.keywords.as_deref(), Some(&["agent".to_owned()][..]));
+    assert_eq!(rss.max_items_per_feed, Some(20));
+    assert_eq!(rss.notify, Some(false));
+    assert_eq!(rss.interval_secs, None);
 }
 
 #[test]

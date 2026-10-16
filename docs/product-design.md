@@ -258,7 +258,7 @@ X 接入需要实测，不预设完整覆盖或实时性。先评估可用 API�
 | 渠道 | 拟定接入 | 待验证事项 |
 |---|---|---|
 | QQ | 官方机器人 WebSocket 网关 + REST v2（已实现，协议参照 XingtuBot-Spigot 重写）：群@/C2C 收消息、终态被动回复 | 主动推送配额与频控、富媒体与按钮交互 |
-| 飞书 | 应用机器人用于双向交互；群自定义 webhook 可单独作为通知出口 | 应用权限、事件订阅、回调连接方式、卡片能力 |
+| 飞书 | 群自定义 webhook 通知出口已实现（`src/ingress/feishu.rs`，见 [飞书渠道说明](channels-feishu.md)）；双向交互需应用机器人 | 应用权限、事件订阅、回调连接方式、卡片能力 |
 | 钉钉 | 应用机器人接收消息，评估 Stream 或 HTTP 回调 | 应用权限、回复/主动发送能力、会话凭据有效期 |
 
 飞书自定义群机器人只提供通知能力，双向交互需要应用机器人；钉钉应用机器人支持 Stream 或 HTTP 接收。接入时按实际平台能力配置，不把单向 webhook 当成完整消息网关。[飞书官方说明](https://open.feishu.cn/document/client-docs/bot-v3/add-custom-bot)、[钉钉接收消息](https://open-dingtalk.github.io/developerpedia/docs/learn/bot/appbot/receive/)

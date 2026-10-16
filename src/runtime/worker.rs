@@ -9,11 +9,7 @@ use crate::{
 };
 use anyhow::{Context, Result, ensure};
 use serde::Serialize;
-use std::{
-    path::PathBuf,
-    sync::Arc,
-    time::{Duration, SystemTime, UNIX_EPOCH},
-};
+use std::{path::PathBuf, sync::Arc, time::Duration};
 use tokio::sync::watch;
 
 /// Worker 执行配置：标识、运行目录、超时与租约/重试参数。
@@ -238,10 +234,5 @@ impl Worker {
     }
 }
 
-/// 当前 Unix 秒；全库统一用它，避免各处时间源不一致。
-pub fn now() -> i64 {
-    SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .unwrap_or_default()
-        .as_secs() as i64
-}
+/// 时间源已上移到 util；此处保留 re-export 兼容既有调用方。
+pub use crate::util::now;

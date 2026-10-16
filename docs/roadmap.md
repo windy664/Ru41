@@ -14,7 +14,10 @@
 - [x] Worker 按任务 backend_id 路由底座（持有 BackendRegistry，移除 `worker --backend`）
 - [x] TOML 配置体系（`--config`/./ru41.toml/ ~/.config，CLI > 环境变量 > 配置文件 > 默认值）
 - [x] 终态通知 dispatcher 上移至应用层（NotifyChannel trait + NotifyDispatcher，QQ 为首个渠道实现）
+- [x] 飞书自定义群机器人 webhook 通知渠道（`[notify]` 默认出口统一路由，`ru41 notify` 独立派发进程）
 - [x] 自动行为测试及一次真实 Codex 分析任务验证
+- [x] 定时器入口统一机制：`ingress/schedule.rs` 的 `run_periodic`（名称 + 间隔 + 轮询闭包），papers/rss/ecard 的 run 命令共用（设计文档 8.2 定时器入口；核心组如需收进 runtime 可平移）
+- [x] 装配层收口：附属装配集中在 `bootstrap/assembly.rs`（渠道知识唯一驻地），时间源 `now()` 上移 `util`（worker 保留 re-export）
 
 ## 核心后续
 
@@ -33,8 +36,10 @@
 
 ## P1 信息与消息
 
-- [ ] 论文/RSS 来源记录、筛选和来源笔记
-- [x] 一个消息渠道（QQ 官方机器人）：记录想法入队任务、终态结果回复；身份绑定与任务查询指令后续补充
+- [x] 论文来源采集：arXiv 定时轮询、按 ID 去重、关键词粗筛、Codex 每日精选 digest 与推送（来源笔记落 Vault 待 Obsidian 闭环）
+- [x] RSS 通用来源采集：RSS 2.0 与 Atom 订阅源轮询、按源+guid/id 去重、四段式精选 digest（多源事件聚合后续）
+- [x] 水电费监控：ecard 平台接口逆向（docs/ecard-waterfee.md）、每日余额采集落库、低余额阈值提醒（充值识别与消耗趋势后续）
+- [x] 一个消息渠道（QQ 官方机器人）：记录想法入队任务、终态结果回复、固定命令（帮助/任务查询/取消）与口令身份绑定
 
 ## 后续
 

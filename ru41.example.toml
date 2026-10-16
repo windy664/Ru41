@@ -30,6 +30,43 @@ bin = "codex"
 # 密钥建议用环境变量 RU41_QQ_APP_ID / RU41_QQ_APP_SECRET，避免写进文件。
 app_id = ""
 app_secret = ""
+# 「绑定」命令的口令；也可用环境变量 RU41_QQ_BIND_SECRET。留空则绑定功能关闭。
+# bind_secret = ""
+# 主动通知的默认目标（[notify] channel = "qq" 时必填）。
+# default_notify_target = "user:你的openid"
+
+[channel.feishu]
+# 自定义群机器人 webhook（含 token，建议用环境变量 RU41_FEISHU_WEBHOOK_URL）。
+# webhook_url = ""
+
+# 默认通知出口：简报类任务（如论文精选）终态推送走哪个渠道，只有这里需要知道渠道。
+# [notify]
+# channel = "feishu"
+
+# arXiv 论文追踪（ru41 papers poll/run）。
+# [sources.arxiv]
+# categories = ["cs.CR", "cs.AI", "cs.CL"]
+# keywords = ["prompt injection", "jailbreak", "llm security", "agent"]
+# interests = "AI 安全方向本科生，关注 LLM/Agent 安全"
+# notify = true
+
+# RSS 信息流追踪（ru41 rss poll/run），模式与论文追踪一致。
+# [sources.rss]
+# feeds = ["https://www.jiqizhixin.com/rss"]
+# keywords = ["agent", "llm", "安全"]
+# interests = "AI 安全方向本科生"
+
+# 校园卡水电监控（ru41 ecard poll/run），协议见 docs/ecard-waterfee.md。
+# base_url 与 token 只存本地；token 建议用环境变量 RU41_ECARD_TOKEN。
+# [sources.ecard]
+# base_url = "https://ecarduser.<school>.edu.cn"
+# impl_type = ""
+# school_area_no = ""
+# building_no = ""
+# room_num = ""
+# power_threshold = 10.0   # 度
+# water_threshold = 1.0    # 吨
+# interval_secs = 86400
 
 # HTTP API（ru41 serve）。令牌经环境变量 RU41_API_TOKEN 注入，不写入配置文件。
 # listen 地址通过 CLI 参数指定：ru41 serve --listen 127.0.0.1:4141

@@ -1,5 +1,7 @@
 pub use crate::adapters::messaging::qq::{api, gateway};
 
+pub mod commands;
+
 use crate::{domain::NotifyRoute, ports::channel::NotifyChannel, ports::storage::TaskStore};
 use anyhow::{Result, bail};
 use api::QqApiClient;
@@ -72,11 +74,17 @@ impl NotifyChannel for QqNotifier {
     }
 }
 
-/// QQ 网关：收消息幂等入队任务；终态回复由 runtime::dispatcher 的 dispatcher 统一负责。
+/// QQ 网关：收消息幂等入队任务；固定命令立即回复，终态回复由 runtime::dispatcher 统一负责。
 pub struct QqBot {
     pub api: Arc<QqApiClient>,
     pub store: Arc<dyn TaskStore>,
     pub backend: String,
+    /// 身份绑定口令；None 时绑定功能关闭。
+    pub bind_secret: Option<String>,
+    /// arXiv 客户端（精读命令用）；None 时精读命令不可用。
+    pub arxiv_client: Option<crate::adapters::sources::arxiv::ArxivClient>,
+    /// 个人关注方向，注入精读 prompt；None 时使用空串。
+    pub papers_interests: Option<String>,
 }
 
 impl QqBot {
@@ -86,8 +94,8 @@ impl QqBot {
         let gateway = self.gateway_loop(events, shutdown.clone());
         let ingest = async {
             while let Some(event) = receiver.recv().await {
-                if let Err(error) = self.ingest(&event) {
-                    eprintln!("[qq] enqueue failed: {error:#}");
+                if let Err(error) = self.handle(&event).await {
+                    eprintln!("[qq] handle failed: {error:#}");
                 }
             }
             Ok::<(), anyhow::Error>(())
@@ -133,6 +141,86 @@ impl QqBot {
                 }
             }
         }
+    }
+
+    /// 固定命令立即执行并回复；其余消息走幂等入队。
+    async fn handle(&self, event: &GatewayEvent) -> Result<()> {
+        let (msg_id, content, target, author_openid, is_c2c) = match event {
+            GatewayEvent::GroupMessage {
+                msg_id,
+                content,
+                group_openid,
+                author_openid,
+            } => (
+                msg_id,
+                content,
+                format!("{TARGET_GROUP_PREFIX}{group_openid}"),
+                author_openid,
+                false,
+            ),
+            GatewayEvent::C2cMessage {
+                msg_id,
+                content,
+                user_openid,
+            } => (
+                msg_id,
+                content,
+                format!("{TARGET_C2C_PREFIX}{user_openid}"),
+                user_openid,
+                true,
+            ),
+            _ => return Ok(()),
+        };
+        let Some(command) = commands::parse_command(content) else {
+            return self.ingest(event);
+        };
+        if let commands::Command::DeepRead(id) = &command {
+            let Some(client) = &self.arxiv_client else {
+                return self
+                    .reply(&target, msg_id, "精读功能未启用（未配置 arXiv 客户端）")
+                    .await;
+            };
+            let route = NotifyRoute {
+                channel: "qq".into(),
+                target: target.clone(),
+                msg_id: Some(msg_id.clone()),
+            };
+            let text = crate::app::papers::deep_read_task(
+                &self.store,
+                client,
+                id,
+                self.papers_interests.as_deref().unwrap_or(""),
+                &self.backend,
+                &route,
+            )
+            .await?;
+            return self.reply(&target, msg_id, &text).await;
+        }
+        let reply = commands::execute(
+            &command,
+            &commands::CommandContext {
+                store: &self.store,
+                bind_secret: self.bind_secret.as_deref(),
+                target: &target,
+                author_openid,
+                is_c2c,
+            },
+        )?;
+        self.reply(&target, msg_id, &reply).await
+    }
+
+    /// 命令的即时被动回复；每条命令消息只回一条，msg_seq 固定为 1。
+    async fn reply(&self, target: &str, msg_id: &str, text: &str) -> Result<()> {
+        if let Some(group) = target.strip_prefix(TARGET_GROUP_PREFIX) {
+            self.api
+                .send_group_text(group, text, Some(msg_id), 1)
+                .await?;
+        } else if let Some(user) = target.strip_prefix(TARGET_C2C_PREFIX) {
+            self.api.send_c2c_text(user, text, Some(msg_id), 1).await?;
+        } else {
+            bail!("unknown qq notify target: {target}")
+        }
+        Ok(())
     }
 
     /// 把一条消息事件幂等入队，并登记回话路由。

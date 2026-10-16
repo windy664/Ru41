@@ -11,6 +11,8 @@ pub struct Config {
     pub agent: AgentSection,
     pub channel: ChannelSection,
     pub api: ApiSection,
+    pub sources: SourcesSection,
+    pub notify: NotifySection,
 }
 
 /// HTTP API 配置；令牌也允许环境变量 RU41_API_TOKEN 注入（优先级更高）。
@@ -63,6 +65,7 @@ pub use crate::adapters::agent::codex::provider::CodexProviderSection;
 #[serde(default, deny_unknown_fields)]
 pub struct ChannelSection {
     pub qq: QqSection,
+    pub feishu: FeishuSection,
 }
 
 #[derive(Debug, Default, Deserialize)]
@@ -70,6 +73,96 @@ pub struct ChannelSection {
 pub struct QqSection {
     pub app_id: Option<String>,
     pub app_secret: Option<String>,
+    /// 身份绑定口令；未配置时 QQ 的「绑定」命令不可用。
+    pub bind_secret: Option<String>,
+    /// 主动通知的默认目标（如 user:{openid}）；QQ 主动推送受平台配额限制。
+    pub default_notify_target: Option<String>,
+}
+
+#[derive(Debug, Default, Deserialize)]
+#[serde(default, deny_unknown_fields)]
+pub struct FeishuSection {
+    /// 自定义群机器人 webhook URL（含 token，建议只用配置文件或环境变量注入）。
+    pub webhook_url: Option<String>,
+}
+
+/// 默认通知出口：业务模块只说「要通知」，用哪个渠道由这里统一决定。
+#[derive(Debug, Default, Deserialize)]
+#[serde(default, deny_unknown_fields)]
+pub struct NotifySection {
+    /// 渠道标识（feishu / qq）；缺省表示无默认出口，简报类任务只入队不推送。
+    pub channel: Option<String>,
+}
+
+#[derive(Debug, Default, Deserialize)]
+#[serde(default, deny_unknown_fields)]
+pub struct SourcesSection {
+    pub arxiv: ArxivSection,
+    pub rss: RssSection,
+    pub ecard: EcardSection,
+}
+
+/// arXiv 论文追踪配置；papers poll/run 使用。
+#[derive(Debug, Default, Deserialize)]
+#[serde(default, deny_unknown_fields)]
+pub struct ArxivSection {
+    /// 追踪的分类，如 ["cs.CR", "cs.AI", "cs.CL"]。
+    pub categories: Option<Vec<String>>,
+    /// 关键词粗筛；空或缺省表示不过滤。
+    pub keywords: Option<Vec<String>>,
+    /// 个人关注方向描述，注入 digest prompt 供 Agent 判断相关性。
+    pub interests: Option<String>,
+    /// 单次拉取条数上限，默认 100。
+    pub max_results: Option<u32>,
+    /// papers run 的轮询间隔（秒），默认 21600（6 小时）。
+    pub interval_secs: Option<u64>,
+    /// digest 任务的执行底座，默认 codex。
+    pub backend: Option<String>,
+    /// 终态后是否经默认通知出口推送（[notify] channel）；默认 true。
+    pub notify: Option<bool>,
+}
+
+/// RSS 信息流追踪配置；rss poll/run 使用。
+#[derive(Debug, Default, Deserialize)]
+#[serde(default, deny_unknown_fields)]
+pub struct RssSection {
+    /// 订阅的 RSS 2.0 feed 地址列表。
+    pub feeds: Option<Vec<String>>,
+    /// 关键词粗筛；空或缺省表示不过滤。
+    pub keywords: Option<Vec<String>>,
+    /// 个人关注方向描述，注入 digest prompt 供 Agent 判断相关性。
+    pub interests: Option<String>,
+    /// 每个源单次最多处理的条目数，默认 50。
+    pub max_items_per_feed: Option<u32>,
+    /// rss run 的轮询间隔（秒），默认 21600（6 小时）。
+    pub interval_secs: Option<u64>,
+    /// digest 任务的执行底座，默认 codex。
+    pub backend: Option<String>,
+    /// 终态后是否经默认通知出口推送（[notify] channel）；默认 true。
+    pub notify: Option<bool>,
+}
+
+/// 校园卡水电监控配置；ecard poll/run 使用。协议见 docs/ecard-waterfee.md。
+#[derive(Debug, Default, Deserialize)]
+#[serde(default, deny_unknown_fields)]
+pub struct EcardSection {
+    /// ecard 平台 API 基址（如 https://ecarduser.<school>.edu.cn），学校域名只存本地。
+    pub base_url: Option<String>,
+    /// ecard 平台 token（建议用环境变量 RU41_ECARD_TOKEN 注入，勿提交）。
+    pub token: Option<String>,
+    /// 房间定位参数（getBalance 四项）。
+    pub impl_type: Option<String>,
+    pub school_area_no: Option<String>,
+    pub building_no: Option<String>,
+    pub room_num: Option<String>,
+    /// 电量低余额阈值（度），默认 10。
+    pub power_threshold: Option<f64>,
+    /// 水量低余额阈值（吨），默认 1。
+    pub water_threshold: Option<f64>,
+    /// ecard run 的轮询间隔（秒），默认 86400（每日）。
+    pub interval_secs: Option<u64>,
+    /// 低余额时是否经默认通知出口提醒；默认 true。
+    pub notify: Option<bool>,
 }
 
 impl Config {

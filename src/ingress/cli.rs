@@ -59,6 +59,48 @@ pub enum Command {
         #[command(subcommand)]
         command: QqCommand,
     },
+    /// 长驻运行终态通知派发；按配置注册渠道（当前为飞书 webhook）。
+    /// QQ 网关在 qq run 内自带派发，此命令用于不跑 QQ 的部署。
+    Notify,
+    /// arXiv 论文追踪：轮询新论文、去重粗筛后合成精选 digest 任务。
+    Papers {
+        #[command(subcommand)]
+        command: PapersCommand,
+    },
+    /// RSS 信息流追踪：轮询订阅源、去重粗筛后合成精选 digest 任务。
+    Rss {
+        #[command(subcommand)]
+        command: RssCommand,
+    },
+    /// 校园卡水电监控：查询余额、记录历史、低余额提醒。
+    Ecard {
+        #[command(subcommand)]
+        command: EcardCommand,
+    },
+}
+
+#[derive(Subcommand)]
+pub enum PapersCommand {
+    /// 执行一轮轮询（适合系统 cron 定时调用）。
+    Poll,
+    /// 常驻运行，按 sources.arxiv.interval_secs 周期轮询。
+    Run,
+}
+
+#[derive(Subcommand)]
+pub enum RssCommand {
+    /// 执行一轮轮询（适合系统 cron 定时调用）。
+    Poll,
+    /// 常驻运行，按 sources.rss.interval_secs 周期轮询。
+    Run,
+}
+
+#[derive(Subcommand)]
+pub enum EcardCommand {
+    /// 查询一次余额并按阈值判断是否提醒（适合系统 cron 每日调用）。
+    Poll,
+    /// 常驻运行，按 sources.ecard.interval_secs 周期查询。
+    Run,
 }
 
 #[derive(clap::Args)]
@@ -80,6 +122,9 @@ pub enum QqCommand {
         /// 消息任务入队时绑定的底座。
         #[arg(long)]
         backend: Option<String>,
+        /// 身份绑定口令（也可用环境变量 RU41_QQ_BIND_SECRET 或配置文件 channel.qq.bind_secret）。
+        #[arg(long, env = "RU41_QQ_BIND_SECRET")]
+        bind_secret: Option<String>,
     },
     /// 手动向群发送一条主动文本消息（用于测试连通性）。
     Send {
@@ -102,6 +147,9 @@ pub enum TaskCommand {
         key: String,
         #[arg(long)]
         prompt: String,
+        /// 终态后经默认通知出口推送（[notify] channel 配置决定渠道）。
+        #[arg(long)]
+        notify: bool,
     },
     List {
         #[arg(long, default_value_t = 20)]

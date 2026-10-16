@@ -26,5 +26,10 @@ jobs:
       - name: Install Rust
         run: rustup toolchain install stable --profile minimal --component rustfmt --component clippy
       - run: cargo +stable fmt --all -- --check
+      - name: Secret scan（防手滑提交 token/手机号/openid）
+        run: |
+          ! grep -rInE "node[0-9a-z]{30,}|1[3-9][0-9]{9}|opXvX5|o6gXt5" \
+            --include="*.rs" --include="*.toml" --include="*.md" \
+            --exclude-dir=target --exclude=sanitize.rs .
       - run: cargo +stable clippy --locked --all-targets -- -D warnings
       - run: cargo +stable test --locked

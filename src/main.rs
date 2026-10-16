@@ -1,16 +1,20 @@
 use anyhow::{Context, Result};
 use clap::Parser;
 use ru41::bootstrap::agents::{AgentOverrides, registry};
+use ru41::bootstrap::assembly::{
+    default_notify_route, ecard_tracker, notify_channels, paper_tracker, qq_api, rss_tracker,
+};
 use ru41::{
     adapters::{
         agent::codex,
         database::{postgres::PostgresTaskStore, sqlite::SqliteTaskStore},
+        sources::arxiv::ArxivClient,
     },
     app::task::TaskService,
     bootstrap::config::Config,
     ingress::{
-        cli::{Cli, Command, QqCommand, QqCredentials, TaskCommand},
-        qq::{QqBot, QqNotifier, api::QqApiClient},
+        cli::{Cli, Command, EcardCommand, PapersCommand, QqCommand, RssCommand, TaskCommand},
+        qq::QqBot,
     },
     ports::storage::TaskStore,
     privacy::{NoopSanitizer, RandomSanitizer, Sanitizer},
@@ -141,18 +145,28 @@ async fn main() -> Result<()> {
             QqCommand::Run {
                 credentials,
                 backend,
+                bind_secret,
             } => {
                 let backend = backend.unwrap_or_else(|| "codex".into());
+                let bind_secret = bind_secret.or_else(|| config.channel.qq.bind_secret.clone());
                 let api = Arc::new(qq_api(&credentials, &config)?);
                 let store = open_store(&store_config)?;
                 let bot = QqBot {
                     api: api.clone(),
                     store: store.clone(),
                     backend,
+                    bind_secret,
+                    arxiv_client: Some(ArxivClient::new()),
+                    papers_interests: config
+                        .sources
+                        .arxiv
+                        .interests
+                        .clone()
+                        .filter(|s| !s.trim().is_empty()),
                 };
                 let dispatcher = NotifyDispatcher {
                     store,
-                    channels: vec![Arc::new(QqNotifier::new(api))],
+                    channels: notify_channels(&config, Some(api))?,
                     batch: 20,
                     interval: Duration::from_secs(2),
                 };
@@ -172,6 +186,84 @@ async fn main() -> Result<()> {
                 serde_json::to_value(api.send_group_text(&group_openid, &text, None, 1).await?)?
             }
         },
+        Command::Notify => {
+            let channels = notify_channels(&config, None)?;
+            anyhow::ensure!(
+                !channels.is_empty(),
+                "no notify channel configured (e.g. channel.feishu.webhook_url)"
+            );
+            let dispatcher = NotifyDispatcher {
+                store: open_store(&store_config)?,
+                channels,
+                batch: 20,
+                interval: Duration::from_secs(2),
+            };
+            dispatcher.run_loop(shutdown_channel()?).await?;
+            return Ok(());
+        }
+        Command::Papers { command } => match command {
+            PapersCommand::Poll => {
+                let tracker = paper_tracker(&config, open_store(&store_config)?)?;
+                serde_json::to_value(tracker.poll_once().await?)?
+            }
+            PapersCommand::Run => {
+                let tracker = paper_tracker(&config, open_store(&store_config)?)?;
+                let tracker_ref = &tracker;
+                ru41::ingress::schedule::run_periodic(
+                    "papers",
+                    tracker.interval(),
+                    move || {
+                        let tracker = tracker_ref;
+                        async move { Ok(serde_json::to_value(tracker.poll_once().await?)?) }
+                    },
+                    shutdown_channel()?,
+                )
+                .await?;
+                return Ok(());
+            }
+        },
+        Command::Rss { command } => match command {
+            RssCommand::Poll => {
+                let tracker = rss_tracker(&config, open_store(&store_config)?)?;
+                serde_json::to_value(tracker.poll_once().await?)?
+            }
+            RssCommand::Run => {
+                let tracker = rss_tracker(&config, open_store(&store_config)?)?;
+                let tracker_ref = &tracker;
+                ru41::ingress::schedule::run_periodic(
+                    "rss",
+                    tracker.interval(),
+                    move || {
+                        let tracker = tracker_ref;
+                        async move { Ok(serde_json::to_value(tracker.poll_once().await?)?) }
+                    },
+                    shutdown_channel()?,
+                )
+                .await?;
+                return Ok(());
+            }
+        },
+        Command::Ecard { command } => match command {
+            EcardCommand::Poll => {
+                let tracker = ecard_tracker(&config, open_store(&store_config)?)?;
+                serde_json::to_value(tracker.poll_once().await?)?
+            }
+            EcardCommand::Run => {
+                let tracker = ecard_tracker(&config, open_store(&store_config)?)?;
+                let tracker_ref = &tracker;
+                ru41::ingress::schedule::run_periodic(
+                    "ecard",
+                    tracker.interval(),
+                    move || {
+                        let tracker = tracker_ref;
+                        async move { Ok(serde_json::to_value(tracker.poll_once().await?)?) }
+                    },
+                    shutdown_channel()?,
+                )
+                .await?;
+                return Ok(());
+            }
+        },
         Command::Task { command } => {
             let mut service = TaskService::new(open_store(&store_config)?);
             match command {
@@ -179,9 +271,22 @@ async fn main() -> Result<()> {
                     key,
                     prompt,
                     backend,
+                    notify,
                 } => {
                     registry(&config.agent, AgentOverrides::default())?.get(&backend)?;
-                    serde_json::to_value(service.enqueue_for(&key, &prompt, &backend)?)?
+                    match notify {
+                        false => {
+                            serde_json::to_value(service.enqueue_for(&key, &prompt, &backend)?)?
+                        }
+                        true => {
+                            let route = default_notify_route(&config)?.context(
+                                "no default notify channel configured ([notify].channel)",
+                            )?;
+                            serde_json::to_value(
+                                service.enqueue_with_notify(&key, &prompt, &backend, &route)?,
+                            )?
+                        }
+                    }
                 }
                 TaskCommand::List { limit } => serde_json::to_value(service.list(limit)?)?,
                 TaskCommand::Show { id } => serde_json::to_value(service.get(id)?)?,
@@ -212,22 +317,6 @@ fn open_store(
         }
         other => anyhow::bail!("unknown store backend: {other}"),
     }
-}
-
-fn qq_api(credentials: &QqCredentials, config: &Config) -> Result<QqApiClient> {
-    let app_id = credentials
-        .app_id
-        .clone()
-        .or_else(|| config.channel.qq.app_id.clone())
-        .context("QQ app id required: --qq-app-id, RU41_QQ_APP_ID or channel.qq.app_id")?;
-    let app_secret = credentials
-        .app_secret
-        .clone()
-        .or_else(|| config.channel.qq.app_secret.clone())
-        .context(
-            "QQ app secret required: --qq-app-secret, RU41_QQ_APP_SECRET or channel.qq.app_secret",
-        )?;
-    Ok(QqApiClient::new(app_id, app_secret))
 }
 
 /// SIGINT/SIGTERM 触发的优雅关闭信号。
