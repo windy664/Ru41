@@ -1,8 +1,8 @@
 use ru41::{
     adapters::database::sqlite::SqliteTaskStore,
     adapters::sources::feed::{FeedClient, parse_feed, parse_rss},
-    app::rss::{RssConfig, RssTracker},
     domain::NotifyRoute,
+    modules::rss::{RssConfig, RssTracker},
     ports::storage::TaskStore,
 };
 use std::{

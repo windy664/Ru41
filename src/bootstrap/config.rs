@@ -94,75 +94,13 @@ pub struct NotifySection {
     pub channel: Option<String>,
 }
 
+/// 附属来源配置由各自业务模块定义，这里只做组合。
 #[derive(Debug, Default, Deserialize)]
 #[serde(default, deny_unknown_fields)]
 pub struct SourcesSection {
-    pub arxiv: ArxivSection,
-    pub rss: RssSection,
-    pub ecard: EcardSection,
-}
-
-/// arXiv 论文追踪配置；papers poll/run 使用。
-#[derive(Debug, Default, Deserialize)]
-#[serde(default, deny_unknown_fields)]
-pub struct ArxivSection {
-    /// 追踪的分类，如 ["cs.CR", "cs.AI", "cs.CL"]。
-    pub categories: Option<Vec<String>>,
-    /// 关键词粗筛；空或缺省表示不过滤。
-    pub keywords: Option<Vec<String>>,
-    /// 个人关注方向描述，注入 digest prompt 供 Agent 判断相关性。
-    pub interests: Option<String>,
-    /// 单次拉取条数上限，默认 100。
-    pub max_results: Option<u32>,
-    /// papers run 的轮询间隔（秒），默认 21600（6 小时）。
-    pub interval_secs: Option<u64>,
-    /// digest 任务的执行底座，默认 codex。
-    pub backend: Option<String>,
-    /// 终态后是否经默认通知出口推送（[notify] channel）；默认 true。
-    pub notify: Option<bool>,
-}
-
-/// RSS 信息流追踪配置；rss poll/run 使用。
-#[derive(Debug, Default, Deserialize)]
-#[serde(default, deny_unknown_fields)]
-pub struct RssSection {
-    /// 订阅的 RSS 2.0 feed 地址列表。
-    pub feeds: Option<Vec<String>>,
-    /// 关键词粗筛；空或缺省表示不过滤。
-    pub keywords: Option<Vec<String>>,
-    /// 个人关注方向描述，注入 digest prompt 供 Agent 判断相关性。
-    pub interests: Option<String>,
-    /// 每个源单次最多处理的条目数，默认 50。
-    pub max_items_per_feed: Option<u32>,
-    /// rss run 的轮询间隔（秒），默认 21600（6 小时）。
-    pub interval_secs: Option<u64>,
-    /// digest 任务的执行底座，默认 codex。
-    pub backend: Option<String>,
-    /// 终态后是否经默认通知出口推送（[notify] channel）；默认 true。
-    pub notify: Option<bool>,
-}
-
-/// 校园卡水电监控配置；ecard poll/run 使用。协议见 docs/ecard-waterfee.md。
-#[derive(Debug, Default, Deserialize)]
-#[serde(default, deny_unknown_fields)]
-pub struct EcardSection {
-    /// ecard 平台 API 基址（如 https://ecarduser.<school>.edu.cn），学校域名只存本地。
-    pub base_url: Option<String>,
-    /// ecard 平台 token（建议用环境变量 RU41_ECARD_TOKEN 注入，勿提交）。
-    pub token: Option<String>,
-    /// 房间定位参数（getBalance 四项）。
-    pub impl_type: Option<String>,
-    pub school_area_no: Option<String>,
-    pub building_no: Option<String>,
-    pub room_num: Option<String>,
-    /// 电量低余额阈值（度），默认 10。
-    pub power_threshold: Option<f64>,
-    /// 水量低余额阈值（吨），默认 1。
-    pub water_threshold: Option<f64>,
-    /// ecard run 的轮询间隔（秒），默认 86400（每日）。
-    pub interval_secs: Option<u64>,
-    /// 低余额时是否经默认通知出口提醒；默认 true。
-    pub notify: Option<bool>,
+    pub arxiv: crate::modules::papers::ArxivSection,
+    pub rss: crate::modules::rss::RssSection,
+    pub ecard: crate::modules::ecard::EcardSection,
 }
 
 impl Config {

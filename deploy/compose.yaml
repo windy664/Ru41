@@ -1,0 +1,65 @@
+x-ru41: &ru41-common
+  image: ru41:local
+  build:
+    context: ..
+    dockerfile: Dockerfile
+  init: true
+  restart: unless-stopped
+
+x-ru41-volumes: &ru41-volumes
+  - ../ru41.toml:/etc/ru41/ru41.toml:ro
+  - ../.ru41:/data
+
+services:
+  worker:
+    <<: *ru41-common
+    volumes:
+      - ../ru41.toml:/etc/ru41/ru41.toml:ro
+      - ../.ru41:/data
+      - ${RU41_CODEX_HOME:-../.ru41/codex}:/home/node/.codex
+    command:
+      - --config
+      - /etc/ru41/ru41.toml
+      - --db
+      - /data/state.db
+      - worker
+      - --runs-dir
+      - /data/runs
+
+  notify:
+    <<: *ru41-common
+    profiles: [notify]
+    volumes: *ru41-volumes
+    command: ["--config", "/etc/ru41/ru41.toml", "--db", "/data/state.db", "notify"]
+
+  qq:
+    <<: *ru41-common
+    profiles: [qq]
+    volumes: *ru41-volumes
+    command: ["--config", "/etc/ru41/ru41.toml", "--db", "/data/state.db", "qq", "run"]
+
+  papers:
+    <<: *ru41-common
+    profiles: [papers]
+    volumes: *ru41-volumes
+    command: ["--config", "/etc/ru41/ru41.toml", "--db", "/data/state.db", "papers", "run"]
+
+  rss:
+    <<: *ru41-common
+    profiles: [rss]
+    volumes: *ru41-volumes
+    command: ["--config", "/etc/ru41/ru41.toml", "--db", "/data/state.db", "rss", "run"]
+
+  ecard:
+    <<: *ru41-common
+    profiles: [ecard]
+    volumes: *ru41-volumes
+    command: ["--config", "/etc/ru41/ru41.toml", "--db", "/data/state.db", "ecard", "run"]
+
+  serve:
+    <<: *ru41-common
+    profiles: [api]
+    volumes: *ru41-volumes
+    command: ["--config", "/etc/ru41/ru41.toml", "--db", "/data/state.db", "serve", "--listen", "0.0.0.0:4141"]
+    ports:
+      - "127.0.0.1:4141:4141"

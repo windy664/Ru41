@@ -1,7 +1,6 @@
 use ru41::{
     adapters::database::sqlite::SqliteTaskStore,
-    adapters::sources::ecard::{EcardClient, EcardRoom},
-    app::ecard::{EcardConfig, EcardTracker},
+    modules::ecard::{EcardClient, EcardConfig, EcardRoom, EcardTracker},
     ports::channel::NotifyChannel,
     ports::storage::TaskStore,
 };

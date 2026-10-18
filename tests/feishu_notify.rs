@@ -1,7 +1,7 @@
 use ru41::{
     adapters::database::sqlite::SqliteTaskStore,
+    channels::feishu::{DEFAULT_TARGET, FeishuWebhookNotifier},
     domain::{AgentResult, NotifyRoute, RunContract, TaskStatus},
-    ingress::feishu::{DEFAULT_TARGET, FeishuWebhookNotifier},
     ports::channel::NotifyChannel,
     ports::storage::TaskStore,
     runtime::dispatcher::NotifyDispatcher,

@@ -1,11 +1,9 @@
-use crate::{
-    adapters::sources::arxiv::{ArxivClient, ArxivEntry},
-    domain::NotifyRoute,
-    ports::storage::TaskStore,
-};
+use crate::{domain::NotifyRoute, ports::storage::TaskStore};
 use anyhow::Result;
 use serde::Serialize;
 use std::sync::Arc;
+
+use super::source::{ArxivClient, ArxivEntry};
 
 /// arXiv 追踪配置（对应配置文件的 [sources.arxiv]）。
 #[derive(Debug, Clone)]

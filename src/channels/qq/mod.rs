@@ -1,6 +1,6 @@
-pub use crate::adapters::messaging::qq::{api, gateway};
-
+pub mod api;
 pub mod commands;
+pub mod gateway;
 
 use crate::{domain::NotifyRoute, ports::channel::NotifyChannel, ports::storage::TaskStore};
 use anyhow::{Result, bail};
@@ -81,10 +81,8 @@ pub struct QqBot {
     pub backend: String,
     /// 身份绑定口令；None 时绑定功能关闭。
     pub bind_secret: Option<String>,
-    /// arXiv 客户端（精读命令用）；None 时精读命令不可用。
-    pub arxiv_client: Option<crate::adapters::sources::arxiv::ArxivClient>,
-    /// 个人关注方向，注入精读 prompt；None 时使用空串。
-    pub papers_interests: Option<String>,
+    /// 业务模块注册的扩展命令；QQ 渠道不直接依赖业务模块。
+    pub command_handlers: Vec<Arc<dyn commands::QqCommandHandler>>,
 }
 
 impl QqBot {
@@ -143,7 +141,7 @@ impl QqBot {
         }
     }
 
-    /// 固定命令立即执行并回复；其余消息走幂等入队。
+    /// 内置命令与注册的扩展命令立即执行并回复；未命中的消息走幂等入队。
     async fn handle(&self, event: &GatewayEvent) -> Result<()> {
         let (msg_id, content, target, author_openid, is_c2c) = match event {
             GatewayEvent::GroupMessage {
@@ -171,42 +169,33 @@ impl QqBot {
             ),
             _ => return Ok(()),
         };
-        let Some(command) = commands::parse_command(content) else {
-            return self.ingest(event);
+        let ctx = commands::CommandContext {
+            store: &self.store,
+            bind_secret: self.bind_secret.as_deref(),
+            target: &target,
+            msg_id,
+            author_openid,
+            is_c2c,
         };
-        if let commands::Command::DeepRead(id) = &command {
-            let Some(client) = &self.arxiv_client else {
-                return self
-                    .reply(&target, msg_id, "精读功能未启用（未配置 arXiv 客户端）")
-                    .await;
+        if let Some(command) = commands::parse_command(content) {
+            let reply = if command == commands::Command::Help {
+                commands::help_text(&self.command_handlers)
+            } else {
+                commands::execute(&command, &ctx)?
             };
-            let route = NotifyRoute {
-                channel: "qq".into(),
-                target: target.clone(),
-                msg_id: Some(msg_id.clone()),
-            };
-            let text = crate::app::papers::deep_read_task(
-                &self.store,
-                client,
-                id,
-                self.papers_interests.as_deref().unwrap_or(""),
-                &self.backend,
-                &route,
-            )
-            .await?;
-            return self.reply(&target, msg_id, &text).await;
+            return self.reply(&target, msg_id, &reply).await;
         }
-        let reply = commands::execute(
-            &command,
-            &commands::CommandContext {
-                store: &self.store,
-                bind_secret: self.bind_secret.as_deref(),
-                target: &target,
-                author_openid,
-                is_c2c,
-            },
-        )?;
-        self.reply(&target, msg_id, &reply).await
+        let mut parts = content.trim().splitn(2, char::is_whitespace);
+        let verb = parts.next().unwrap_or_default().to_lowercase();
+        let arg = parts.next().map(str::trim).unwrap_or_default();
+        for handler in &self.command_handlers {
+            if handler.matches(&verb)
+                && let Some(reply) = handler.handle(arg, &ctx).await?
+            {
+                return self.reply(&target, msg_id, &reply).await;
+            }
+        }
+        self.ingest(event)
     }
 
     /// 命令的即时被动回复；每条命令消息只回一条，msg_seq 固定为 1。

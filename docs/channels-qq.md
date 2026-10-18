@@ -8,7 +8,7 @@ tags: [Ru41, QQ, channel, gateway]
 
 # QQ 渠道说明
 
-Ru41 的第一个消息渠道，协议参照 XingtuBot-Spigot（Java）的 QQGatewayClient / QqOpenApiClient 用 Rust 重写。代码在 `src/ingress/qq/`：`gateway.rs`（WebSocket）、`api.rs`（REST）、`mod.rs`（组装与入队/通知逻辑）。
+Ru41 的第一个消息渠道，协议参照 XingtuBot-Spigot（Java）的 QQGatewayClient / QqOpenApiClient 用 Rust 重写。代码在 `src/channels/qq/`：`gateway.rs`（WebSocket）、`api.rs`（REST）、`mod.rs`（组装与入队/通知逻辑）。
 
 ## 前置条件
 
@@ -30,7 +30,7 @@ Ru41 的第一个消息渠道，协议参照 XingtuBot-Spigot（Java）的 QQGat
 
 ## 命令与身份绑定
 
-网关收到消息先走固定命令解析（`src/ingress/qq/commands.rs`），命中即由 `QqBot` 直接执行并用 msg_id 立即被动回复；未命中才幂等入队给 Agent。命令词参数非法时按自然语言处理，避免误拦截。
+网关收到消息先解析内置命令（`src/channels/qq/commands.rs`），未命中再依次尝试装配层注册的模块扩展命令；命中即执行并用 msg_id 立即被动回复，仍未命中才幂等入队给 Agent。命令词参数非法时按自然语言处理，避免误拦截。QQ 只定义 `QqCommandHandler` 扩展接口，不直接依赖论文、水电等业务模块。
 
 | 命令 | 行为 |
 |---|---|
@@ -44,7 +44,7 @@ Ru41 的第一个消息渠道，协议参照 XingtuBot-Spigot（Java）的 QQGat
 
 水电余额属个人信息：仅绑定用户在单聊中可查，群聊拒绝展示（设计文档 3.10「群聊中请求时不能直接暴露私人内容」）。
 
-精读命令需要异步访问 arXiv API，由 `QqBot` 在进入同步命令执行前拦截处理（`src/app/papers.rs::deep_read_task`）；同一篇论文只精读一次，重复请求回复已有任务编号。精读结果与 digest 一样走 dispatcher 被动回复：QQ 被动回复的 msg_id 有有效期（约 5 分钟），分析超时则结果可在「任务 <id>」查看。
+精读命令由 papers 模块实现并经 `QqCommandHandler` 注册（`src/modules/papers/qq_command.rs` → `src/modules/papers/service.rs::deep_read_task`）；同一篇论文只精读一次，重复请求回复已有任务编号。精读结果与 digest 一样走 dispatcher 被动回复：QQ 被动回复的 msg_id 有有效期（约 5 分钟），分析超时则结果可在「任务 <id>」查看。
 
 可见性：查询与取消只作用于 `notify_target` 等于当前会话的任务（群看群的、单聊看单聊的），越权返回「无权操作」；已绑定用户在单聊中可聚合自己所有 QQ 会话的任务，群聊中不聚合（私人内容不进群）。
 

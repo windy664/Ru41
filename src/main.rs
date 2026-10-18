@@ -2,20 +2,18 @@ use anyhow::{Context, Result};
 use clap::Parser;
 use ru41::bootstrap::agents::{AgentOverrides, registry};
 use ru41::bootstrap::assembly::{
-    default_notify_route, ecard_tracker, notify_channels, paper_tracker, qq_api, rss_tracker,
+    default_notify_route, ecard_tracker, notify_channels, paper_tracker, qq_api,
+    qq_command_handlers, rss_tracker,
 };
 use ru41::{
     adapters::{
         agent::codex,
         database::{postgres::PostgresTaskStore, sqlite::SqliteTaskStore},
-        sources::arxiv::ArxivClient,
     },
     app::task::TaskService,
     bootstrap::config::Config,
-    ingress::{
-        cli::{Cli, Command, EcardCommand, PapersCommand, QqCommand, RssCommand, TaskCommand},
-        qq::QqBot,
-    },
+    channels::qq::QqBot,
+    ingress::cli::{Cli, Command, EcardCommand, PapersCommand, QqCommand, RssCommand, TaskCommand},
     ports::storage::TaskStore,
     privacy::{NoopSanitizer, RandomSanitizer, Sanitizer},
     runtime::dispatcher::NotifyDispatcher,
@@ -151,18 +149,13 @@ async fn main() -> Result<()> {
                 let bind_secret = bind_secret.or_else(|| config.channel.qq.bind_secret.clone());
                 let api = Arc::new(qq_api(&credentials, &config)?);
                 let store = open_store(&store_config)?;
+                let command_handlers = qq_command_handlers(&config, &backend);
                 let bot = QqBot {
                     api: api.clone(),
                     store: store.clone(),
                     backend,
                     bind_secret,
-                    arxiv_client: Some(ArxivClient::new()),
-                    papers_interests: config
-                        .sources
-                        .arxiv
-                        .interests
-                        .clone()
-                        .filter(|s| !s.trim().is_empty()),
+                    command_handlers,
                 };
                 let dispatcher = NotifyDispatcher {
                     store,

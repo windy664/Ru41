@@ -8,7 +8,7 @@ tags: [Ru41, RSS, intelligence, source]
 
 # RSS 信息流追踪说明
 
-通用资讯来源模块：定时抓取配置的订阅源（RSS 2.0 / Atom），去重与关键词粗筛后合成精选 digest 任务交 Codex，终态经 `[notify]` 默认出口推送。与 [arXiv 追踪](sources-arxiv.md) 共用同一 digest 管线；代码：`src/adapters/sources/feed.rs`（通用 feed 抓取与双格式解析）、`src/app/digest.rs`（去重/过滤/入队管线）、`src/app/rss.rs`（逐源编排与 prompt 模板）。
+通用资讯来源模块：定时抓取配置的订阅源（RSS 2.0 / Atom），去重与关键词粗筛后合成精选 digest 任务交 Codex，终态经 `[notify]` 默认出口推送。与 [arXiv 追踪](sources-arxiv.md) 共用同一 digest 管线；代码：`src/adapters/sources/feed.rs`（通用 feed 抓取与双格式解析）、`src/app/digest.rs`（去重/过滤/入队管线）、`src/modules/rss/service.rs`（逐源编排与 prompt 模板）。
 
 ## 与论文模块的差异
 

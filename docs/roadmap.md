@@ -18,6 +18,9 @@
 - [x] 自动行为测试及一次真实 Codex 分析任务验证
 - [x] 定时器入口统一机制：`ingress/schedule.rs` 的 `run_periodic`（名称 + 间隔 + 轮询闭包），papers/rss/ecard 的 run 命令共用（设计文档 8.2 定时器入口；核心组如需收进 runtime 可平移）
 - [x] 装配层收口：附属装配集中在 `bootstrap/assembly.rs`（渠道知识唯一驻地），时间源 `now()` 上移 `util`（worker 保留 re-export）
+- [x] 业务附属垂直模块化：`modules/papers`、`modules/rss`、`modules/ecard` 各自持有配置、来源与业务，论文/水电同时持有 QQ 命令；QQ 通过 `QqCommandHandler` 注册表扩展，不直接依赖业务模块
+- [x] 消息渠道垂直收拢：`channels/qq` 集中机器人、REST/WebSocket 协议与命令接口，`channels/feishu.rs` 持有 webhook 通知；原 messaging 适配目录已移除
+- [x] Docker 部署：多阶段单镜像（内置 Codex）、Compose 分进程/profile、宿主机持久化与 SQLite 在线备份；Pi/浏览器等重依赖后续按独立镜像扩展
 
 ## 核心后续
 

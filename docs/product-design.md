@@ -232,7 +232,7 @@ X 接入需要实测，不预设完整覆盖或实时性。先评估可用 API�
 
 ### 3.10 消息网关：QQ、飞书与钉钉
 
-**目标：从日常聊天工具记录想法、交办任务、查询状态、审核结果，并接收主动简报。** 三个平台共享同一套 Ru41 能力，分别作为可启停的渠道模块接入。QQ 渠道已实现（`src/ingress/qq/`）：群@与单聊消息以 `qq:msg:{msg_id}` 幂等入队；终态通知由应用层 `NotifyDispatcher`（`NotifyChannel` trait）统一轮询 `notify_channel/notify_target/notify_msg_id` 路由派发，QQ 以 `QqNotifier` 注册为首个渠道，飞书/钉钉接入时复用同一机制。协议与限制见 [QQ 渠道说明](channels-qq.md)。
+**目标：从日常聊天工具记录想法、交办任务、查询状态、审核结果，并接收主动简报。** 三个平台共享同一套 Ru41 能力，分别作为可启停的渠道模块接入。QQ 渠道已实现（`src/channels/qq/`）：群@与单聊消息以 `qq:msg:{msg_id}` 幂等入队；终态通知由应用层 `NotifyDispatcher`（`NotifyChannel` trait）统一轮询 `notify_channel/notify_target/notify_msg_id` 路由派发，QQ 以 `QqNotifier` 注册为首个渠道，飞书/钉钉接入时复用同一机制。协议与限制见 [QQ 渠道说明](channels-qq.md)。
 
 | 用户消息或场景 | 产品行为 |
 |---|---|
@@ -258,7 +258,7 @@ X 接入需要实测，不预设完整覆盖或实时性。先评估可用 API�
 | 渠道 | 拟定接入 | 待验证事项 |
 |---|---|---|
 | QQ | 官方机器人 WebSocket 网关 + REST v2（已实现，协议参照 XingtuBot-Spigot 重写）：群@/C2C 收消息、终态被动回复 | 主动推送配额与频控、富媒体与按钮交互 |
-| 飞书 | 群自定义 webhook 通知出口已实现（`src/ingress/feishu.rs`，见 [飞书渠道说明](channels-feishu.md)）；双向交互需应用机器人 | 应用权限、事件订阅、回调连接方式、卡片能力 |
+| 飞书 | 群自定义 webhook 通知出口已实现（`src/channels/feishu.rs`，见 [飞书渠道说明](channels-feishu.md)）；双向交互需应用机器人 | 应用权限、事件订阅、回调连接方式、卡片能力 |
 | 钉钉 | 应用机器人接收消息，评估 Stream 或 HTTP 回调 | 应用权限、回复/主动发送能力、会话凭据有效期 |
 
 飞书自定义群机器人只提供通知能力，双向交互需要应用机器人；钉钉应用机器人支持 Stream 或 HTTP 接收。接入时按实际平台能力配置，不把单向 webhook 当成完整消息网关。[飞书官方说明](https://open.feishu.cn/document/client-docs/bot-v3/add-custom-bot)、[钉钉接收消息](https://open-dingtalk.github.io/developerpedia/docs/learn/bot/appbot/receive/)
@@ -402,22 +402,24 @@ ru41/
 ├── Cargo.toml
 ├── Cargo.lock
 ├── src/
-│   ├── main.rs                 # 启动、装配、关闭
+│   ├── main.rs                 # 进程启动、CLI 分发、优雅关闭
 │   ├── lib.rs                  # 暴露内部可测试服务
 │   ├── domain/                 # 任务、运行、交互、投递、结果契约
-│   ├── app/                    # 公共用例：TaskService、InteractionService
+│   ├── app/                    # 公共用例：TaskService、InteractionService、digest、身份
+│   ├── modules/                # 垂直业务附属：papers、rss、ecard
+│   ├── channels/               # 消息渠道：QQ、飞书
 │   ├── ports/                  # 可替换能力接口：agent、storage、channel、interaction
-│   ├── runtime/                # Worker 与投递 dispatcher 等长驻机制
-│   ├── privacy/                # 脱敏、回填（映射只留宿主侧）
+│   ├── runtime/                # Worker、投递 dispatcher、可靠消费者
+│   ├── privacy/                # 脱敏、回填（映射只留宿主内存）
 │   ├── adapters/
-│   │   ├── agent/              # codex exec（批处理）、codex_session（会话+审批转发）
+│   │   ├── agent/              # codex、pi 等 Agent 底座
 │   │   ├── database/           # sqlite、postgres
-│   │   └── messaging/          # QQ、飞书、钉钉协议适配
+│   │   └── sources/            # 跨模块通用来源协议（RSS/Atom feed）
 │   ├── ingress/
 │   │   ├── http/               # HTTP API、认证、SSE、OpenAPI
-│   │   ├── cli/                # CLI 入口
-│   │   └── qq/                 # 消息接收转公共用例
-│   ├── bootstrap/              # 配置加载
+│   │   ├── cli.rs              # CLI 入口
+│   │   └── schedule.rs         # 通用定时轮询
+│   ├── bootstrap/              # 配置聚合与附属静态装配
 │   └── util/                   # 无业务规则的小工具
 ├── migrations/                 # sqlite 与 postgres 方言各一份
 └── tests/                      # 核心端到端场景与失败恢复
@@ -428,7 +430,8 @@ ru41/
 - `app` 编排公共服务并实施权限、状态与一致性检查。
 - `workflows` 明确业务步骤，复用公共服务；首版用明确函数和任务类型分发。
 - `adapters` 处理外部协议和数据转换，不能自行决定业务成功或审核通过。
-- `main` 负责创建并传入具体实现，不在业务代码中到处创建数据库连接或 Codex 客户端。
+- `modules` 按业务垂直收拢配置、来源、服务与可选渠道命令；`channels` 集中消息渠道实现，核心不反向依赖它们。
+- `main` 只负责启动与命令分发；`bootstrap/assembly.rs` 负责创建并传入具体实现，不在业务代码中到处创建数据库连接或 Agent 客户端。
 - 只对需要替换或模拟的边界定义小型 trait，如 Agent 接入、任务存储和消息发送；普通业务优先用 struct、enum 和函数。
 
 ### 8.4 先定义的数据对象
@@ -481,15 +484,15 @@ SQLite（可切换为 PostgreSQL）保存任务、事件、尝试、审核、来
 - `BackendRegistry` 在启动时注册底座；任务显式绑定后端 ID 和执行契约，不自动跨底座降级。
 - 每次尝试记录后端、模型、会话 ID、结果与错误；会话 ID 不跨底座复用。
 - 当前实现 `analysis_v1`：校验并保存结构化分析结果。工具、恢复和审核能力后续按真实需求扩展，不能假定所有底座相同。
-- 两个模拟底座用于验证同一 Worker 的路由和隔离，真实接入当前只有 Codex。
+- 两个模拟底座用于验证同一 Worker 的路由和隔离，真实接入为 Codex 与可选 Pi（默认关闭）。
 - 底座接口、业务模块和消息渠道分别设计，新增底座尽量不影响已有业务。
 
 #### 信息脱敏（已实现）
 
-Worker 调用 AgentBackend 之前经 `Sanitizer`（`src/app/sanitize.rs`）处理 prompt：手机号、身份证号、邮箱、银行卡号与带前缀的姓名（“姓名：张三”）替换为**语法合法的随机同类假数据**（随机手机号、带校验位的身份证号、Luhn 合法卡号等），不是 `[PHONE_1]` 式占位符，保证 Agent 看到的上下文自然可读。
+Worker 调用 AgentBackend 之前经 `Sanitizer`（`src/privacy/mod.rs`）处理 prompt：手机号、身份证号、邮箱、银行卡号与带前缀的姓名（“姓名：张三”）替换为**语法合法的随机同类假数据**（随机手机号、带校验位的身份证号、Luhn 合法卡号等），不是 `[PHONE_1]` 式占位符，保证 Agent 看到的上下文自然可读。
 
 - 同一真值在一次任务内映射到同一假值，保持上下文一致；假值与原文已有片段或既有假值碰撞时重新生成。
-- 假值→真值的映射表只写入本地尝试目录（`mapping.json`，即审计记录），绝不发给 Agent；日志只记规则类型与次数。
+- 假值→真值的映射表只保留在宿主内存，不写入 Agent 可访问的尝试目录；日志只记规则类型与次数。
 - Agent 返回后先回填真值再校验落库，数据库与渠道通知（如 QQ 回复）都是真实内容。
 - 边界：脱敏只覆盖内置规则识别的结构化敏感信息，不能保证穷尽所有隐私内容；调试时可用 `worker --no-sanitize` 关闭。
 

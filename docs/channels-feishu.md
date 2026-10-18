@@ -8,7 +8,7 @@ tags: [Ru41, 飞书, channel, notify]
 
 # 飞书渠道说明
 
-第二个通知渠道，只负责把终态结果**主动推送**到群，无双向交互（双向需要应用机器人，后续单独接入）。实现为 `src/ingress/feishu.rs` 的 `FeishuWebhookNotifier`（`NotifyChannel` trait），投递仍由 `runtime::dispatcher` 统一轮询与重试。
+第二个通知渠道，只负责把终态结果**主动推送**到群，无双向交互（双向需要应用机器人，后续单独接入）。实现为 `src/channels/feishu.rs` 的 `FeishuWebhookNotifier`（`NotifyChannel` trait），投递仍由 `runtime::dispatcher` 统一轮询与重试。
 
 ## 前置条件
 

@@ -1,11 +1,9 @@
-use crate::{
-    adapters::sources::ecard::{EcardClient, EcardRoom},
-    ports::channel::NotifyChannel,
-    ports::storage::TaskStore,
-};
+use crate::{ports::channel::NotifyChannel, ports::storage::TaskStore};
 use anyhow::Result;
 use serde::Serialize;
 use std::sync::Arc;
+
+use super::source::{EcardClient, EcardRoom};
 
 /// 水电监控配置（对应配置文件的 [sources.ecard]）。
 #[derive(Debug, Clone)]

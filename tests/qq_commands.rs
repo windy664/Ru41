@@ -1,8 +1,12 @@
 use ru41::{
     adapters::database::sqlite::SqliteTaskStore,
     app::task::TaskService,
+    channels::qq::commands::{self, Command, CommandContext, QqCommandHandler},
     domain::{NotifyRoute, TaskStatus},
-    ingress::qq::commands::{self, Command, CommandContext},
+    modules::{
+        ecard::EcardQqCommand,
+        papers::{ArxivClient, PapersQqCommand},
+    },
     ports::storage::TaskStore,
 };
 use std::sync::Arc;
@@ -97,6 +101,7 @@ fn ctx<'a>(
         store: &fixture.store,
         bind_secret: Some("s3cret"),
         target,
+        msg_id: "command-msg",
         author_openid: author,
         is_c2c,
     }
@@ -133,8 +138,13 @@ fn bound_user_aggregates_across_conversations_in_c2c() {
     assert!(!group_view.contains(&format!("#{}", fixture.c2c_task)));
 }
 
-#[test]
-fn utility_command_requires_binding_and_c2c() {
+async fn utility_reply(fixture: &Fixture, target: &str, author: &str, is_c2c: bool) -> String {
+    let context = ctx(fixture, target, author, is_c2c);
+    EcardQqCommand.handle("", &context).await.unwrap().unwrap()
+}
+
+#[tokio::test]
+async fn utility_command_requires_binding_and_c2c() {
     let fixture = fixture();
     // 写入一条读数。
     fixture
@@ -147,8 +157,7 @@ fn utility_command_requires_binding_and_c2c() {
         )
         .unwrap();
     // 未绑定：提示先绑定。
-    let reply =
-        commands::execute(&Command::Utility, &ctx(&fixture, "user:U1", "U1", true)).unwrap();
+    let reply = utility_reply(&fixture, "user:U1", "U1", true).await;
     assert!(reply.contains("先绑定"));
     // 群聊（即使已绑定）：不展示私人数据。
     commands::execute(
@@ -156,63 +165,47 @@ fn utility_command_requires_binding_and_c2c() {
         &ctx(&fixture, "user:U1", "U1", true),
     )
     .unwrap();
-    let reply =
-        commands::execute(&Command::Utility, &ctx(&fixture, "group:G1", "U1", false)).unwrap();
+    let reply = utility_reply(&fixture, "group:G1", "U1", false).await;
     assert!(reply.contains("单聊"));
     // 绑定后单聊：返回余额与数据时间。
-    let reply =
-        commands::execute(&Command::Utility, &ctx(&fixture, "user:U1", "U1", true)).unwrap();
+    let reply = utility_reply(&fixture, "user:U1", "U1", true).await;
     assert!(reply.contains("18.87度"));
     assert!(reply.contains("2.80吨"));
     assert!(reply.contains("测试楼A栋 A#101"));
     assert!(reply.contains("数据时间"));
 }
 
-#[test]
-fn utility_command_without_reading() {
+#[tokio::test]
+async fn utility_command_without_reading() {
     let fixture = fixture();
     commands::execute(
         &Command::Bind("s3cret".into()),
         &ctx(&fixture, "user:U1", "U1", true),
     )
     .unwrap();
-    let reply =
-        commands::execute(&Command::Utility, &ctx(&fixture, "user:U1", "U1", true)).unwrap();
+    let reply = utility_reply(&fixture, "user:U1", "U1", true).await;
     assert!(reply.contains("暂无水电读数"));
 }
 
 #[test]
-fn parses_utility_keywords() {
-    assert_eq!(commands::parse_command("水电"), Some(Command::Utility));
-    assert_eq!(commands::parse_command("电费"), Some(Command::Utility));
-    assert_eq!(commands::parse_command("水费"), Some(Command::Utility));
-    assert_eq!(commands::parse_command("utility"), Some(Command::Utility));
-    // 自然语言不拦截。
-    assert_eq!(commands::parse_command("电费怎么交"), None);
-}
+fn extension_commands_match_aliases_and_join_help() {
+    let ecard = EcardQqCommand;
+    for verb in ["水电", "电费", "水费", "utility"] {
+        assert!(ecard.matches(verb));
+    }
+    assert!(!ecard.matches("电费怎么交"));
 
-#[test]
-fn parses_deep_read_command() {
-    assert_eq!(
-        commands::parse_command("精读 2610.18594"),
-        Some(Command::DeepRead("2610.18594".into()))
-    );
-    assert_eq!(
-        commands::parse_command("deepread 2610.18594v2"),
-        Some(Command::DeepRead("2610.18594v2".into()))
-    );
-    assert_eq!(
-        commands::parse_command("deep 2510.11111"),
-        Some(Command::DeepRead("2510.11111".into()))
-    );
-    // 缺参数、非法 ID、自然语言都不拦截，落回 Agent。
-    assert_eq!(commands::parse_command("精读"), None);
-    assert_eq!(commands::parse_command("精读一下"), None);
-    assert_eq!(commands::parse_command("精读 abc"), None);
-    assert_eq!(commands::parse_command("精读 123.4567"), None);
-    assert_eq!(commands::parse_command("精读 2610.185"), None);
-    assert_eq!(commands::parse_command("精读 2610.18594vx"), None);
-    assert_eq!(commands::parse_command("帮我精读一下这篇论文"), None);
+    let papers = PapersQqCommand::new(ArxivClient::new(), String::new(), "codex".into());
+    for verb in ["精读", "deep", "deepread"] {
+        assert!(papers.matches(verb));
+    }
+    assert!(!papers.matches("精读一下"));
+
+    let handlers: Vec<Arc<dyn QqCommandHandler>> = vec![Arc::new(papers), Arc::new(ecard)];
+    let help = commands::help_text(&handlers);
+    assert!(help.contains("精读 <arxiv-id>"));
+    assert!(help.contains("水电 - 查询宿舍水电余额"));
+    assert!(help.contains("其他消息将作为任务交给 Agent 处理"));
 }
 
 #[test]

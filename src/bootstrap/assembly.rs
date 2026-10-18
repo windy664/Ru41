@@ -3,22 +3,18 @@
 //! 业务模块只拿到解析好的路由与追踪器；新增附属时在此登记装配函数。
 
 use crate::{
-    adapters::sources::{
-        arxiv::ArxivClient,
-        ecard::{EcardClient, EcardRoom},
-        feed::FeedClient,
-    },
-    app::{
-        ecard::{EcardConfig, EcardTracker},
-        papers::{PaperTracker, PapersConfig},
-        rss::{RssConfig, RssTracker},
-    },
+    adapters::sources::feed::FeedClient,
     bootstrap::config::Config,
-    domain::NotifyRoute,
-    ingress::{
-        cli::QqCredentials,
+    channels::{
         feishu::{self, FeishuWebhookNotifier},
-        qq::{QqNotifier, api::QqApiClient},
+        qq::{QqNotifier, api::QqApiClient, commands::QqCommandHandler},
+    },
+    domain::NotifyRoute,
+    ingress::cli::QqCredentials,
+    modules::{
+        ecard::{EcardClient, EcardConfig, EcardQqCommand, EcardRoom, EcardTracker},
+        papers::{ArxivClient, PaperTracker, PapersConfig, PapersQqCommand},
+        rss::{RssConfig, RssTracker},
     },
     ports::{channel::NotifyChannel, storage::TaskStore},
 };
@@ -38,6 +34,18 @@ pub fn notify_channels(
         channels.push(Arc::new(FeishuWebhookNotifier::new(url)));
     }
     Ok(channels)
+}
+
+/// 注册各业务模块提供的 QQ 扩展命令；这是唯一同时认识 QQ 与业务模块的位置。
+pub fn qq_command_handlers(config: &Config, backend: &str) -> Vec<Arc<dyn QqCommandHandler>> {
+    vec![
+        Arc::new(PapersQqCommand::new(
+            ArxivClient::new(),
+            config.sources.arxiv.interests.clone().unwrap_or_default(),
+            backend.to_owned(),
+        )),
+        Arc::new(EcardQqCommand),
+    ]
 }
 
 /// 飞书 webhook URL：环境变量 RU41_FEISHU_WEBHOOK_URL > 配置文件；空串视为未配置。

@@ -1,0 +1,16 @@
+/target/
+/.git/
+/.ru41/
+/ru41.toml
+/.env
+/.env.*
+*.db
+*.db-shm
+*.db-wal
+*.sqlite
+*.sqlite-shm
+*.sqlite-wal
+/deploy/
+/docs/
+/tests/
+/examples/

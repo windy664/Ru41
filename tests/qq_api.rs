@@ -1,4 +1,4 @@
-use ru41::ingress::qq::api::QqApiClient;
+use ru41::channels::qq::api::QqApiClient;
 use std::io::{BufRead, BufReader, Read, Write};
 use std::net::TcpListener;
 use std::sync::{

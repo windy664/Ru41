@@ -1,8 +1,11 @@
 use ru41::{
     adapters::database::sqlite::SqliteTaskStore,
-    adapters::sources::arxiv::{ArxivClient, parse_feed},
-    app::papers::{PaperTracker, PapersConfig, deep_read_task},
+    channels::qq::commands::{CommandContext, QqCommandHandler},
     domain::NotifyRoute,
+    modules::papers::{
+        PaperTracker, PapersConfig, PapersQqCommand, deep_read_task,
+        source::{ArxivClient, parse_feed},
+    },
     ports::storage::TaskStore,
 };
 use std::{
@@ -257,4 +260,40 @@ async fn deep_read_unknown_id_replies_not_found() {
     .unwrap();
     assert!(text.contains("未找到论文 2510.99999"));
     assert!(store.list(10).unwrap().is_empty());
+}
+
+#[tokio::test]
+async fn qq_deep_read_handler_validates_and_executes() {
+    let base = mock_arxiv_server(SAMPLE_FEED);
+    let dir = tempfile::tempdir().unwrap();
+    let store: Arc<dyn TaskStore> =
+        Arc::new(SqliteTaskStore::open(&dir.path().join("state.db")).unwrap());
+    let handler = PapersQqCommand::new(
+        ArxivClient::with_base_url(&base),
+        "AI 安全".into(),
+        "codex".into(),
+    );
+    let ctx = CommandContext {
+        store: &store,
+        bind_secret: None,
+        target: "user:U1",
+        msg_id: "m9",
+        author_openid: "U1",
+        is_c2c: true,
+    };
+
+    // 缺参数与非法 ID 不拦截，交回 QQ 落入普通 Agent 消息。
+    assert!(handler.handle("", &ctx).await.unwrap().is_none());
+    assert!(handler.handle("abc", &ctx).await.unwrap().is_none());
+    assert!(store.list(10).unwrap().is_empty());
+
+    let reply = handler.handle("2510.11111", &ctx).await.unwrap().unwrap();
+    assert!(reply.contains("精读任务已创建"));
+    let tasks = store.list(10).unwrap();
+    assert_eq!(tasks.len(), 1);
+    assert_eq!(tasks[0].request_key, "arxiv:deep:2510.11111");
+    assert_eq!(
+        tasks[0].notify.as_ref().unwrap().msg_id.as_deref(),
+        Some("m9")
+    );
 }

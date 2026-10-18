@@ -1,4 +1,4 @@
-use ru41::ingress::qq::gateway::{
+use ru41::channels::qq::gateway::{
     GatewayEvent, close_forces_reidentify, close_is_fatal, heartbeat_payload, identify_payload,
     parse_dispatch, resume_payload,
 };
@@ -96,5 +96,5 @@ fn close_codes_drive_reconnect_policy() {
 
 #[test]
 fn request_key_is_derived_from_msg_id() {
-    assert_eq!(ru41::ingress::qq::msg_request_key("msg-1"), "qq:msg:msg-1");
+    assert_eq!(ru41::channels::qq::msg_request_key("msg-1"), "qq:msg:msg-1");
 }

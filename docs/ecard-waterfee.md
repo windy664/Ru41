@@ -31,7 +31,7 @@ tags: [Ru41, ecard, 水电费, source]
 
 ## Ru41 模块（已实现）
 
-`src/adapters/sources/ecard.rs`（客户端）+ `src/app/ecard.rs`（编排）：`ecard poll/run` 查询余额 → 读数以 `ecard_reading` 落 records（同日覆盖、跨日成历史，余额回升即充值）→ 阈值判断（纯 Rust，不经 Agent，符合「金额由程序计算」）→ 低余额经 `[notify]` 默认出口提醒，同日 `ecard_alert` 去重不重复打扰。token 与房间参数走 `[sources.ecard]` 本地配置或 `RU41_ECARD_TOKEN`。
+`src/modules/ecard/`（`source.rs` 客户端、`service.rs` 编排、`qq_command.rs` QQ 查询）：`ecard poll/run` 查询余额 → 读数以 `ecard_reading` 落 records（同日覆盖、跨日成历史，余额回升即充值）→ 阈值判断（纯 Rust，不经 Agent，符合「金额由程序计算」）→ 低余额经 `[notify]` 默认出口提醒，同日 `ecard_alert` 去重不重复打扰。token 与房间参数走 `[sources.ecard]` 本地配置或 `RU41_ECARD_TOKEN`。
 
 ## 限制与注意事项
 

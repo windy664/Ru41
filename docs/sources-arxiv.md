@@ -8,7 +8,7 @@ tags: [Ru41, arXiv, papers, source]
 
 # arXiv 论文追踪说明
 
-第一个信息来源模块：定时抓取 arXiv 新论文，经去重与关键词粗筛后合成**一份每日精选 digest 任务**交给 Codex 分析，终态经通知渠道推送。代码：`src/adapters/sources/arxiv.rs`（协议与 Atom 解析）、`src/app/digest.rs`（与 RSS 共用的去重/过滤/入队管线）、`src/app/papers.rs`（编排与 prompt 模板）。
+第一个信息来源模块：定时抓取 arXiv 新论文，经去重与关键词粗筛后合成**一份每日精选 digest 任务**交给 Codex 分析，终态经通知渠道推送。代码：`src/modules/papers/source.rs`（协议与 Atom 解析）、`src/app/digest.rs`（与 RSS 共用的去重/过滤/入队管线）、`src/modules/papers/service.rs`（编排与 prompt 模板）、`src/modules/papers/qq_command.rs`（QQ 精读命令）。
 
 ## 形态：digest 而非逐篇推送
 
