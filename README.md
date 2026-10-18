@@ -59,6 +59,8 @@ Ru41 连接消息、信息来源与 Agent 应用：由 Rust 宿主管理任务�
 
 ## 快速开始
 
+### 01 · 准备环境
+
 需要支持 Rust 2024 edition 的工具链；本地验证使用 Rust 1.98.0、Codex CLI 0.162.1。Codex 需提前安装并完成登录。
 
 ```bash
@@ -71,7 +73,9 @@ cargo run --locked -- backends
 
 `doctor` 仅检查 CLI 版本，不验证登录，也不调用模型。`backends` 列出当前编译注册的底座和支持的契约。
 
-创建分析任务并执行：
+### 02 · 执行第一个任务
+
+创建分析任务、运行一次 Worker，再查看结果与执行历史：
 
 ```bash
 cargo run --locked -- task add --key demo:1 --backend codex --prompt "给个人论文阅读计划列出三个建议"
@@ -107,6 +111,15 @@ cargo run --locked -- task retry 1
 
 ## Docker 部署
 
+**一个镜像，按需启动不同进程。**
+
+| 进程角色 | 职责 |
+| :--- | :--- |
+| Worker | 领取并执行 Agent 任务 |
+| QQ 网关 | 接收消息、入队与回复 |
+| 通知派发 | 将任务结果发送到配置的渠道 |
+| 来源模块 | 周期轮询论文、RSS 或水电数据 |
+
 仓库提供多阶段 `Dockerfile` 和 `deploy/compose.yaml`：一个镜像分别运行 worker、QQ、通知和各来源模块，SQLite、runs 与配置均挂载宿主机目录。最小启动方式：
 
 ```bash
@@ -119,6 +132,16 @@ docker compose -f deploy/compose.yaml up -d worker
 附属通过 Compose profiles 按需启动，`./deploy/backup.sh` 使用 SQLite 在线备份。完整配置、认证、备份恢复和重依赖扩展见 [Docker 部署指南](deploy/README.md)。**Docker 只解决部署与自动重启，不等于断电保护；仍需持久卷、备份和异地副本。**
 
 ## QQ 消息网关
+
+**从聊天发起任务，在原会话接收结果。**
+
+| 入口 | 使用方式 |
+| :--- | :--- |
+| 群聊 / 单聊 | @机器人或直接发送文本，创建分析任务 |
+| 任务管理 | `帮助` · `任务` · `任务 id` · `取消 id` |
+| 业务命令 | `精读 arxiv-id` · `水电` |
+
+[渠道接入说明 →](docs/channels-qq.md)
 
 <details>
 <summary><strong>QQ 启动命令、回复行为与运行数据</strong></summary>
@@ -143,6 +166,14 @@ cargo run --locked -- qq send --qq-app-id <APP_ID> --qq-app-secret <SECRET> --gr
 </details>
 
 ## 附属模块：论文、RSS 与水电
+
+| 模块 | 输入 → 输出 | 运行入口 |
+| :--- | :--- | :--- |
+| [论文追踪](docs/sources-arxiv.md) | arXiv 分类与关键词 → 精选摘要 / 单篇精读 | `papers poll/run` |
+| [信息订阅](docs/sources-rss.md) | RSS / Atom → 与个人兴趣相关的摘要 | `rss poll/run` |
+| [宿舍水电](docs/ecard-waterfee.md) | 校园卡平台 → 余额历史与阈值提醒 | `ecard poll/run` |
+
+来源采集、Agent 执行与通知派发各自运行，通过持久化数据衔接。
 
 <details>
 <summary><strong>论文与 RSS 配置示例、轮询命令及水电接入</strong></summary>
@@ -181,7 +212,17 @@ cargo run --locked -- notify          # 未运行 QQ 网关时的独立通知进
 
 ## 配置文件
 
-除 CLI 参数外，也可以用 TOML 配置文件。加载顺序：`--config <路径>` > `./ru41.toml` > `~/.config/ru41/config.toml`；都没有则用内置默认值。同一配置的取值优先级为 **CLI 参数 > 环境变量 > 配置文件 > 默认值**。`ru41.toml` 已在 `.gitignore` 中（密钥不要进 git），样例见 `ru41.example.toml`：
+从 [ru41.example.toml](ru41.example.toml) 开始配置；本地 `ru41.toml` 已被 Git 忽略，密钥通过环境变量注入。
+
+| 配置规则 | 优先级（从高到低） |
+| :--- | :--- |
+| 文件选择 | `--config <路径>` → `./ru41.toml` → `~/.config/ru41/config.toml` |
+| 字段取值 | CLI 参数 → 环境变量 → 配置文件 → 默认值 |
+
+没有配置文件时使用内置默认值。
+
+<details>
+<summary><strong>配置分区速查</strong></summary>
 
 ```toml
 [store]           # kind = "sqlite"|"postgres"、path、url
@@ -197,6 +238,15 @@ cargo run --locked -- notify          # 未运行 QQ 网关时的独立通知进
 [api]             # listen、token；令牌建议用 RU41_API_TOKEN
 ```
 
+</details>
+
+### 存储选择
+
+| SQLite · 默认 | PostgreSQL · 可选 |
+| :--- | :--- |
+| 本地文件，适合单机部署 | 通过连接串接入数据库服务 |
+| `.ru41/state.db` | `RU41_PG_URL` / `store.url` |
+
 使用 PostgreSQL 作为存储时，通过 `--store postgres --pg-url`（或环境变量 `RU41_PG_URL`、配置 `store.url`）指定连接串，启动时自动执行 `migrations/postgres/` 下的迁移：
 
 ```bash
@@ -207,29 +257,43 @@ cargo run --locked -- --store postgres worker --once
 
 ## 核心架构
 
-```text
-HTTP API / CLI / QQ 网关 / 定时来源
-                  ↓
-   应用服务与业务模块（TaskService / interactions / digest）
-                  ↓
-     TaskStore（SQLite 默认，可选 PostgreSQL）+ 运行/交互/投递记录
-                  ↓
-       Worker：租约、重试、恢复；按任务 backend_id 路由
-                  ↓
-       AgentBackend 通用接口（ports）
-                  ↓
-   Codex exec / Codex app-server / Pi JSONL RPC（均为 analysis_v1）
-                  ↓
-   结果校验与事务保存；交互请求持久化等待用户决定
-                  ↓
-   NotifyDispatcher：独立投递记录，按渠道派发（QQ / 飞书）
+Ru41 管理执行生命周期，Agent 适配器负责对接底座协议。
+
+```mermaid
+flowchart TD
+    entry["HTTP · CLI · QQ · 定时来源"] --> app["应用服务 / 业务模块"]
+    app --> queue[("持久化任务 · SQLite / PostgreSQL")]
+    queue --> worker["Worker · 租约 / 重试 / 路由"]
+    worker --> privacy["脱敏 · 随机同类假值"]
+    privacy --> agent["AgentBackend · Codex / Pi"]
+    agent --> result["校验 · 回填 · 事务保存"]
+    result --> notify["NotifyDispatcher · QQ / 飞书"]
+    result -. 状态事件 .-> events["持久化事件 · SSE / 消费者"]
+    classDef host fill:#172432,stroke:#62bda8,color:#e6edf3
+    classDef edge fill:#202c3b,stroke:#779fc5,color:#e6edf3
+    class app,worker,privacy,result host
+    class entry,queue,agent,notify,events edge
 ```
 
-核心概念分离：**Task 是要完成的工作，AgentRun 是一次底座运行（含状态与 session），Interaction 是底座发出的审批/补充信息请求**。一个任务可多次运行；底座运行成功不等于任务成功。审批由底座触发、Ru41 转发：交互记录持久化到数据库，当前可通过 HTTP API 回复；回复校验选项、有效期与运行状态后经适配器回传底座。QQ 审批命令尚未开放，避免在核心恢复语义完成前提供不可靠入口。
+### 任务、运行与交互
+
+| 概念 | 表达什么 | 边界 |
+| :--- | :--- | :--- |
+| `Task` | 用户希望完成的工作 | 一项任务可以有多次运行 |
+| `AgentRun` | 一次底座运行及其状态、会话 | 底座运行成功不等于任务成功 |
+| `Interaction` | 底座发出的审批 / 补充信息请求 | 由 Ru41 转发与持久化，用户通过 HTTP API 回复 |
+
+
+审批由底座触发、Ru41 转发：交互记录持久化到数据库，当前可通过 HTTP API 回复；回复校验选项、有效期与运行状态后经适配器回传底座。QQ 审批命令尚未开放，避免在核心恢复语义完成前提供不可靠入口。
 
 任务与审核状态变化还会原子写入事件日志，供 SSE 与可靠消费者订阅；现有 QQ/飞书通知仍走 NotifyDispatcher，尚未迁移到事件消费者。
 
 脱敏在 Agent 边界完成：prompt 出站前替换为随机同类假值，映射只保留在宿主内存，日志只记录规则计数，**不落入 Agent 可访问的运行目录**；结果回填真值后落库。
+
+### 代码布局
+
+<details>
+<summary><strong>展开目录与职责</strong></summary>
 
 ```text
 src/
@@ -253,13 +317,22 @@ src/
 └── main.rs           # 进程启动与命令分发
 ```
 
-职责约束：`app` 只描述“做什么”；`runtime` 负责“如何持续执行”；`ports` 定义可替换边界；`adapters` 翻译外部协议，不决定业务成功或审核通过；所有入口（HTTP/CLI/QQ）调用同一套应用服务。
+</details>
+
+| 层 | 核心职责 |
+| :--- | :--- |
+| `app` | 描述用例；所有入口复用同一套应用服务 |
+| `runtime` | 持续执行、调度与通知派发 |
+| `ports` | 定义可替换能力边界 |
+| `adapters` | 翻译外部协议，不决定业务成功或审核通过 |
 
 ### 附属模块如何接入
 
 业务代码按功能放在 `src/modules/<name>/`，消息渠道放在 `src/channels/`；核心不反向依赖业务模块。当前采用**编译期静态装配**，不是放入目录就自动加载的插件系统：`bootstrap/config.rs` 聚合配置，`bootstrap/assembly.rs` 构造 tracker、注册 QQ 命令与通知渠道，`main.rs` 负责命令分发。新增模块的目录约定、注册清单和测试要求见 [附属模块开发指南](docs/module-development.md)。
 
 ## 自定义模型 API
+
+通过 Ru41 配置向 Codex 传入供应商设置，API Key 由子进程从环境变量读取。
 
 <details>
 <summary><strong>自定义供应商配置与参数说明</strong></summary>
@@ -283,6 +356,8 @@ wire_api = "chat"
 </details>
 
 ## Pi 底座（可选）
+
+**同一套 Worker，按任务选择底座。** Pi 默认关闭，启用后可使用 `backend = "pi"` 路由。
 
 <details>
 <summary><strong>启用 Pi 并创建任务</strong></summary>
@@ -309,6 +384,10 @@ Pi 首版不支持工具、会话恢复或审批；协议边界与验证范围�
 
 ## HTTP API
 
+**服务入口与任务执行分离。** `serve` 提供 API，独立 Worker 负责执行任务；API、CLI 与 QQ 共用应用服务和存储。
+
+### 启动与调用
+
 ```bash
 export RU41_API_TOKEN=$(openssl rand -hex 24)   # 至少 24 字节
 cargo run --locked -- serve --listen 127.0.0.1:4141
@@ -322,15 +401,34 @@ curl -X POST -H "Authorization: Bearer $RU41_API_TOKEN" -H "Content-Type: applic
   http://127.0.0.1:4141/api/v1/interactions/{id}/reply
 ```
 
-端点：`GET/POST /api/v1/tasks`、`GET /api/v1/tasks/{id}`、`POST /api/v1/tasks/{id}/cancel|retry`、`GET /api/v1/backends`、`GET /api/v1/runs`、`GET /api/v1/interactions`、`POST /api/v1/interactions/{id}/reply`、`GET /api/v1/events`（SSE）、`GET /api/v1/consumers/{name}`、`POST /api/v1/consumers/{name}/retry`、`GET /api/v1/openapi.json`。API 与 CLI、QQ 共用同一套应用服务与存储；任务由独立 worker 进程执行，serve 只做入口。事件游标与消费者恢复语义见 [事件文档](docs/events.md)和[消费者文档](docs/event-consumers.md)。
+### 接口速查
+
+所有路径均以 `/api/v1` 为前缀。
+
+| 资源 | 方法与路径 | 用途 |
+| :--- | :--- | :--- |
+| 任务 | `GET /tasks` · `POST /tasks` · `GET /tasks/{id}` | 创建、列表与详情 |
+| 任务控制 | `POST /tasks/{id}/cancel` · `POST /tasks/{id}/retry` | 取消与重试 |
+| 底座与运行 | `GET /backends` · `GET /runs` | 查询底座及运行记录 |
+| 交互 | `GET /interactions` · `POST /interactions/{id}/reply` | 查询与回复底座请求 |
+| 事件流 | `GET /events` | 可续传 SSE |
+| 消费者 | `GET /consumers/{name}` · `POST /consumers/{name}/retry` | 消费状态与重试 |
+| 接口规范 | `GET /openapi.json` | OpenAPI 文档 |
+
+[事件与游标 →](docs/events.md) · [可靠消费者与恢复 →](docs/event-consumers.md)
 
 ## 文档导航
 
-- 产品与规划：[产品设计](docs/product-design.md)、[开发路线](docs/roadmap.md)、[核心状态](docs/core-status.md)
-- 渠道：[QQ](docs/channels-qq.md)、[飞书](docs/channels-feishu.md)
-- 来源与业务：[arXiv](docs/sources-arxiv.md)、[RSS](docs/sources-rss.md)、[水电监控](docs/ecard-waterfee.md)
-- Agent 与运行时：[底座架构](docs/agent-architecture.md)、[底座接入](docs/agent-backends.md)、[Pi](docs/agent-pi.md)、[事件](docs/events.md)、[可靠消费者](docs/event-consumers.md)
-- 扩展开发：[附属模块开发指南](docs/module-development.md)；全部文档见 [docs 索引](docs/README.md)
+| 我想…… | 从这里开始 |
+| :--- | :--- |
+| 了解产品方向与进度 | [产品设计](docs/product-design.md) · [路线图](docs/roadmap.md) · [核心状态](docs/core-status.md) |
+| 部署到自己的服务器 | [Docker 部署](deploy/README.md) · [配置样例](ru41.example.toml) |
+| 接入消息渠道 | [QQ](docs/channels-qq.md) · [飞书](docs/channels-feishu.md) |
+| 配置个人信息来源 | [arXiv](docs/sources-arxiv.md) · [RSS](docs/sources-rss.md) · [水电](docs/ecard-waterfee.md) |
+| 增加一个 Agent 底座 | [底座架构](docs/agent-architecture.md) · [接入契约](docs/agent-backends.md) · [Pi](docs/agent-pi.md) |
+| 订阅事件或开发新模块 | [事件](docs/events.md) · [消费者](docs/event-consumers.md) · [模块开发](docs/module-development.md) |
+
+[浏览全部文档 →](docs/README.md)
 
 ## 开发检查
 
@@ -341,3 +439,13 @@ cargo test --locked
 ```
 
 自动测试使用模拟 Agent 或本地假进程，不调用付费模型、不访问真实 Vault。覆盖数据库升级、并发领取、租约接管、取消竞态、重试预算、协议错误、日志上限、进程清理与多底座路由。
+
+---
+
+<div align="center">
+
+**Ru41 · 让个人自动化持续运转。**
+
+[返回顶部](#ru41) · [开发路线](docs/roadmap.md) · [报告问题](https://github.com/windy664/Ru41/issues)
+
+</div>
