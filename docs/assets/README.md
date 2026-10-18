@@ -1,0 +1,13 @@
+# README 视觉资源
+
+- `task-flow.gif`：原创任务流程动画，1200 × 370，循环时长 2.56 秒；GIF 编码会合并相同帧。
+- `task-flow.png`：同一流程的静态版本，供不希望观看动画的读者使用。
+- `render-flow.py`：使用 Pillow 绘制的生成脚本，无远程图片依赖。不是运行状态可视化。
+
+重新生成：安装 Pillow，确保系统存在 DejaVu Sans Mono 字体（路径见脚本），在仓库根目录执行：
+
+```bash
+python3 docs/assets/render-flow.py
+```
+
+修改流程节点时应同步 README 的图片替代文本。图中文字使用英文以兼顾字体可复现性，README 替代文本提供中文说明。

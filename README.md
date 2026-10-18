@@ -1,10 +1,41 @@
+<div align="center">
+
 # Ru41
 
-Rust 编写的个人自动化助手：以持久化任务和可替换 Agent 底座为核心，通过 QQ、飞书、HTTP API 与定时来源处理个人想法、一手信息和任务；Obsidian Vault 闭环仍在规划中。
+**把日常信息交给流程，把注意力留给自己。**
 
-> 当前 v0.2 已跑通任务执行、消息通知和多个真实附属模块，但尚未接入真实 Vault、Git 自动归档或需要审批的外部写入动作。`succeeded` 表示分析结果已校验并保存，不表示已完成用户描述的任意外部操作。核心未完成项见 [核心宿主状态](docs/core-status.md)。
+Rust 个人自动化宿主 · 可替换 Agent · 模块化信息处理
 
-## 已实现
+[![Rust checks](https://github.com/windy664/Ru41/actions/workflows/ci.yml/badge.svg)](https://github.com/windy664/Ru41/actions/workflows/ci.yml)
+![Rust](https://img.shields.io/badge/Rust-2024_edition-d99a6c?style=flat-square)
+![Agents](https://img.shields.io/badge/Agents-Codex_%2F_Pi-62bda8?style=flat-square)
+![Storage](https://img.shields.io/badge/Storage-SQLite_%2F_PostgreSQL-779fc5?style=flat-square)
+
+[快速开始](#快速开始) · [能力概览](#能力概览) · [核心架构](#核心架构) · [部署指南](deploy/README.md) · [文档索引](docs/README.md)
+
+![Ru41 任务流程：输入经 Rust 宿主排队与脱敏，调用 Codex 或 Pi，校验并保存结果后通过 QQ 或飞书通知；底层支持 SQLite、PostgreSQL 与持久化事件。](docs/assets/task-flow.gif)
+
+<sub>流程示意，非实时监控 · <a href="docs/assets/task-flow.png">查看静态图片</a></sub>
+
+</div>
+
+Ru41 连接消息、信息来源与 Agent 应用：由 Rust 宿主管理任务、存储、脱敏、事件和通知，让 Codex 或 Pi 完成分析。业务模块按需接入，入口与执行相互独立。
+
+> **当前阶段 · v0.2**：任务执行、消息通知与多个业务模块已落地。Obsidian Vault、Git 自动归档与需要审批的外部写入动作仍待接入。`succeeded` 表示分析结果已校验并保存。详见[核心宿主状态](docs/core-status.md)。
+
+## 能力概览
+
+| 方向 | 当前能力 | 了解更多 |
+| :--- | :--- | :--- |
+| 消息与通知 | QQ 群 @ / 单聊入队，任务结果回复；飞书群 webhook 推送 | [QQ](docs/channels-qq.md) · [飞书](docs/channels-feishu.md) |
+| 一手信息 | arXiv 论文追踪与单篇精读，RSS / Atom 筛选与摘要 | [论文](docs/sources-arxiv.md) · [RSS](docs/sources-rss.md) |
+| 宿舍日常 | 校园卡平台水电余额、历史读数、低余额提醒 | [水电监控](docs/ecard-waterfee.md) |
+| Agent 接入 | Codex 与可选 Pi，共用任务管线；Codex 支持自定义模型 API | [底座接入](docs/agent-backends.md) · [Pi](docs/agent-pi.md) |
+| 可靠执行 | 持久化任务、租约、重试、取消、多数据库、随机假值脱敏与回填 | [架构](docs/agent-architecture.md) |
+| 开发集成 | HTTP API、审批转发、可续传 SSE、可靠事件消费者 | [事件](docs/events.md) · [消费者](docs/event-consumers.md) |
+
+<details>
+<summary><strong>展开完整能力与当前边界</strong></summary>
 
 - 任务创建、去重、查询、取消、失败重试和每次执行的历史。
 - SQLite 原子领取、租约续期、过期接管和旧 Worker 写入拦截；存储经 `TaskStore` trait 抽象，SQLite 为默认实现，另提供 PostgreSQL 适配器（`--store postgres`）。
@@ -23,6 +54,8 @@ Rust 编写的个人自动化助手：以持久化任务和可替换 Agent 底�
 - 旧版数据库自动迁移；自动行为测试与 GitHub Actions。
 
 当前真实底座为 **Codex** 与可选 **Pi**；其他 Agent 不会因接口存在而自动可用。两个底座目前都不提供会话续接或外部写入工具，模拟后端仅用于验证公共接口与路由。
+
+</details>
 
 ## 快速开始
 
@@ -47,7 +80,10 @@ cargo run --locked -- task show 1
 cargo run --locked -- task attempts 1
 ```
 
-Worker 会实际调用 Codex，使用已有认证并消耗对应额度。适配器使用 `--ignore-user-config`、`--sandbox read-only` 和独立尝试目录；不加载用户自定义模型后端或 MCP 配置。可通过 `--model` 显式选择账户可用模型。只读沙箱不是独立机器或完整数据隔离。
+Worker 会实际调用 Codex，使用已有认证并消耗对应额度。适配器使用 `--ignore-user-config`、`--sandbox read-only` 和独立尝试目录；不自动加载用户原生 Codex 配置；自定义供应商与启动覆盖通过 Ru41 配置显式传入。可通过 `--model` 显式选择账户可用模型。只读沙箱不是独立机器或完整数据隔离。
+
+<details>
+<summary><strong>常驻运行、取消与重试语义</strong></summary>
 
 常驻运行、取消和手动重试：
 
@@ -67,6 +103,8 @@ cargo run --locked -- task retry 1
 - 同一次输入重试使用相同 `--key`、内容和底座；改变其中内容或底座要使用新键。
 - `worker --once` 返回的是一次调度报告，请检查 JSON 的 `status`；一次业务失败不等于 Worker 命令异常退出。
 
+</details>
+
 ## Docker 部署
 
 仓库提供多阶段 `Dockerfile` 和 `deploy/compose.yaml`：一个镜像分别运行 worker、QQ、通知和各来源模块，SQLite、runs 与配置均挂载宿主机目录。最小启动方式：
@@ -81,6 +119,9 @@ docker compose -f deploy/compose.yaml up -d worker
 附属通过 Compose profiles 按需启动，`./deploy/backup.sh` 使用 SQLite 在线备份。完整配置、认证、备份恢复和重依赖扩展见 [Docker 部署指南](deploy/README.md)。**Docker 只解决部署与自动重启，不等于断电保护；仍需持久卷、备份和异地副本。**
 
 ## QQ 消息网关
+
+<details>
+<summary><strong>QQ 启动命令、回复行为与运行数据</strong></summary>
 
 接入 QQ 官方机器人开放平台（需在平台后台创建机器人并开启「群聊@消息 / C2C 消息」权限）。网关只负责收消息入队和结果回复，任务执行仍需 Worker 进程：
 
@@ -99,7 +140,12 @@ cargo run --locked -- qq send --qq-app-id <APP_ID> --qq-app-secret <SECRET> --gr
 
 运行数据默认位于 `.ru41/state.db` 和 `.ru41/runs/`，可以分别通过 `--db`、`--runs-dir` 指定。不要将运行数据放进 Vault。日志包含任务内容及模型输出，需要按私人数据管理；当前没有自动清理策略。
 
+</details>
+
 ## 附属模块：论文、RSS 与水电
+
+<details>
+<summary><strong>论文与 RSS 配置示例、轮询命令及水电接入</strong></summary>
 
 三个业务模块都通过 TOML 配置和 `bootstrap/assembly.rs` 静态装配，不需要修改 Worker。最小论文/RSS 配置示例：
 
@@ -131,6 +177,8 @@ cargo run --locked -- notify          # 未运行 QQ 网关时的独立通知进
 
 水电模块使用 `[sources.ecard]`，必填平台地址、token 和房间参数；密钥建议经 `RU41_ECARD_TOKEN` 注入，完整字段见 `ru41.example.toml`。详细说明：[arXiv](docs/sources-arxiv.md)、[RSS](docs/sources-rss.md)、[水电](docs/ecard-waterfee.md)、[飞书通知](docs/channels-feishu.md)。
 
+</details>
+
 ## 配置文件
 
 除 CLI 参数外，也可以用 TOML 配置文件。加载顺序：`--config <路径>` > `./ru41.toml` > `~/.config/ru41/config.toml`；都没有则用内置默认值。同一配置的取值优先级为 **CLI 参数 > 环境变量 > 配置文件 > 默认值**。`ru41.toml` 已在 `.gitignore` 中（密钥不要进 git），样例见 `ru41.example.toml`：
@@ -152,7 +200,8 @@ cargo run --locked -- notify          # 未运行 QQ 网关时的独立通知进
 使用 PostgreSQL 作为存储时，通过 `--store postgres --pg-url`（或环境变量 `RU41_PG_URL`、配置 `store.url`）指定连接串，启动时自动执行 `migrations/postgres/` 下的迁移：
 
 ```bash
-cargo run --locked -- --store postgres --pg-url postgres://user:pass@localhost:5432/ru41 task list
+export RU41_PG_URL="postgres://user:pass@localhost:5432/ru41"
+cargo run --locked -- --store postgres task list
 cargo run --locked -- --store postgres worker --once
 ```
 
@@ -212,6 +261,9 @@ src/
 
 ## 自定义模型 API
 
+<details>
+<summary><strong>自定义供应商配置与参数说明</strong></summary>
+
 底座默认用你本机的 Codex 登录；也可以让 codex 走任意 OpenAI 兼容端点（OpenRouter、DeepSeek、本地 vLLM 等）：
 
 ```toml
@@ -228,7 +280,12 @@ wire_api = "chat"
 
 实现方式是 codex 官方的 `-c model_providers.<id>={...}` 与 `-c model_provider=<id>` 启动覆盖，`exec` 与 `app-server`（会话+审批）两种模式都生效。密钥只经环境变量由 codex 子进程自读，宿主与配置文件不接触密钥值。参数由 `adapters/agent/codex/provider.rs` 校验并生成。
 
+</details>
+
 ## Pi 底座（可选）
+
+<details>
+<summary><strong>启用 Pi 并创建任务</strong></summary>
 
 Pi 默认不注册，认证与自定义提供方由 Pi 原生配置管理。启用后可按 `backend = "pi"` 创建任务，与 Codex 共用同一个 Worker：
 
@@ -248,6 +305,8 @@ cargo run --locked -- worker --once
 
 Pi 首版不支持工具、会话恢复或审批；协议边界与验证范围见 [Pi 底座](docs/agent-pi.md)。
 
+</details>
+
 ## HTTP API
 
 ```bash
@@ -256,7 +315,7 @@ cargo run --locked -- serve --listen 127.0.0.1:4141
 
 curl -H "Authorization: Bearer $RU41_API_TOKEN" http://127.0.0.1:4141/api/v1/tasks
 curl -X POST -H "Authorization: Bearer $RU41_API_TOKEN" -H "Content-Type: application/json" \
-  -d '{"key":"api:1","prompt":"整理收件箱","backend":"codex"}' \
+  -d '{"key":"api:1","prompt":"给个人论文阅读计划列出三个建议","backend":"codex"}' \
   http://127.0.0.1:4141/api/v1/tasks
 curl -X POST -H "Authorization: Bearer $RU41_API_TOKEN" -H "Content-Type: application/json" \
   -d '{"decision":"accept"}' \
