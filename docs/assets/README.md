@@ -11,3 +11,11 @@ python3 docs/assets/render-flow.py
 ```
 
 修改流程节点时应同步 README 的图片替代文本。图中文字使用英文以兼顾字体可复现性，README 替代文本提供中文说明。
+
+## 架构图
+
+`architecture.png` 为直接嵌入的静态架构图，不依赖 Mermaid 渲染。使用 Pillow 与 Noto Sans CJK 字体重新生成：
+
+```bash
+python3 docs/assets/render-architecture.py
+```

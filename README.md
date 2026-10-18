@@ -259,21 +259,7 @@ cargo run --locked -- --store postgres worker --once
 
 Ru41 管理执行生命周期，Agent 适配器负责对接底座协议。
 
-```mermaid
-flowchart TD
-    entry["HTTP · CLI · QQ · 定时来源"] --> app["应用服务 / 业务模块"]
-    app --> queue[("持久化任务 · SQLite / PostgreSQL")]
-    queue --> worker["Worker · 租约 / 重试 / 路由"]
-    worker --> privacy["脱敏 · 随机同类假值"]
-    privacy --> agent["AgentBackend · Codex / Pi"]
-    agent --> result["校验 · 回填 · 事务保存"]
-    result --> notify["NotifyDispatcher · QQ / 飞书"]
-    result -. 状态事件 .-> events["持久化事件 · SSE / 消费者"]
-    classDef host fill:#172432,stroke:#62bda8,color:#e6edf3
-    classDef edge fill:#202c3b,stroke:#779fc5,color:#e6edf3
-    class app,worker,privacy,result host
-    class entry,queue,agent,notify,events edge
-```
+![Ru41 核心架构：入口与应用服务将任务持久化，Worker 经过脱敏调用 Codex 或 Pi，校验回填后保存结果，再通过通知渠道与持久化事件对外提供结果。](docs/assets/architecture.png)
 
 ### 任务、运行与交互
 
