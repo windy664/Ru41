@@ -5,16 +5,13 @@ use ru41::bootstrap::assembly::{
     default_notify_route, ecard_tracker, notify_channels, paper_tracker, qq_api,
     qq_command_handlers, rss_tracker,
 };
+use ru41::bootstrap::store::{open_store, resolve as resolve_store};
 use ru41::{
-    adapters::{
-        agent::codex,
-        database::{postgres::PostgresTaskStore, sqlite::SqliteTaskStore},
-    },
     app::task::TaskService,
     bootstrap::config::Config,
     channels::qq::QqBot,
     ingress::cli::{Cli, Command, EcardCommand, PapersCommand, QqCommand, RssCommand, TaskCommand},
-    ports::storage::TaskStore,
+    ingress::cli_ops,
     privacy::{NoopSanitizer, RandomSanitizer, Sanitizer},
     runtime::dispatcher::NotifyDispatcher,
     runtime::worker::{Worker, WorkerConfig},
@@ -25,23 +22,23 @@ use tokio::sync::watch;
 #[tokio::main]
 async fn main() -> Result<()> {
     let cli = Cli::parse();
+    if let Some(outcome) = cli_ops::try_run(&cli).await? {
+        println!("{}", serde_json::to_string_pretty(&outcome.value)?);
+        if !outcome.success {
+            std::process::exit(1);
+        }
+        return Ok(());
+    }
     let (config, config_path) = Config::load(cli.config.as_deref())?;
-    // 存储解析在移动 command 之前完成（CLI > 环境变量 > 配置文件 > 默认值）。
-    let store_kind = cli
-        .store
-        .clone()
-        .or_else(|| config.store.kind.clone())
-        .unwrap_or_else(|| "sqlite".into());
-    let store_db = cli
-        .db
-        .clone()
-        .or_else(|| config.store.path.clone())
-        .unwrap_or_else(|| PathBuf::from(".ru41/state.db"));
-    let store_pg_url = cli.pg_url.clone().or_else(|| config.store.url.clone());
+    let store_config = resolve_store(
+        cli.store.clone(),
+        cli.db.clone(),
+        cli.pg_url.clone(),
+        &config,
+    );
     if let Some(path) = &config_path {
         eprintln!("[config] using {}", path.display());
     }
-    let store_config = (store_kind, store_db, store_pg_url);
     let output = match cli.command {
         Command::Serve { listen } => {
             // 令牌优先级：环境变量 > 配置文件。
@@ -69,12 +66,13 @@ async fn main() -> Result<()> {
                 .await?;
             return Ok(());
         }
-        Command::Doctor => serde_json::json!({
-            "codex_version": codex::version()?,
-            "model_invoked": false,
-            "authentication_checked": false,
-            "stage": "task-execution"
-        }),
+        Command::Init { .. }
+        | Command::Doctor { .. }
+        | Command::Config { .. }
+        | Command::Status
+        | Command::Dump => {
+            unreachable!("handled by cli_ops")
+        }
         Command::Backends => {
             serde_json::to_value(registry(&config.agent, AgentOverrides::default())?.descriptors())?
         }
@@ -178,6 +176,7 @@ async fn main() -> Result<()> {
                 let api = qq_api(&credentials, &config)?;
                 serde_json::to_value(api.send_group_text(&group_openid, &text, None, 1).await?)?
             }
+            QqCommand::Doctor { .. } => unreachable!("handled by cli_ops"),
         },
         Command::Notify => {
             let channels = notify_channels(&config, None)?;
@@ -291,25 +290,6 @@ async fn main() -> Result<()> {
     };
     println!("{}", serde_json::to_string_pretty(&output)?);
     Ok(())
-}
-
-/// CLI > 环境变量（clap env）> 配置文件 > 默认值。
-fn open_store(
-    (kind, db, pg_url): &(String, PathBuf, Option<String>),
-) -> Result<Arc<dyn TaskStore>> {
-    match kind.as_str() {
-        "sqlite" => Ok(Arc::new(SqliteTaskStore::open(db)?)),
-        "postgres" => {
-            let url = pg_url.as_deref().context(
-                "--store postgres requires --pg-url, RU41_PG_URL or store.url in config",
-            )?;
-            // postgres 同步客户端内部会 block_on，需离开当前 runtime 上下文。
-            Ok(Arc::new(tokio::task::block_in_place(|| {
-                PostgresTaskStore::open(url)
-            })?))
-        }
-        other => anyhow::bail!("unknown store backend: {other}"),
-    }
 }
 
 /// SIGINT/SIGTERM 触发的优雅关闭信号。

@@ -14,15 +14,20 @@ sanitize = true                 # Agent 调用前的信息脱敏
 [agent.codex]
 # bin = "codex"
 # model = "gpt-5.2-codex"
+# output_schema = false             # 供应商不接受 json_schema 时，改用 prompt 约束 + Ru41 校验
+# config_overrides = [              # 附加 codex -c 配置；路径需用绝对路径
+#   'model_catalog_json="/absolute/path/model-catalogs.json"',
+#   'web_search="disabled"',
+# ]
 
-# 自定义模型提供方（可选）：让 codex 走任意 OpenAI 兼容或 Responses 端点。
+# 自定义模型提供方（可选）：让 codex 走 OpenAI Responses 兼容端点。
 # 密钥从 api_key_env 指定的环境变量读取（由 codex 子进程自读），不写进本文件。
 # [agent.codex.provider]
 # id = "openrouter"                 # provider 标识
 # name = "OpenRouter"               # 展示名（缺省同 id）
 # base_url = "https://openrouter.ai/api/v1"
 # api_key_env = "OPENROUTER_API_KEY"
-# wire_api = "chat"                 # chat=Chat Completions 兼容；responses=Responses API
+# wire_api = "responses"            # Codex 0.163+ 仅支持 responses；chat 仅用于旧版
 bin = "codex"
 # model = "gpt-5-codex"
 

@@ -50,11 +50,21 @@ Rust 编写的个人自动化宿主，接入 Codex / Pi，串联消息、信息�
 git clone https://github.com/windy664/Ru41.git
 cd Ru41
 cargo build --locked
+cargo run --locked -- init --non-interactive
 cargo run --locked -- doctor
 cargo run --locked -- backends
 ```
 
-`doctor` 检查 CLI 版本，`backends` 查看已注册底座；它们不验证模型调用是否可用。
+`init` 幂等创建最小配置、数据目录和数据库，不覆盖已有配置，也不接收密钥。`doctor` 默认只做离线检查；`doctor --deep` 才会连接数据库并真实调用模型。`backends` 查看已注册底座。
+
+常用运维命令：
+
+```bash
+cargo run --locked -- config check  # 配置与供应商装配校验
+cargo run --locked -- status        # 任务计数与启用组件
+cargo run --locked -- dump          # 脱敏排障报告
+cargo run --locked -- qq doctor     # QQ 凭证与 gateway，不发消息
+```
 
 ### 2. 创建并执行任务
 

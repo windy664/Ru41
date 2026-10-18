@@ -47,7 +47,7 @@ fn home_config_used_when_cwd_has_none() {
     std::fs::create_dir_all(home.path().join(".config/ru41")).unwrap();
     std::fs::write(
         home.path().join(".config/ru41/config.toml"),
-        "[agent.codex]\nbin = \"/opt/codex\"\nmodel = \"gpt-5\"\n[channel.qq]\napp_id = \"123\"\nbind_secret = \"s3cret\"\n",
+        "[agent.codex]\nbin = \"/opt/codex\"\nmodel = \"gpt-5\"\noutput_schema = false\nconfig_overrides = ['web_search=\"disabled\"']\n[channel.qq]\napp_id = \"123\"\nbind_secret = \"s3cret\"\n",
     )
     .unwrap();
     let (config, path) = Config::load_from(None, cwd.path(), Some(home.path())).unwrap();
@@ -57,6 +57,11 @@ fn home_config_used_when_cwd_has_none() {
         Some(PathBuf::from("/opt/codex").as_path())
     );
     assert_eq!(config.agent.codex.model.as_deref(), Some("gpt-5"));
+    assert_eq!(config.agent.codex.output_schema, Some(false));
+    assert_eq!(
+        config.agent.codex.config_overrides,
+        vec!["web_search=\"disabled\"".to_owned()]
+    );
     assert_eq!(config.channel.qq.app_id.as_deref(), Some("123"));
     assert_eq!(config.channel.qq.bind_secret.as_deref(), Some("s3cret"));
 }

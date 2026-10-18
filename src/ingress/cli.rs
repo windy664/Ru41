@@ -22,14 +22,33 @@ pub struct Cli {
 
 #[derive(Subcommand)]
 pub enum Command {
+    /// 初始化配置、数据目录和数据库；不接收或写入密钥。
+    Init {
+        #[arg(long)]
+        non_interactive: bool,
+        #[arg(long, value_parser = ["codex", "mimo"])]
+        provider: Option<String>,
+    },
     /// 启动 HTTP API；任务由独立 worker 执行。
     Serve {
         /// 监听地址；缺省取配置 [api].listen 或 127.0.0.1:4141。
         #[arg(long)]
         listen: Option<std::net::SocketAddr>,
     },
-    /// 检查本地 Codex CLI 是否可用；不调用模型。
-    Doctor,
+    /// 检查配置与本地运行环境；--deep 才会调用模型。
+    Doctor {
+        #[arg(long)]
+        deep: bool,
+    },
+    /// 查看或校验配置；敏感值默认脱敏。
+    Config {
+        #[command(subcommand)]
+        command: ConfigCommand,
+    },
+    /// 查看任务与启用组件概况。
+    Status,
+    /// 输出适合排障分享的脱敏配置与状态报告。
+    Dump,
     /// 列出已注册的运行时底座及其支持的契约。
     Backends,
     /// 执行队列中的分析任务；底座由任务的 backend_id 路由决定。
@@ -77,6 +96,16 @@ pub enum Command {
         #[command(subcommand)]
         command: EcardCommand,
     },
+}
+
+#[derive(Subcommand)]
+pub enum ConfigCommand {
+    /// 输出当前配置文件路径及是否存在。
+    Path,
+    /// 输出脱敏后的配置。
+    Show,
+    /// 校验配置和供应商装配，不访问网络或数据库。
+    Check,
 }
 
 #[derive(Subcommand)]
@@ -134,6 +163,11 @@ pub enum QqCommand {
         group_openid: String,
         #[arg(long)]
         text: String,
+    },
+    /// 检查 QQ 凭证和 gateway；不连接 WebSocket、不发送消息。
+    Doctor {
+        #[command(flatten)]
+        credentials: QqCredentials,
     },
 }
 

@@ -52,6 +52,7 @@ echo 'diagnostic' >&2
     );
     let agent = CodexAgent {
         config_overrides: Vec::new(),
+        output_schema: true,
         executable: bin,
         model: None,
     };
@@ -80,6 +81,7 @@ async fn rejects_nonzero_exit_bad_json_and_missing_completion() {
         let dir = tempfile::tempdir().unwrap();
         let agent = CodexAgent {
             config_overrides: Vec::new(),
+            output_schema: true,
             executable: executable(dir.path(), body),
             model: None,
         };
@@ -95,6 +97,7 @@ async fn drains_stderr_concurrently_and_limits_log_size() {
     let dir = tempfile::tempdir().unwrap();
     let agent = CodexAgent {
         config_overrides: Vec::new(),
+        output_schema: true,
         executable: executable(
             dir.path(),
             r#"
@@ -120,6 +123,7 @@ async fn dropping_run_terminates_subprocess_group() {
     let dir = tempfile::tempdir().unwrap();
     let agent = CodexAgent {
         config_overrides: Vec::new(),
+        output_schema: true,
         executable: executable(dir.path(), "sleep 60 &\necho $! > child.pid\nwait"),
         model: None,
     };
@@ -168,6 +172,7 @@ printf '%s' '{"summary":"ok"}' > "$output"
         ],
         executable: bin,
         model: Some("gpt-test".into()),
+        output_schema: true,
     };
     agent.run(request(dir.path())).await.unwrap();
     let args = std::fs::read_to_string(dir.path().join("run/received-args.txt")).unwrap();
@@ -192,4 +197,47 @@ printf '%s' '{"summary":"ok"}' > "$output"
         provider_pos < stdin_pos,
         "provider overrides must precede stdin marker: {argv:?}"
     );
+}
+
+#[tokio::test]
+async fn accepts_recoverable_error_when_turn_completes() {
+    let dir = tempfile::tempdir().unwrap();
+    let bin = executable(
+        dir.path(),
+        r#"
+printf '%s\n' '{"type":"error","message":"Reconnecting..."}' '{"type":"turn.completed"}'
+printf '%s' '{"summary":"recovered"}' > "$output"
+"#,
+    );
+    let agent = CodexAgent {
+        config_overrides: Vec::new(),
+        output_schema: true,
+        executable: bin,
+        model: None,
+    };
+    let output = agent.run(request(dir.path())).await.unwrap();
+    assert_eq!(output.result.summary, "recovered");
+}
+
+#[tokio::test]
+async fn native_output_schema_can_be_disabled() {
+    let dir = tempfile::tempdir().unwrap();
+    let bin = executable(
+        dir.path(),
+        r#"
+printf '%s\n' '{"type":"turn.completed"}'
+printf '%s' '{"summary":"prompt-only"}' > "$output"
+"#,
+    );
+    let agent = CodexAgent {
+        config_overrides: Vec::new(),
+        output_schema: false,
+        executable: bin,
+        model: None,
+    };
+    let output = agent.run(request(dir.path())).await.unwrap();
+    assert_eq!(output.result.summary, "prompt-only");
+    let args = std::fs::read_to_string(dir.path().join("run/received-args.txt")).unwrap();
+    assert!(!args.contains("--output-schema"));
+    assert!(args.contains("--output-last-message"));
 }

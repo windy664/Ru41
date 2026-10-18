@@ -56,6 +56,8 @@ pub struct AgentSection {
 pub struct CodexSection {
     pub bin: Option<PathBuf>,
     pub model: Option<String>,
+    pub output_schema: Option<bool>,
+    pub config_overrides: Vec<String>,
     pub provider: Option<CodexProviderSection>,
 }
 
@@ -103,6 +105,25 @@ pub struct SourcesSection {
     pub ecard: crate::modules::ecard::EcardSection,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ConfigLocation {
+    pub path: PathBuf,
+    pub exists: bool,
+}
+
+fn candidates(explicit: Option<&Path>, cwd: &Path, home: Option<&Path>) -> Vec<PathBuf> {
+    match explicit {
+        Some(path) => vec![path.to_owned()],
+        None => {
+            let mut candidates = vec![cwd.join("ru41.toml")];
+            if let Some(home) = home {
+                candidates.push(home.join(".config/ru41/config.toml"));
+            }
+            candidates
+        }
+    }
+}
+
 impl Config {
     /// 加载配置：显式路径 > ./ru41.toml > ~/.config/ru41/config.toml > 全默认。
     /// 返回配置与实际使用的文件路径（未使用配置文件时为 None）。
@@ -112,23 +133,33 @@ impl Config {
         Self::load_from(explicit, &cwd, home.as_deref())
     }
 
+    pub fn locate(explicit: Option<&Path>) -> Result<ConfigLocation> {
+        let cwd = std::env::current_dir().context("cannot resolve current directory")?;
+        let home = std::env::var_os("HOME").map(PathBuf::from);
+        Ok(Self::locate_from(explicit, &cwd, home.as_deref()))
+    }
+
+    pub fn locate_from(explicit: Option<&Path>, cwd: &Path, home: Option<&Path>) -> ConfigLocation {
+        for path in candidates(explicit, cwd, home) {
+            if path.is_file() {
+                return ConfigLocation { path, exists: true };
+            }
+        }
+        ConfigLocation {
+            path: explicit
+                .map(Path::to_owned)
+                .unwrap_or_else(|| cwd.join("ru41.toml")),
+            exists: false,
+        }
+    }
+
     /// 可注入目录的加载逻辑，便于测试优先级。
     pub fn load_from(
         explicit: Option<&Path>,
         cwd: &Path,
         home: Option<&Path>,
     ) -> Result<(Self, Option<PathBuf>)> {
-        let candidates: Vec<PathBuf> = match explicit {
-            Some(path) => vec![path.to_owned()],
-            None => {
-                let mut candidates = vec![cwd.join("ru41.toml")];
-                if let Some(home) = home {
-                    candidates.push(home.join(".config/ru41/config.toml"));
-                }
-                candidates
-            }
-        };
-        for path in candidates {
+        for path in candidates(explicit, cwd, home) {
             if path.is_file() {
                 let text = std::fs::read_to_string(&path)
                     .with_context(|| format!("cannot read config file {}", path.display()))?;

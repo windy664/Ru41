@@ -21,6 +21,7 @@
 - [x] 业务附属垂直模块化：`modules/papers`、`modules/rss`、`modules/ecard` 各自持有配置、来源与业务，论文/水电同时持有 QQ 命令；QQ 通过 `QqCommandHandler` 注册表扩展，不直接依赖业务模块
 - [x] 消息渠道垂直收拢：`channels/qq` 集中机器人、REST/WebSocket 协议与命令接口，`channels/feishu.rs` 持有 webhook 通知；原 messaging 适配目录已移除
 - [x] Docker 部署：多阶段单镜像（内置 Codex）、Compose 分进程/profile、宿主机持久化与 SQLite 在线备份；Pi/浏览器等重依赖后续按独立镜像扩展
+- [x] CLI 运维命令：幂等 `init`、离线/深度 `doctor`、脱敏 `config show` 与 `dump`、`config check`、`qq doctor`、数据库聚合 `status`
 
 ## 核心后续
 

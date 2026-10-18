@@ -3,5 +3,5 @@ mod exec;
 pub mod provider;
 mod session;
 
-pub use exec::{CodexAgent, version};
+pub use exec::{CodexAgent, version, version_with};
 pub use session::CodexSession;

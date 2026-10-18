@@ -14,6 +14,7 @@ pub struct CodexSession {
     pub model: Option<String>,
     /// 附加的 `-c key=value` 覆盖项（自定义 provider 等）。
     pub config_overrides: Vec<String>,
+    pub output_schema: bool,
 }
 impl AgentBackend for CodexSession {
     fn descriptor(&self) -> BackendDescriptor {
@@ -76,7 +77,23 @@ impl CodexSession {
                         .as_str()
                         .context("missing thread id")?
                         .to_string();
-                    send(&mut writer,json!({"id":3,"method":"turn/start","params":{"threadId":id,"input":[{"type":"text","text":request.prompt}],"outputSchema":{"type":"object","properties":{"summary":{"type":"string"}},"required":["summary"],"additionalProperties":false}}})).await?;
+                    let prompt = if self.output_schema {
+                        request.prompt.clone()
+                    } else {
+                        format!(
+                            "Return only a JSON object with a nonempty string field named summary; do not use Markdown.\n\nRequest:\n{}",
+                            request.prompt
+                        )
+                    };
+                    let mut params = json!({"threadId":id,"input":[{"type":"text","text":prompt}]});
+                    if self.output_schema {
+                        params["outputSchema"] = json!({"type":"object","properties":{"summary":{"type":"string"}},"required":["summary"],"additionalProperties":false});
+                    }
+                    send(
+                        &mut writer,
+                        json!({"id":3,"method":"turn/start","params":params}),
+                    )
+                    .await?;
                     session = Some(id);
                 }
                 _ => {}

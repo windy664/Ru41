@@ -4,7 +4,11 @@ use std::process::Command;
 
 /// 只检查已安装的 CLI，不做认证也不调用模型。
 pub fn version() -> Result<String> {
-    let output = Command::new("codex")
+    version_with(std::path::Path::new("codex"))
+}
+
+pub fn version_with(executable: &std::path::Path) -> Result<String> {
+    let output = Command::new(executable)
         .arg("--version")
         .output()
         .context("cannot start Codex CLI; install it and make sure codex is on PATH")?;
@@ -34,6 +38,7 @@ pub struct CodexAgent {
     pub model: Option<String>,
     /// 附加的 `-c key=value` 覆盖项（自定义 provider 等）。
     pub config_overrides: Vec<String>,
+    pub output_schema: bool,
 }
 
 impl Default for CodexAgent {
@@ -42,6 +47,7 @@ impl Default for CodexAgent {
             executable: "codex".into(),
             model: None,
             config_overrides: Vec::new(),
+            output_schema: true,
         }
     }
 }
@@ -86,14 +92,15 @@ impl CodexAgent {
                 "--color",
                 "never",
             ])
-            .arg("--output-schema")
-            .arg(&schema)
             .arg("--output-last-message")
             .arg(&output_file)
             .stdin(Stdio::piped())
             .stdout(Stdio::piped())
             .stderr(Stdio::piped())
             .kill_on_drop(true);
+        if self.output_schema {
+            cmd.arg("--output-schema").arg(&schema);
+        }
         if let Some(model) = &self.model {
             cmd.arg("--model").arg(model);
         }
@@ -113,7 +120,7 @@ impl CodexAgent {
         let stdout = child.stdout.take().context("missing Codex stdout")?;
         let stderr = child.stderr.take().context("missing Codex stderr")?;
         let prompt = format!(
-            "You are Ru41's analysis agent. Use only the supplied request. Return a JSON object with a nonempty summary. Do not modify files, submit assignments, publish, or claim any external action was completed. If the request requires an external action, explain the proposed steps and the limitation.\n\nRequest:\n{}",
+            "You are Ru41's analysis agent. Use only the supplied request. Return only a JSON object with a nonempty string field named summary; do not use Markdown. Do not modify files, submit assignments, publish, or claim any external action was completed. If the request requires an external action, explain the proposed steps and the limitation.\n\nRequest:\n{}",
             request.prompt
         );
         let events_path = request.run_dir.join("events.jsonl");
@@ -137,6 +144,7 @@ impl CodexAgent {
         }
         let mut thread_id = None;
         let mut completed = false;
+        let mut error_reported = false;
         for line in events.split(|b| *b == b'\n').filter(|l| !l.is_empty()) {
             let event: serde_json::Value =
                 serde_json::from_slice(line).context("invalid Codex JSONL event")?;
@@ -148,19 +156,23 @@ impl CodexAgent {
                         .map(str::to_owned)
                 }
                 Some("turn.completed") => completed = true,
-                Some("turn.failed" | "error") => {
+                Some("turn.failed") => {
                     return Err(Ru41Error::AgentProcess(
                         "Codex reported an error; inspect the attempt events.jsonl".into(),
                     )
                     .into());
                 }
+                Some("error") => error_reported = true,
                 _ => {}
             }
         }
         if !completed {
-            return Err(
-                Ru41Error::AgentProcess("Codex did not report turn.completed".into()).into(),
-            );
+            let message = if error_reported {
+                "Codex reported an error; inspect the attempt events.jsonl"
+            } else {
+                "Codex did not report turn.completed"
+            };
+            return Err(Ru41Error::AgentProcess(message.into()).into());
         }
         // 即使子进程产出畸形的超大文件，也做有界读取。
         let file = tokio::fs::File::open(&output_file)

@@ -15,6 +15,16 @@ Ru41 的第一个消息渠道，协议参照 XingtuBot-Spigot（Java）的 QQGat
 - 在 QQ 开放平台创建机器人，拿到 AppID 与 ClientSecret。
 - 在「权限管理」开启接收群聊@消息与 C2C 单聊消息（对应 intents `1<<25 | 1<<26`）；权限不足时网关以 4014/4914/4915 关闭码断开且不再重连。
 
+## 接入前检查
+
+```bash
+export RU41_QQ_APP_ID="你的 AppID"
+export RU41_QQ_APP_SECRET="你的 ClientSecret"
+cargo run --locked -- qq doctor
+```
+
+`qq doctor` 依次验证凭证、`getAppAccessToken` 和 `/gateway`。它不连接 WebSocket、不发送消息，也不会与正在运行的网关抢连接；输出不包含 access token。当前接入使用官方机器人 AppID/ClientSecret，**没有个人 QQ 扫码登录**。
+
 ## 协议要点
 
 - **凭证**：`POST https://bots.qq.com/app/getAppAccessToken`，body `{"appId", "clientSecret"}`，返回 `access_token` 与 `expires_in`（字符串）。客户端缓存 token 并提前 60 秒重新申请；鉴权相关关闭码（4002/4004）会清缓存重新取。

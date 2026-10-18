@@ -1,4 +1,5 @@
 mod consumers;
+use super::TaskStatusCounts;
 use crate::{
     domain::{AgentResult, Attempt, Claim, EnqueueResult, RunContract, Task, TaskStatus},
     ports::storage::TaskStore,
@@ -75,6 +76,21 @@ impl PostgresTaskStore {
         tx.commit()?;
         Ok(Self {
             client: Mutex::new(ManuallyDrop::new(client)),
+        })
+    }
+
+    pub fn task_status_counts(&self) -> Result<TaskStatusCounts> {
+        outside_runtime(|| {
+            let rows = self
+                .client()?
+                .query("SELECT status, COUNT(*) FROM tasks GROUP BY status", &[])?;
+            let mut counts = TaskStatusCounts::default();
+            for row in rows {
+                let status: String = row.get(0);
+                let count: i64 = row.get(1);
+                counts.insert(&status, count)?;
+            }
+            Ok(counts)
         })
     }
 

@@ -7,6 +7,8 @@ fn codex_agent(
     bin: PathBuf,
     model: Option<String>,
     provider: Option<&crate::bootstrap::config::CodexProviderSection>,
+    extra_overrides: &[String],
+    output_schema: bool,
 ) -> Result<CodexAgent> {
     // 在切换子进程工作目录前，先解析显式的相对可执行路径。
     let executable = if bin.components().count() > 1 {
@@ -14,14 +16,16 @@ fn codex_agent(
     } else {
         bin.clone()
     };
-    let config_overrides = match provider {
+    let mut config_overrides = match provider {
         Some(section) => crate::adapters::agent::codex::provider::overrides(section)?,
         None => Vec::new(),
     };
+    config_overrides.extend(extra_overrides.iter().cloned());
     Ok(CodexAgent {
         executable,
         model,
         config_overrides,
+        output_schema,
     })
 }
 
@@ -44,6 +48,8 @@ pub fn registry(
             .unwrap_or_else(|| "codex".into()),
         overrides.codex_model.or_else(|| agents.codex.model.clone()),
         agents.codex.provider.as_ref(),
+        &agents.codex.config_overrides,
+        agents.codex.output_schema.unwrap_or(true),
     )?;
     let pi = &agents.pi;
     let mut backends = BackendRegistry::default();
@@ -51,11 +57,13 @@ pub fn registry(
         executable: codex.executable.clone(),
         model: codex.model.clone(),
         config_overrides: codex.config_overrides.clone(),
+        output_schema: codex.output_schema,
     })?;
     backends.register(crate::adapters::agent::codex::CodexSession {
         executable: codex.executable.clone(),
         model: codex.model.clone(),
         config_overrides: codex.config_overrides.clone(),
+        output_schema: codex.output_schema,
     })?;
     if pi.enabled {
         anyhow::ensure!(

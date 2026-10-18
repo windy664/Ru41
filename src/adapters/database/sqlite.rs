@@ -1,4 +1,5 @@
 mod consumers;
+use super::TaskStatusCounts;
 use crate::{
     domain::{AgentResult, Attempt, Claim, EnqueueResult, RunContract, Task},
     ports::storage::TaskStore,
@@ -55,6 +56,20 @@ impl SqliteTaskStore {
         Ok(Self {
             connection: Mutex::new(connection),
         })
+    }
+
+    pub fn task_status_counts(&self) -> Result<TaskStatusCounts> {
+        let connection = self.connection()?;
+        let mut statement =
+            connection.prepare("SELECT status, COUNT(*) FROM tasks GROUP BY status")?;
+        let mut rows = statement.query([])?;
+        let mut counts = TaskStatusCounts::default();
+        while let Some(row) = rows.next()? {
+            let status: String = row.get(0)?;
+            let count: i64 = row.get(1)?;
+            counts.insert(&status, count)?;
+        }
+        Ok(counts)
     }
 
     fn connection(&self) -> Result<MutexGuard<'_, Connection>> {

@@ -8,17 +8,18 @@
 
 ### 01 · 准备环境
 
-需要支持 Rust 2024 edition 的工具链；本地验证使用 Rust 1.98.0、Codex CLI 0.162.1。Codex 需提前安装并完成登录。
+需要支持 Rust 2024 edition 的工具链；本地验证使用 Rust 1.98.0、Codex CLI 0.163.0，Docker 镜像当前内置 0.162.1。默认 OpenAI 底座需提前完成 Codex 登录，自定义供应商则使用对应 API Key。
 
 ```bash
 git clone https://github.com/windy664/Ru41.git
 cd Ru41
 cargo build --locked
+cargo run --locked -- init --non-interactive
 cargo run --locked -- doctor
 cargo run --locked -- backends
 ```
 
-`doctor` 仅检查 CLI 版本，不验证登录，也不调用模型。`backends` 列出当前编译注册的底座和支持的契约。
+`init` 幂等创建最小配置、数据目录和数据库，不覆盖已有配置，也不接收密钥。`doctor` 默认只做离线检查；`doctor --deep` 才会检查现有数据库并真实调用模型。`backends` 列出当前编译注册的底座和支持的契约。
 
 ### 02 · 执行第一个任务
 
@@ -55,6 +56,28 @@ cargo run --locked -- task retry 1
 - `worker --once` 返回的是一次调度报告，请检查 JSON 的 `status`；一次业务失败不等于 Worker 命令异常退出。
 
 </details>
+
+## 运维与诊断
+
+```bash
+# 配置路径、脱敏内容与纯配置校验
+cargo run --locked -- config path
+cargo run --locked -- config show
+cargo run --locked -- config check
+
+# 离线环境检查；--deep 才检查现有数据库并调用模型
+cargo run --locked -- doctor
+cargo run --locked -- doctor --deep
+
+# 任务计数、启用组件与脱敏排障报告
+cargo run --locked -- status
+cargo run --locked -- dump
+
+# QQ 凭证与 gateway；不连接 WebSocket、不发送消息
+cargo run --locked -- qq doctor
+```
+
+`config show` 和 `dump` 会隐藏密钥、连接串、webhook、通知目标、个人房间字段及自由 overrides；分享前仍应人工复核。`status` 的六种任务计数在数据库内聚合，不会把全部 prompt 或结果读入宿主。检查类命令发现错误时返回非零退出码，可用于部署脚本。
 
 ## Docker 部署
 
@@ -174,7 +197,7 @@ cargo run --locked -- notify          # 未运行 QQ 网关时的独立通知进
 ```toml
 [store]           # kind = "sqlite"|"postgres"、path、url
 [worker]          # timeout_secs、runs_dir、sanitize
-[agent.codex]     # bin、model、provider
+[agent.codex]     # bin、model、output_schema、config_overrides、provider
 [agent.pi]        # enabled、bin、model、provider；默认不启用
 [channel.qq]      # app_id、app_secret、bind_secret、default_notify_target
 [channel.feishu]  # webhook_url；建议改用 RU41_FEISHU_WEBHOOK_URL
@@ -268,23 +291,33 @@ src/
 通过 Ru41 配置向 Codex 传入供应商设置，API Key 由子进程从环境变量读取。
 
 <details>
-<summary><strong>自定义供应商配置与参数说明</strong></summary>
+<summary><strong>自定义供应商配置：MiMo 示例与参数说明</strong></summary>
 
-底座默认用你本机的 Codex 登录；也可以让 codex 走任意 OpenAI 兼容端点（OpenRouter、DeepSeek、本地 vLLM 等）：
+底座默认用你本机的 Codex 登录；也可以让 codex 走 OpenAI Responses 兼容端点。下面是 MiMo 的完整示例（API Key 通过环境变量注入，不写入配置）：
 
 ```toml
 # ru41.toml
 [agent.codex]
-model = "deepseek-chat"
+model = "mimo-v2.6-flash"
+output_schema = false  # MiMo 只接受 text/json_object；Ru41 仍会在本地校验 JSON
+config_overrides = [
+  'model_catalog_json="/absolute/path/model-catalogs.json"',
+  'model_reasoning_effort="none"',
+  'model_reasoning_summary="none"',
+  'model_context_window=1048576',
+  'web_search="disabled"',
+]
 
 [agent.codex.provider]
-id = "deepseek"
-base_url = "https://api.deepseek.com/v1"
-api_key_env = "DEEPSEEK_API_KEY"   # export DEEPSEEK_API_KEY=sk-...
-wire_api = "chat"
+id = "mimo"
+base_url = "https://api.xiaomimimo.com/v1"
+api_key_env = "MIMO_API_KEY"   # export MIMO_API_KEY=sk-...
+wire_api = "responses"
 ```
 
-实现方式是 codex 官方的 `-c model_providers.<id>={...}` 与 `-c model_provider=<id>` 启动覆盖，`exec` 与 `app-server`（会话+审批）两种模式都生效。密钥只经环境变量由 codex 子进程自读，宿主与配置文件不接触密钥值。参数由 `adapters/agent/codex/provider.rs` 校验并生成。
+MiMo 的 `model-catalogs.json` 与参数说明见[官方 Codex 配置指南](https://mimo.mi.com/docs/zh-CN/tokenplan/integration/codex-configuration)。`config_overrides` 可传递其他 Codex `-c key=value` 配置，路径应使用绝对路径。
+
+实现方式是 codex 官方的 `-c model_providers.<id>={...}` 与 `-c model_provider=<id>` 启动覆盖，`exec` 与 `app-server`（会话+审批）两种模式都生效。密钥只经环境变量由 codex 子进程自读，宿主与配置文件不接触密钥值。参数由 `adapters/agent/codex/provider.rs` 校验并生成。Codex 0.163 起只支持 `responses`；`chat` 仅供旧版 CLI 使用。
 
 </details>
 
