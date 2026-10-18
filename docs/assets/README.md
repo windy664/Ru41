@@ -19,3 +19,11 @@ python3 docs/assets/render-flow.py
 ```bash
 python3 docs/assets/render-architecture.py
 ```
+
+## 项目封面
+
+`cover.png` 为原创文字与几何图形封面（1600 × 600）。重新生成需 Pillow、Noto Sans CJK 与 DejaVu Sans Bold：
+
+```bash
+python3 docs/assets/render-cover.py
+```
