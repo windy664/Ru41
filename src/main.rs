@@ -475,6 +475,8 @@ async fn run_tracker_periodic(
 }
 
 /// 附属追踪器的统一 CLI 执行：Poll 跑一轮并返回报告，Run 常驻至收到退出信号。
+/// Run 分支在退出信号后已无事可做，直接以 0 退出，避免调用方把「正常关停」
+/// 当成缺报告的错误（tracker_or_exit 只服务于 Poll 分支）。
 async fn tracker_cli(
     name: &str,
     command: TrackerCommand,
@@ -487,7 +489,7 @@ async fn tracker_cli(
         TrackerCommand::Poll => Ok(Some(job.poll_json().await?)),
         TrackerCommand::Run => {
             run_tracker_periodic(name, job.as_ref()).await?;
-            Ok(None)
+            std::process::exit(0);
         }
     }
 }
