@@ -4,3 +4,5 @@ pub mod agent;
 pub mod database;
 /// 跨模块通用的外部信息来源协议（当前为 RSS/Atom feed）。
 pub mod sources;
+/// Vault 适配器：ports::Vault 的 git 工作副本实现。
+pub mod vault;
