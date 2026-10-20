@@ -13,7 +13,7 @@ pub struct BlogConfig {
     pub repo_path: PathBuf,
     pub remote: String,
     pub branch: String,
-    pub pending_dir: String,
+    /// Vault 内的已发布目录：用户把定稿移入该目录并推送即触发发布。
     pub published_dir: String,
     pub posts_dir: String,
     pub site_url: String,
@@ -37,7 +37,7 @@ pub struct BlogPollReport {
 struct BlogPublishState {
     #[serde(default)]
     processed_sha: String,
-    /// 已处理（含校验拒绝）的待发布文件，键为 `路径:内容hash`，防止崩溃重试循环。
+    /// 已处理（含校验拒绝）的已发布文件，键为 `路径:内容hash`，防止崩溃重试循环。
     #[serde(default)]
     done: Vec<String>,
     /// 最近一次失败已通知的 Vault HEAD（同一 HEAD 不重复通知）。
@@ -45,24 +45,22 @@ struct BlogPublishState {
     notified_sha: Option<String>,
 }
 
-/// 待发布文件的校验结果。
+/// 已发布文件的校验结果。
 struct PendingPost {
-    pending_path: String,
     content: String,
     /// 博客仓库文件名（YYYY-MM-DD-slug.md，URL 身份）。
     target_name: String,
-    /// Vault 已发布目录文件名（YYYY-MM-DD-标题.md，人读优先）。
-    vault_name: String,
     url: String,
 }
 
 /// 校验拒绝（会标记已处理并通知，不阻塞其他文件）。
 struct RejectedPost {
-    pending_path: String,
+    published_path: String,
     reason: String,
 }
 
-/// 博客发布追踪器：监听 Vault 仓库的待发布目录，校验后写入博客仓库并推送。
+/// 博客发布追踪器：监听 Vault 已发布目录的新增 markdown，校验后写入博客仓库并推送。
+/// 发布入口就是「把定稿从 Drafts-草稿 移入 Published-已发布 并推送」，没有中间队列。
 pub struct BlogPublishTracker {
     store: Arc<dyn TaskStore>,
     vault: Arc<dyn Vault>,
@@ -139,10 +137,10 @@ impl BlogPublishTracker {
             return Ok(report);
         }
 
-        // 找出本轮新出现且未处理过的待发布文件。
+        // 找出本轮新出现且未处理过的已发布文件。
         let vault = self.vault.clone();
         let from = state.processed_sha.clone();
-        let pending_prefix = format!("{}/", self.config.pending_dir);
+        let published_prefix = format!("{}/", self.config.published_dir);
         let candidates = tokio::task::spawn_blocking(move || -> Result<Vec<String>> {
             let base = if from.is_empty() {
                 EMPTY_TREE.to_owned()
@@ -152,7 +150,7 @@ impl BlogPublishTracker {
             Ok(vault
                 .changed_files(&base, &head_for_diff)?
                 .into_iter()
-                .filter(|f| f.starts_with(&pending_prefix) && f.ends_with(".md"))
+                .filter(|f| f.starts_with(&published_prefix) && f.ends_with(".md"))
                 .collect())
         })
         .await??;
@@ -195,13 +193,13 @@ impl BlogPublishTracker {
                     Ok(post) => posts.push(post),
                     Err(reason) => {
                         rejected.push(RejectedPost {
-                            pending_path: path,
+                            published_path: path,
                             reason,
                         });
                     }
                 },
                 None => rejected.push(RejectedPost {
-                    pending_path: path,
+                    published_path: path,
                     reason: "文件不存在或不是普通文件".into(),
                 }),
             }
@@ -245,32 +243,6 @@ impl BlogPublishTracker {
             }
         }
 
-        // 成功：文件移入已发布目录，Vault 侧 [ru41] 提交（obsidian 整理自动跳过）。
-        if !posts.is_empty() {
-            let vault = self.vault.clone();
-            let moves: Vec<(String, String, String)> = posts
-                .iter()
-                .map(|p| {
-                    (
-                        p.pending_path.clone(),
-                        format!("{}/{}", self.config.published_dir, p.vault_name),
-                        p.content.clone(),
-                    )
-                })
-                .collect();
-            tokio::task::spawn_blocking(move || -> Result<()> {
-                for (pending, published, content) in moves {
-                    vault.write_file(&published, &content)?;
-                    vault.remove_file(&pending)?;
-                }
-                // 同上：push 无条件，补推上一轮可能失败的提交。
-                vault.commit_all("[ru41] blog publish")?;
-                vault.push()?;
-                Ok(())
-            })
-            .await??;
-        }
-
         for path in &fresh {
             state.done.push(done_key(path));
         }
@@ -296,14 +268,14 @@ impl BlogPublishTracker {
     /// 规则对齐 src/content.config.ts：title 必填、categories 限枚举单值、tags ≤ 8。
     fn prepare_post(
         &self,
-        pending_path: &str,
+        published_path: &str,
         content: &str,
     ) -> std::result::Result<PendingPost, String> {
         let front = parse_frontmatter(content)
             .ok_or_else(|| "缺少 YAML frontmatter（须以 --- 开始）".to_owned())?;
-        let title = front
-            .get("title")
-            .ok_or_else(|| "frontmatter 缺 title".to_owned())?;
+        if !front.contains_key("title") {
+            return Err("frontmatter 缺 title".to_owned());
+        }
         let date = front
             .get("date")
             .and_then(|d| d.get(0..10).filter(|s| s.chars().take(10).count() == 10))
@@ -328,10 +300,10 @@ impl BlogPublishTracker {
         if front.get("draft").map(|d| d == "true").unwrap_or(false) {
             return Err("frontmatter draft=true，请改为 false 再发布".to_owned());
         }
-        let stem = pending_path
+        let stem = published_path
             .rsplit('/')
             .next()
-            .unwrap_or(pending_path)
+            .unwrap_or(published_path)
             .trim_end_matches(".md");
         let slug = sanitize_slug(stem);
         let target_name =
@@ -348,26 +320,9 @@ impl BlogPublishTracker {
             &date[8..10],
             target_name.trim_end_matches(".md")
         );
-        let title_clean: String = title
-            .chars()
-            .filter(|c| {
-                !matches!(
-                    c,
-                    '<' | '>' | ':' | '"' | '/' | '\\' | '|' | '?' | '*' | '\n' | '\r' | '\t'
-                )
-            })
-            .collect::<String>()
-            .split_whitespace()
-            .collect::<String>()
-            .chars()
-            .take(60)
-            .collect();
-        let vault_name = format!("{date}-{title_clean}.md");
         Ok(PendingPost {
-            pending_path: pending_path.to_owned(),
             content: content.to_owned(),
             target_name,
-            vault_name,
             url,
         })
     }
@@ -384,7 +339,10 @@ impl BlogPublishTracker {
             ));
         }
         for reject in rejected {
-            lines.push(format!("- ❌ `{}`：{}", reject.pending_path, reject.reason));
+            lines.push(format!(
+                "- ❌ `{}`：{}",
+                reject.published_path, reject.reason
+            ));
         }
         notifier
             .send(&self.notify_target, None, &lines.join("\n"))

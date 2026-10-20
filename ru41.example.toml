@@ -97,6 +97,12 @@ app_secret = ""
 # interval_secs = 60       # 签到窗口常为 1-2 分钟，默认 60s
 # notify = true
 # auto_sign = false        # true = agent 模式：发现待签当场自动签（二维码除外）
+# work_poll_secs = 1800    # 作业轮询间隔（作业列表请求重，务必低频）
+# work_due_days = 3        # 截止前 N 天临期提醒
+# work_todo_sync = true    # 未交作业自动进待办、已交自动回勾
+# work_vault_sync = true   # 作业清单进 Obsidian（需 [obsidian]）；与智慧树同窗目录即聚合
+# vault_course_dir = "01-Courses-课程/2026-Fall-大一上"   # 缺省与 zhihuishu 一致
+# vault_courses = { "大学英语新视野" = "大学英语" }         # 跨平台同名课程映射到同一目录
 # default_lat = 30.000000  # 宿舍纬度：位置/二维码签到的坐标缺省
 # default_lon = 114.000000 # 宿舍经度
 # default_addr = "宿舍"    # 地址文本（位置签到的 address 参数，教师端可见）
@@ -106,10 +112,12 @@ app_secret = ""
 # 统一认证账号经 CAS 单点登录拉课表；首次登录需人工输一次图形验证码。
 # 凭证建议用环境变量 RU41_JWXT_USERNAME / RU41_JWXT_PASSWORD 注入。
 # [sources.jwxt]
-# semester_start = "2026-10-05" # 学期第一周周一：周次推算与明日课表依赖它
+# semester_start = "2026-09-07" # 学期第一周周一：周次推算与明日课表依赖它（教务接口不暴露当前周，必须配置准确）
 # interval_secs = 3600          # jwxt run 轮询间隔
 # remind_hour = 21              # 每日到点后推明日课表（同日去重）
 # daily_remind = true
+# sync_schedule = true          # 课表同步到日程（课前15分钟提醒、/日程 可见）；需配 section_times
+# section_times = ["08:30","09:25","10:25","11:20","13:30","14:25","15:25","16:20","17:10","18:05","19:00","19:55","20:45","21:35","22:20","23:10"]  # 第1..=16节上课时刻
 # notify = true
 
 # Obsidian Vault 闭环（ru41 obsidian poll/run，核心能力）：Git 轮询发现 Inbox 新提交，
@@ -129,8 +137,9 @@ app_secret = ""
 # listen = "127.0.0.1:4141"
 # token 也可写在这里；环境变量 RU41_API_TOKEN 优先级更高（推荐）
 
-# 博客发布管线（ru41 blog poll/run）：Vault 的 Pending-待发布/ 目录即发布入口。
-# 文章移入该目录并 git 同步后，服务器自动校验 frontmatter、写入博客仓库 _posts 并推送。
+# 博客发布管线（ru41 blog poll/run）：Vault 的 Published-已发布/ 目录即发布入口。
+# 定稿从 Drafts-草稿/ 移入该目录并 git 同步后，服务器自动校验 frontmatter、
+# 写入博客仓库 _posts 并推送；文件原地留在已发布目录归档，程序不回写 Vault。
 # repo_path 是服务器上的博客仓库克隆（容器内挂载）；推 GitHub 需凭据（git credential helper）。
 # [sources.blog]
 # repo_path = "/blog"

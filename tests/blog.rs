@@ -44,8 +44,12 @@ impl Fx {
         );
         git(&vault_seed, &["config", "user.name", "windy"]);
         git(&vault_seed, &["config", "user.email", "w@test"]);
-        std::fs::create_dir_all(vault_seed.join("06-Blog-博客/Pending-待发布")).unwrap();
-        std::fs::write(vault_seed.join("06-Blog-博客/Pending-待发布/.gitkeep"), "").unwrap();
+        std::fs::create_dir_all(vault_seed.join("06-Blog-博客/Published-已发布")).unwrap();
+        std::fs::write(
+            vault_seed.join("06-Blog-博客/Published-已发布/.gitkeep"),
+            "",
+        )
+        .unwrap();
         git(&vault_seed, &["add", "-A"]);
         git(&vault_seed, &["commit", "-m", "init"]);
         git(&vault_seed, &["push", "origin", "master"]);
@@ -103,7 +107,6 @@ impl Fx {
                 repo_path: self.blog_path.clone(),
                 remote: "origin".into(),
                 branch: "master".into(),
-                pending_dir: "06-Blog-博客/Pending-待发布".into(),
                 published_dir: "06-Blog-博客/Published-已发布".into(),
                 posts_dir: "source/_posts".into(),
                 site_url: "https://example.com".into(),
@@ -117,22 +120,22 @@ impl Fx {
         )
     }
 
-    /// 向 Vault 远端推入一个待发布文件（模拟 Obsidian 端同步）。
-    fn push_pending(&self, name: &str, content: &str) {
+    /// 向 Vault 远端推入一个已发布目录新文件（模拟 Obsidian 端「移入并同步」）。
+    fn push_published(&self, name: &str, content: &str) {
         let seed = self._dir.path().join("vault-seed");
-        let file = seed.join("06-Blog-博客/Pending-待发布").join(name);
+        let file = seed.join("06-Blog-博客/Published-已发布").join(name);
         std::fs::write(&file, content).unwrap();
         git(&seed, &["add", "-A"]);
-        git(&seed, &["commit", "-m", &format!("pending {name}")]);
+        git(&seed, &["commit", "-m", &format!("publish {name}")]);
         git(&seed, &["push", "origin", "master"]);
     }
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn publishes_pending_post_end_to_end() {
+async fn publishes_published_dir_post_end_to_end() {
     let fx = Fx::new();
     let tracker = fx.tracker();
-    fx.push_pending("我的测试文章.md", POST);
+    fx.push_published("我的测试文章.md", POST);
 
     let report = tracker.poll_once().await.unwrap();
     assert_eq!(report.action, "published");
@@ -150,20 +153,9 @@ async fn publishes_pending_post_end_to_end() {
     );
     assert!(files.contains("source/_posts/2026-10-19-"), "{files}");
 
-    // Vault：文件移入已发布目录，Pending 清空，[ru41] 提交。
+    // Vault：文件原地留在已发布目录，程序不回写 Vault（无 [ru41] 提交）。
     let vault_seed = fx._dir.path().join("vault-seed");
     git(&vault_seed, &["fetch", "origin"]);
-    let pending = git(
-        &vault_seed,
-        &[
-            "ls-tree",
-            "-r",
-            "--name-only",
-            "origin/master",
-            "06-Blog-博客/Pending-待发布",
-        ],
-    );
-    assert!(!pending.contains("我的测试文章.md"), "{pending}");
     let published = git(
         &vault_seed,
         &[
@@ -174,9 +166,12 @@ async fn publishes_pending_post_end_to_end() {
             "06-Blog-博客/Published-已发布",
         ],
     );
-    assert!(published.contains("2026-10-19-"), "{published}");
+    assert!(published.contains("我的测试文章.md"), "{published}");
     let vlog = git(&vault_seed, &["log", "--format=%s", "origin/master", "-1"]);
-    assert!(vlog.contains("[ru41] blog publish"), "{vlog}");
+    assert!(
+        vlog.contains("publish 我的测试文章.md"),
+        "Vault 应是用户自己的提交：{vlog}"
+    );
 
     // 再次轮询：游标已推进，幂等不重复发布。
     let report = tracker.poll_once().await.unwrap();
@@ -187,35 +182,42 @@ async fn publishes_pending_post_end_to_end() {
 async fn rejects_invalid_frontmatter_without_blocking_others() {
     let fx = Fx::new();
     let tracker = fx.tracker();
-    fx.push_pending("坏文章.md", POST_BAD_CATEGORY);
-    fx.push_pending("好文章.md", POST);
+    fx.push_published("坏文章.md", POST_BAD_CATEGORY);
+    fx.push_published("好文章.md", POST);
 
     let report = tracker.poll_once().await.unwrap();
     assert_eq!(report.action, "published");
     assert_eq!(report.published, 1);
     assert_eq!(report.rejected, 1);
 
-    // 坏文件留在 Pending（不被移动），好文件已发布。
+    // 坏文件原地留在已发布目录（等人工修正），好文件进了博客仓库。
     let vault_seed = fx._dir.path().join("vault-seed");
     git(&vault_seed, &["fetch", "origin"]);
-    let pending = git(
+    let published = git(
         &vault_seed,
         &[
             "ls-tree",
             "-r",
             "--name-only",
             "origin/master",
-            "06-Blog-博客/Pending-待发布",
+            "06-Blog-博客/Published-已发布",
         ],
     );
-    assert!(pending.contains("坏文章.md"), "{pending}");
+    assert!(published.contains("坏文章.md"), "{published}");
+    let blog_seed = fx._dir.path().join("blog-seed");
+    git(&blog_seed, &["fetch", "origin"]);
+    let files = git(
+        &blog_seed,
+        &["show", "--name-only", "--format=", "origin/master"],
+    );
+    assert!(files.contains("source/_posts/2026-10-19-"), "{files}");
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn failed_push_retries_next_poll() {
     let fx = Fx::new();
     let tracker = fx.tracker();
-    fx.push_pending("文章.md", POST);
+    fx.push_published("文章.md", POST);
     // 让博客仓库的 push 失败：把本地 blog clone 的 origin 指向不存在地址。
     git(
         &fx.blog_path,

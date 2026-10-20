@@ -73,6 +73,6 @@
 
 ## P2 博客管线
 
-- [x] 发布管线：`06-Blog-博客/Pending-待发布/` 即发布入口（Vault → 博客仓库单向），frontmatter 校验对齐 Astro content 集合（categories 枚举/tags≤8），规范命名 `YYYY-MM-DD-slug.md`，推送后移入 `Published-已发布/` 并 `[ru41]` 回写 Vault（`tests/blog.rs`）
+- [x] 发布管线：`06-Blog-博客/Published-已发布/` 即发布入口（Vault → 博客仓库单向，无中间队列目录），frontmatter 校验对齐 Astro content 集合（categories 枚举/tags≤8），规范命名 `YYYY-MM-DD-slug.md` 写入 `_posts/`，文件原地留在已发布目录归档、程序不回写 Vault（`tests/blog.rs`）
 - [ ] GitHub 推送凭据（PAT 经 git credential helper 注入服务器）
 - [ ] 已发布目录与博客仓库 _posts 的自动对齐（当前为一次性拷入）
