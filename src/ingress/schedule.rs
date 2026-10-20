@@ -1,6 +1,35 @@
 use anyhow::Result;
-use std::{future::Future, time::Duration};
+use serde::Serialize;
+use std::{future::Future, pin::Pin, time::Duration};
 use tokio::sync::watch;
+
+/// 定时任务注册表条目：各附属模块单轮 poll 与长驻 run 的统一描述。
+/// 注册表只描述任务与入口，执行逻辑仍由各模块自己的 poll_once 提供；
+/// 新附属在装配层登记一个条目即可被 `schedule list/run` 统一调度。
+#[derive(Debug, Clone, Serialize)]
+pub struct ScheduledJob {
+    /// 所属模块（papers/rss/ecard/chaoxing/jwxt/zhihuishu/planner）。
+    pub module: String,
+    /// 任务名，也是 `schedule run` 的参数。
+    pub name: String,
+    /// 长驻入口的轮询间隔（秒）；None 表示间隔由命令行参数或外部 cron 决定。
+    pub interval_secs: Option<u64>,
+    /// 单轮入口，适合系统 cron 或手动验证。
+    pub poll_command: String,
+    /// 长驻入口，适合 compose 常驻容器。
+    pub run_command: String,
+    /// 当前配置是否可直接启动。
+    pub enabled: bool,
+    /// 未启用原因或额外参数说明。
+    pub notes: Option<String>,
+}
+
+/// 附属追踪器对调度核心的统一暴露：单轮 poll 逻辑与业务留在附属，
+/// 调度语义（间隔、报告序列化）归核心；模块 `run` 命令与 `schedule run` 共用。
+pub trait PollJob: Send + Sync {
+    fn job_interval(&self) -> Duration;
+    fn poll_json(&self) -> Pin<Box<dyn Future<Output = Result<serde_json::Value>> + Send + '_>>;
+}
 
 /// 定时入口的公共执行循环（设计文档 8.2 定时器入口的统一机制）：
 /// 立即执行一轮后按间隔循环，失败只记日志等下一轮，收到 shutdown 优雅退出。
@@ -10,9 +39,9 @@ use tokio::sync::watch;
 /// ```ignore
 /// let tracker = paper_tracker(&config, store)?;
 /// let tracker_ref = &tracker; // 闭包按值复制引用，避免借用闭包自身
-/// run_periodic("papers", tracker.interval(), move || {
+/// run_periodic("papers", tracker_ref.job_interval(), move || {
 ///     let tracker = tracker_ref;
-///     async move { Ok(serde_json::to_value(tracker.poll_once().await?)?) }
+///     async move { tracker.poll_json().await }
 /// }, shutdown).await?;
 /// ```
 pub async fn run_periodic<F, Fut>(
