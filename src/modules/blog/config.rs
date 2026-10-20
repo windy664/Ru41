@@ -14,9 +14,8 @@ pub struct BlogSection {
     /// 远端与分支；默认 origin/master。
     pub remote: Option<String>,
     pub branch: Option<String>,
-    /// Vault 内的待发布目录（相对路径）；默认 06-Blog-博客/Pending-待发布。
-    pub pending_dir: Option<String>,
-    /// Vault 内的已发布目录（相对路径）；默认 06-Blog-博客/Published-已发布。
+    /// Vault 内的已发布目录（相对路径），也是发布触发入口；
+    /// 把定稿 markdown 移入该目录并推送即发布。默认 06-Blog-博客/Published-已发布。
     pub published_dir: Option<String>,
     /// 站点 URL（发布成功通知里拼链接）；默认 https://windy664.github.io。
     pub site_url: Option<String>,
@@ -30,7 +29,6 @@ impl BlogSection {
     pub const DEFAULT_INTERVAL_SECS: u64 = 300;
     pub const DEFAULT_REMOTE: &str = "origin";
     pub const DEFAULT_BRANCH: &str = "master";
-    pub const DEFAULT_PENDING_DIR: &str = "06-Blog-博客/Pending-待发布";
     pub const DEFAULT_PUBLISHED_DIR: &str = "06-Blog-博客/Published-已发布";
     pub const DEFAULT_SITE_URL: &str = "https://windy664.github.io";
     /// Astro content collection 的文章目录。
@@ -43,7 +41,7 @@ impl BlogSection {
     }
 
     /// 由 [sources.blog] 解析出运行时配置；默认值只定义在这里。
-    /// 依赖核心 [obsidian] 的 vault_path（待发布文件在 Vault 仓库里）。
+    /// 依赖核心 [obsidian] 的 vault_path（已发布文件在 Vault 仓库里）。
     pub fn resolved(&self, notify: Option<NotifyRoute>) -> Result<BlogConfig> {
         let repo_path = self
             .repo_path
@@ -60,10 +58,6 @@ impl BlogSection {
                 .branch
                 .clone()
                 .unwrap_or_else(|| Self::DEFAULT_BRANCH.into()),
-            pending_dir: self
-                .pending_dir
-                .clone()
-                .unwrap_or_else(|| Self::DEFAULT_PENDING_DIR.into()),
             published_dir: self
                 .published_dir
                 .clone()
