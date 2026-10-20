@@ -30,6 +30,9 @@
 - [arXiv 论文追踪](sources-arxiv.md)：论文 digest、按 ID 精读与配置
 - [RSS 信息流](sources-rss.md)：RSS/Atom 采集、去重和精选输出
 - [校园卡水电监控](ecard-waterfee.md)：协议调查、读数采集、提醒与平台限制
+- [智慧树作业提醒](sources-zhihuishu.md)：sidecar 报告契约、deadline 分类与考试式红线
+- [学习通签到监控](sources-chaoxing.md)：协议端直连、待签提醒与手动签到红线
+- [教务课表监控](sources-jwxt.md)：CAS 单点登录拉课表、变更检测与明日课表提醒
 
 ## 推荐阅读顺序
 

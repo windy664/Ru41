@@ -2,15 +2,21 @@ use anyhow::{Context, Result};
 use clap::Parser;
 use ru41::bootstrap::agents::{AgentOverrides, registry};
 use ru41::bootstrap::assembly::{
-    default_notify_route, ecard_tracker, notify_channels, paper_tracker, qq_api,
-    qq_command_handlers, rss_tracker,
+    chaoxing_tracker, chaoxing_work_tracker, default_notify_route, jwxt_tracker,
+    notifier_for_route, notify_channels, qq_api, qq_command_handlers, scheduled_jobs,
+    todo_notify_route, tracker_job,
 };
 use ru41::bootstrap::store::{open_store, resolve as resolve_store};
 use ru41::{
-    app::task::TaskService,
+    app::{schedule::ScheduleService, task::TaskService, todo::TodoService},
     bootstrap::config::Config,
     channels::qq::QqBot,
-    ingress::cli::{Cli, Command, EcardCommand, PapersCommand, QqCommand, RssCommand, TaskCommand},
+    domain::schedule::{EventInput, EventSource, parse_event_when},
+    domain::todo::{TodoInput, parse_due},
+    ingress::cli::{
+        ChaoxingCommand, Cli, Command, EventCommand, JwxtCommand, QqCommand, ScheduleCommand,
+        TaskCommand, TodoCommand, TrackerCommand,
+    },
     ingress::cli_ops,
     privacy::{NoopSanitizer, RandomSanitizer, Sanitizer},
     runtime::dispatcher::NotifyDispatcher,
@@ -147,7 +153,7 @@ async fn main() -> Result<()> {
                 let bind_secret = bind_secret.or_else(|| config.channel.qq.bind_secret.clone());
                 let api = Arc::new(qq_api(&credentials, &config)?);
                 let store = open_store(&store_config)?;
-                let command_handlers = qq_command_handlers(&config, &backend);
+                let command_handlers = qq_command_handlers(&config, &backend)?;
                 let bot = QqBot {
                     api: api.clone(),
                     store: store.clone(),
@@ -176,7 +182,7 @@ async fn main() -> Result<()> {
                 let api = qq_api(&credentials, &config)?;
                 serde_json::to_value(api.send_group_text(&group_openid, &text, None, 1).await?)?
             }
-            QqCommand::Doctor { .. } => unreachable!("handled by cli_ops"),
+            QqCommand::Doctor { .. } | QqCommand::Onboard => unreachable!("handled by cli_ops"),
         },
         Command::Notify => {
             let channels = notify_channels(&config, None)?;
@@ -193,69 +199,72 @@ async fn main() -> Result<()> {
             dispatcher.run_loop(shutdown_channel()?).await?;
             return Ok(());
         }
-        Command::Papers { command } => match command {
-            PapersCommand::Poll => {
-                let tracker = paper_tracker(&config, open_store(&store_config)?)?;
+        Command::Papers { command } => {
+            tracker_or_exit(tracker_cli("papers", command, &config, &store_config).await?)?
+        }
+        Command::Rss { command } => {
+            tracker_or_exit(tracker_cli("rss", command, &config, &store_config).await?)?
+        }
+        Command::Ecard { command } => {
+            tracker_or_exit(tracker_cli("ecard", command, &config, &store_config).await?)?
+        }
+        Command::Zhihuishu { command } => {
+            tracker_or_exit(tracker_cli("zhihuishu", command, &config, &store_config).await?)?
+        }
+        Command::Chaoxing { command } => match command {
+            ChaoxingCommand::Poll => tracker_or_exit(
+                tracker_cli("chaoxing", TrackerCommand::Poll, &config, &store_config).await?,
+            )?,
+            ChaoxingCommand::Work => {
+                let tracker = chaoxing_work_tracker(&config, open_store(&store_config)?)?;
                 serde_json::to_value(tracker.poll_once().await?)?
             }
-            PapersCommand::Run => {
-                let tracker = paper_tracker(&config, open_store(&store_config)?)?;
-                let tracker_ref = &tracker;
-                ru41::ingress::schedule::run_periodic(
-                    "papers",
-                    tracker.interval(),
-                    move || {
-                        let tracker = tracker_ref;
-                        async move { Ok(serde_json::to_value(tracker.poll_once().await?)?) }
-                    },
-                    shutdown_channel()?,
-                )
-                .await?;
+            ChaoxingCommand::Run => {
+                tracker_cli("chaoxing", TrackerCommand::Run, &config, &store_config).await?;
                 return Ok(());
             }
-        },
-        Command::Rss { command } => match command {
-            RssCommand::Poll => {
-                let tracker = rss_tracker(&config, open_store(&store_config)?)?;
-                serde_json::to_value(tracker.poll_once().await?)?
+            ChaoxingCommand::Sign {
+                activity_id,
+                lat,
+                lon,
+                addr,
+                enc,
+                photo,
+            } => {
+                let tracker = chaoxing_tracker(&config, open_store(&store_config)?)?;
+                serde_json::to_value(
+                    tracker
+                        .sign_manual(
+                            &activity_id,
+                            lat,
+                            lon,
+                            addr.as_deref(),
+                            enc.as_deref(),
+                            photo.as_deref(),
+                        )
+                        .await?,
+                )?
             }
-            RssCommand::Run => {
-                let tracker = rss_tracker(&config, open_store(&store_config)?)?;
-                let tracker_ref = &tracker;
-                ru41::ingress::schedule::run_periodic(
-                    "rss",
-                    tracker.interval(),
-                    move || {
-                        let tracker = tracker_ref;
-                        async move { Ok(serde_json::to_value(tracker.poll_once().await?)?) }
-                    },
-                    shutdown_channel()?,
-                )
-                .await?;
+        },
+        Command::Jwxt { command } => match command {
+            JwxtCommand::Poll => tracker_or_exit(
+                tracker_cli("jwxt", TrackerCommand::Poll, &config, &store_config).await?,
+            )?,
+            JwxtCommand::Run => {
+                tracker_cli("jwxt", TrackerCommand::Run, &config, &store_config).await?;
                 return Ok(());
             }
-        },
-        Command::Ecard { command } => match command {
-            EcardCommand::Poll => {
-                let tracker = ecard_tracker(&config, open_store(&store_config)?)?;
-                serde_json::to_value(tracker.poll_once().await?)?
-            }
-            EcardCommand::Run => {
-                let tracker = ecard_tracker(&config, open_store(&store_config)?)?;
-                let tracker_ref = &tracker;
-                ru41::ingress::schedule::run_periodic(
-                    "ecard",
-                    tracker.interval(),
-                    move || {
-                        let tracker = tracker_ref;
-                        async move { Ok(serde_json::to_value(tracker.poll_once().await?)?) }
-                    },
-                    shutdown_channel()?,
-                )
-                .await?;
-                return Ok(());
+            JwxtCommand::Login { captcha } => {
+                let tracker = jwxt_tracker(&config, open_store(&store_config)?)?;
+                jwxt_login(&tracker, captcha.as_deref()).await?
             }
         },
+        Command::Obsidian { command } => {
+            tracker_or_exit(tracker_cli("obsidian", command, &config, &store_config).await?)?
+        }
+        Command::Blog { command } => {
+            tracker_or_exit(tracker_cli("blog", command, &config, &store_config).await?)?
+        }
         Command::Task { command } => {
             let mut service = TaskService::new(open_store(&store_config)?);
             match command {
@@ -287,9 +296,275 @@ async fn main() -> Result<()> {
                 TaskCommand::Attempts { id } => serde_json::to_value(service.attempts(id)?)?,
             }
         }
+        Command::Todo { command } => {
+            let options = config.todo.options()?;
+            let service = TodoService::new(open_store(&store_config)?, options);
+            let now = ru41::util::now();
+            match command {
+                TodoCommand::List { view, limit } => match view {
+                    Some(view) => serde_json::to_value(service.list(
+                        view.into_domain(),
+                        now,
+                        limit as usize,
+                    )?)?,
+                    None => serde_json::to_value(service.overview(now, limit as usize)?)?,
+                },
+                TodoCommand::Add {
+                    title,
+                    due,
+                    remind,
+                    labels,
+                    priority,
+                } => {
+                    let due_at = due
+                        .as_deref()
+                        .map(|text| parse_due(text, now, &options))
+                        .transpose()?;
+                    let explicit_remind_at = remind
+                        .as_deref()
+                        .map(|text| parse_due(text, now, &options))
+                        .transpose()?;
+                    let remind_at = explicit_remind_at.or(due_at);
+                    serde_json::to_value(service.add(
+                        TodoInput {
+                            title,
+                            priority: priority.into_domain(),
+                            labels,
+                            due_at,
+                            remind_at,
+                            source: Some(ru41::domain::todo::TodoSource {
+                                channel: "cli".into(),
+                                source_id: None,
+                            }),
+                        },
+                        now,
+                    )?)?
+                }
+                TodoCommand::Done { id } => serde_json::to_value(service.complete(&id, now)?)?,
+                TodoCommand::Postpone { id, until } => {
+                    serde_json::to_value(service.postpone(&id, &until, now)?)?
+                }
+                TodoCommand::Cancel { id } => serde_json::to_value(service.cancel(&id, now)?)?,
+                TodoCommand::Restore { id } => serde_json::to_value(service.restore(&id, now)?)?,
+                TodoCommand::Remind {
+                    once,
+                    interval_secs,
+                    channel,
+                    target,
+                } => {
+                    if once {
+                        let route = todo_notify_route(&config, channel, target)?;
+                        let notifier = notifier_for_route(&config, &route)?;
+                        let report = ru41::app::todo::send_due_reminders(
+                            &service,
+                            notifier.as_ref(),
+                            &route,
+                            options,
+                        )
+                        .await?;
+                        let events = ScheduleService::new(service.store().clone(), options);
+                        ru41::app::schedule::send_event_reminders(
+                            &events,
+                            notifier.as_ref(),
+                            &route,
+                            options,
+                        )
+                        .await?;
+                        println!("{}", serde_json::to_string_pretty(&report)?);
+                    } else {
+                        run_todo_remind_loop(&config, &service, interval_secs, channel, target)
+                            .await?;
+                    }
+                    return Ok(());
+                }
+            }
+        }
+        Command::Event { command } => {
+            let options = config.todo.options()?;
+            let service = ScheduleService::new(open_store(&store_config)?, options);
+            let now = ru41::util::now();
+            match command {
+                EventCommand::Add {
+                    when,
+                    title,
+                    location,
+                } => {
+                    let (starts_at, ends_at, recurrence) =
+                        parse_event_when(&when, now, &options)
+                            .with_context(|| format!("无法解析时间：{when}"))?;
+                    serde_json::to_value(service.add(
+                        EventInput {
+                            title,
+                            starts_at,
+                            ends_at,
+                            location,
+                            recurrence,
+                            source: Some(EventSource {
+                                channel: "cli".into(),
+                                source_id: None,
+                            }),
+                        },
+                        now,
+                    )?)?
+                }
+                EventCommand::List { days } => {
+                    serde_json::to_value(service.upcoming(now, days, 100)?)?
+                }
+                EventCommand::Cancel { id } => serde_json::to_value(service.cancel(&id, now)?)?,
+                EventCommand::Conflicts { when } => {
+                    let (starts_at, ends_at, _) = parse_event_when(&when, now, &options)
+                        .with_context(|| format!("无法解析时间：{when}"))?;
+                    serde_json::to_value(service.conflicts(starts_at, ends_at, now)?)?
+                }
+            }
+        }
+        Command::Schedule { command } => match command {
+            ScheduleCommand::List => serde_json::to_value(scheduled_jobs(&config))?,
+            ScheduleCommand::Run {
+                job,
+                interval_secs,
+                channel,
+                target,
+            } => {
+                let store = open_store(&store_config)?;
+                if job == "todo-remind" {
+                    let options = config.todo.options()?;
+                    let service = TodoService::new(store, options);
+                    run_todo_remind_loop(
+                        &config,
+                        &service,
+                        interval_secs.unwrap_or(60),
+                        channel,
+                        target,
+                    )
+                    .await?;
+                    return Ok(());
+                }
+                let Some(tracker) = tracker_job(&config, store, &job)? else {
+                    anyhow::bail!("unknown scheduled job: {job} (see `ru41 schedule list`)");
+                };
+                let interval = interval_secs
+                    .map(Duration::from_secs)
+                    .unwrap_or_else(|| tracker.job_interval());
+                ru41::ingress::schedule::run_periodic(
+                    &job,
+                    interval,
+                    || tracker.poll_json(),
+                    shutdown_channel()?,
+                )
+                .await?;
+                return Ok(());
+            }
+        },
     };
     println!("{}", serde_json::to_string_pretty(&output)?);
     Ok(())
+}
+
+async fn run_tracker_periodic(
+    name: &str,
+    job: &dyn ru41::ingress::schedule::PollJob,
+) -> Result<()> {
+    ru41::ingress::schedule::run_periodic(
+        name,
+        job.job_interval(),
+        || job.poll_json(),
+        shutdown_channel()?,
+    )
+    .await
+}
+
+/// 附属追踪器的统一 CLI 执行：Poll 跑一轮并返回报告，Run 常驻至收到退出信号。
+async fn tracker_cli(
+    name: &str,
+    command: TrackerCommand,
+    config: &Config,
+    store_options: &ru41::bootstrap::store::StoreOptions,
+) -> Result<Option<serde_json::Value>> {
+    let job = tracker_job(config, open_store(store_options)?, name)?
+        .with_context(|| format!("unknown tracker job: {name}"))?;
+    match command {
+        TrackerCommand::Poll => Ok(Some(job.poll_json().await?)),
+        TrackerCommand::Run => {
+            run_tracker_periodic(name, job.as_ref()).await?;
+            Ok(None)
+        }
+    }
+}
+
+/// Run 常驻至退出信号，没有可打印的报告；此时 main 直接结束。
+fn tracker_or_exit(report: Option<serde_json::Value>) -> Result<serde_json::Value> {
+    report.context("tracker run exited")
+}
+
+/// CAS 验证码登录的两步交互：无 --captcha 时下载验证码图片并提示路径；
+/// 带 --captcha 时取持久化的 uid 提交答案，成功后 TGT 已入会话文件。
+async fn jwxt_login(
+    tracker: &ru41::modules::jwxt::JwxtTracker,
+    captcha: Option<&str>,
+) -> Result<serde_json::Value> {
+    let client = tracker.client();
+    match captcha {
+        Some(code) => {
+            let uid = client
+                .pending_captcha_uid()
+                .context("没有待验证的验证码：请先运行 `ru41 jwxt login` 下载验证码图片")?;
+            client.cas_login(&uid, code.trim()).await?;
+            Ok(serde_json::json!({"login": "ok"}))
+        }
+        None => {
+            let (uid, path) = client.download_captcha().await?;
+            Ok(serde_json::json!({
+                "message": "查看验证码图片后运行 `ru41 jwxt login --captcha <答案>`",
+                "uid": uid,
+                "image": path.display().to_string(),
+            }))
+        }
+    }
+}
+
+async fn run_todo_remind_loop(
+    config: &Config,
+    service: &TodoService,
+    interval_secs: u64,
+    channel: String,
+    target: Option<String>,
+) -> Result<()> {
+    let options = config.todo.options()?;
+    let route = todo_notify_route(config, channel, target)?;
+    let notifier = notifier_for_route(config, &route)?;
+    let service_ref = service;
+    let notifier_ref = notifier;
+    ru41::ingress::schedule::run_periodic(
+        "todo-remind",
+        Duration::from_secs(interval_secs),
+        move || {
+            let service = service_ref;
+            let events = ScheduleService::new(service.store().clone(), options);
+            let notifier = notifier_ref.clone();
+            let route = route.clone();
+            async move {
+                let todo_report = ru41::app::todo::send_due_reminders(
+                    service,
+                    notifier.as_ref(),
+                    &route,
+                    options,
+                )
+                .await?;
+                // 同一循环顺带发送行程到点提醒；任一失败让本轮报错下轮重试。
+                ru41::app::schedule::send_event_reminders(
+                    &events,
+                    notifier.as_ref(),
+                    &route,
+                    options,
+                )
+                .await?;
+                Ok(serde_json::json!({"todo": todo_report}))
+            }
+        },
+        shutdown_channel()?,
+    )
+    .await
 }
 
 /// SIGINT/SIGTERM 触发的优雅关闭信号。

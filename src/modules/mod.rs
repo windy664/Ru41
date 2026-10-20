@@ -1,3 +1,9 @@
+pub mod blog;
+pub mod chaoxing;
 pub mod ecard;
+pub mod jwxt;
+pub mod obsidian;
 pub mod papers;
+pub mod planner;
 pub mod rss;
+pub mod zhihuishu;

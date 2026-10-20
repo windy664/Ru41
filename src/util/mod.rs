@@ -1,6 +1,18 @@
 //! 少量跨层通用的小工具。保持克制：只在出现真实重复时才把代码收进这里。
 
-use std::time::{SystemTime, UNIX_EPOCH};
+use std::time::{Duration, SystemTime, UNIX_EPOCH};
+
+/// 出站 HTTP 请求的整体超时；抓取/通知类调用都不应无限等待。
+pub const HTTP_TIMEOUT: Duration = Duration::from_secs(30);
+
+/// 出站 HTTP 客户端统一出口：带整体超时与 ru41 UA，避免各来源重复构造、漏设超时。
+pub fn http_client() -> reqwest::Client {
+    reqwest::Client::builder()
+        .user_agent(concat!("ru41/", env!("CARGO_PKG_VERSION")))
+        .timeout(HTTP_TIMEOUT)
+        .build()
+        .expect("reqwest client build")
+}
 
 /// 当前 Unix 秒；全库统一用它，避免各处时间源不一致。
 pub fn now() -> i64 {

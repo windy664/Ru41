@@ -187,3 +187,96 @@ async fn permanent_failure_skips_retry_budget() {
             .contains("invalid agent output")
     );
 }
+
+#[tokio::test]
+async fn conversation_session_is_saved_and_resumed() {
+    type Requests = Arc<std::sync::Mutex<Vec<(Option<String>, Option<String>)>>>;
+    struct ConversationAgent {
+        requests: Requests,
+    }
+    impl AgentBackend for ConversationAgent {
+        fn descriptor(&self) -> BackendDescriptor {
+            BackendDescriptor {
+                id: "codex".into(),
+                model: None,
+                contracts: vec![RunContract::AnalysisV1],
+                supports_resume: true,
+            }
+        }
+        fn run(
+            &self,
+            request: AgentRequest,
+        ) -> Pin<Box<dyn Future<Output = anyhow::Result<AgentOutput>> + Send + '_>> {
+            let context = request.context.expect("conversation context");
+            assert_eq!(context.skills.len(), 1);
+            assert_eq!(context.skills[0].name, "test-skill");
+            self.requests
+                .lock()
+                .unwrap()
+                .push((context.conversation_id, context.resume_session_id));
+            Box::pin(async {
+                Ok(AgentOutput {
+                    result: AgentResult {
+                        summary: "done".into(),
+                    },
+                    session_id: Some("thread-1".into()),
+                })
+            })
+        }
+    }
+
+    let dir = tempfile::tempdir().unwrap();
+    let store: Arc<dyn TaskStore> =
+        Arc::new(SqliteTaskStore::open(&dir.path().join("state.db")).unwrap());
+    let requests = Arc::new(std::sync::Mutex::new(Vec::new()));
+    let mut backends = BackendRegistry::default();
+    backends
+        .register(ConversationAgent {
+            requests: requests.clone(),
+        })
+        .unwrap();
+    backends.skills = vec![ru41::skills::SkillPackage {
+        name: "test-skill".into(),
+        description: "Test skill".into(),
+        instructions: "Follow the test workflow".into(),
+        files: vec![],
+    }];
+    let mut worker = Worker {
+        store: store.clone(),
+        backends: Arc::new(backends),
+        sanitizer: Arc::new(NoopSanitizer),
+        config: WorkerConfig {
+            worker_id: "test".into(),
+            runs_dir: dir.path().join("runs"),
+            timeout: Duration::from_secs(2),
+            lease_secs: 60,
+            retry_delay_secs: 10,
+        },
+    };
+    let route = ru41::domain::NotifyRoute {
+        channel: "qq".into(),
+        target: "user:U1".into(),
+        msg_id: None,
+    };
+    let (_sender, receiver) = watch::channel(false);
+    for key in ["first", "second"] {
+        store
+            .enqueue_with_notify(key, "hello", "codex", RunContract::AnalysisV1, &route)
+            .unwrap();
+        let report = worker.run_once(receiver.clone()).await.unwrap().unwrap();
+        assert_eq!(report.status, TaskStatus::Succeeded);
+    }
+
+    let document = store
+        .document("conversation", "qq:user:U1")
+        .unwrap()
+        .unwrap();
+    assert_eq!(document.value["session_id"], "thread-1");
+    assert_eq!(
+        *requests.lock().unwrap(),
+        vec![
+            (Some("qq:user:U1".into()), None),
+            (Some("qq:user:U1".into()), Some("thread-1".into())),
+        ]
+    );
+}

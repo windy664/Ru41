@@ -53,6 +53,12 @@ pub fn registry(
     )?;
     let pi = &agents.pi;
     let mut backends = BackendRegistry::default();
+    let skill_roots = if agents.skills.roots.is_empty() {
+        crate::skills::default_roots()
+    } else {
+        agents.skills.roots.clone()
+    };
+    backends.skills = crate::skills::load_roots(&skill_roots)?;
     backends.register(CodexAgent {
         executable: codex.executable.clone(),
         model: codex.model.clone(),

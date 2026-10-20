@@ -56,6 +56,50 @@ services:
     volumes: *ru41-volumes
     command: ["--config", "/etc/ru41/ru41.toml", "--db", "/data/state.db", "ecard", "run"]
 
+  chaoxing:
+    <<: *ru41-common
+    profiles: [chaoxing]
+    volumes: *ru41-volumes
+    command: ["--config", "/etc/ru41/ru41.toml", "--db", "/data/state.db", "chaoxing", "run"]
+
+  todo:
+    <<: *ru41-common
+    profiles: [todo]
+    volumes: *ru41-volumes
+    command:
+      - "--config"
+      - "/etc/ru41/ru41.toml"
+      - "--db"
+      - "/data/state.db"
+      - todo
+      - remind
+      - "--channel"
+      - "qq"
+      - "--target"
+      - "${RU41_TODO_NOTIFY_TARGET:?set RU41_TODO_NOTIFY_TARGET, e.g. user:openid}"
+
+  # Obsidian 闭环：qq（/记一下）与 worker（执行整理任务）也需挂载 Vault。
+  obsidian:
+    <<: *ru41-common
+    profiles: [obsidian]
+    volumes:
+      - ../ru41.toml:/etc/ru41/ru41.toml:ro
+      - ../.ru41:/data
+      - ${RU41_VAULT_PATH:?set RU41_VAULT_PATH to the vault clone dir}:/vault
+    command: ["--config", "/etc/ru41/ru41.toml", "--db", "/data/state.db", "obsidian", "run"]
+
+  # 博客发布管线：Vault 待发布目录 → 校验 → 博客仓库 _posts → 推送。
+  # 发布后回写 Vault（移动 Pending → Published），因此也要挂载 Vault 与 git 凭据。
+  blog:
+    <<: *ru41-common
+    profiles: [blog]
+    volumes:
+      - ../ru41.toml:/etc/ru41/ru41.toml:ro
+      - ../.ru41:/data
+      - ${RU41_VAULT_PATH:?set RU41_VAULT_PATH to the vault clone dir}:/vault
+      - ${RU41_BLOG_PATH:?set RU41_BLOG_PATH to the blog repo clone dir}:/blog
+    command: ["--config", "/etc/ru41/ru41.toml", "--db", "/data/state.db", "blog", "run"]
+
   serve:
     <<: *ru41-common
     profiles: [api]

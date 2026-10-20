@@ -39,6 +39,11 @@ async fn send(writer: &mut tokio::process::ChildStdin, value: Value) -> Result<(
 }
 impl CodexSession {
     async fn execute(&self, request: AgentRequest) -> Result<AgentOutput> {
+        let skills = request
+            .context
+            .as_ref()
+            .map_or(&[][..], |context| context.skills.as_slice());
+        crate::skills::materialize(&request.run_dir, skills)?;
         let mut command = tokio::process::Command::new(&self.executable);
         command
             .args(["app-server", "--listen", "stdio://"])
@@ -70,21 +75,14 @@ impl CodexSession {
             match frame.get("id").and_then(Value::as_u64) {
                 Some(1) if frame.get("method").is_none() => {
                     send(&mut writer, json!({"method":"initialized"})).await?;
-                    send(&mut writer,json!({"id":2,"method":"thread/start","params":{"model":self.model,"cwd":request.run_dir,"approvalPolicy":"on-request","sandbox":"read-only","ephemeral":true}})).await?;
+                    send(&mut writer,json!({"id":2,"method":"thread/start","params":{"model":self.model,"cwd":request.run_dir,"approvalPolicy":"never","sandbox":"danger-full-access","ephemeral":true}})).await?;
                 }
                 Some(2) if frame.get("method").is_none() => {
                     let id = frame["result"]["thread"]["id"]
                         .as_str()
                         .context("missing thread id")?
                         .to_string();
-                    let prompt = if self.output_schema {
-                        request.prompt.clone()
-                    } else {
-                        format!(
-                            "Return only a JSON object with a nonempty string field named summary; do not use Markdown.\n\nRequest:\n{}",
-                            request.prompt
-                        )
-                    };
+                    let prompt = request.prompt.clone();
                     let mut params = json!({"threadId":id,"input":[{"type":"text","text":prompt}]});
                     if self.output_schema {
                         params["outputSchema"] = json!({"type":"object","properties":{"summary":{"type":"string"}},"required":["summary"],"additionalProperties":false});
@@ -144,8 +142,14 @@ impl CodexSession {
                     frame["params"]["turn"]["status"] == "completed",
                     "Codex turn did not complete"
                 );
-                let result: AgentResult =
-                    serde_json::from_str(&final_text).context("invalid structured agent result")?;
+                let result: AgentResult = if self.output_schema {
+                    serde_json::from_str(&final_text).context("invalid structured agent result")?
+                } else {
+                    AgentResult {
+                        summary: final_text.trim().to_owned(),
+                    }
+                };
+                super::ensure_tool_calls_executed(&result.summary)?;
                 result.validate().map_err(anyhow::Error::msg)?;
                 child.kill().await.ok();
                 let _ = child.wait().await;

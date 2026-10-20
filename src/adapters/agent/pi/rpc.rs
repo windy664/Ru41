@@ -84,12 +84,19 @@ impl PiAgent {
         let mut stdin = child.stdin.take().context("Pi stdin missing")?;
         let stdout = child.stdout.take().context("Pi stdout missing")?;
         let mut stderr = child.stderr.take().context("Pi stderr missing")?;
+        let prompt = crate::skills::render_for_prompt(
+            &request.prompt,
+            request
+                .context
+                .as_ref()
+                .map_or(&[][..], |context| context.skills.as_slice()),
+        );
         let protocol = async {
             stdin
                 .write_all(
                     format!(
                         "{}\n",
-                        json!({"id":"ru41-prompt","type":"prompt","message":request.prompt})
+                        json!({"id":"ru41-prompt","type":"prompt","message":prompt})
                     )
                     .as_bytes(),
                 )

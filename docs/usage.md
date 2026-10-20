@@ -32,7 +32,7 @@ cargo run --locked -- task show 1
 cargo run --locked -- task attempts 1
 ```
 
-Worker 会实际调用 Codex，使用已有认证并消耗对应额度。适配器使用 `--ignore-user-config`、`--sandbox read-only` 和独立尝试目录；不自动加载用户原生 Codex 配置；自定义供应商与启动覆盖通过 Ru41 配置显式传入。可通过 `--model` 显式选择账户可用模型。只读沙箱不是独立机器或完整数据隔离。
+Worker 会实际调用 Codex，使用已有认证并消耗对应额度。适配器使用 `--ignore-user-config`、`--dangerously-bypass-approvals-and-sandbox` 和独立尝试目录；不自动加载用户原生 Codex 配置；自定义供应商与启动覆盖通过 Ru41 配置显式传入。可通过 `--model` 显式选择账户可用模型。yolo 模式会无审批执行命令，只应部署在已经外部隔离的环境中。
 
 <details>
 <summary><strong>常驻运行、取消与重试语义</strong></summary>
@@ -73,9 +73,12 @@ cargo run --locked -- doctor --deep
 cargo run --locked -- status
 cargo run --locked -- dump
 
-# QQ 凭证与 gateway；不连接 WebSocket、不发送消息
-cargo run --locked -- qq doctor
+# QQ 官方扫码创建/绑定机器人，再检查凭证与 gateway
+cargo run --locked -- qq onboard
+cargo run --locked -- qq doctor  # 不连接 WebSocket、不发送消息
 ```
+
+`qq onboard` 使用官方机器人开通/绑定流程，不是个人 QQ 登录。扫码成功后仅把 AppID/ClientSecret 原子写入权限为 `0600` 的本地配置；其他配置与注释保留，Secret 不进入日志或 `dump`。随后单聊可直接提问，群聊需要 @机器人。
 
 `config show` 和 `dump` 会隐藏密钥、连接串、webhook、通知目标、个人房间字段及自由 overrides；分享前仍应人工复核。`status` 的六种任务计数在数据库内聚合，不会把全部 prompt 或结果读入宿主。检查类命令发现错误时返回非零退出码，可用于部署脚本。
 
@@ -109,7 +112,7 @@ docker compose -f deploy/compose.yaml up -d worker
 | :--- | :--- |
 | 群聊 / 单聊 | @机器人或直接发送文本，创建分析任务 |
 | 任务管理 | `帮助` · `任务` · `任务 id` · `取消 id` |
-| 业务命令 | `精读 arxiv-id` · `水电` |
+| 业务命令 | `精读 arxiv-id` · `水电` · `待办` · `记待办 [时间] <内容>` · `日程` · `记日程 <时间> <标题>` |
 
 [渠道接入说明 →](channels-qq.md)
 
@@ -135,15 +138,74 @@ cargo run --locked -- qq send --qq-app-id <APP_ID> --qq-app-secret <SECRET> --gr
 
 </details>
 
-## 附属模块：论文、RSS 与水电
+## 私人待办
+
+Todo 是长期个人行动项，不等同于 Agent 执行队列里的 `Task`。数据持久化在同一数据库的通用 `todo_item` 记录中；“今日、近期、长期、逾期”由读取时的本地日期计算，不把会过期的分类写死到数据里。
+
+```bash
+# 添加；日期支持 YYYY-MM-DD、YYYY-MM-DD HH:MM、今天、明天、后天、N天后
+cargo run --locked -- todo add --title "写项目周报" --due "明天下午3点" --label project,weekly
+# 摘要视图：逾期、今日、近期、长期、收件箱
+cargo run --locked -- todo list
+# 单视图
+cargo run --locked -- todo list overdue
+cargo run --locked -- todo list today
+cargo run --locked -- todo list long-term
+# 完成 / 推迟 / 取消 / 恢复；ID 可用完整短 ID 或不歧义前缀
+cargo run --locked -- todo done <id>
+cargo run --locked -- todo postpone <id> "2026-10-21 18:00"
+cargo run --locked -- todo cancel <id>
+cargo run --locked -- todo restore <id>
+# 主动提醒：--once 适合 cron；常驻进程缺省每分钟检查一次
+cargo run --locked -- todo remind --once --channel qq --target "user:<openid>"
+cargo run --locked -- todo remind --channel qq --target "user:<openid>" --interval-secs 60
+```
+
+QQ 单聊中已绑定身份后也可以：
+
+```text
+/记待办 明天下午3点 写项目周报
+/待办
+/待办 逾期
+/完成 <待办ID>
+/推迟 <待办ID> 到 后天晚上8点
+/取消待办 <待办ID>
+/记日程 明天14:00-16:00 班会
+/记日程 每周二14:00-15:40 体育课
+/日程
+/取消日程 <日程ID>
+```
+
+列表类回复带快捷按钮（点击 = 代发对应指令，如「完成 xx」「取消日程 xx」），平台不支持键盘时自动降级为纯文本。`/待办` 摘要与 `/日程` 共用今日视图：行程是时间轴上的占用（起止、地点、每周重复），
+与待办（任务闭环）概念分离，但到点提醒由同一个 `todo remind` 循环发送。CLI 侧对应
+`ru41 event add/list/cancel/conflicts`，`conflicts` 供 agent 规划前做占用检查。
+
+`[todo]` 可配置本地时区固定偏移、近期窗口和长期窗口：
+
+```toml
+[todo]
+utc_offset_minutes = 480
+recent_days = 7
+long_term_days = 14
+```
+
+设置 `--due` 时默认在同一时间提醒，也可用 `--remind` 另设提醒时间；`/推迟` 会把截止和提醒一起改到新时间并重新触发。`todo remind` 到点后经 `--channel/--target` 或 `[notify]` 默认出口发送，通知成功后才记录去重；网络失败会在下一轮重试。循环待办和论文/RSS 自动写入待办在后续接入。
+
+## 附属模块：论文、RSS、水电与待办
 
 | 模块 | 输入 → 输出 | 运行入口 |
 | :--- | :--- | :--- |
 | [论文追踪](sources-arxiv.md) | arXiv 分类与关键词 → 精选摘要 / 单篇精读 | `papers poll/run` |
 | [信息订阅](sources-rss.md) | RSS / Atom → 与个人兴趣相关的摘要 | `rss poll/run` |
 | [宿舍水电](ecard-waterfee.md) | 校园卡平台 → 余额历史与阈值提醒 | `ecard poll/run` |
+| [智慧树作业提醒](sources-zhihuishu.md) | sidecar 报告 → 新作业 / 临近截止 / 考试式提醒 | `zhihuishu poll/run` |
+| [学习通签到监控](sources-chaoxing.md) | 协议端直连 → 待签活动提醒 / 手动签到 | `chaoxing poll/run/sign` |
+| Obsidian Vault 闭环 | Inbox Git 新提交 → Agent 归档整理 → 提交推送（核心服务 `app::obsidian` + `ports::vault`，附属仅 QQ 命令与 skill） | `obsidian poll/run` |
+| 博客发布管线 | Vault `Pending-待发布/` 目录 → 校验 → 博客仓库 `_posts/` → 推送 Pages | `blog poll/run` |
+| 私人待办 | 今日、近期、长期与逾期行动项 → 持久化 Todo 列表 | `todo ...` / QQ `/待办` |
+| 行程（日程事件） | 课表、会议、约会等时间占用（一次性 / 每周重复）→ 展开、冲突检测、到点提醒 | `event ...` / QQ `/日程` |
 
-来源采集、Agent 执行与通知派发各自运行，通过持久化数据衔接。
+来源采集、Agent 执行、私人待办与通知派发各自运行，通过持久化数据衔接。
 
 <details>
 <summary><strong>论文与 RSS 配置示例、轮询命令及水电接入</strong></summary>
@@ -167,9 +229,11 @@ feeds = ["https://example.com/feed.xml"]
 interests = "AI 安全、Rust 与个人自动化"
 ```
 
-`poll` 执行一轮，`run` 常驻周期执行；论文/RSS 的 digest 任务仍需独立 Worker 完成，终态通知由 `qq run` 内嵌派发循环或独立的 `ru41 notify` 进程发出：
+`poll` 执行一轮，`run` 常驻周期执行；论文/RSS 的 digest 任务仍需独立 Worker 完成，终态通知由 `qq run` 内嵌派发循环或独立的 `ru41 notify` 进程发出。所有附属的轮询任务都登记在定时任务注册表里，可用 `schedule list` 查看任务名、间隔与启停状态，用 `schedule run <任务名>` 统一启动（等价于对应模块的 `run`）：
 
 ```bash
+cargo run --locked -- schedule list           # 全部已登记任务及 enabled 状态
+cargo run --locked -- schedule run papers     # 等价于 papers run
 cargo run --locked -- papers poll     # 或 papers run
 cargo run --locked -- rss poll        # 或 rss run
 cargo run --locked -- worker          # 执行 digest / 精读任务
@@ -298,11 +362,11 @@ src/
 ```toml
 # ru41.toml
 [agent.codex]
-model = "mimo-v2.6-flash"
-output_schema = false  # MiMo 只接受 text/json_object；Ru41 仍会在本地校验 JSON
+model = "mimo-v2.6-pro"
+output_schema = false  # 使用 Codex 原生文本回复，Ru41 映射为 summary 并校验
 config_overrides = [
   'model_catalog_json="/absolute/path/model-catalogs.json"',
-  'model_reasoning_effort="none"',
+  'model_reasoning_effort="high"',
   'model_reasoning_summary="none"',
   'model_context_window=1048576',
   'web_search="disabled"',

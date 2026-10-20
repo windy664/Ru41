@@ -1,4 +1,4 @@
-use clap::{Parser, Subcommand};
+use clap::{Parser, Subcommand, ValueEnum};
 use std::path::PathBuf;
 
 #[derive(Parser)]
@@ -73,6 +73,16 @@ pub enum Command {
         #[command(subcommand)]
         command: TaskCommand,
     },
+    /// 私人常驻待办：今日、近期、长期、逾期和收件箱视图。
+    Todo {
+        #[command(subcommand)]
+        command: TodoCommand,
+    },
+    /// 行程（日程事件）：课表、会议、约会等时间轴占用；与待办互补。
+    Event {
+        #[command(subcommand)]
+        command: EventCommand,
+    },
     /// QQ 官方机器人消息网关：收消息入队任务，完成后回复原会话。
     Qq {
         #[command(subcommand)]
@@ -84,17 +94,67 @@ pub enum Command {
     /// arXiv 论文追踪：轮询新论文、去重粗筛后合成精选 digest 任务。
     Papers {
         #[command(subcommand)]
-        command: PapersCommand,
+        command: TrackerCommand,
     },
     /// RSS 信息流追踪：轮询订阅源、去重粗筛后合成精选 digest 任务。
     Rss {
         #[command(subcommand)]
-        command: RssCommand,
+        command: TrackerCommand,
     },
     /// 校园卡水电监控：查询余额、记录历史、低余额提醒。
     Ecard {
         #[command(subcommand)]
-        command: EcardCommand,
+        command: TrackerCommand,
+    },
+    /// 智慧树作业提醒：读取 sidecar 报告，新任务与临近截止提醒（考试式仅提醒人工）。
+    Zhihuishu {
+        #[command(subcommand)]
+        command: TrackerCommand,
+    },
+    /// 学习通签到监控：协议端直连，检测待签活动并提醒，支持手动签到。
+    Chaoxing {
+        #[command(subcommand)]
+        command: ChaoxingCommand,
+    },
+    /// 教务课表监控：CAS 单点登录拉课表，变更检测与明日课表提醒。
+    Jwxt {
+        #[command(subcommand)]
+        command: JwxtCommand,
+    },
+    /// Obsidian Vault 闭环：Git 轮询发现 Inbox 新提交，入队整理任务，完成后提交推送。
+    Obsidian {
+        #[command(subcommand)]
+        command: TrackerCommand,
+    },
+    /// 博客发布管线：Vault 待发布目录 → 校验 → 博客仓库 _posts → 推送。
+    Blog {
+        #[command(subcommand)]
+        command: TrackerCommand,
+    },
+    /// 定时任务注册表：统一查看和运行各附属的轮询任务。
+    Schedule {
+        #[command(subcommand)]
+        command: ScheduleCommand,
+    },
+}
+
+#[derive(Subcommand)]
+pub enum ScheduleCommand {
+    /// 列出所有已登记的定时任务、间隔与启停状态。
+    List,
+    /// 以长驻方式运行指定任务，等价于对应模块的 run 入口。
+    Run {
+        /// 任务名（schedule list 的 name 列）。
+        job: String,
+        /// 覆盖轮询间隔（秒），缺省取任务登记值。
+        #[arg(long, value_parser = clap::value_parser!(u64).range(1..=86400))]
+        interval_secs: Option<u64>,
+        /// 通知渠道，仅 todo-remind 使用；缺省取 [notify] 默认出口。
+        #[arg(long, default_value = "qq")]
+        channel: String,
+        /// 通知目标，仅 todo-remind 使用；缺省取 [notify] 默认出口。
+        #[arg(long)]
+        target: Option<String>,
     },
 }
 
@@ -109,27 +169,84 @@ pub enum ConfigCommand {
 }
 
 #[derive(Subcommand)]
-pub enum PapersCommand {
+pub enum TrackerCommand {
     /// 执行一轮轮询（适合系统 cron 定时调用）。
     Poll,
-    /// 常驻运行，按 sources.arxiv.interval_secs 周期轮询。
+    /// 常驻运行，按该来源配置的 interval_secs 周期轮询。
     Run,
 }
 
 #[derive(Subcommand)]
-pub enum RssCommand {
-    /// 执行一轮轮询（适合系统 cron 定时调用）。
+pub enum ChaoxingCommand {
+    /// 采集一轮课程与签到活动并按需提醒（适合系统 cron 调用）。
     Poll,
-    /// 常驻运行，按 sources.rss.interval_secs 周期轮询。
+    /// 常驻运行，按 sources.chaoxing.interval_secs 周期轮询。
     Run,
+    /// 采集一轮全课程作业清单：提醒/待办/Obsidian 同步（独立低频任务）。
+    Work,
+    /// 手动签到一个签到活动（全类型：普通/手势/签到码/位置/二维码/拍照）。
+    Sign {
+        /// 签到活动 ID（poll 提醒里带的 id）。
+        activity_id: String,
+        /// 位置签到纬度（缺省用配置 default_lat）。
+        #[arg(long)]
+        lat: Option<f64>,
+        /// 位置签到经度（缺省用配置 default_lon）。
+        #[arg(long)]
+        lon: Option<f64>,
+        /// 位置签到地址文本（缺省用配置 default_addr；会显示在教师端）。
+        #[arg(long)]
+        addr: Option<String>,
+        /// 二维码签到 enc 值（现场二维码内容里的时效 token，过期需重扫）。
+        #[arg(long)]
+        enc: Option<String>,
+        /// 拍照签到照片路径（缺省用配置 photo_path，再缺省用内置照片）。
+        #[arg(long)]
+        photo: Option<String>,
+    },
 }
 
 #[derive(Subcommand)]
-pub enum EcardCommand {
-    /// 查询一次余额并按阈值判断是否提醒（适合系统 cron 每日调用）。
+pub enum JwxtCommand {
+    /// 拉取一轮课表并按需提醒（变更检测 + 到点推明日课表；cron 友好）。
     Poll,
-    /// 常驻运行，按 sources.ecard.interval_secs 周期查询。
+    /// 常驻运行，按 sources.jwxt.interval_secs 周期轮询。
     Run,
+    /// CAS 验证码登录：校方 CAS 每次账密登录都要图形验证码，只能人工一次，
+    /// 成功后 TGT 持久化，后续轮询静默换 ST。
+    Login {
+        /// 验证码答案；缺省时只下载验证码图片并提示路径。
+        #[arg(long)]
+        captcha: Option<String>,
+    },
+}
+
+#[derive(Subcommand)]
+pub enum EventCommand {
+    Add {
+        /// 自然语言时间：明天14:00-16:00、每周二14:00-15:40、今晚20:00-22:00。
+        #[arg(long)]
+        when: String,
+        #[arg(long)]
+        title: String,
+        #[arg(long)]
+        location: Option<String>,
+    },
+    /// 列出今天起 N 天的发生（含周期事件展开）。
+    List {
+        #[arg(long, default_value_t = 7)]
+        days: i64,
+    },
+    Cancel {
+        /// 完整 ID 或短 ID。
+        id: String,
+    },
+    /// 查询与给定时间段重叠的行程（agent 规划前占用检查）。
+    Conflicts {
+        /// 自然语言时间，格式同 add --when。
+        #[arg(long)]
+        when: String,
+    },
 }
 
 #[derive(clap::Args)]
@@ -169,6 +286,8 @@ pub enum QqCommand {
         #[command(flatten)]
         credentials: QqCredentials,
     },
+    /// 通过 QQ 官方扫码流程创建/绑定机器人并写入本地凭证。
+    Onboard,
 }
 
 #[derive(Subcommand)]
@@ -204,4 +323,97 @@ pub enum TaskCommand {
     Cancel {
         id: i64,
     },
+}
+
+#[derive(Subcommand)]
+pub enum TodoCommand {
+    /// 不传视图时返回今日、逾期、近期、长期和收件箱摘要。
+    List {
+        #[arg(value_enum)]
+        view: Option<TodoViewArg>,
+        #[arg(long, default_value_t = 20)]
+        limit: u32,
+    },
+    Add {
+        #[arg(long)]
+        title: String,
+        /// 支持 YYYY-MM-DD、YYYY-MM-DD HH:MM、今天、明天、后天、N天后。
+        #[arg(long)]
+        due: Option<String>,
+        /// 提醒时间与 --due 使用同一格式。
+        #[arg(long)]
+        remind: Option<String>,
+        #[arg(long = "label", value_delimiter = ',')]
+        labels: Vec<String>,
+        #[arg(long, value_enum, default_value_t = TodoPriorityArg::Normal)]
+        priority: TodoPriorityArg,
+    },
+    Done {
+        /// 完整 ID 或至少不歧义的短 ID 前缀。
+        id: String,
+    },
+    Postpone {
+        id: String,
+        /// 支持 --due 的日期格式。
+        until: String,
+    },
+    Cancel {
+        id: String,
+    },
+    Restore {
+        id: String,
+    },
+    /// 按 remind_at 发送主动提醒；--once 适合 cron，缺省常驻循环。
+    Remind {
+        #[arg(long)]
+        once: bool,
+        #[arg(long, default_value_t = 60, value_parser = clap::value_parser!(u64).range(1..=86400))]
+        interval_secs: u64,
+        /// 覆盖 [notify] 默认出口；个人提醒通常为 qq + user:{openid}。
+        #[arg(long, default_value = "qq")]
+        channel: String,
+        #[arg(long)]
+        target: Option<String>,
+    },
+}
+
+#[derive(Clone, Copy, Debug, ValueEnum)]
+pub enum TodoViewArg {
+    Today,
+    Recent,
+    LongTerm,
+    Overdue,
+    Inbox,
+    All,
+}
+
+impl TodoViewArg {
+    pub fn into_domain(self) -> crate::domain::todo::TodoView {
+        match self {
+            Self::Today => crate::domain::todo::TodoView::Today,
+            Self::Recent => crate::domain::todo::TodoView::Recent,
+            Self::LongTerm => crate::domain::todo::TodoView::LongTerm,
+            Self::Overdue => crate::domain::todo::TodoView::Overdue,
+            Self::Inbox => crate::domain::todo::TodoView::Inbox,
+            Self::All => crate::domain::todo::TodoView::All,
+        }
+    }
+}
+
+#[derive(Clone, Copy, Debug, Default, ValueEnum)]
+pub enum TodoPriorityArg {
+    Low,
+    #[default]
+    Normal,
+    High,
+}
+
+impl TodoPriorityArg {
+    pub fn into_domain(self) -> crate::domain::todo::TodoPriority {
+        match self {
+            Self::Low => crate::domain::todo::TodoPriority::Low,
+            Self::Normal => crate::domain::todo::TodoPriority::Normal,
+            Self::High => crate::domain::todo::TodoPriority::High,
+        }
+    }
 }

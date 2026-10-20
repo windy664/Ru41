@@ -8,4 +8,5 @@ pub mod modules;
 pub mod ports;
 pub mod privacy;
 pub mod runtime;
+pub mod skills;
 pub mod util;

@@ -71,6 +71,9 @@ docker compose -f deploy/compose.yaml --profile rss --profile notify up -d worke
 # 水电监控（纯 Rust 阈值判断，不要求 worker）
 docker compose -f deploy/compose.yaml --profile ecard up -d ecard
 
+# 私人待办到点提醒（需要设置 QQ 单聊目标）
+RU41_TODO_NOTIFY_TARGET="user:<openid>" docker compose -f deploy/compose.yaml --profile todo up -d todo
+
 # HTTP API，仅绑定宿主机 127.0.0.1:4141
 docker compose -f deploy/compose.yaml --profile api up -d serve worker
 ```

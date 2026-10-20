@@ -101,7 +101,7 @@ fn notify_text(task: &Task) -> String {
     match &task.result {
         Some(result) => result.summary.clone(),
         None => format!(
-            "任务失败：{}",
+            "## 任务失败\n\n{}",
             task.last_error.as_deref().unwrap_or("未知错误")
         ),
     }
