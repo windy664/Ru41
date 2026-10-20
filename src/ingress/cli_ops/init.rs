@@ -103,11 +103,11 @@ fn minimal_config(provider: &str, catalog_path: Option<&Path>) -> Result<Value> 
         let catalog = catalog_path.context("MiMo catalog path missing")?;
         codex = json!({
             "bin": "codex",
-            "model": "mimo-v2.6-flash",
+            "model": "mimo-v2.6-pro",
             "output_schema": false,
             "config_overrides": [
                 format!("model_catalog_json={:?}", catalog.to_string_lossy()),
-                "model_reasoning_effort=\"none\"",
+                "model_reasoning_effort=\"high\"",
                 "model_reasoning_summary=\"none\"",
                 "model_context_window=1048576",
                 "web_search=\"disabled\"",

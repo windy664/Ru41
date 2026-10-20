@@ -1,7 +1,4 @@
-use crate::{
-    channels::qq::commands::{CommandContext, QqCommandHandler},
-    domain::NotifyRoute,
-};
+use crate::ports::commands::{CommandContext, CommandHandler, Reply};
 use anyhow::Result;
 use std::{future::Future, pin::Pin};
 
@@ -24,29 +21,25 @@ impl PapersQqCommand {
     }
 }
 
-impl QqCommandHandler for PapersQqCommand {
+impl CommandHandler for PapersQqCommand {
     fn matches(&self, verb: &str) -> bool {
         matches!(verb, "精读" | "deep" | "deepread")
     }
 
     fn help(&self) -> &'static str {
-        "精读 <arxiv-id> - 精读指定论文（如 精读 2510.12345）"
+        "`/精读 <arxiv-id>`：精读指定论文（如 `/精读 2510.12345`）"
     }
 
     fn handle<'a>(
         &'a self,
         arg: &'a str,
         ctx: &'a CommandContext<'a>,
-    ) -> Pin<Box<dyn Future<Output = Result<Option<String>>> + Send + 'a>> {
+    ) -> Pin<Box<dyn Future<Output = Result<Option<Reply>>> + Send + 'a>> {
         Box::pin(async move {
             if !is_arxiv_id(arg) {
                 return Ok(None);
             }
-            let route = NotifyRoute {
-                channel: "qq".into(),
-                target: ctx.target.to_owned(),
-                msg_id: Some(ctx.msg_id.to_owned()),
-            };
+            let route = ctx.reply_route();
             deep_read_task(
                 ctx.store,
                 &self.client,
@@ -56,6 +49,7 @@ impl QqCommandHandler for PapersQqCommand {
                 &route,
             )
             .await
+            .map(Reply::text)
             .map(Some)
         })
     }

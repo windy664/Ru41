@@ -1,9 +1,45 @@
-use super::{OpsOutcome, check};
+use super::{OpsOutcome, check, init};
 use crate::{
     bootstrap::{assembly::qq_api, config::Config},
-    channels::qq::api::QqApiClient,
+    channels::qq::{api::QqApiClient, onboard::QqOnboardClient},
     ingress::cli::{Cli, QqCredentials},
 };
+
+pub(crate) async fn onboard(cli: &Cli) -> OpsOutcome {
+    if let Err(error) = init::run(cli, true, None).await {
+        return OpsOutcome::failure(error.to_string());
+    }
+    let client = QqOnboardClient::new();
+    let result = match client
+        .run(|task| {
+            match crate::channels::qq::onboard::render_qr(&task.qr_url) {
+                Ok(qr) => eprintln!("{qr}"),
+                Err(error) => eprintln!("cannot render QR code: {error}"),
+            }
+            eprintln!("Open this link in QQ: {}", task.qr_url);
+        })
+        .await
+    {
+        Ok(result) => result,
+        Err(error) => return OpsOutcome::failure(error.to_string()),
+    };
+    let config_path =
+        match write_qq_credentials(cli.config.as_deref(), &result.app_id, &result.client_secret) {
+            Ok(path) => path,
+            Err(error) => {
+                return OpsOutcome::failure(sanitize_error(
+                    &error.to_string(),
+                    &[&result.app_id, &result.client_secret],
+                ));
+            }
+        };
+    OpsOutcome::success(serde_json::json!({
+        "ok": true,
+        "config_path": config_path,
+        "credentials_configured": true,
+        "next_steps": ["ru41 qq doctor", "ru41 worker", "ru41 qq run"],
+    }))
+}
 
 pub(crate) async fn run(cli: &Cli, credentials: &QqCredentials) -> OpsOutcome {
     let (config, _) = match Config::load(cli.config.as_deref()) {
@@ -89,6 +125,44 @@ fn sanitize_error(error: &str, secrets: &[&str]) -> String {
         }
     }
     sanitized.chars().take(500).collect()
+}
+
+fn write_qq_credentials(
+    config_path: Option<&std::path::Path>,
+    app_id: &str,
+    client_secret: &str,
+) -> anyhow::Result<std::path::PathBuf> {
+    anyhow::ensure!(
+        !app_id.trim().is_empty() && !client_secret.trim().is_empty(),
+        "QQ credentials are incomplete"
+    );
+    let location = Config::locate(config_path)?;
+    anyhow::ensure!(location.exists, "configuration must be initialized first");
+    let text = std::fs::read_to_string(&location.path)?;
+    let mut document = text.parse::<toml_edit::DocumentMut>()?;
+    document["channel"]["qq"]["app_id"] = toml_edit::value(app_id);
+    document["channel"]["qq"]["app_secret"] = toml_edit::value(client_secret);
+    let temporary = location.path.with_extension("toml.tmp");
+    let write_result = (|| -> anyhow::Result<()> {
+        let mut options = std::fs::OpenOptions::new();
+        options.write(true).create(true).truncate(true);
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::OpenOptionsExt;
+            options.mode(0o600);
+        }
+        let mut file = options.open(&temporary)?;
+        std::io::Write::write_all(&mut file, document.to_string().as_bytes())?;
+        file.sync_all()?;
+        std::fs::rename(&temporary, &location.path)?;
+        Ok(())
+    })();
+    if let Err(error) = write_result {
+        let _ = std::fs::remove_file(&temporary);
+        return Err(error);
+    }
+    Config::load(Some(&location.path))?;
+    Ok(location.path)
 }
 
 #[cfg(test)]
@@ -297,5 +371,33 @@ mod tests {
         assert_side_effects_disabled(&outcome);
         assert_eq!(factory_calls.load(Ordering::SeqCst), 0);
         assert!(server.requests().is_empty());
+    }
+
+    #[test]
+    fn credentials_are_written_atomically_without_reformatting_other_config() {
+        use std::os::unix::fs::PermissionsExt;
+
+        let directory = tempfile::tempdir().unwrap();
+        let path = directory.path().join("ru41.toml");
+        std::fs::write(
+            &path,
+            "# keep-this-comment\n[store]\nkind = \"sqlite\"\npath = \".ru41/state.db\"\n[agent.codex]\nbin = \"codex\"\n",
+        )
+        .unwrap();
+
+        write_qq_credentials(Some(&path), "new-app-id", "new-client-secret").unwrap();
+
+        let text = std::fs::read_to_string(&path).unwrap();
+        assert!(text.contains("# keep-this-comment"));
+        assert!(text.contains("new-app-id"));
+        let (config, _) = Config::load(Some(&path)).unwrap();
+        assert_eq!(config.channel.qq.app_id.as_deref(), Some("new-app-id"));
+        assert_eq!(
+            config.channel.qq.app_secret.as_deref(),
+            Some("new-client-secret")
+        );
+        let mode = std::fs::metadata(&path).unwrap().permissions().mode();
+        assert_eq!(mode & 0o077, 0);
+        assert!(!path.with_extension("toml.tmp").exists());
     }
 }

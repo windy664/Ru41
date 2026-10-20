@@ -1,8 +1,16 @@
 pub mod api;
 pub mod commands;
 pub mod gateway;
+pub mod onboard;
 
-use crate::{domain::NotifyRoute, ports::channel::NotifyChannel, ports::storage::TaskStore};
+use crate::{
+    domain::NotifyRoute,
+    ports::{
+        channel::NotifyChannel,
+        commands::{CommandHandler, Reply},
+        storage::TaskStore,
+    },
+};
 use anyhow::{Result, bail};
 use api::QqApiClient;
 use gateway::{GatewayEvent, GatewaySession};
@@ -82,7 +90,13 @@ pub struct QqBot {
     /// 身份绑定口令；None 时绑定功能关闭。
     pub bind_secret: Option<String>,
     /// 业务模块注册的扩展命令；QQ 渠道不直接依赖业务模块。
-    pub command_handlers: Vec<Arc<dyn commands::QqCommandHandler>>,
+    pub command_handlers: Vec<Arc<dyn CommandHandler>>,
+}
+
+/// 单条消息的分发结果：立即回复（含可选按钮），或已幂等入队。
+enum DispatchOutcome {
+    Reply(Reply),
+    Ingested,
 }
 
 impl QqBot {
@@ -142,7 +156,34 @@ impl QqBot {
     }
 
     /// 内置命令与注册的扩展命令立即执行并回复；未命中的消息走幂等入队。
+    /// 命令执行与入队是同步存储 I/O，经 block_in_place 让出 executor 线程
+    /// （与 HTTP/consumer 的 spawn_blocking 同一纪律）；扩展命令内部的
+    /// 真实 async（如 /精读 拉取 arXiv）由 Handle::block_on 驱动。
     async fn handle(&self, event: &GatewayEvent) -> Result<()> {
+        let outcome = tokio::task::block_in_place(|| {
+            tokio::runtime::Handle::current().block_on(self.dispatch(event))
+        })?;
+        let DispatchOutcome::Reply(reply) = outcome else {
+            return Ok(());
+        };
+        let (msg_id, target) = match event {
+            GatewayEvent::GroupMessage {
+                msg_id,
+                group_openid,
+                ..
+            } => (msg_id, format!("{TARGET_GROUP_PREFIX}{group_openid}")),
+            GatewayEvent::C2cMessage {
+                msg_id,
+                user_openid,
+                ..
+            } => (msg_id, format!("{TARGET_C2C_PREFIX}{user_openid}")),
+            _ => return Ok(()),
+        };
+        self.reply(&target, msg_id, &reply).await
+    }
+
+    /// 命令分发与消息入队；同步存储 I/O 全部在此路径上（调用方已做 block_in_place）。
+    async fn dispatch(&self, event: &GatewayEvent) -> Result<DispatchOutcome> {
         let (msg_id, content, target, author_openid, is_c2c) = match event {
             GatewayEvent::GroupMessage {
                 msg_id,
@@ -167,45 +208,77 @@ impl QqBot {
                 user_openid,
                 true,
             ),
-            _ => return Ok(()),
+            _ => return Ok(DispatchOutcome::Ingested),
         };
-        let ctx = commands::CommandContext {
+        let ctx = crate::ports::commands::CommandContext {
             store: &self.store,
             bind_secret: self.bind_secret.as_deref(),
             target: &target,
             msg_id,
             author_openid,
             is_c2c,
+            reply_channel: "qq",
         };
         if let Some(command) = commands::parse_command(content) {
             let reply = if command == commands::Command::Help {
-                commands::help_text(&self.command_handlers)
+                // 帮助文本需汇总扩展命令，单独构造；按钮与 /帮助 execute 一致。
+                let mut reply = commands::execute(&commands::Command::Help, &ctx)?;
+                reply.text = commands::help_text(&self.command_handlers);
+                reply
             } else {
                 commands::execute(&command, &ctx)?
             };
-            return self.reply(&target, msg_id, &reply).await;
+            return Ok(DispatchOutcome::Reply(reply));
         }
         let mut parts = content.trim().splitn(2, char::is_whitespace);
         let verb = parts.next().unwrap_or_default().to_lowercase();
+        let verb = verb.strip_prefix('/').unwrap_or(&verb);
         let arg = parts.next().map(str::trim).unwrap_or_default();
         for handler in &self.command_handlers {
-            if handler.matches(&verb)
-                && let Some(reply) = handler.handle(arg, &ctx).await?
+            if handler.matches(verb)
+                && let Some(reply) = handler.handle_command(verb, arg, &ctx).await?
             {
-                return self.reply(&target, msg_id, &reply).await;
+                return Ok(DispatchOutcome::Reply(reply));
             }
         }
-        self.ingest(event)
+        for handler in &self.command_handlers {
+            if let Some(reply) = handler.handle_message(content, &ctx).await? {
+                return Ok(DispatchOutcome::Reply(reply));
+            }
+        }
+        self.ingest(event)?;
+        Ok(DispatchOutcome::Ingested)
     }
 
     /// 命令的即时被动回复；每条命令消息只回一条，msg_seq 固定为 1。
-    async fn reply(&self, target: &str, msg_id: &str, text: &str) -> Result<()> {
+    /// 有按钮走 markdown + keyboard 通道（平台不支持时发送层自动降级纯文本）。
+    async fn reply(&self, target: &str, msg_id: &str, reply: &Reply) -> Result<()> {
         if let Some(group) = target.strip_prefix(TARGET_GROUP_PREFIX) {
-            self.api
-                .send_group_text(group, text, Some(msg_id), 1)
-                .await?;
+            match &reply.markup {
+                Some(markup) if !markup.is_empty() => {
+                    self.api
+                        .send_group_markup(group, &reply.text, markup, Some(msg_id), 1)
+                        .await?;
+                }
+                _ => {
+                    self.api
+                        .send_group_text(group, &reply.text, Some(msg_id), 1)
+                        .await?;
+                }
+            }
         } else if let Some(user) = target.strip_prefix(TARGET_C2C_PREFIX) {
-            self.api.send_c2c_text(user, text, Some(msg_id), 1).await?;
+            match &reply.markup {
+                Some(markup) if !markup.is_empty() => {
+                    self.api
+                        .send_c2c_markup(user, &reply.text, markup, Some(msg_id), 1)
+                        .await?;
+                }
+                _ => {
+                    self.api
+                        .send_c2c_text(user, &reply.text, Some(msg_id), 1)
+                        .await?;
+                }
+            }
         } else {
             bail!("unknown qq notify target: {target}")
         }

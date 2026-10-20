@@ -1,24 +1,16 @@
 use crate::{
-    app::{identity::IdentityService, task::TaskService},
+    app::{
+        identity::{BindOutcome, IdentityService},
+        task::TaskService,
+    },
     domain::{Task, TaskStatus},
-    ports::storage::TaskStore,
+    ports::{
+        commands::{CommandContext, MarkupButton, Reply, ReplyMarkup},
+        storage::TaskStore,
+    },
 };
 use anyhow::Result;
-use std::{future::Future, pin::Pin, sync::Arc};
-
-/// QQ 扩展命令：由业务模块实现、装配层注册，QQ 渠道本身不认识具体业务。
-/// 返回 Ok(None) 表示不拦截（如参数非法），消息继续按自然语言入队给 Agent。
-pub trait QqCommandHandler: Send + Sync {
-    /// 是否匹配命令词；verb 已转为小写。
-    fn matches(&self, verb: &str) -> bool;
-    /// 单行帮助文本。
-    fn help(&self) -> &'static str;
-    fn handle<'a>(
-        &'a self,
-        arg: &'a str,
-        ctx: &'a CommandContext<'a>,
-    ) -> Pin<Box<dyn Future<Output = Result<Option<String>>> + Send + 'a>>;
-}
+use std::sync::Arc;
 
 /// QQ 内置固定命令：精确命中才拦截，其余消息先尝试扩展命令，再入队给 Agent。
 // TODO: 审批命令（审批/裁决）待核心的 Interaction 回复与租约原子性、崩溃恢复
@@ -30,25 +22,32 @@ pub enum Command {
     Show(i64),
     Cancel(i64),
     Bind(String),
+    Clear,
 }
 
-const BUILTIN_HELP: &str = "可用命令：
-帮助 - 显示本说明
-任务 - 列出本会话最近任务
-任务 <id> - 查看任务详情
-取消 <id> - 取消任务
-绑定 <口令> - 绑定个人身份（绑定后单聊可跨会话查询）";
+const BUILTIN_HELP: &str = "## Ru41 机器人
 
-const HELP_FOOTER: &str = "其他消息将作为任务交给 Agent 处理";
+**基础指令**
+- `/帮助` 或 `/help`：查看这份说明
+- `/任务` 或 `/tasks`：最近 10 条任务
+- `/任务 <id>` 或 `/task <id>`：查看任务详情
+- `/取消 <id>` 或 `/cancel <id>`：取消任务
+- `/绑定 <口令>` 或 `/bind <口令>`：绑定个人身份
+- `/新建` 或 `/clear`：开始新对话";
+
+const HELP_FOOTER: &str = "> 直接描述你的任务即可，当前对话会自动保留上下文。";
 
 /// 内置命令与装配层注册的扩展命令共同组成帮助文本。
-pub fn help_text(handlers: &[Arc<dyn QqCommandHandler>]) -> String {
+pub fn help_text(handlers: &[Arc<dyn crate::ports::commands::CommandHandler>]) -> String {
     let mut text = BUILTIN_HELP.to_owned();
-    for handler in handlers {
-        text.push('\n');
-        text.push_str(handler.help());
+    if !handlers.is_empty() {
+        text.push_str("\n\n**扩展指令**");
+        for handler in handlers {
+            text.push_str("\n- ");
+            text.push_str(handler.help());
+        }
     }
-    text.push('\n');
+    text.push_str("\n\n");
     text.push_str(HELP_FOOTER);
     text
 }
@@ -57,16 +56,20 @@ pub fn help_text(handlers: &[Arc<dyn QqCommandHandler>]) -> String {
 pub fn parse_command(content: &str) -> Option<Command> {
     let text = content.trim();
     let lower = text.to_lowercase();
-    if matches!(lower.as_str(), "帮助" | "help" | "/help") {
+    if matches!(lower.as_str(), "帮助" | "help" | "/帮助" | "/help") {
         return Some(Command::Help);
     }
-    if matches!(lower.as_str(), "任务" | "tasks" | "/tasks") {
+    if matches!(lower.as_str(), "任务" | "tasks" | "/任务" | "/tasks") {
         return Some(Command::List);
+    }
+    if matches!(lower.as_str(), "新建" | "/新建" | "clear" | "/clear") {
+        return Some(Command::Clear);
     }
     let mut parts = text.splitn(2, char::is_whitespace);
     let verb = parts.next()?.to_lowercase();
+    let verb = verb.strip_prefix('/').unwrap_or(&verb);
     let arg = parts.next().map(str::trim).filter(|s| !s.is_empty());
-    match verb.as_str() {
+    match verb {
         "任务" | "task" | "show" => Some(Command::Show(arg?.parse().ok()?)),
         "取消" | "cancel" => Some(Command::Cancel(arg?.parse().ok()?)),
         "绑定" | "bind" => Some(Command::Bind(arg?.to_owned())),
@@ -74,23 +77,8 @@ pub fn parse_command(content: &str) -> Option<Command> {
     }
 }
 
-/// 命令执行上下文：渠道适配器只负责收发，业务判断集中在命令实现里。
-pub struct CommandContext<'a> {
-    pub store: &'a Arc<dyn TaskStore>,
-    /// 未配置口令时绑定功能关闭。
-    pub bind_secret: Option<&'a str>,
-    /// 当前会话的通知 target（group:{openid} 或 user:{openid}）。
-    pub target: &'a str,
-    /// 当前消息 ID，扩展命令可用它登记终态被动回复路由。
-    pub msg_id: &'a str,
-    /// 发消息用户的 openid，用于绑定状态判定。
-    pub author_openid: &'a str,
-    /// 是否单聊；只有单聊且已绑定时才聚合该用户跨会话的任务。
-    pub is_c2c: bool,
-}
-
 /// 执行内置命令并返回回复文本；不直接发消息，便于测试。
-pub fn execute(command: &Command, ctx: &CommandContext) -> Result<String> {
+pub fn execute(command: &Command, ctx: &CommandContext) -> Result<Reply> {
     let identity = IdentityService::new(ctx.store.clone());
     let bound = identity.is_bound("qq", ctx.author_openid)?;
     let aggregate = ctx.is_c2c && bound;
@@ -104,7 +92,7 @@ pub fn execute(command: &Command, ctx: &CommandContext) -> Result<String> {
         notify.target == ctx.target || aggregate
     };
     match command {
-        Command::Help => Ok(help_text(&[])),
+        Command::Help => Ok(Reply::with_markup(help_text(&[]), help_markup())),
         Command::List => {
             let tasks: Vec<Task> = ctx
                 .store
@@ -113,41 +101,101 @@ pub fn execute(command: &Command, ctx: &CommandContext) -> Result<String> {
                 .filter(visible)
                 .take(10)
                 .collect();
-            Ok(format_task_list(&tasks))
+            Ok(Reply::with_markup(
+                format_task_list(&tasks),
+                task_rows_markup(&tasks),
+            ))
         }
         Command::Show(id) => match ctx.store.get(*id)? {
-            Some(task) if visible(&task) => Ok(format_task_detail(&task)),
-            _ => Ok(format!("任务 #{id} 不存在或无权查看")),
+            Some(task) if visible(&task) => Ok(Reply::with_markup(
+                format_task_detail(&task),
+                ReplyMarkup::new().row(vec![MarkupButton::new(
+                    "取消任务",
+                    format!("/取消 {}", task.id),
+                )]),
+            )),
+            _ => Ok(Reply::text(format!("任务 #{id} 不存在或无权查看"))),
         },
         Command::Cancel(id) => match ctx.store.get(*id)? {
             Some(task) if visible(&task) => {
                 let task = TaskService::new(ctx.store.clone()).cancel(*id)?;
-                Ok(format!(
-                    "任务 #{} 已取消（原状态：{}）",
+                Ok(Reply::text(format!(
+                    "## 任务已取消\n\n- **任务**：`#{}`\n- **原状态**：{}",
                     task.id,
                     status_label(task.status)
-                ))
+                )))
             }
-            _ => Ok(format!("任务 #{id} 不存在或无权操作")),
+            _ => Ok(Reply::text(format!("任务 #{id} 不存在或无权操作"))),
         },
         Command::Bind(given) => match ctx.bind_secret {
-            None => Ok("绑定功能未开放（未配置绑定口令）".to_owned()),
-            Some(expected) if identity.bind("qq", ctx.author_openid, expected, given)? => {
-                Ok("绑定成功，单聊中可跨会话查询任务".to_owned())
+            None => Ok(Reply::text("## 绑定未开放\n\n当前未配置绑定口令。")),
+            Some(expected) => {
+                match identity.bind("qq", ctx.author_openid, expected, given, crate::util::now())? {
+                    BindOutcome::Bound => Ok(Reply::text(
+                        "## 绑定成功\n\n当前 QQ 已绑定，可在单聊中跨会话查询任务。",
+                    )),
+                    BindOutcome::Rejected => {
+                        Ok(Reply::text("## 绑定失败\n\n口令错误，请重新发送。"))
+                    }
+                    BindOutcome::Locked => Ok(Reply::text(
+                        "## 尝试过于频繁\n\n连续多次口令错误，请 10 分钟后再试。",
+                    )),
+                }
             }
-            Some(_) => Ok("口令错误，绑定失败".to_owned()),
         },
+        Command::Clear => {
+            let key = format!("qq:{}", ctx.target);
+            if let Some(doc) = ctx.store.document("conversation", &key)? {
+                let mut value = doc.value.clone();
+                value["session_id"] = serde_json::Value::Null;
+                if !ctx
+                    .store
+                    .put_document("conversation", &key, Some(doc.revision), &value)?
+                {
+                    return Ok(Reply::text("## 请稍后重试\n\n会话正在更新。"));
+                }
+            }
+            Ok(Reply::text(
+                "## 新对话已开始\n\n后续消息将不再携带上一轮上下文。",
+            ))
+        }
     }
+}
+
+/// /帮助 的快捷按钮：常用入口两行。
+fn help_markup() -> ReplyMarkup {
+    ReplyMarkup::new()
+        .row(vec![
+            MarkupButton::new("待办", "/待办"),
+            MarkupButton::new("日程", "/日程"),
+            MarkupButton::new("任务", "/任务"),
+        ])
+        .row(vec![
+            MarkupButton::new("帮助", "/帮助"),
+            MarkupButton::new("新建对话", "/新建"),
+        ])
+}
+
+/// 任务列表按钮：每个任务一行「详情 / 取消」，最多 4 行（QQ 键盘上限）。
+fn task_rows_markup(tasks: &[Task]) -> ReplyMarkup {
+    let mut markup = ReplyMarkup::new();
+    for task in tasks.iter().take(4) {
+        markup.push_row(vec![
+            MarkupButton::new(format!("详情 #{}", task.id), format!("/任务 {}", task.id)),
+            MarkupButton::new(format!("取消 #{}", task.id), format!("/取消 {}", task.id)),
+        ]);
+    }
+    markup
 }
 
 pub fn format_task_list(tasks: &[Task]) -> String {
     if tasks.is_empty() {
-        return "暂无可见任务".to_owned();
+        return "## 任务列表\n\n> 暂无可见任务".to_owned();
     }
-    let mut lines = vec![format!("最近任务（{} 条）：", tasks.len())];
+    let mut lines = vec![format!("## 最近任务（{} 条）", tasks.len())];
     for task in tasks {
         lines.push(format!(
-            "#{} [{}] {}",
+            "- `#{}` **{}** — {}",
             task.id,
             status_label(task.status),
             truncate(&task.prompt, 20)
@@ -158,16 +206,16 @@ pub fn format_task_list(tasks: &[Task]) -> String {
 
 pub fn format_task_detail(task: &Task) -> String {
     let mut lines = vec![
-        format!("任务 #{}", task.id),
-        format!("状态：{}", status_label(task.status)),
-        format!("底座：{}", task.backend_id),
-        format!("创建：{}", task.created_at),
-        format!("内容：{}", truncate(&task.prompt, 100)),
+        format!("## 任务 `#{}`", task.id),
+        format!("- **状态**：{}", status_label(task.status)),
+        format!("- **底座**：`{}`", task.backend_id),
+        format!("- **创建**：{}", task.created_at),
+        format!("- **内容**：{}", truncate(&task.prompt, 100)),
     ];
     if let Some(result) = &task.result {
-        lines.push(format!("结果：{}", result.summary));
+        lines.push(format!("\n**结果**\n{}", result.summary));
     } else if let Some(error) = &task.last_error {
-        lines.push(format!("错误：{error}"));
+        lines.push(format!("\n**错误**\n{error}"));
     }
     lines.join("\n")
 }

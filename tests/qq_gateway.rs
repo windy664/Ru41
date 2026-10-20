@@ -1,8 +1,9 @@
 use ru41::channels::qq::gateway::{
-    GatewayEvent, close_forces_reidentify, close_is_fatal, heartbeat_payload, identify_payload,
-    parse_dispatch, resume_payload,
+    GatewayEvent, close_forces_reidentify, close_is_fatal, heartbeat_payload, heartbeat_stalled,
+    identify_payload, parse_dispatch, resume_payload,
 };
 use serde_json::json;
+use std::time::{Duration, Instant};
 
 #[test]
 fn parses_group_at_message() {
@@ -97,4 +98,22 @@ fn close_codes_drive_reconnect_policy() {
 #[test]
 fn request_key_is_derived_from_msg_id() {
     assert_eq!(ru41::channels::qq::msg_request_key("msg-1"), "qq:msg:msg-1");
+}
+
+#[test]
+fn heartbeat_stall_detection() {
+    let interval = Duration::from_secs(30);
+    let t0 = Instant::now();
+    assert!(!heartbeat_stalled(t0, t0, interval));
+    // 阈值是 2 个周期 + 10s 宽限：70s 内仍视为存活。
+    assert!(!heartbeat_stalled(
+        t0,
+        t0 + Duration::from_secs(69),
+        interval
+    ));
+    assert!(heartbeat_stalled(
+        t0,
+        t0 + Duration::from_secs(71),
+        interval
+    ));
 }

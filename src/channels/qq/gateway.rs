@@ -1,9 +1,19 @@
 use anyhow::{Context, Result, bail};
-use futures_util::{SinkExt, StreamExt};
+use futures_util::{SinkExt, StreamExt, stream::SplitSink};
 use serde_json::{Value, json};
-use std::time::Duration;
+use std::time::{Duration, Instant};
 use tokio::sync::{mpsc, watch};
-use tokio_tungstenite::tungstenite::Message;
+use tokio_tungstenite::{MaybeTlsStream, WebSocketStream, tungstenite::Message};
+
+type WsSink = SplitSink<WebSocketStream<MaybeTlsStream<tokio::net::TcpStream>>, Message>;
+
+/// 网关写操作统一带 5s 超时：半开连接上卡住的 send 不能拖停整个 select 循环。
+async fn send_with_timeout(sink: &mut WsSink, message: Message) -> Result<()> {
+    tokio::time::timeout(Duration::from_secs(5), sink.send(message))
+        .await
+        .context("QQ gateway send timed out")??;
+    Ok(())
+}
 
 pub const OP_DISPATCH: u8 = 0;
 pub const OP_HEARTBEAT: u8 = 1;
@@ -137,6 +147,12 @@ pub fn close_is_fatal(code: u16) -> bool {
     matches!(code, 4014 | 4914 | 4915)
 }
 
+/// 心跳活性判定：最近 ACK 超过 2 个心跳周期 + 10s 视为连接静默死亡，应主动断开重连。
+/// 半开连接上 TCP 超时可能要几十分钟，靠 ACK 探测才能在分钟级发现。
+pub fn heartbeat_stalled(last_ack: Instant, now: Instant, interval: Duration) -> bool {
+    now.saturating_duration_since(last_ack) > interval.saturating_mul(2) + Duration::from_secs(10)
+}
+
 /// 运行一条 WebSocket 会话：HELLO→IDENTIFY/RESUME→心跳→事件经 events 送出。
 /// 返回 Err 表示连接中断，由调用方决定是否带 session 重连。
 pub async fn run(
@@ -146,9 +162,13 @@ pub async fn run(
     events: mpsc::Sender<GatewayEvent>,
     mut shutdown: watch::Receiver<bool>,
 ) -> Result<()> {
-    let (ws, _) = tokio_tungstenite::connect_async(url)
-        .await
-        .context("cannot connect QQ gateway WebSocket")?;
+    let (ws, _) = tokio::time::timeout(
+        Duration::from_secs(10),
+        tokio_tungstenite::connect_async(url),
+    )
+    .await
+    .context("QQ gateway connect timed out")?
+    .context("cannot connect QQ gateway WebSocket")?;
     let (mut sink, mut stream) = ws.split();
     let hello = tokio::time::timeout(Duration::from_secs(10), stream.next())
         .await
@@ -167,20 +187,24 @@ pub async fn run(
         (Some(id), Some(seq)) => resume_payload(token, id, seq),
         _ => identify_payload(token),
     };
-    sink.send(Message::text(login.to_string())).await?;
+    send_with_timeout(&mut sink, Message::text(login.to_string())).await?;
     // 心跳略提前，避免临界点超时。
-    let mut heartbeat =
-        tokio::time::interval(Duration::from_millis(heartbeat_ms.max(10_000) - 5_000));
+    let heartbeat_interval = Duration::from_millis(heartbeat_ms.max(10_000) - 5_000);
+    let mut heartbeat = tokio::time::interval(heartbeat_interval);
     heartbeat.tick().await;
+    let mut last_ack = Instant::now();
     loop {
         tokio::select! {
             biased;
             _ = shutdown.changed() => {
-                let _ = sink.send(Message::Close(None)).await;
+                let _ = send_with_timeout(&mut sink, Message::Close(None)).await;
                 return Ok(());
             }
             _ = heartbeat.tick() => {
-                sink.send(Message::text(heartbeat_payload(session.last_seq).to_string())).await?;
+                if heartbeat_stalled(last_ack, Instant::now(), heartbeat_interval) {
+                    bail!("QQ gateway heartbeat stalled, reconnecting");
+                }
+                send_with_timeout(&mut sink, Message::text(heartbeat_payload(session.last_seq).to_string())).await?;
             }
             frame = stream.next() => {
                 let frame = frame.context("QQ gateway stream ended")??;
@@ -201,7 +225,9 @@ pub async fn run(
                             return Ok(());
                         }
                     }
-                    Some(op) if op == OP_HEARTBEAT_ACK as u64 => {}
+                    Some(op) if op == OP_HEARTBEAT_ACK as u64 => {
+                        last_ack = Instant::now();
+                    }
                     Some(op) if op == OP_RECONNECT as u64 => bail!("QQ gateway requested reconnect"),
                     Some(op) if op == OP_INVALID_SESSION as u64 => {
                         if frame.get("d").and_then(Value::as_bool) != Some(true) {

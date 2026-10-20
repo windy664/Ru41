@@ -61,6 +61,9 @@ pub async fn try_run(cli: &Cli) -> Result<Option<OpsOutcome>> {
         Command::Qq {
             command: QqCommand::Doctor { credentials },
         } => Ok(Some(qq::run(cli, credentials).await)),
+        Command::Qq {
+            command: QqCommand::Onboard,
+        } => Ok(Some(qq::onboard(cli).await)),
         Command::Status => Ok(Some(status::run(cli, false).await)),
         Command::Dump => Ok(Some(status::run(cli, true).await)),
         _ => Ok(None),
