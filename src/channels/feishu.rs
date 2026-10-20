@@ -17,7 +17,7 @@ pub struct FeishuWebhookNotifier {
 impl FeishuWebhookNotifier {
     pub fn new(default_url: impl Into<String>) -> Self {
         Self {
-            http: reqwest::Client::new(),
+            http: crate::util::http_client(),
             default_url: default_url.into(),
         }
     }

@@ -58,7 +58,7 @@ impl AgentBackend for CodexAgent {
             id: "codex".into(),
             model: self.model.clone(),
             contracts: vec![RunContract::AnalysisV1],
-            supports_resume: false,
+            supports_resume: true,
         }
     }
     fn run(
@@ -79,20 +79,37 @@ impl CodexAgent {
         let schema = request.run_dir.join("result.schema.json");
         let output_file = request.run_dir.join("result.json");
         tokio::fs::write(&schema, r#"{"type":"object","properties":{"summary":{"type":"string"}},"required":["summary"],"additionalProperties":false}"#).await?;
+        let skills = request
+            .context
+            .as_ref()
+            .map_or(&[][..], |context| context.skills.as_slice());
+        crate::skills::materialize(&request.run_dir, skills)?;
+        let (persistent, resume_session_id) =
+            request.context.as_ref().map_or((false, None), |context| {
+                (
+                    context.conversation_id.is_some(),
+                    context.resume_session_id.clone(),
+                )
+            });
+        let resuming = resume_session_id.is_some();
         let mut cmd = tokio::process::Command::new(&self.executable);
-        cmd.current_dir(&request.run_dir)
-            .args([
-                "exec",
-                "--json",
-                "--ephemeral",
-                "--ignore-user-config",
-                "--skip-git-repo-check",
-                "--sandbox",
-                "read-only",
-                "--color",
-                "never",
-            ])
-            .arg("--output-last-message")
+        cmd.current_dir(&request.run_dir).arg("exec");
+        if let Some(session_id) = resume_session_id {
+            cmd.arg("resume").arg(session_id);
+        }
+        cmd.args([
+            "--json",
+            "--ignore-user-config",
+            "--skip-git-repo-check",
+            "--dangerously-bypass-approvals-and-sandbox",
+        ]);
+        if !resuming {
+            cmd.args(["--color", "never"]);
+        }
+        if !persistent {
+            cmd.arg("--ephemeral");
+        }
+        cmd.arg("--output-last-message")
             .arg(&output_file)
             .stdin(Stdio::piped())
             .stdout(Stdio::piped())
@@ -119,10 +136,7 @@ impl CodexAgent {
         let mut stdin = child.stdin.take().context("missing Codex stdin")?;
         let stdout = child.stdout.take().context("missing Codex stdout")?;
         let stderr = child.stderr.take().context("missing Codex stderr")?;
-        let prompt = format!(
-            "You are Ru41's analysis agent. Use only the supplied request. Return only a JSON object with a nonempty string field named summary; do not use Markdown. Do not modify files, submit assignments, publish, or claim any external action was completed. If the request requires an external action, explain the proposed steps and the limitation.\n\nRequest:\n{}",
-            request.prompt
-        );
+        let prompt = request.prompt;
         let events_path = request.run_dir.join("events.jsonl");
         let stderr_path = request.run_dir.join("stderr.log");
         let ((), status, events, _) = tokio::try_join!(
@@ -181,8 +195,20 @@ impl CodexAgent {
         let mut bytes = Vec::new();
         file.take(131_073).read_to_end(&mut bytes).await?;
         anyhow::ensure!(bytes.len() <= 131_072, "Codex result exceeds size limit");
-        let result: AgentResult = serde_json::from_slice(&bytes)
-            .map_err(|e| Ru41Error::InvalidOutput(format!("invalid Codex result JSON: {e}")))?;
+        let result: AgentResult = if self.output_schema {
+            serde_json::from_slice(&bytes)
+                .map_err(|e| Ru41Error::InvalidOutput(format!("invalid Codex result JSON: {e}")))?
+        } else {
+            AgentResult {
+                summary: String::from_utf8(bytes)
+                    .map_err(|e| {
+                        Ru41Error::InvalidOutput(format!("invalid Codex result UTF-8: {e}"))
+                    })?
+                    .trim()
+                    .to_owned(),
+            }
+        };
+        super::ensure_tool_calls_executed(&result.summary)?;
         result
             .validate()
             .map_err(|e| anyhow::Error::new(Ru41Error::InvalidOutput(e)))?;

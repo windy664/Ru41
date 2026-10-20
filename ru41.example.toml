@@ -11,6 +11,11 @@ timeout_secs = 300
 runs_dir = ".ru41/runs"
 sanitize = true                 # Agent 调用前的信息脱敏
 
+[todo]
+utc_offset_minutes = 480        # 本地时区固定偏移；默认 +08:00
+recent_days = 7                 # 今日之后归入“近期”的窗口
+long_term_days = 14             # 超过该窗口的已排期事项归入“长期”
+
 [agent.codex]
 # bin = "codex"
 # model = "gpt-5.2-codex"
@@ -30,6 +35,10 @@ sanitize = true                 # Agent 调用前的信息脱敏
 # wire_api = "responses"            # Codex 0.163+ 仅支持 responses；chat 仅用于旧版
 bin = "codex"
 # model = "gpt-5-codex"
+
+[agent.skills]
+# 按 root/<module>/skills/<skill>/SKILL.md 发现技能；缺省同时尝试以下两个目录。
+roots = ["src/modules", "/etc/ru41/modules"]
 
 [channel.qq]
 # 密钥建议用环境变量 RU41_QQ_APP_ID / RU41_QQ_APP_SECRET，避免写进文件。
@@ -73,9 +82,59 @@ app_secret = ""
 # water_threshold = 1.0    # 吨
 # interval_secs = 86400
 
+# 智慧树作业提醒：消费 sidecar 采集器写出的报告文件（见 docs/sources-zhihuishu.md）。
+# [sources.zhihuishu]
+# report_path = ".ru41/zhihuishu/report.json"
+# deadline_days = 3        # 截止前 N 天进入每日提醒
+# interval_secs = 21600
+# notify = true
+
+# 学习通签到监控：协议端直连，检测待签活动并提醒（见 docs/sources-chaoxing.md）。
+# 凭证建议用环境变量 RU41_XXT_PHONE / RU41_XXT_PASSWORD 注入。
+# [sources.chaoxing]
+# phone = "13800000000"
+# password = ""
+# interval_secs = 60       # 签到窗口常为 1-2 分钟，默认 60s
+# notify = true
+# auto_sign = false        # true = agent 模式：发现待签当场自动签（二维码除外）
+# default_lat = 30.000000  # 宿舍纬度：位置/二维码签到的坐标缺省
+# default_lon = 114.000000 # 宿舍经度
+# default_addr = "宿舍"    # 地址文本（位置签到的 address 参数，教师端可见）
+# photo_path = "~/sign.jpg" # 拍照签到默认照片；缺省用内置兜底照片
+
+# 教务课表监控（ru41 jwxt poll/run/login，见 docs/sources-jwxt.md）。
+# 统一认证账号经 CAS 单点登录拉课表；首次登录需人工输一次图形验证码。
+# 凭证建议用环境变量 RU41_JWXT_USERNAME / RU41_JWXT_PASSWORD 注入。
+# [sources.jwxt]
+# semester_start = "2026-10-05" # 学期第一周周一：周次推算与明日课表依赖它
+# interval_secs = 3600          # jwxt run 轮询间隔
+# remind_hour = 21              # 每日到点后推明日课表（同日去重）
+# daily_remind = true
+# notify = true
+
+# Obsidian Vault 闭环（ru41 obsidian poll/run，核心能力）：Git 轮询发现 Inbox 新提交，
+# 入队 Agent 整理任务（obsidian-organize skill），成功后自动提交推送。
+# vault_path 是服务器本地克隆路径（容器内需挂载）；git 凭据用 credential.helper，不写这里。
+# [obsidian]
+# vault_path = "/vault"
+# branch = "master"
+# inbox_dir = "00-Inbox-收件箱"
+# interval_secs = 300
+# notify = true
+
 # HTTP API（ru41 serve）。令牌经环境变量 RU41_API_TOKEN 注入，不写入配置文件。
 # listen 地址通过 CLI 参数指定：ru41 serve --listen 127.0.0.1:4141
 
 [api]
 # listen = "127.0.0.1:4141"
 # token 也可写在这里；环境变量 RU41_API_TOKEN 优先级更高（推荐）
+
+# 博客发布管线（ru41 blog poll/run）：Vault 的 Pending-待发布/ 目录即发布入口。
+# 文章移入该目录并 git 同步后，服务器自动校验 frontmatter、写入博客仓库 _posts 并推送。
+# repo_path 是服务器上的博客仓库克隆（容器内挂载）；推 GitHub 需凭据（git credential helper）。
+# [sources.blog]
+# repo_path = "/blog"
+# branch = "master"
+# site_url = "https://windy664.github.io"
+# interval_secs = 300
+# notify = true

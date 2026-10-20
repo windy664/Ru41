@@ -60,10 +60,9 @@ echo 'diagnostic' >&2
     assert_eq!(output.session_id.as_deref(), Some("abc"));
     assert_eq!(output.result.summary, "hello");
     assert!(dir.path().join("run/events.jsonl").is_file());
-    assert!(
-        std::fs::read_to_string(dir.path().join("run/input.txt"))
-            .unwrap()
-            .contains("Request:\nhello")
+    assert_eq!(
+        std::fs::read_to_string(dir.path().join("run/input.txt")).unwrap(),
+        "hello"
     );
 }
 
@@ -220,13 +219,13 @@ printf '%s' '{"summary":"recovered"}' > "$output"
 }
 
 #[tokio::test]
-async fn native_output_schema_can_be_disabled() {
+async fn native_output_schema_can_be_disabled_for_plain_text() {
     let dir = tempfile::tempdir().unwrap();
     let bin = executable(
         dir.path(),
         r#"
 printf '%s\n' '{"type":"turn.completed"}'
-printf '%s' '{"summary":"prompt-only"}' > "$output"
+printf '%s' 'plain text response' > "$output"
 "#,
     );
     let agent = CodexAgent {
@@ -236,8 +235,96 @@ printf '%s' '{"summary":"prompt-only"}' > "$output"
         model: None,
     };
     let output = agent.run(request(dir.path())).await.unwrap();
-    assert_eq!(output.result.summary, "prompt-only");
+    assert_eq!(output.result.summary, "plain text response");
     let args = std::fs::read_to_string(dir.path().join("run/received-args.txt")).unwrap();
     assert!(!args.contains("--output-schema"));
     assert!(args.contains("--output-last-message"));
+}
+
+#[tokio::test]
+async fn unexecuted_tool_call_is_transient_failure() {
+    let dir = tempfile::tempdir().unwrap();
+    let bin = executable(
+        dir.path(),
+        r#"
+printf '%s\n' '{"type":"turn.completed"}'
+printf '%s' '先说明一句<tool_call_x><function=exec_command>noop</function></tool_call_x>' > "$output"
+"#,
+    );
+    let agent = CodexAgent {
+        config_overrides: Vec::new(),
+        output_schema: false,
+        executable: bin,
+        model: None,
+    };
+    let error = agent
+        .run(request(dir.path()))
+        .await
+        .err()
+        .expect("raw tool call must be rejected");
+    assert_eq!(
+        ru41::domain::error::classify(&error),
+        ru41::domain::error::FailureKind::Transient
+    );
+    assert!(error.to_string().contains("unexecuted tool call"));
+}
+
+struct NoInteractions;
+
+impl ru41::ports::interaction::InteractionHandler for NoInteractions {
+    fn request(
+        &self,
+        _request: ru41::domain::records::Interaction,
+    ) -> std::pin::Pin<
+        Box<dyn std::future::Future<Output = anyhow::Result<serde_json::Value>> + Send + '_>,
+    > {
+        Box::pin(async { anyhow::bail!("unexpected interaction") })
+    }
+}
+
+#[tokio::test]
+async fn resumes_native_codex_session_for_conversation() {
+    let dir = tempfile::tempdir().unwrap();
+    let bin = executable(
+        dir.path(),
+        r#"
+printf '%s\n' '{"type":"thread.started","thread_id":"thread-abc"}' '{"type":"turn.completed"}'
+printf '%s' 'resumed' > "$output"
+"#,
+    );
+    let agent = CodexAgent {
+        config_overrides: Vec::new(),
+        output_schema: false,
+        executable: bin,
+        model: None,
+    };
+    let mut request = request(dir.path());
+    request.context = Some(ru41::ports::agent::RunContext {
+        run_id: "run-1".into(),
+        interactions: std::sync::Arc::new(NoInteractions),
+        conversation_id: Some("qq:user:U1".into()),
+        resume_session_id: Some("thread-abc".into()),
+        skills: vec![ru41::skills::SkillPackage {
+            name: "test-skill".into(),
+            description: "Test skill".into(),
+            instructions: "Follow the test workflow".into(),
+            files: vec![ru41::skills::SkillFile {
+                relative: PathBuf::from("SKILL.md"),
+                bytes: b"test".to_vec(),
+            }],
+        }],
+    });
+    let output = agent.run(request).await.unwrap();
+    assert!(
+        dir.path()
+            .join("run/.agents/skills/test-skill/SKILL.md")
+            .is_file()
+    );
+    assert_eq!(output.result.summary, "resumed");
+    assert_eq!(output.session_id.as_deref(), Some("thread-abc"));
+    let args = std::fs::read_to_string(dir.path().join("run/received-args.txt")).unwrap();
+    let argv: Vec<&str> = args.lines().collect();
+    assert_eq!(&argv[..3], &["exec", "resume", "thread-abc"]);
+    assert!(!argv.contains(&"--ephemeral"));
+    assert!(!argv.contains(&"--color"));
 }

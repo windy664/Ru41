@@ -1,11 +1,11 @@
 use ru41::{
     adapters::database::sqlite::SqliteTaskStore,
-    channels::qq::commands::{CommandContext, QqCommandHandler},
     domain::NotifyRoute,
     modules::papers::{
         PaperTracker, PapersConfig, PapersQqCommand, deep_read_task,
         source::{ArxivClient, parse_feed},
     },
+    ports::commands::{CommandContext, CommandHandler},
     ports::storage::TaskStore,
 };
 use std::{
@@ -280,6 +280,7 @@ async fn qq_deep_read_handler_validates_and_executes() {
         msg_id: "m9",
         author_openid: "U1",
         is_c2c: true,
+        reply_channel: "qq",
     };
 
     // 缺参数与非法 ID 不拦截，交回 QQ 落入普通 Agent 消息。
@@ -288,7 +289,7 @@ async fn qq_deep_read_handler_validates_and_executes() {
     assert!(store.list(10).unwrap().is_empty());
 
     let reply = handler.handle("2510.11111", &ctx).await.unwrap().unwrap();
-    assert!(reply.contains("精读任务已创建"));
+    assert!(reply.text.contains("精读任务已创建"));
     let tasks = store.list(10).unwrap();
     assert_eq!(tasks.len(), 1);
     assert_eq!(tasks[0].request_key, "arxiv:deep:2510.11111");

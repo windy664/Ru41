@@ -2,6 +2,8 @@ pub mod consumers;
 pub mod error;
 pub mod events;
 pub mod records;
+pub mod schedule;
+pub mod todo;
 use serde::{Deserialize, Serialize};
 use std::str::FromStr;
 

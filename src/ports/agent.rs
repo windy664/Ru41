@@ -54,6 +54,7 @@ impl<T: AgentBackend + ?Sized> AgentBackend for Arc<T> {
 #[derive(Default)]
 pub struct BackendRegistry {
     backends: BTreeMap<String, Arc<dyn AgentBackend>>,
+    pub skills: Vec<crate::skills::SkillPackage>,
 }
 impl BackendRegistry {
     pub fn register(&mut self, backend: impl AgentBackend + 'static) -> Result<()> {
@@ -86,4 +87,7 @@ impl BackendRegistry {
 pub struct RunContext {
     pub run_id: String,
     pub interactions: Arc<dyn crate::ports::interaction::InteractionHandler>,
+    pub conversation_id: Option<String>,
+    pub resume_session_id: Option<String>,
+    pub skills: Vec<crate::skills::SkillPackage>,
 }

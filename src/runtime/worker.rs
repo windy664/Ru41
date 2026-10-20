@@ -190,12 +190,34 @@ impl Worker {
                 mapping.rule_counts()
             );
         }
+        let conversation_id = claim
+            .task
+            .notify
+            .as_ref()
+            .map(|route| format!("{}:{}", route.channel, route.target));
+        let conversation = match &conversation_id {
+            Some(id) => self.store.document("conversation", id)?,
+            None => None,
+        };
+        let resume_session_id = conversation.as_ref().and_then(|doc| {
+            if doc.value["backend_id"].as_str() == Some(claim.task.backend_id.as_str()) {
+                doc.value["session_id"]
+                    .as_str()
+                    .filter(|id| !id.is_empty())
+                    .map(str::to_owned)
+            } else {
+                None
+            }
+        });
         let request = AgentRequest {
             context: Some(crate::ports::agent::RunContext {
                 run_id: format!("run-{}-{}", claim.task.id, claim.attempt_id),
                 interactions: Arc::new(crate::app::interactions::InteractionService {
                     store: self.store.clone(),
                 }),
+                conversation_id: conversation_id.clone(),
+                resume_session_id,
+                skills: self.backends.skills.clone(),
             }),
             prompt,
             run_dir,
@@ -227,6 +249,18 @@ impl Worker {
                     };
                     output.result.validate().map_err(Ru41Error::InvalidOutput)?;
                     ensure!(self.store.succeed(claim, &output.result, output.session_id.as_deref(), now())?, "task cancelled or lease lost before commit");
+                    if let (Some(id), Some(session)) = (&conversation_id, &output.session_id) {
+                        let record = serde_json::json!({
+                            "backend_id": claim.task.backend_id,
+                            "session_id": session,
+                        });
+                        let revision = conversation.as_ref().map(|doc| doc.revision);
+                        match self.store.put_document("conversation", id, revision, &record) {
+                            Ok(true) => {}
+                            Ok(false) => eprintln!("[worker] conversation state update conflict"),
+                            Err(error) => eprintln!("[worker] conversation state update failed: {error:#}"),
+                        }
+                    }
                     return Ok(output.session_id);
                 }
             }

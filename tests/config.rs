@@ -144,6 +144,26 @@ fn explicit_path_wins_and_missing_explicit_path_fails() {
 }
 
 #[test]
+fn parses_todo_section_and_rejects_bad_timezone() {
+    let dir = tempfile::tempdir().unwrap();
+    let file = dir.path().join("todo.toml");
+    std::fs::write(
+        &file,
+        "[todo]\nutc_offset_minutes = 480\nrecent_days = 10\nlong_term_days = 30\n",
+    )
+    .unwrap();
+    let (config, _) = Config::load_from(Some(&file), dir.path(), None).unwrap();
+    let options = config.todo.options().unwrap();
+    assert_eq!(options.offset_seconds, 8 * 3600);
+    assert_eq!(options.recent_days, 10);
+    assert_eq!(options.long_term_days, 30);
+
+    std::fs::write(&file, "[todo]\nutc_offset_minutes = 900\n").unwrap();
+    let (config, _) = Config::load_from(Some(&file), dir.path(), None).unwrap();
+    assert!(config.todo.options().is_err());
+}
+
+#[test]
 fn unknown_fields_and_invalid_toml_are_rejected() {
     let dir = tempfile::tempdir().unwrap();
     let file = dir.path().join("bad.toml");
@@ -151,4 +171,16 @@ fn unknown_fields_and_invalid_toml_are_rejected() {
     assert!(Config::load_from(Some(&file), dir.path(), None).is_err());
     std::fs::write(&file, "not toml [").unwrap();
     assert!(Config::load_from(Some(&file), dir.path(), None).is_err());
+}
+
+#[test]
+fn parses_agent_skills_roots() {
+    let dir = tempfile::tempdir().unwrap();
+    let file = dir.path().join("skills.toml");
+    std::fs::write(&file, "[agent.skills]\nroots = [\"one\", \"two\"]\n").unwrap();
+    let (config, _) = Config::load_from(Some(&file), dir.path(), None).unwrap();
+    assert_eq!(
+        config.agent.skills.roots,
+        vec![PathBuf::from("one"), PathBuf::from("two")]
+    );
 }

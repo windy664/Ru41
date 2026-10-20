@@ -14,11 +14,17 @@ Ru41 的业务宿主使用 Rust。Codex 是首个已接入底座；后续可添�
 
 ## analysis_v1
 
-当前唯一执行契约：根据传入材料进行分析，结果为一个仅含非空 `summary` 的对象。宿主验证 JSON 结构和长度后保存。该契约不提供真实 Vault 写入、作业提交、公开发布等外部动作。
+当前唯一执行契约：根据传入请求运行 Codex，结果统一映射为非空 `summary`。Codex 以 yolo 模式使用工具并执行外部动作；宿主保存摘要，实际产物和操作结果仍需在运行目录核验。
 
-Codex 适配器要求进程成功退出、收到 `turn.completed`、没有失败事件、最终 JSON 合法且通过业务校验。结果和尝试状态在同一数据库事务中保存。
+Codex 适配器要求进程成功退出、收到 `turn.completed`、没有失败事件。启用原生 output schema 时验证最终 JSON；关闭时把最终普通文本映射为 `summary`。结果和尝试状态在同一数据库事务中保存。
 
-`supports_resume=false` 表示当前适配器尚未实现会话续接，不代表 Codex 产品没有此能力。当前重试会创建新会话。`session_id` 只作为底座内部标识记录，不在不同底座间传递。
+Codex `exec` 适配器的 `supports_resume=true`：带会话上下文的任务使用 `codex exec resume <session_id>`，宿主按渠道会话保存该不透明标识；无会话上下文的任务仍使用 `--ephemeral`。`codex-session` 与 Pi 不声明续接能力，标识不跨底座传递。
+
+## Agent Skills
+
+技能包位于 `src/modules/<module>/skills/<skill>/SKILL.md`，由 `BackendRegistry` 在启动时加载并经 `RunContext.skills` 传给任务。Codex 将技能写入任务目录 `.agents/skills`，使用原生发现；Pi 使用提示词注入。新底座应根据自身能力选择原生加载或提示词注入，不能让业务模块直接调用 Codex 专属路径或命令。
+
+技能包必须有匹配的目录名和 frontmatter `name`，以及非空 `description` 与正文。加载器拒绝重复名称、符号链接、路径穿越和超限文件。`[agent.skills] roots` 可以替换默认搜索根。
 
 ## 增加真实底座
 

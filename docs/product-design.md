@@ -404,9 +404,9 @@ ru41/
 ├── src/
 │   ├── main.rs                 # 进程启动、CLI 分发、优雅关闭
 │   ├── lib.rs                  # 暴露内部可测试服务
-│   ├── domain/                 # 任务、运行、交互、投递、结果契约
-│   ├── app/                    # 公共用例：TaskService、InteractionService、digest、身份
-│   ├── modules/                # 垂直业务附属：papers、rss、ecard
+│   ├── domain/                 # 任务、运行、交互、投递、待办与结果契约
+│   ├── app/                    # 公共用例：TaskService、TodoService、InteractionService、digest、身份
+│   ├── modules/                # 垂直业务附属：papers、rss、ecard、planner
 │   ├── channels/               # 消息渠道：QQ、飞书
 │   ├── ports/                  # 可替换能力接口：agent、storage、channel、interaction
 │   ├── runtime/                # Worker、投递 dispatcher、可靠消费者
@@ -418,7 +418,7 @@ ru41/
 │   ├── ingress/
 │   │   ├── http/               # HTTP API、认证、SSE、OpenAPI
 │   │   ├── cli.rs              # CLI 入口
-│   │   └── schedule.rs         # 通用定时轮询
+│   │   └── schedule.rs         # 通用定时轮询与定时任务注册表（ScheduledJob）
 │   ├── bootstrap/              # 配置聚合与附属静态装配
 │   └── util/                   # 无业务规则的小工具
 ├── migrations/                 # sqlite 与 postgres 方言各一份

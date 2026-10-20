@@ -25,7 +25,7 @@ Rust 编写的个人自动化宿主，接入 Codex / Pi，串联消息、信息�
 
 > **开发中 · v0.2**
 >
-> 已实现任务执行、QQ / 飞书通知、论文 / RSS 与水电模块。Obsidian Vault 与 Git 触发归档仍在规划中；当前任务成功代表分析结果校验并保存，不代表已完成任意外部操作。[查看实现边界 →](docs/core-status.md)
+> 已实现任务执行、QQ / 飞书通知、论文 / RSS、水电、私人待办与 Obsidian Vault 闭环（Git 轮询 → Agent 归档 → 提交推送）。Codex 任务以 yolo 模式执行，只应部署在隔离环境中。[查看实现边界 →](docs/core-status.md)
 
 ## 能做什么
 
@@ -36,6 +36,8 @@ Rust 编写的个人自动化宿主，接入 Codex / Pi，串联消息、信息�
 | **追踪研究进展** | arXiv 分类订阅、关键词筛选、摘要与单篇精读 | [论文追踪](docs/sources-arxiv.md) |
 | **整理订阅信息** | RSS / Atom 采集、去重与个人兴趣摘要 | [信息流](docs/sources-rss.md) |
 | **关注宿舍水电** | 校园卡平台余额查询、历史读数、低余额提醒 | [水电监控](docs/ecard-waterfee.md) |
+| **盯紧课程表** | 教务系统拉课表、调课停课提醒、明日课表推送、QQ 查课 | [课表监控](docs/sources-jwxt.md) |
+| **管理私人待办** | 今日、近期、长期、逾期视图，QQ 单聊命令与 CLI | [使用说明](docs/usage.md#私人待办) |
 | **搭建自己的自动化** | HTTP API、持久化事件、SSE 与可靠事件消费者 | [事件](docs/events.md) · [消费者](docs/event-consumers.md) |
 
 各来源模块按需配置；采集、Worker 与通知进程分别运行。水电模块需要对应平台与房间参数，并非通用的任意学校查询服务。
@@ -63,6 +65,7 @@ cargo run --locked -- backends
 cargo run --locked -- config check  # 配置与供应商装配校验
 cargo run --locked -- status        # 任务计数与启用组件
 cargo run --locked -- dump          # 脱敏排障报告
+cargo run --locked -- qq onboard    # 官方扫码创建/绑定机器人并写入凭证
 cargo run --locked -- qq doctor     # QQ 凭证与 gateway，不发消息
 ```
 

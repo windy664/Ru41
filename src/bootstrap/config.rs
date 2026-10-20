@@ -8,6 +8,8 @@ use std::path::{Path, PathBuf};
 pub struct Config {
     pub store: StoreConfig,
     pub worker: WorkerSection,
+    pub todo: TodoSection,
+    pub obsidian: ObsidianSection,
     pub agent: AgentSection,
     pub channel: ChannelSection,
     pub api: ApiSection,
@@ -44,11 +46,113 @@ pub struct WorkerSection {
     pub sanitize: Option<bool>,
 }
 
+/// 私人待办视图的本地日期与窗口配置。
+#[derive(Debug, Default, Deserialize)]
+#[serde(default, deny_unknown_fields)]
+pub struct TodoSection {
+    /// 本地时区固定偏移（分钟），默认 +08:00。
+    pub utc_offset_minutes: Option<i64>,
+    /// 今日之后归入“近期”的天数，默认 7。
+    pub recent_days: Option<i64>,
+    /// 超过该天数的已排期事项归入“长期”，默认 14。
+    pub long_term_days: Option<i64>,
+}
+
+impl TodoSection {
+    pub fn options(&self) -> Result<crate::domain::todo::TodoOptions> {
+        let minutes = self.utc_offset_minutes.unwrap_or(480);
+        anyhow::ensure!(
+            (-12 * 60..=14 * 60).contains(&minutes),
+            "todo.utc_offset_minutes must be between -720 and 840"
+        );
+        crate::domain::todo::TodoOptions {
+            offset_seconds: i32::try_from(minutes * 60)?,
+            recent_days: self.recent_days.unwrap_or(7),
+            long_term_days: self.long_term_days.unwrap_or(14),
+        }
+        .validated()
+    }
+}
+
+/// Obsidian Vault 闭环配置（核心能力，非附属）：Git 轮询发现 Inbox 新提交，
+/// 入队 Agent 整理任务，成功后提交推送；其他附属经 `ports::vault` 读写 Vault。
+/// 仓库只存服务器本地路径与远端名，凭据走 git credential helper，不写进配置。
+#[derive(Debug, Default, Deserialize)]
+#[serde(default, deny_unknown_fields)]
+pub struct ObsidianSection {
+    /// 服务器上的 Vault 克隆路径（容器内路径，如 /vault）。
+    pub vault_path: Option<String>,
+    /// 远端与分支；默认 origin/master。
+    pub remote: Option<String>,
+    pub branch: Option<String>,
+    /// 自动整理的目录前缀；默认 00-Inbox-收件箱。
+    pub inbox_dir: Option<String>,
+    /// obsidian run 的轮询间隔（秒），默认 300。
+    pub interval_secs: Option<u64>,
+    /// 整理 digest 任务的执行底座，默认 codex。
+    pub backend: Option<String>,
+    /// 整理完成后是否经默认通知出口推送（[notify] channel）；默认 true。
+    pub notify: Option<bool>,
+}
+
+impl ObsidianSection {
+    /// run 的轮询间隔（秒）默认值；装配与 schedule list 共用这一份。
+    pub const DEFAULT_INTERVAL_SECS: u64 = 300;
+    pub const DEFAULT_REMOTE: &str = "origin";
+    pub const DEFAULT_BRANCH: &str = "master";
+    pub const DEFAULT_INBOX_DIR: &str = "00-Inbox-收件箱";
+
+    /// 配置是否已齐（schedule list 的 enabled 判定与装配共用同一套检查）。
+    pub fn is_ready(&self) -> bool {
+        self.vault_path
+            .as_deref()
+            .is_some_and(|p| !p.trim().is_empty())
+    }
+
+    /// 由 [obsidian] 解析出运行时配置；默认值只定义在这里。
+    /// 通知路由由装配层按 [notify] 渠道注入，核心内不感知渠道知识。
+    pub fn resolved(
+        &self,
+        notify: Option<crate::domain::NotifyRoute>,
+    ) -> Result<crate::app::obsidian::ObsidianConfig> {
+        let vault_path = self
+            .vault_path
+            .clone()
+            .filter(|p| !p.trim().is_empty())
+            .context("obsidian.vault_path required")?;
+        Ok(crate::app::obsidian::ObsidianConfig {
+            vault_path: std::path::PathBuf::from(vault_path),
+            remote: self
+                .remote
+                .clone()
+                .unwrap_or_else(|| Self::DEFAULT_REMOTE.into()),
+            branch: self
+                .branch
+                .clone()
+                .unwrap_or_else(|| Self::DEFAULT_BRANCH.into()),
+            inbox_dir: self
+                .inbox_dir
+                .clone()
+                .unwrap_or_else(|| Self::DEFAULT_INBOX_DIR.into()),
+            interval_secs: self.interval_secs.unwrap_or(Self::DEFAULT_INTERVAL_SECS),
+            backend: self.backend.clone().unwrap_or_else(|| "codex".into()),
+            notify,
+        })
+    }
+}
+
 #[derive(Debug, Default, Deserialize)]
 #[serde(default, deny_unknown_fields)]
 pub struct AgentSection {
     pub pi: PiSection,
     pub codex: CodexSection,
+    pub skills: AgentSkillsSection,
+}
+
+#[derive(Debug, Default, Deserialize)]
+#[serde(default, deny_unknown_fields)]
+pub struct AgentSkillsSection {
+    pub roots: Vec<PathBuf>,
 }
 
 #[derive(Debug, Default, Deserialize)]
@@ -103,6 +207,10 @@ pub struct SourcesSection {
     pub arxiv: crate::modules::papers::ArxivSection,
     pub rss: crate::modules::rss::RssSection,
     pub ecard: crate::modules::ecard::EcardSection,
+    pub chaoxing: crate::modules::chaoxing::ChaoxingSection,
+    pub jwxt: crate::modules::jwxt::JwxtSection,
+    pub zhihuishu: crate::modules::zhihuishu::ZhihuishuSection,
+    pub blog: crate::modules::blog::BlogSection,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
