@@ -130,10 +130,17 @@ fn digest_prompt(interests: &str, candidates: &[ArxivEntry]) -> String {
     prompt
 }
 
-impl PaperTracker {
-    /// 轮询间隔（run 定时入口使用）。
-    pub fn interval(&self) -> std::time::Duration {
+impl crate::ingress::schedule::PollJob for PaperTracker {
+    fn job_interval(&self) -> std::time::Duration {
         std::time::Duration::from_secs(self.config.interval_secs)
+    }
+
+    fn poll_json(
+        &self,
+    ) -> std::pin::Pin<
+        Box<dyn std::future::Future<Output = anyhow::Result<serde_json::Value>> + Send + '_>,
+    > {
+        Box::pin(async move { Ok(serde_json::to_value(self.poll_once().await?)?) })
     }
 }
 

@@ -72,10 +72,12 @@ impl EcardTracker {
         .trim()
         .to_owned();
         // 读数落库：同日覆盖（保留最新），跨日形成历史；余额回升即为充值。
-        self.store.put_document(
+        // 注意 put_document(None) 是 insert-or-ignore，覆盖必须带现有 revision。
+        let existing = self.store.document("ecard_reading", &today)?;
+        let written = self.store.put_document(
             "ecard_reading",
             &today,
-            None,
+            existing.map(|d| d.revision),
             &serde_json::json!({
                 "power": power,
                 "water": water,
@@ -83,6 +85,7 @@ impl EcardTracker {
                 "ts": now,
             }),
         )?;
+        anyhow::ensure!(written, "ecard_reading 被并发修改，读数未保存");
 
         let mut low = Vec::new();
         if let Some(p) = power
@@ -139,9 +142,16 @@ impl EcardTracker {
     }
 }
 
-impl EcardTracker {
-    /// 轮询间隔（run 定时入口使用）。
-    pub fn interval(&self) -> std::time::Duration {
+impl crate::ingress::schedule::PollJob for EcardTracker {
+    fn job_interval(&self) -> std::time::Duration {
         std::time::Duration::from_secs(self.config.interval_secs)
+    }
+
+    fn poll_json(
+        &self,
+    ) -> std::pin::Pin<
+        Box<dyn std::future::Future<Output = anyhow::Result<serde_json::Value>> + Send + '_>,
+    > {
+        Box::pin(async move { Ok(serde_json::to_value(self.poll_once().await?)?) })
     }
 }

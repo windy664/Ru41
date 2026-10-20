@@ -61,12 +61,8 @@ impl EcardClient {
     }
 
     pub fn with_base_url(base_url: impl Into<String>) -> Self {
-        let http = reqwest::Client::builder()
-            .user_agent(concat!("ru41/", env!("CARGO_PKG_VERSION")))
-            .build()
-            .expect("reqwest client build");
         Self {
-            http,
+            http: crate::util::http_client(),
             base_url: base_url.into(),
         }
     }

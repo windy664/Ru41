@@ -25,11 +25,9 @@ impl Default for FeedClient {
 
 impl FeedClient {
     pub fn new() -> Self {
-        let http = reqwest::Client::builder()
-            .user_agent(concat!("ru41/", env!("CARGO_PKG_VERSION")))
-            .build()
-            .expect("reqwest client build");
-        Self { http }
+        Self {
+            http: crate::util::http_client(),
+        }
     }
 
     pub async fn fetch(&self, url: &str) -> Result<Vec<FeedItem>> {
@@ -48,44 +46,56 @@ impl FeedClient {
     }
 }
 
-/// 解析 RSS 2.0（<rss><channel><item>…）与 Atom（<feed><entry>…）两种格式。
-/// 与 arxiv 解析同一模式：实体引用是独立事件，文本按标签累积后在 </tag> 落字段。
-pub fn parse_feed(xml: &str) -> Result<Vec<FeedItem>> {
+/// XML 条目解析的统一接口：RSS/Atom 与 arXiv 解析共用同一个事件骨架。
+/// 新来源只需实现本 trait 并提供标签映射，不再抄写事件循环。
+pub trait XmlEntry: Default {
+    type Output;
+    /// <tag> 开始时（条目内部）回调，用于 in_author 这类嵌套状态。
+    fn on_start(&mut self, _tag: &str) {}
+    /// 空元素（如 <link href=".."/>）回调；属性读取失败可返回错误。
+    fn on_empty(&mut self, _tag: &str, _element: &quick_xml::events::BytesStart) -> Result<()> {
+        Ok(())
+    }
+    /// </tag> 时把该标签累积的文本（已 trim）落到字段；空文本不回调。
+    fn on_end(&mut self, _tag: &str, _text: &str) {}
+    /// 条目标签结束时产出最终值。
+    fn finish(self) -> Result<Self::Output>;
+}
+
+/// 通用 XML 拉式解析骨架：文本/实体引用按标签累积到 buf，</tag> 落字段，
+/// <tag .../> 空元素交给条目回调。条目间状态不共享。
+pub fn parse_items<T: XmlEntry>(
+    xml: &str,
+    root_tags: &[&str],
+    item_tags: &[&str],
+    not_feed_error: &'static str,
+) -> Result<Vec<T::Output>> {
     let mut reader = Reader::from_str(xml);
     let mut items = Vec::new();
-    let mut current: Option<PartialItem> = None;
+    let mut current: Option<T> = None;
     let mut buf = String::new();
-    let mut format = FeedFormat::Unknown;
+    let mut root_seen = root_tags.is_empty();
     loop {
         match reader.read_event()? {
-            Event::Start(e) => match e.local_name().as_ref() {
-                "rss" => format = FeedFormat::Rss,
-                "feed" => format = FeedFormat::Atom,
-                "item" | "entry" => current = Some(PartialItem::default()),
-                _ => buf.clear(),
-            },
+            Event::Start(e) => {
+                let tag = e.local_name();
+                let tag = tag.as_ref();
+                if root_tags.contains(&tag) {
+                    root_seen = true;
+                }
+                if item_tags.contains(&tag) {
+                    current = Some(T::default());
+                    buf.clear();
+                } else {
+                    if let Some(entry) = current.as_mut() {
+                        entry.on_start(tag);
+                    }
+                    buf.clear();
+                }
+            }
             Event::Empty(e) => {
-                // Atom 的链接在 <link href="..."/> 属性上。
-                if e.local_name().as_ref() == "link"
-                    && let Some(entry) = current.as_mut()
-                {
-                    let mut href = None;
-                    let mut is_alternate = true;
-                    for attr in e.attributes().flatten() {
-                        match attr.key.local_name().as_ref() {
-                            "href" => {
-                                href = Some(
-                                    attr.normalized_value(quick_xml::XmlVersion::Implicit1_0)?
-                                        .into_owned(),
-                                )
-                            }
-                            "rel" => is_alternate = attr.value.as_ref() == "alternate",
-                            _ => {}
-                        }
-                    }
-                    if let (Some(href), true) = (href, is_alternate) {
-                        entry.link = href;
-                    }
+                if let Some(entry) = current.as_mut() {
+                    entry.on_empty(e.local_name().as_ref(), &e)?;
                 }
             }
             Event::Text(e) => {
@@ -105,37 +115,42 @@ pub fn parse_feed(xml: &str) -> Result<Vec<FeedItem>> {
                     buf.push_str(&resolved);
                 }
             }
-            Event::End(e) => match e.local_name().as_ref() {
-                "item" | "entry" => {
-                    if let Some(partial) = current.take() {
-                        items.push(partial.finish());
-                    }
-                }
-                _ => {
-                    if let Some(item) = current.as_mut() {
-                        item.set(e.local_name().as_ref(), buf.trim());
+            Event::End(e) => {
+                let tag = e.local_name();
+                let tag = tag.as_ref();
+                if item_tags.contains(&tag) {
+                    if let Some(entry) = current.take() {
+                        items.push(entry.finish()?);
                     }
                     buf.clear();
+                } else if let Some(entry) = current.as_mut() {
+                    // 空文本也回调，由条目实现决定是否忽略（与原 RSS 解析行为一致）。
+                    entry.on_end(tag, buf.trim());
+                    buf.clear();
                 }
-            },
+            }
             Event::Eof => break,
             _ => {}
         }
     }
-    anyhow::ensure!(format != FeedFormat::Unknown, "not an RSS 2.0 or Atom feed");
+    anyhow::ensure!(root_seen, "{not_feed_error}");
     Ok(items)
+}
+
+/// 解析 RSS 2.0（<rss><channel><item>…）与 Atom（<feed><entry>…）两种格式。
+/// 与 arxiv 解析同一模式：实体引用是独立事件，文本按标签累积后在 </tag> 落字段。
+pub fn parse_feed(xml: &str) -> Result<Vec<FeedItem>> {
+    parse_items::<PartialItem>(
+        xml,
+        &["rss", "feed"],
+        &["item", "entry"],
+        "not an RSS 2.0 or Atom feed",
+    )
 }
 
 /// 兼容旧名：parse_rss 即 parse_feed。
 pub fn parse_rss(xml: &str) -> Result<Vec<FeedItem>> {
     parse_feed(xml)
-}
-
-#[derive(PartialEq)]
-enum FeedFormat {
-    Unknown,
-    Rss,
-    Atom,
 }
 
 #[derive(Default)]
@@ -149,8 +164,35 @@ struct PartialItem {
     published: String,
 }
 
-impl PartialItem {
-    fn set(&mut self, tag: &str, text: &str) {
+impl XmlEntry for PartialItem {
+    type Output = FeedItem;
+
+    fn on_empty(&mut self, tag: &str, element: &quick_xml::events::BytesStart) -> Result<()> {
+        // Atom 的链接在 <link href="..."/> 属性上。
+        if tag != "link" {
+            return Ok(());
+        }
+        let mut href = None;
+        let mut is_alternate = true;
+        for attr in element.attributes().flatten() {
+            match attr.key.local_name().as_ref() {
+                "href" => {
+                    href = Some(
+                        attr.normalized_value(quick_xml::XmlVersion::Implicit1_0)?
+                            .into_owned(),
+                    )
+                }
+                "rel" => is_alternate = attr.value.as_ref() == "alternate",
+                _ => {}
+            }
+        }
+        if let (Some(href), true) = (href, is_alternate) {
+            self.link = href;
+        }
+        Ok(())
+    }
+
+    fn on_end(&mut self, tag: &str, text: &str) {
         if text.is_empty() {
             return;
         }
@@ -171,7 +213,7 @@ impl PartialItem {
         }
     }
 
-    fn finish(self) -> FeedItem {
+    fn finish(self) -> Result<FeedItem> {
         let id = if !self.guid.is_empty() {
             self.guid.clone()
         } else if !self.link.is_empty() {
@@ -179,13 +221,13 @@ impl PartialItem {
         } else {
             format!("{}:{}", self.title, self.published)
         };
-        FeedItem {
+        Ok(FeedItem {
             id,
             title: self.title,
             link: self.link,
             summary: strip_html(&self.description),
             published: self.published,
-        }
+        })
     }
 }
 

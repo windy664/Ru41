@@ -1,4 +1,8 @@
+use crate::domain::NotifyRoute;
+use anyhow::{Context, Result};
 use serde::Deserialize;
+
+use super::service::RssConfig;
 
 /// RSS 信息流追踪配置；rss poll/run 使用。
 #[derive(Debug, Default, Deserialize)]
@@ -18,4 +22,27 @@ pub struct RssSection {
     pub backend: Option<String>,
     /// 终态后是否经默认通知出口推送（[notify] channel）；默认 true。
     pub notify: Option<bool>,
+}
+
+impl RssSection {
+    /// run 的轮询间隔（秒）默认值；tracker 装配与 schedule list 共用这一份。
+    pub const DEFAULT_INTERVAL_SECS: u64 = 21_600;
+
+    /// 由 [sources.rss] 解析出运行时配置；默认值只定义在这里。
+    /// 通知路由由装配层按 [notify] 渠道注入，模块内不感知渠道知识。
+    pub fn resolved(&self, notify: Option<NotifyRoute>) -> Result<RssConfig> {
+        Ok(RssConfig {
+            feeds: self
+                .feeds
+                .clone()
+                .filter(|f| !f.is_empty())
+                .context("sources.rss.feeds required")?,
+            keywords: self.keywords.clone().unwrap_or_default(),
+            interests: self.interests.clone().unwrap_or_default(),
+            max_items_per_feed: self.max_items_per_feed.unwrap_or(50),
+            interval_secs: self.interval_secs.unwrap_or(Self::DEFAULT_INTERVAL_SECS),
+            backend: self.backend.clone().unwrap_or_else(|| "codex".into()),
+            notify,
+        })
+    }
 }

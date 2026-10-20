@@ -1,6 +1,4 @@
-use crate::adapters::sources::feed::resolve_ref;
 use anyhow::{Context, Result, bail};
-use quick_xml::{Reader, events::Event};
 
 /// 一篇 arXiv 论文的元数据（来自 Atom feed，摘要级，不含全文）。
 #[derive(Debug, Clone, PartialEq)]
@@ -35,12 +33,8 @@ impl ArxivClient {
     }
 
     pub fn with_base_url(base_url: impl Into<String>) -> Self {
-        let http = reqwest::Client::builder()
-            .user_agent(concat!("ru41/", env!("CARGO_PKG_VERSION")))
-            .build()
-            .expect("reqwest client build");
         Self {
-            http,
+            http: crate::util::http_client(),
             base_url: base_url.into(),
         }
     }
@@ -94,104 +88,14 @@ impl ArxivClient {
 }
 
 /// 解析 Atom feed；容忍条目内字段顺序与多余命名空间。
-/// quick-xml 把实体引用拆成独立事件，文本按标签累积后在 </tag> 时落字段。
+/// 事件骨架与 RSS 解析共用 adapters::sources::feed::parse_items。
 pub fn parse_feed(xml: &str) -> Result<Vec<ArxivEntry>> {
-    let mut reader = Reader::from_str(xml);
-    let mut entries = Vec::new();
-    let mut current: Option<PartialEntry> = None;
-    let mut buf = String::new();
-    let mut in_author = false;
-    loop {
-        match reader.read_event()? {
-            Event::Start(e) => {
-                let name = e.local_name();
-                match name.as_ref() {
-                    "entry" => current = Some(PartialEntry::default()),
-                    "author" if current.is_some() => in_author = true,
-                    _ => buf.clear(),
-                }
-            }
-            Event::Empty(e) => {
-                if e.local_name().as_ref() == "link"
-                    && let Some(entry) = current.as_mut()
-                {
-                    let mut href = None;
-                    let mut is_pdf = false;
-                    for attr in e.attributes().flatten() {
-                        match attr.key.local_name().as_ref() {
-                            "href" => {
-                                href = Some(
-                                    attr.normalized_value(quick_xml::XmlVersion::Implicit1_0)?
-                                        .into_owned(),
-                                );
-                            }
-                            "title" => is_pdf = attr.value.as_ref() == "pdf",
-                            _ => {}
-                        }
-                    }
-                    if let Some(href) = href {
-                        if is_pdf {
-                            entry.pdf_url = Some(href);
-                        } else {
-                            entry.abs_url = href;
-                        }
-                    }
-                }
-            }
-            Event::Text(e) => {
-                if current.is_some() {
-                    buf.push_str(&e.xml10_content());
-                }
-            }
-            Event::CData(e) => {
-                if current.is_some() {
-                    buf.push_str(&e.xml10_content());
-                }
-            }
-            Event::GeneralRef(e) => {
-                if current.is_some()
-                    && let Some(resolved) = resolve_ref(&e)
-                {
-                    buf.push_str(&resolved);
-                }
-            }
-            Event::End(e) => {
-                let name = e.local_name();
-                let name = name.as_ref();
-                match name {
-                    "entry" => {
-                        if let Some(partial) = current.take() {
-                            entries.push(partial.finish()?);
-                        }
-                    }
-                    "author" => in_author = false,
-                    _ => {
-                        if let Some(entry) = current.as_mut() {
-                            let text = buf.trim();
-                            if !text.is_empty() {
-                                if in_author && name == "name" {
-                                    entry.authors.push(text.to_owned());
-                                } else {
-                                    match name {
-                                        "id" => entry.id = text.to_owned(),
-                                        "title" => entry.title = text.to_owned(),
-                                        "summary" => entry.summary = text.to_owned(),
-                                        "published" => entry.published = text.to_owned(),
-                                        "updated" => entry.updated = text.to_owned(),
-                                        _ => {}
-                                    }
-                                }
-                            }
-                        }
-                        buf.clear();
-                    }
-                }
-            }
-            Event::Eof => break,
-            _ => {}
-        }
-    }
-    Ok(entries)
+    crate::adapters::sources::feed::parse_items::<PartialEntry>(
+        xml,
+        &["feed"],
+        &["entry"],
+        "not an arXiv Atom feed",
+    )
 }
 
 #[derive(Default)]
@@ -204,9 +108,68 @@ struct PartialEntry {
     updated: String,
     abs_url: String,
     pdf_url: Option<String>,
+    in_author: bool,
 }
 
-impl PartialEntry {
+impl crate::adapters::sources::feed::XmlEntry for PartialEntry {
+    type Output = ArxivEntry;
+
+    fn on_start(&mut self, tag: &str) {
+        if tag == "author" {
+            self.in_author = true;
+        }
+    }
+
+    fn on_empty(&mut self, tag: &str, element: &quick_xml::events::BytesStart) -> Result<()> {
+        if tag != "link" {
+            return Ok(());
+        }
+        let mut href = None;
+        let mut is_pdf = false;
+        for attr in element.attributes().flatten() {
+            match attr.key.local_name().as_ref() {
+                "href" => {
+                    href = Some(
+                        attr.normalized_value(quick_xml::XmlVersion::Implicit1_0)?
+                            .into_owned(),
+                    );
+                }
+                "title" => is_pdf = attr.value.as_ref() == "pdf",
+                _ => {}
+            }
+        }
+        if let Some(href) = href {
+            if is_pdf {
+                self.pdf_url = Some(href);
+            } else {
+                self.abs_url = href;
+            }
+        }
+        Ok(())
+    }
+
+    fn on_end(&mut self, tag: &str, text: &str) {
+        if tag == "author" {
+            self.in_author = false;
+            return;
+        }
+        if text.is_empty() {
+            return;
+        }
+        if self.in_author && tag == "name" {
+            self.authors.push(text.to_owned());
+            return;
+        }
+        match tag {
+            "id" => self.id = text.to_owned(),
+            "title" => self.title = text.to_owned(),
+            "summary" => self.summary = text.to_owned(),
+            "published" => self.published = text.to_owned(),
+            "updated" => self.updated = text.to_owned(),
+            _ => {}
+        }
+    }
+
     fn finish(self) -> Result<ArxivEntry> {
         // id 形如 http://arxiv.org/abs/2510.12345v2
         let raw = self

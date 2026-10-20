@@ -33,6 +33,8 @@ tags: [Ru41, ecard, 水电费, source]
 
 `src/modules/ecard/`（`source.rs` 客户端、`service.rs` 编排、`qq_command.rs` QQ 查询）：`ecard poll/run` 查询余额 → 读数以 `ecard_reading` 落 records（同日覆盖、跨日成历史，余额回升即充值）→ 阈值判断（纯 Rust，不经 Agent，符合「金额由程序计算」）→ 低余额经 `[notify]` 默认出口提醒，同日 `ecard_alert` 去重不重复打扰。token 与房间参数走 `[sources.ecard]` 本地配置或 `RU41_ECARD_TOKEN`。
 
+QQ 提供两个入口：`/水电` 立即返回最近一次读数；自然语言（如“电费还剩多少，顺便分析”）则由 ecard handler 先校验身份绑定和单聊上下文，再读取最近 30 条缓存记录、注入 Agent 任务并由 `skills/ecard-utility/SKILL.md` 分析。Agent 不直接接触数据库或校园卡接口，也不会触发轮询、阈值计算或充值，避免自然语言任务绕过隐私边界。
+
 ## 限制与注意事项
 
 - **WAF 限流**：单 IP 突发请求会被断连（SSL reset），间隔数秒恢复。采集节奏应≤1 次查询/天·房间，失败退避重试。
