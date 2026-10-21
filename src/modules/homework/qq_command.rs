@@ -87,14 +87,30 @@ fn authorize(ctx: &CommandContext<'_>) -> Result<Option<Reply>> {
 }
 
 /// 自然语言命中要克制：既提「作业/截止」又带疑问色彩才拦截，避免日常闲聊被吞。
+/// 两道保险：只拦截短问句（长文一律交给 Agent），且「查」必须带宾语（裸「查」
+/// 会命中「筛查/检查/调查」等，比赛公告、新闻长文常被误吞）。
 fn looks_like_homework_question(content: &str) -> bool {
     let text = content.trim().to_lowercase();
+    if text.chars().count() > 80 {
+        return false;
+    }
     let topic = ["作业", "截止", "deadline", "due"]
         .iter()
         .any(|k| text.contains(k));
-    let asking = ["什么", "哪些", "还有", "有没有", "查", "快", "？", "?"]
-        .iter()
-        .any(|k| text.contains(k));
+    let asking = [
+        "什么",
+        "哪些",
+        "还有",
+        "有没有",
+        "查下",
+        "查询",
+        "查查",
+        "快",
+        "？",
+        "?",
+    ]
+    .iter()
+    .any(|k| text.contains(k));
     topic && asking
 }
 
