@@ -666,6 +666,7 @@ fn ctx<'a>(f: &'a CtxFixture, c2c: bool) -> CommandContext<'a> {
         author_openid: &f.author,
         is_c2c: c2c,
         reply_channel: "qq",
+        image_url: None,
     }
 }
 

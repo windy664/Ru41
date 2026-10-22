@@ -219,6 +219,12 @@ pub enum JwxtCommand {
         #[arg(long)]
         captcha: Option<String>,
     },
+    /// 读本地课表缓存回答「今天/明天/某天/本周有什么课」；只读缓存，不触网、不需要登录态。
+    Classes {
+        /// 时间：缺省今天；支持 tomorrow/明天、week/周、YYYY-MM-DD。
+        #[arg(default_value = "today")]
+        when: String,
+    },
 }
 
 #[derive(Subcommand)]
