@@ -4,6 +4,7 @@ pub mod gateway;
 pub mod onboard;
 
 use crate::{
+    app::task::TaskService,
     domain::NotifyRoute,
     ports::{
         channel::NotifyChannel,
@@ -184,7 +185,7 @@ impl QqBot {
 
     /// 命令分发与消息入队；同步存储 I/O 全部在此路径上（调用方已做 block_in_place）。
     async fn dispatch(&self, event: &GatewayEvent) -> Result<DispatchOutcome> {
-        let (msg_id, content, target, author_openid, is_c2c) = match event {
+        let (msg_id, content, target, author_openid, is_c2c, image_url) = match event {
             GatewayEvent::GroupMessage {
                 msg_id,
                 content,
@@ -196,17 +197,20 @@ impl QqBot {
                 format!("{TARGET_GROUP_PREFIX}{group_openid}"),
                 author_openid,
                 false,
+                None,
             ),
             GatewayEvent::C2cMessage {
                 msg_id,
                 content,
                 user_openid,
+                image_url,
             } => (
                 msg_id,
                 content,
                 format!("{TARGET_C2C_PREFIX}{user_openid}"),
                 user_openid,
                 true,
+                image_url.as_deref(),
             ),
             _ => return Ok(DispatchOutcome::Ingested),
         };
@@ -217,6 +221,7 @@ impl QqBot {
             msg_id,
             author_openid,
             is_c2c,
+            image_url,
             reply_channel: "qq",
         };
         if let Some(command) = commands::parse_command(content) {
@@ -246,7 +251,9 @@ impl QqBot {
                 return Ok(DispatchOutcome::Reply(reply));
             }
         }
-        self.ingest(event)?;
+        if let Some(notice) = self.ingest(event)? {
+            return Ok(DispatchOutcome::Reply(notice.into()));
+        }
         Ok(DispatchOutcome::Ingested)
     }
 
@@ -286,8 +293,11 @@ impl QqBot {
     }
 
     /// 把一条消息事件幂等入队，并登记回话路由。
-    pub fn ingest(&self, event: &GatewayEvent) -> Result<()> {
-        let (msg_id, content, target) = match event {
+    /// 单聊新消息到达时，打断同会话未完成（排队/运行/等待重试）的旧任务：
+    /// 旧任务的心跳下一轮即失败，agent 进程组被回收，新消息取代旧消息。
+    /// 返回 Some(提示文本) 表示发生了打断，调用方应即时回复用户。
+    pub fn ingest(&self, event: &GatewayEvent) -> Result<Option<String>> {
+        let (msg_id, content, target, private) = match event {
             GatewayEvent::GroupMessage {
                 msg_id,
                 content,
@@ -297,14 +307,44 @@ impl QqBot {
                 msg_id,
                 content,
                 format!("{TARGET_GROUP_PREFIX}{group_openid}"),
+                false,
             ),
             GatewayEvent::C2cMessage {
                 msg_id,
                 content,
                 user_openid,
-            } => (msg_id, content, format!("{TARGET_C2C_PREFIX}{user_openid}")),
-            _ => return Ok(()),
+                ..
+            } => (
+                msg_id,
+                content,
+                format!("{TARGET_C2C_PREFIX}{user_openid}"),
+                true,
+            ),
+            _ => return Ok(None),
         };
+        let mut interrupted = 0_usize;
+        if private {
+            for task in self.store.list(50)? {
+                if !matches!(
+                    task.status,
+                    crate::domain::TaskStatus::Queued
+                        | crate::domain::TaskStatus::Running
+                        | crate::domain::TaskStatus::RetryScheduled
+                ) {
+                    continue;
+                }
+                if task.notify.as_ref().map(|route| route.target.as_str()) != Some(target.as_str())
+                {
+                    continue;
+                }
+                match TaskService::new(self.store.clone()).cancel(task.id) {
+                    Ok(_) => interrupted += 1,
+                    Err(error) => {
+                        eprintln!("[qq] interrupt task {} failed: {error:#}", task.id)
+                    }
+                }
+            }
+        }
         crate::app::task::TaskService::new(self.store.clone()).enqueue_with_notify(
             &msg_request_key(msg_id),
             content,
@@ -315,6 +355,12 @@ impl QqBot {
                 msg_id: Some(msg_id.clone()),
             },
         )?;
-        Ok(())
+        Ok(if interrupted > 0 {
+            Some(format!(
+                "⏹ 已打断上一条未完成的任务（{interrupted} 个），现在开始处理这条。"
+            ))
+        } else {
+            None
+        })
     }
 }
