@@ -533,3 +533,50 @@ fn show_and_cancel_reject_cross_conversation_tasks() {
     assert!(detail.text.contains("已取消"));
     assert!(detail.text.contains("单聊的分析请求"));
 }
+
+#[test]
+fn c2c_new_message_interrupts_unfinished_tasks_same_conversation() {
+    use ru41::channels::qq::QqBot;
+    use ru41::channels::qq::api::QqApiClient;
+    use ru41::channels::qq::gateway::GatewayEvent;
+
+    let fixture = fixture();
+    let bot = QqBot {
+        api: Arc::new(QqApiClient::new("app", "secret")),
+        store: fixture.store.clone(),
+        backend: "codex".into(),
+        bind_secret: None,
+        command_handlers: vec![],
+    };
+    let c2c = |msg_id: &str, content: &str| GatewayEvent::C2cMessage {
+        msg_id: msg_id.into(),
+        content: content.into(),
+        user_openid: "U777".into(),
+        image_url: None,
+    };
+
+    // 第一条直接入队，无打断提示。
+    assert!(bot.ingest(&c2c("m1", "第一条")).unwrap().is_none());
+    // 同会话第二条：打断第一条（排队中），并给出提示。
+    let notice = bot.ingest(&c2c("m2", "第二条")).unwrap().unwrap();
+    assert!(notice.contains("已打断"));
+    // 群消息不打断单聊任务。
+    let group = GatewayEvent::GroupMessage {
+        msg_id: "g9".into(),
+        content: "群消息".into(),
+        group_openid: "G1".into(),
+        author_openid: "U9".into(),
+    };
+    assert!(bot.ingest(&group).unwrap().is_none());
+
+    let tasks = fixture.store.list(10).unwrap();
+    let status_of = |key: &str| {
+        tasks
+            .iter()
+            .find(|t| t.request_key == key)
+            .map(|t| t.status)
+    };
+    assert_eq!(status_of("qq:msg:m1"), Some(TaskStatus::Cancelled));
+    assert_eq!(status_of("qq:msg:m2"), Some(TaskStatus::Queued));
+    assert_eq!(status_of("qq:msg:g9"), Some(TaskStatus::Queued));
+}
