@@ -1,6 +1,6 @@
 use crate::ports::{channel::NotifyChannel, storage::TaskStore};
 use anyhow::Result;
-use chrono::{Datelike, Duration, NaiveDate, Timelike};
+use chrono::{Datelike, Duration, NaiveDate, TimeZone, Timelike};
 use serde::Serialize;
 use std::collections::HashSet;
 use std::sync::Arc;
@@ -29,6 +29,10 @@ pub struct JwxtConfig {
     pub daily_remind: bool,
     /// 明日课表推送的本地时间下限（小时）。
     pub remind_hour: u8,
+    /// 是否把课表同步进日程系统（课前 20 分钟提醒、`/日程` 可见）。
+    pub sync_schedule: bool,
+    /// 节次时刻表；日程同步与消息里的具体时间显示依赖它。
+    pub clock: Option<SectionClock>,
     /// 提醒投递目标（装配层按 [notify] 渠道解析）。
     pub notify_target: String,
 }
@@ -63,6 +67,11 @@ fn weekday_no(date: NaiveDate) -> u8 {
     (date.weekday().number_from_monday()) as u8
 }
 
+const WEEKDAY_NAMES: [&str; 7] = ["周一", "周二", "周三", "周四", "周五", "周六", "周日"];
+fn weekday_name(date: NaiveDate) -> &'static str {
+    WEEKDAY_NAMES[(date.weekday().number_from_monday() - 1) as usize]
+}
+
 /// 取某天要上的课（星期匹配 + 周次在 zcd 范围内）。
 pub fn meetings_on(
     meetings: &[CourseMeeting],
@@ -78,6 +87,31 @@ pub fn meetings_on(
         .collect()
 }
 
+/// 节次时刻表：把 "3-4节" 换算成 "10:40-12:00"。教务接口不暴露作息时间，
+/// 由配置 `section_times` + `class_duration_mins` 提供。
+#[derive(Debug, Clone)]
+pub struct SectionClock {
+    /// 索引 = 节次 - 1。
+    pub times: Vec<chrono::NaiveTime>,
+    /// 单节时长（分钟）。
+    pub duration_mins: u64,
+}
+
+impl SectionClock {
+    /// 节次范围 → "HH:MM-HH:MM"；超出时刻表范围返回 None（调用方回退到节次文本）。
+    pub fn range_label(&self, start: Option<u8>, end: Option<u8>) -> Option<String> {
+        let (s, e) = (start?, end?);
+        let start_t = *self.times.get(s as usize - 1)?;
+        let end_t = *self.times.get(e as usize - 1)?;
+        let end_t = end_t + Duration::minutes(self.duration_mins as i64);
+        Some(format!(
+            "{}-{}",
+            start_t.format("%H:%M"),
+            end_t.format("%H:%M")
+        ))
+    }
+}
+
 /// 一轮轮询的报告。
 #[derive(Debug, Serialize)]
 pub struct JwxtPollReport {
@@ -90,6 +124,10 @@ pub struct JwxtPollReport {
     pub week: Option<i64>,
     /// 本轮检测到的课表变更条数。
     pub changes: usize,
+    /// 本轮日程同步：新建事件数。
+    pub events_created: usize,
+    /// 本轮日程同步：取消事件数（调课/停课导致）。
+    pub events_cancelled: usize,
     /// 是否已推送今日明日课表提醒。
     pub daily_reminded: bool,
     pub notified: bool,
@@ -142,13 +180,16 @@ impl From<&CourseMeeting> for StoredMeeting {
 }
 
 impl StoredMeeting {
-    /// 提醒/回复里的一行：`9-10节 军事理论 @T301（鲁鲜亮）`。
-    pub fn display_line(&self) -> String {
-        let section = match (self.start_section, self.end_section) {
-            (Some(s), Some(e)) if s == e => format!("{s}节"),
-            (Some(s), Some(e)) => format!("{s}-{e}节"),
-            _ => self.sections_raw.clone(),
-        };
+    /// 提醒/回复里的一行：`- **10:40-12:00** 高等数学 @U102（张晓婷）`。
+    /// 未配置作息表时回退到节次文本（`3-4节`）。
+    pub fn display_line(&self, clock: Option<&SectionClock>) -> String {
+        let time = clock
+            .and_then(|c| c.range_label(self.start_section, self.end_section))
+            .unwrap_or_else(|| match (self.start_section, self.end_section) {
+                (Some(s), Some(e)) if s == e => format!("{s}节"),
+                (Some(s), Some(e)) => format!("{s}-{e}节"),
+                _ => self.sections_raw.clone(),
+            });
         let teacher = if self.teacher.is_empty() {
             String::new()
         } else {
@@ -159,7 +200,7 @@ impl StoredMeeting {
         } else {
             self.classroom.clone()
         };
-        format!("{section} {} @{room}{teacher}", self.course)
+        format!("- **{time}** {} @{room}{teacher}", self.course)
     }
 }
 
@@ -220,7 +261,9 @@ impl JwxtTracker {
                 .send(
                     &self.config.notify_target,
                     None,
-                    &format!("⚠️ 教务登录态失效：{err}\n请在服务器运行 `ru41 jwxt login --captcha <答案>` 重新登录"),
+                    &format!(
+                        "⚠️ 教务登录失败：{err}\n若是密码/账号问题请检查配置；若验证码识别失效，可手动 `ru41 jwxt login --captcha <答案>` 兜底"
+                    ),
                 )
                 .await?;
         }
@@ -269,17 +312,23 @@ impl JwxtTracker {
             return Ok(Vec::new());
         }
 
+        let clock = self.config.clock.as_ref();
+        let when = |m: &CourseMeeting| -> String {
+            clock
+                .and_then(|c| c.range_label(m.start_section, m.end_section))
+                .unwrap_or_else(|| m.sections_raw.clone())
+        };
         let old_sigs: HashSet<String> = old.meetings.iter().map(stored_signature).collect();
         let mut changes = Vec::new();
         for meeting in meetings {
             let sig = &meeting.signature();
             if !old_sigs.contains(sig) {
                 changes.push(format!(
-                    "+ 新增 {}｜{}｜星期{}｜{}｜@{}",
+                    "**新增** {}｜{}周｜{}｜{}｜@{}",
                     meeting.course,
                     meeting.weeks_raw,
-                    meeting.weekday,
-                    meeting.sections_raw,
+                    WEEKDAY_NAMES[(meeting.weekday as usize).clamp(1, 7) - 1],
+                    when(meeting),
                     meeting.classroom
                 ));
             }
@@ -287,12 +336,28 @@ impl JwxtTracker {
         let new_sigs: HashSet<String> = signatures.iter().cloned().collect();
         for meeting in &old.meetings {
             if !new_sigs.contains(stored_signature(meeting).as_str()) {
+                let m = CourseMeeting {
+                    course: meeting.course.clone(),
+                    course_id: meeting.course_id.clone(),
+                    teacher: meeting.teacher.clone(),
+                    classroom: meeting.classroom.clone(),
+                    weekday: meeting.weekday,
+                    sections_raw: meeting.sections_raw.clone(),
+                    start_section: meeting.start_section,
+                    end_section: meeting.end_section,
+                    weeks: meeting.weeks.clone(),
+                    weeks_raw: meeting.weeks_raw.clone(),
+                    class_type: meeting.class_type.clone(),
+                    class_group: meeting.class_group.clone(),
+                    xnm: String::new(),
+                    xqm: String::new(),
+                };
                 changes.push(format!(
-                    "- 取消 {}｜{}｜星期{}｜{}｜@{}",
+                    "**取消** {}｜{}周｜{}｜{}｜@{}",
                     meeting.course,
                     meeting.weeks_raw,
-                    meeting.weekday,
-                    meeting.sections_raw,
+                    WEEKDAY_NAMES[(meeting.weekday as usize).clamp(1, 7) - 1],
+                    when(&m),
                     meeting.classroom
                 ));
             }
@@ -353,24 +418,179 @@ impl JwxtTracker {
         let tomorrow = today + Duration::days(1);
         let day_meetings = meetings_on(meetings, start, tomorrow);
         let message = format!(
-            "【明日课表】{}（第{}周）\n{}",
-            tomorrow.format("%m月%d日 %A"),
+            "## 📚 明日课表\n\n**{} {} · 第{}周**\n\n{}",
+            tomorrow.format("%m月%d日"),
+            weekday_name(tomorrow),
             week_of(start, tomorrow),
             if day_meetings.is_empty() {
                 "明天没有课 🎉".to_owned()
             } else {
                 let mut lines: Vec<String> = day_meetings
                     .iter()
-                    .map(|m| StoredMeeting::from(m).display_line())
+                    .map(|m| StoredMeeting::from(m).display_line(self.config.clock.as_ref()))
                     .collect();
                 lines.sort();
-                format!("{}\n共 {} 节课", lines.join("\n"), lines.len())
+                format!("{}\n\n共 {} 节课", lines.join("\n"), lines.len())
             }
         );
         notifier
             .send(&self.config.notify_target, None, &message)
             .await?;
         Ok(true)
+    }
+
+    /// 日程同步：本周+下周的行课展开成一次性事件（kind=event，课前 20 分钟
+    /// 由核心提醒循环推送、`/日程` 可见）。与已有 jwxt 事件按 source_id 求差：
+    /// 缺的创建、多余的取消。幂等：无变化零写入；调课 = 取消旧 + 建新。
+    async fn sync_schedule_events(
+        &self,
+        xnm: &str,
+        xqm: &str,
+        meetings: &[CourseMeeting],
+        today: NaiveDate,
+    ) -> Result<(usize, usize)> {
+        use crate::app::schedule::ScheduleService;
+        use crate::domain::schedule::{
+            EVENT_KIND, EventInput, EventItem, EventRecurrence, EventSource,
+        };
+        use crate::domain::todo::TodoOptions;
+
+        if !self.config.sync_schedule {
+            return Ok((0, 0));
+        }
+        if self.config.semester_start.is_none() || self.config.clock.is_none() {
+            // 一次性提示（不是每日）：缺 semester_start / section_times 时同步无法工作
+            let key = "schedule_config";
+            if self.store.document("jwxt_alert", key)?.is_none() {
+                self.store.put_document(
+                    "jwxt_alert",
+                    key,
+                    None,
+                    &serde_json::json!({ "ts": crate::util::now() }),
+                )?;
+                if let Some(notifier) = &self.notifier {
+                    notifier
+                        .send(
+                            &self.config.notify_target,
+                            None,
+                            "⚠️ 已开启课表日程同步，但缺少 semester_start 或 section_times（节次时刻表）配置，同步未生效",
+                        )
+                        .await?;
+                }
+            }
+            return Ok((0, 0));
+        }
+        let semester_start = self.config.semester_start.unwrap();
+        let clock = self.config.clock.clone().unwrap();
+        let now = crate::util::now();
+
+        // 目标事件集：本周 + 下周（周日晚已能看到下周一的课）
+        let mut desired: std::collections::HashMap<String, EventInput> =
+            std::collections::HashMap::new();
+        for week in [
+            week_of(semester_start, today),
+            week_of(semester_start, today) + 1,
+        ] {
+            if week < 1 {
+                continue;
+            }
+            let monday = semester_start + Duration::days((week - 1) * 7);
+            for meeting in meetings.iter().filter(|m| m.weeks.contains(&(week as u32))) {
+                let (Some(first), Some(last)) = (meeting.start_section, meeting.end_section) else {
+                    continue;
+                };
+                let Some(start_time) = clock.times.get(first as usize - 1) else {
+                    continue; // 节次超出时刻表范围，跳过（配置问题，不逐条告警）
+                };
+                let Some(end_time) = clock.times.get(last as usize - 1) else {
+                    continue;
+                };
+                let day = monday + Duration::days(meeting.weekday as i64 - 1);
+                let starts_at = chrono::Local
+                    .from_local_datetime(&day.and_time(*start_time))
+                    .single()
+                    .map(|t| t.timestamp());
+                let ends_at = chrono::Local
+                    .from_local_datetime(
+                        &day.and_time(*end_time + Duration::minutes(clock.duration_mins as i64)),
+                    )
+                    .single()
+                    .map(|t| t.timestamp());
+                let (Some(starts_at), Some(ends_at)) = (starts_at, ends_at) else {
+                    continue;
+                };
+                let source_id = format!(
+                    "{xnm}#{xqm}|{week}|{}|{}|{}-{}|{}|{}",
+                    meeting.course_id,
+                    meeting.weekday,
+                    first,
+                    last,
+                    meeting.classroom,
+                    meeting.teacher
+                );
+                desired.insert(
+                    source_id.clone(),
+                    EventInput {
+                        title: meeting.course.clone(),
+                        starts_at,
+                        ends_at,
+                        location: (!meeting.classroom.is_empty())
+                            .then(|| meeting.classroom.clone()),
+                        recurrence: EventRecurrence::None,
+                        source: Some(EventSource {
+                            channel: "jwxt".into(),
+                            source_id: Some(source_id),
+                        }),
+                    },
+                );
+            }
+        }
+
+        // 已有 jwxt 事件（只看 active；cancelled 的不再复活）
+        let service = ScheduleService::new(self.store.clone(), TodoOptions::default());
+        let mut existing: std::collections::HashMap<String, EventItem> =
+            std::collections::HashMap::new();
+        for doc in self.store.documents(EVENT_KIND, 1000)? {
+            let Ok(item) = serde_json::from_value::<EventItem>(doc.value) else {
+                continue;
+            };
+            let Some(source) = &item.source else { continue };
+            if source.channel != "jwxt"
+                || item.status != crate::domain::schedule::EventStatus::Active
+            {
+                continue;
+            }
+            if let Some(source_id) = &source.source_id {
+                existing.insert(source_id.clone(), item);
+            }
+        }
+
+        let mut created = 0;
+        let mut cancelled = 0;
+        for (source_id, input) in &desired {
+            match existing.get(source_id) {
+                // 时间也要一致：section_times 配置调整后旧事件必须重建
+                Some(item)
+                    if item.starts_at == input.starts_at && item.ends_at == input.ends_at => {}
+                Some(item) => {
+                    service.cancel(&item.id, now)?;
+                    service.add(input.clone(), now)?;
+                    created += 1;
+                    cancelled += 1;
+                }
+                None => {
+                    service.add(input.clone(), now)?;
+                    created += 1;
+                }
+            }
+        }
+        for (source_id, item) in &existing {
+            if !desired.contains_key(source_id) {
+                service.cancel(&item.id, now)?;
+                cancelled += 1;
+            }
+        }
+        Ok((created, cancelled))
     }
 
     pub async fn poll_once(&self) -> Result<JwxtPollReport> {
@@ -393,6 +613,8 @@ impl JwxtTracker {
                     .semester_start
                     .map(|start| week_of(start, today)),
                 changes: 0,
+                events_created: 0,
+                events_cancelled: 0,
                 daily_reminded: false,
                 notified: alerted,
             });
@@ -412,6 +634,8 @@ impl JwxtTracker {
                         .semester_start
                         .map(|start| week_of(start, today)),
                     changes: 0,
+                    events_created: 0,
+                    events_cancelled: 0,
                     daily_reminded: false,
                     notified: alerted,
                 });
@@ -431,6 +655,9 @@ impl JwxtTracker {
                 .await?;
         }
         let daily_reminded = self.maybe_daily_remind(&meetings, today).await?;
+        let (events_created, events_cancelled) = self
+            .sync_schedule_events(&xnm, &xqm, &meetings, today)
+            .await?;
 
         Ok(JwxtPollReport {
             login_ok: true,
@@ -442,6 +669,8 @@ impl JwxtTracker {
                 .semester_start
                 .map(|start| week_of(start, today)),
             changes: changes.len(),
+            events_created,
+            events_cancelled,
             daily_reminded,
             notified: !changes.is_empty() || daily_reminded,
         })
@@ -465,12 +694,16 @@ fn stored_signature(meeting: &StoredMeeting) -> String {
 pub fn describe_day_from_store(
     store: &Arc<dyn TaskStore>,
     semester_start: Option<NaiveDate>,
+    clock: Option<&SectionClock>,
     date: NaiveDate,
 ) -> Result<String> {
     let (xnm, xqm) = resolve_term(None, None, chrono::Local::now().date_naive());
     let key = format!("{xnm}#{xqm}");
     let Some(doc) = store.document("jwxt_timetable", &key)? else {
-        return Ok("## 暂无课表缓存\n\n请先在服务器运行 `jwxt poll`。".to_owned());
+        return Ok(
+            "## 暂无课表缓存\n\n课表还没同步成功：`jwxt run` 未运行，或学校教务系统当前不可用（恢复后会自动同步）。"
+                .to_owned(),
+        );
     };
     let snapshot: TimetableSnapshot = serde_json::from_value(doc.value)?;
     let Some(start) = semester_start else {
@@ -501,22 +734,22 @@ pub fn describe_day_from_store(
         .collect();
     let day_meetings = meetings_on(&meetings, start, date);
     let title = format!(
-        "{}（第{}周 星期{}）",
+        "## 📅 {} {} · 第{}周\n\n",
         date.format("%m月%d日"),
-        week_of(start, date),
-        weekday_no(date)
+        weekday_name(date),
+        week_of(start, date)
     );
     let body = if day_meetings.is_empty() {
         "没有课 🎉".to_owned()
     } else {
         let mut lines: Vec<String> = day_meetings
             .iter()
-            .map(|m| StoredMeeting::from(m).display_line())
+            .map(|m| StoredMeeting::from(m).display_line(clock))
             .collect();
         lines.sort();
-        lines.join("\n")
+        format!("{}\n\n共 {} 节课", lines.join("\n"), lines.len())
     };
-    Ok(format!("## {title}\n\n{body}"))
+    Ok(format!("{title}{body}"))
 }
 
 impl crate::ingress::schedule::PollJob for JwxtTracker {
