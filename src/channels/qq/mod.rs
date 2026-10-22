@@ -191,6 +191,7 @@ impl QqBot {
                 content,
                 group_openid,
                 author_openid,
+                ..
             } => (
                 msg_id,
                 content,
@@ -204,6 +205,7 @@ impl QqBot {
                 content,
                 user_openid,
                 image_url,
+                ..
             } => (
                 msg_id,
                 content,
@@ -297,31 +299,70 @@ impl QqBot {
     /// 旧任务的心跳下一轮即失败，agent 进程组被回收，新消息取代旧消息。
     /// 返回 Some(提示文本) 表示发生了打断，调用方应即时回复用户。
     pub fn ingest(&self, event: &GatewayEvent) -> Result<Option<String>> {
-        let (msg_id, content, target, private) = match event {
+        let (msg_id, content, target, private, attachments) = match event {
             GatewayEvent::GroupMessage {
                 msg_id,
                 content,
                 group_openid,
+                attachments,
                 ..
             } => (
                 msg_id,
                 content,
                 format!("{TARGET_GROUP_PREFIX}{group_openid}"),
                 false,
+                attachments,
             ),
             GatewayEvent::C2cMessage {
                 msg_id,
                 content,
                 user_openid,
+                attachments,
                 ..
             } => (
                 msg_id,
                 content,
                 format!("{TARGET_C2C_PREFIX}{user_openid}"),
                 true,
+                attachments,
             ),
             _ => return Ok(None),
         };
+        // 富媒体合成进 prompt：语音用平台 ASR 转写，文件给下载地址让 agent 自取。
+        // 图片不走这里（image_url 有独立通道，由消费方处理）。
+        let mut prompt = String::new();
+        for attachment in attachments {
+            match attachment.kind {
+                gateway::AttachmentKind::Voice => {
+                    if let Some(text) = &attachment.asr_text {
+                        prompt.push_str(&format!("[语音转写] {text}\n"));
+                    } else {
+                        prompt.push_str(&format!(
+                            "[语音] 平台未提供转写，WAV 地址：https://{}\n",
+                            attachment.url
+                        ));
+                    }
+                }
+                gateway::AttachmentKind::File => {
+                    let name = attachment.filename.as_deref().unwrap_or("未命名文件");
+                    let size = attachment
+                        .size
+                        .map(|s| format!(" {} KB", s / 1024))
+                        .unwrap_or_default();
+                    prompt.push_str(&format!(
+                        "[文件] {name}{size}\n下载地址（有时效，请尽快下载）：https://{}\n请下载后按我的要求处理。\n",
+                        attachment.url
+                    ));
+                }
+                gateway::AttachmentKind::Image => {}
+            }
+        }
+        if !content.is_empty() {
+            if !prompt.is_empty() {
+                prompt.push('\n');
+            }
+            prompt.push_str(content);
+        }
         let mut interrupted = 0_usize;
         if private {
             for task in self.store.list(50)? {
@@ -347,7 +388,7 @@ impl QqBot {
         }
         crate::app::task::TaskService::new(self.store.clone()).enqueue_with_notify(
             &msg_request_key(msg_id),
-            content,
+            &prompt,
             &self.backend,
             &NotifyRoute {
                 channel: "qq".into(),
