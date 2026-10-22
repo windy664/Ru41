@@ -553,6 +553,7 @@ fn c2c_new_message_interrupts_unfinished_tasks_same_conversation() {
         content: content.into(),
         user_openid: "U777".into(),
         image_url: None,
+        attachments: vec![],
     };
 
     // 第一条直接入队，无打断提示。
@@ -566,6 +567,7 @@ fn c2c_new_message_interrupts_unfinished_tasks_same_conversation() {
         content: "群消息".into(),
         group_openid: "G1".into(),
         author_openid: "U9".into(),
+        attachments: vec![],
     };
     assert!(bot.ingest(&group).unwrap().is_none());
 

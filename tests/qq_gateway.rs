@@ -1,6 +1,7 @@
 use ru41::channels::qq::gateway::{
-    GatewayEvent, close_forces_reidentify, close_is_fatal, heartbeat_payload, heartbeat_stalled,
-    identify_payload, parse_dispatch, resume_payload,
+    AttachmentKind, GatewayEvent, MessageAttachment, close_forces_reidentify, close_is_fatal,
+    heartbeat_payload, heartbeat_stalled, identify_payload, op_forces_reidentify, parse_dispatch,
+    resume_payload,
 };
 use serde_json::json;
 use std::time::{Duration, Instant};
@@ -23,6 +24,7 @@ fn parses_group_at_message() {
             content: "帮我总结一下今天的收件箱".into(),
             group_openid: "G123".into(),
             author_openid: "U456".into(),
+            attachments: vec![],
         }
     );
 }
@@ -39,6 +41,41 @@ fn parses_c2c_message() {
             msg_id: "msg-1".into(),
             content: "hello".into(),
             user_openid: "U1".into(),
+            image_url: None,
+            attachments: vec![],
+        }
+    );
+}
+
+/// 纯图片消息（content 为空）不该被丢：首个图片附件 URL 进入事件，
+/// 供「二维码照片 → 自动签」链路使用。
+#[test]
+fn parses_c2c_image_message() {
+    let frame = json!({
+        "op": 0, "t": "C2C_MESSAGE_CREATE",
+        "d": {
+            "id": "msg-2", "content": "",
+            "author": { "user_openid": "U1" },
+            "attachments": [
+                { "contentType": 1, "url": "https://multimedia.qq.com/qr.jpg" },
+                { "contentType": 2, "url": "https://multimedia.qq.com/other" }
+            ]
+        }
+    });
+    assert_eq!(
+        parse_dispatch(&frame),
+        GatewayEvent::C2cMessage {
+            msg_id: "msg-2".into(),
+            content: "".into(),
+            user_openid: "U1".into(),
+            image_url: Some("multimedia.qq.com/qr.jpg".into()),
+            attachments: vec![MessageAttachment {
+                kind: AttachmentKind::Image,
+                url: "multimedia.qq.com/qr.jpg".into(),
+                filename: None,
+                size: None,
+                asr_text: None,
+            }],
         }
     );
 }
@@ -96,6 +133,17 @@ fn close_codes_drive_reconnect_policy() {
 }
 
 #[test]
+fn reconnect_and_invalid_session_ops_force_reidentify() {
+    // op=7（平台要求重连）与 op=9（会话失效）都会作废旧 session_id：
+    // 沿用它 RESUME 会得到「连得上但不再收消息」的静默连接。
+    assert!(op_forces_reidentify(7));
+    assert!(op_forces_reidentify(9));
+    // 正常投递与心跳 ACK 必须保留会话，否则白白丢掉可恢复的 RESUME 机会。
+    assert!(!op_forces_reidentify(0));
+    assert!(!op_forces_reidentify(6));
+}
+
+#[test]
 fn request_key_is_derived_from_msg_id() {
     assert_eq!(ru41::channels::qq::msg_request_key("msg-1"), "qq:msg:msg-1");
 }
@@ -116,4 +164,73 @@ fn heartbeat_stall_detection() {
         t0 + Duration::from_secs(71),
         interval
     ));
+}
+
+#[test]
+fn parses_c2c_voice_message() {
+    let frame = json!({
+        "op": 0, "t": "C2C_MESSAGE_CREATE",
+        "d": {
+            "id": "msg-voice",
+            "content": "",
+            "author": { "user_openid": "U1" },
+            "attachments": [{
+                "content_type": "voice",
+                "url": "multimedia.qq.com/voice.silk",
+                "voice_wav_url": "multimedia.qq.com/voice.wav",
+                "asr_refer_text": "明天下午有空吗"
+            }]
+        }
+    });
+    assert_eq!(
+        parse_dispatch(&frame),
+        GatewayEvent::C2cMessage {
+            msg_id: "msg-voice".into(),
+            content: "".into(),
+            user_openid: "U1".into(),
+            image_url: None,
+            attachments: vec![MessageAttachment {
+                kind: AttachmentKind::Voice,
+                url: "multimedia.qq.com/voice.wav".into(),
+                filename: None,
+                size: None,
+                asr_text: Some("明天下午有空吗".into()),
+            }],
+        }
+    );
+}
+
+#[test]
+fn parses_group_file_message() {
+    let frame = json!({
+        "op": 0, "t": "GROUP_AT_MESSAGE_CREATE",
+        "d": {
+            "id": "msg-file",
+            "content": " 帮我看看这个文件 ",
+            "group_openid": "G1",
+            "author": { "member_openid": "U9" },
+            "attachments": [{
+                "content_type": "file",
+                "url": "multimedia.qq.com/report.pdf",
+                "filename": "report.pdf",
+                "size": 20480
+            }]
+        }
+    });
+    assert_eq!(
+        parse_dispatch(&frame),
+        GatewayEvent::GroupMessage {
+            msg_id: "msg-file".into(),
+            content: "帮我看看这个文件".into(),
+            group_openid: "G1".into(),
+            author_openid: "U9".into(),
+            attachments: vec![MessageAttachment {
+                kind: AttachmentKind::File,
+                url: "multimedia.qq.com/report.pdf".into(),
+                filename: Some("report.pdf".into()),
+                size: Some(20480),
+                asr_text: None,
+            }],
+        }
+    );
 }
