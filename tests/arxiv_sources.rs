@@ -281,6 +281,7 @@ async fn qq_deep_read_handler_validates_and_executes() {
         author_openid: "U1",
         is_c2c: true,
         reply_channel: "qq",
+        image_url: None,
     };
 
     // 缺参数与非法 ID 不拦截，交回 QQ 落入普通 Agent 消息。
