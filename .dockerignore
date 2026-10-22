@@ -1,4 +1,6 @@
-/target/
+/target/*
+!/target/release/
+!/target/release/ru41
 /.git/
 /.ru41/
 /ru41.toml
