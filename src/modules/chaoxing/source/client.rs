@@ -127,6 +127,7 @@ struct PersistedCookie {
 }
 
 /// 学习通协议客户端。凭证来自 [sources.chaoxing]（建议环境变量注入）。
+#[derive(Clone)]
 pub struct ChaoxingClient {
     jar: std::sync::Arc<CookieJar>,
     http: reqwest::Client,
@@ -300,7 +301,7 @@ impl ChaoxingClient {
             .map(|(_, value)| value.clone())
     }
 
-    fn uid(&self) -> Result<String> {
+    pub fn uid(&self) -> Result<String> {
         self.cookie("_uid")
             .or_else(|| self.cookie("UID"))
             .context("会话 cookie 中没有 _uid，请重新登录")
@@ -444,8 +445,17 @@ impl ChaoxingClient {
 
     /// preSign 预签（普通类签到的平台流程前置）。
     async fn pre_sign(&self, course: &ChaoxingCourse, activity_id: &str, uid: &str) -> Result<()> {
-        let _: String = self
-            .http
+        self.pre_sign_body(course, activity_id, uid).await.map(|_| ())
+    }
+
+    /// preSign 响应体（科研线：窗口探测用它找 enc 泄漏）。
+    pub async fn pre_sign_body(
+        &self,
+        course: &ChaoxingCourse,
+        activity_id: &str,
+        uid: &str,
+    ) -> Result<String> {
+        self.http
             .get(format!("{}{PRE_SIGN_PATH}", self.mobilelearn_base))
             .query(&[
                 ("general", "1".to_string()),
@@ -464,8 +474,29 @@ impl ChaoxingClient {
             .context("preSign 请求失败")?
             .text()
             .await
-            .context("preSign 响应读取失败")?;
-        Ok(())
+            .context("preSign 响应读取失败")
+    }
+
+    /// 学生端签到详情页 HTML（科研线：QR 窗口期间侦测 enc 是否泄漏在页面里）。
+    pub async fn sign_page_html(&self, activity_id: i64) -> Result<String> {
+        let uid = self.uid()?;
+        let url = format!(
+            "{}/widget/sign/pcStuSignController?activeId={}&uid={}&fid={}",
+            self.mobilelearn_base,
+            activity_id,
+            uid,
+            self.fid()
+        );
+        self.http
+            .get(&url)
+            .send()
+            .await
+            .context("签到详情页请求失败")?
+            .error_for_status()
+            .context("签到详情页响应异常")?
+            .text()
+            .await
+            .context("签到详情页读取失败")
     }
 
     /// 上传照片到超星云盘换 objectId（拍照签到前置）。

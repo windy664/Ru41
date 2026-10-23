@@ -120,6 +120,7 @@ pub fn qq_image_consumers(config: &Config) -> Result<Vec<Arc<dyn ImageConsumer>>
         consumers.push(Arc::new(ChaoxingQrSigner::new(
             client,
             cfg.default_location.clone(),
+            cfg.enc_sample_path.clone(),
         )));
     }
     Ok(consumers)

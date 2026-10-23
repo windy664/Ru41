@@ -30,6 +30,9 @@ pub struct ChaoxingConfig {
     pub vault_course_dir: Option<String>,
     /// 学习通课程名 → Vault 课程目录名映射。
     pub vault_courses: std::collections::BTreeMap<String, String>,
+    /// enc 样本库路径（科研线：QR 窗口探测 + 照片解码样本的 JSONL 落盘）；
+    /// None 关闭采集。缺省 /data/chaoxing/enc-samples.jsonl。
+    pub enc_sample_path: Option<std::path::PathBuf>,
 }
 
 /// 学习通签到监控配置；chaoxing poll/run/sign 使用。
@@ -70,6 +73,8 @@ pub struct ChaoxingSection {
     pub vault_course_dir: Option<String>,
     /// 学习通课程名 → Vault 课程目录名映射。
     pub vault_courses: Option<std::collections::BTreeMap<String, String>>,
+    /// enc 样本库路径（科研线）；缺省开在 /data。
+    pub enc_sample_path: Option<String>,
 }
 
 impl ChaoxingSection {
@@ -131,6 +136,12 @@ impl ChaoxingSection {
                     .unwrap_or_else(|| Self::DEFAULT_VAULT_COURSE_DIR.into()),
             ),
             vault_courses: self.vault_courses.clone().unwrap_or_default(),
+            enc_sample_path: Some(
+                self.enc_sample_path
+                    .clone()
+                    .unwrap_or_else(|| "/data/chaoxing/enc-samples.jsonl".into())
+                    .into(),
+            ),
         })
     }
 

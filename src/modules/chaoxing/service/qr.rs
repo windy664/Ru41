@@ -12,6 +12,7 @@ use crate::modules::chaoxing::source::{
 };
 use crate::ports::commands::ImageConsumer;
 
+use super::enc_sample::{EncSample, EncSampleLogger};
 use super::sign::sign_response_ok;
 
 /// 二维码里解出的签到要素。
@@ -67,17 +68,21 @@ pub struct ChaoxingQrSigner {
     client: ChaoxingClient,
     http: reqwest::Client,
     default_location: Option<(f64, f64, String)>,
+    /// 科研线 C：每次照片解码出的 enc 都落样本库（成败都记）。
+    enc_log: Option<EncSampleLogger>,
 }
 
 impl ChaoxingQrSigner {
     pub fn new(
         client: ChaoxingClient,
         default_location: Option<(f64, f64, String)>,
+        enc_sample_path: Option<std::path::PathBuf>,
     ) -> Self {
         Self {
             client,
             http: reqwest::Client::new(),
             default_location,
+            enc_log: enc_sample_path.map(EncSampleLogger::new),
         }
     }
 
@@ -108,22 +113,33 @@ impl ChaoxingQrSigner {
             enc: qr.enc.clone(),
             location: self.default_location.clone(),
         };
-        match self
+        let outcome = match self
             .client
             .sign(&ChaoxingCourse::bare(), &ChaoxingActivity::bare(qr.activity_id), &method)
             .await
         {
-            Ok(response) if sign_response_ok(&response) => format!(
-                "✅ 二维码签到成功（图片识别，活动 {}）",
-                qr.activity_id
-            ),
-            Ok(response) => format!(
-                "❌ 二维码签到被平台拒绝（活动 {}，响应：{}）；可能已结束或已签",
-                qr.activity_id,
-                response.trim()
-            ),
-            Err(err) => format!("❌ 二维码签到请求失败（活动 {}）：{err:#}", qr.activity_id),
+            Ok(response) => {
+                let ok = sign_response_ok(&response);
+                (ok, if ok { format!("✅ 二维码签到成功（图片识别，活动 {}）", qr.activity_id) } else { format!(
+                    "❌ 二维码签到被平台拒绝（活动 {}，响应：{}）；可能已结束或已签",
+                    qr.activity_id,
+                    response.trim()
+                ) }, response)
+            }
+            Err(err) => (false, format!("❌ 二维码签到请求失败（活动 {}）：{err:#}", qr.activity_id), format!("{err:#}")),
+        };
+        // 科研线 C：成败都落样本（拒绝文本是 token 有效期分析的关键数据）
+        if let Some(logger) = &self.enc_log {
+            logger.log(&EncSample {
+                ts: crate::util::now(),
+                activity_id: qr.activity_id,
+                enc: qr.enc.clone(),
+                source: "photo".into(),
+                ok: outcome.0,
+                response: outcome.2.trim().to_owned(),
+            });
         }
+        outcome.1
     }
 }
 
