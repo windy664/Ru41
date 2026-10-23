@@ -112,6 +112,22 @@ impl Worker {
         };
         self.store
             .put_document("run", &run_id, None, &serde_json::to_value(&run)?)?;
+        // 进度通知（pending）：由 NotifyDispatcher 扫描后发给任务绑定的会话，
+        // 让用户看到「开始执行」；失败路径另写 retry 进度。
+        if let Err(error) = self.store.put_document(
+            "progress",
+            &format!("{run_id}-started"),
+            None,
+            &serde_json::json!({
+                "task_id": claim.task.id,
+                "attempt_id": claim.attempt_id,
+                "kind": "started",
+                "status": "pending",
+                "backend_id": claim.task.backend_id,
+            }),
+        ) {
+            eprintln!("[worker] progress doc for task {} failed: {error:#}", claim.task.id);
+        }
         let result = self.run_claim(&claim, agent, &mut shutdown).await;
         if let Ok(session_id) = &result {
             run.session_id = session_id.clone();
@@ -150,6 +166,33 @@ impl Worker {
                 interrupted,
                 kind == FailureKind::Transient,
             )?;
+            // 首次失败进入重试时留一条进度通知，避免用户在重试窗口里完全看不到动静。
+            let retrying = self
+                .store
+                .get(claim.task.id)?
+                .map(|task| task.status == TaskStatus::RetryScheduled)
+                .unwrap_or(false);
+            if retrying && claim.task.attempt_count == 1 {
+                let mut reason = format!("{error:#}");
+                reason.truncate(300);
+                if let Err(doc_error) = self.store.put_document(
+                    "progress",
+                    &format!("{run_id}-retry"),
+                    None,
+                    &serde_json::json!({
+                        "task_id": claim.task.id,
+                        "attempt_id": claim.attempt_id,
+                        "kind": "retry",
+                        "status": "pending",
+                        "error": reason,
+                    }),
+                ) {
+                    eprintln!(
+                        "[worker] retry progress doc for task {} failed: {doc_error:#}",
+                        claim.task.id
+                    );
+                }
+            }
         }
         let status = self
             .store

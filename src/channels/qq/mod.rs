@@ -33,19 +33,32 @@ pub fn msg_request_key(msg_id: &str) -> String {
     format!("qq:msg:{msg_id}")
 }
 
-/// QQ 通知渠道：把终态结果作为被动回复发回原会话。
-pub struct QqNotifier {
-    api: Arc<QqApiClient>,
-    /// 同一 msg_id 多条回复需 msg_seq 自增。
+/// 同一 msg_id 被动回复的序号器：msg_seq 必须从 1 开始递增且不能重复。
+/// QQ 网关进程内 QqBot（命令/回执）与 QqNotifier（终态/进度通知）共享一个实例，
+/// 避免同一 msg_id 下两条回复撞同一个 seq。
+#[derive(Default)]
+pub struct ReplySequencer {
     seq_by_msg: Mutex<HashMap<String, i64>>,
 }
 
+impl ReplySequencer {
+    pub fn next(&self, msg_id: &str) -> i64 {
+        let mut seqs = self.seq_by_msg.lock().unwrap_or_else(|e| e.into_inner());
+        let seq = seqs.get(msg_id).copied().unwrap_or(0) + 1;
+        seqs.insert(msg_id.to_owned(), seq);
+        seq
+    }
+}
+
+/// QQ 通知渠道：把终态结果作为被动回复发回原会话。
+pub struct QqNotifier {
+    api: Arc<QqApiClient>,
+    sequencer: Arc<ReplySequencer>,
+}
+
 impl QqNotifier {
-    pub fn new(api: Arc<QqApiClient>) -> Self {
-        Self {
-            api,
-            seq_by_msg: Mutex::new(HashMap::new()),
-        }
+    pub fn new(api: Arc<QqApiClient>, sequencer: Arc<ReplySequencer>) -> Self {
+        Self { api, sequencer }
     }
 }
 
@@ -62,15 +75,7 @@ impl NotifyChannel for QqNotifier {
     ) -> Pin<Box<dyn Future<Output = Result<()>> + Send + 'a>> {
         Box::pin(async move {
             let key = msg_id.unwrap_or_default();
-            let seq = {
-                let mut seqs = self
-                    .seq_by_msg
-                    .lock()
-                    .map_err(|_| anyhow::anyhow!("qq seq lock poisoned"))?;
-                let seq = seqs.get(key).copied().unwrap_or(0) + 1;
-                seqs.insert(key.to_owned(), seq);
-                seq
-            };
+            let seq = self.sequencer.next(key);
             if let Some(group) = target.strip_prefix(TARGET_GROUP_PREFIX) {
                 self.api.send_group_text(group, text, msg_id, seq).await?;
             } else if let Some(user) = target.strip_prefix(TARGET_C2C_PREFIX) {
@@ -92,6 +97,8 @@ pub struct QqBot {
     pub bind_secret: Option<String>,
     /// 业务模块注册的扩展命令；QQ 渠道不直接依赖业务模块。
     pub command_handlers: Vec<Arc<dyn CommandHandler>>,
+    /// 与 QqNotifier 共享的被动回复序号器，防止同 msg_id 下 seq 撞车。
+    pub sequencer: Arc<ReplySequencer>,
 }
 
 /// 单条消息的分发结果：立即回复（含可选按钮），或已幂等入队。
@@ -253,25 +260,24 @@ impl QqBot {
                 return Ok(DispatchOutcome::Reply(reply));
             }
         }
-        if let Some(notice) = self.ingest(event)? {
-            return Ok(DispatchOutcome::Reply(notice.into()));
-        }
-        Ok(DispatchOutcome::Ingested)
+        let receipt = self.ingest(event)?;
+        Ok(DispatchOutcome::Reply(receipt.notice().into()))
     }
 
-    /// 命令的即时被动回复；每条命令消息只回一条，msg_seq 固定为 1。
+    /// 命令的即时被动回复；msg_seq 经共享序号器分配，与终态/进度通知不撞车。
     /// 有按钮走 markdown + keyboard 通道（平台不支持时发送层自动降级纯文本）。
     async fn reply(&self, target: &str, msg_id: &str, reply: &Reply) -> Result<()> {
+        let seq = self.sequencer.next(msg_id);
         if let Some(group) = target.strip_prefix(TARGET_GROUP_PREFIX) {
             match &reply.markup {
                 Some(markup) if !markup.is_empty() => {
                     self.api
-                        .send_group_markup(group, &reply.text, markup, Some(msg_id), 1)
+                        .send_group_markup(group, &reply.text, markup, Some(msg_id), seq)
                         .await?;
                 }
                 _ => {
                     self.api
-                        .send_group_text(group, &reply.text, Some(msg_id), 1)
+                        .send_group_text(group, &reply.text, Some(msg_id), seq)
                         .await?;
                 }
             }
@@ -279,12 +285,12 @@ impl QqBot {
             match &reply.markup {
                 Some(markup) if !markup.is_empty() => {
                     self.api
-                        .send_c2c_markup(user, &reply.text, markup, Some(msg_id), 1)
+                        .send_c2c_markup(user, &reply.text, markup, Some(msg_id), seq)
                         .await?;
                 }
                 _ => {
                     self.api
-                        .send_c2c_text(user, &reply.text, Some(msg_id), 1)
+                        .send_c2c_text(user, &reply.text, Some(msg_id), seq)
                         .await?;
                 }
             }
@@ -297,8 +303,8 @@ impl QqBot {
     /// 把一条消息事件幂等入队，并登记回话路由。
     /// 单聊新消息到达时，打断同会话未完成（排队/运行/等待重试）的旧任务：
     /// 旧任务的心跳下一轮即失败，agent 进程组被回收，新消息取代旧消息。
-    /// 返回 Some(提示文本) 表示发生了打断，调用方应即时回复用户。
-    pub fn ingest(&self, event: &GatewayEvent) -> Result<Option<String>> {
+    /// 返回入执收据：任务 id、是否新创建、打断数量；调用方应立即回复 `receipt.notice()`。
+    pub fn ingest(&self, event: &GatewayEvent) -> Result<IngestReceipt> {
         let (msg_id, content, target, private, attachments) = match event {
             GatewayEvent::GroupMessage {
                 msg_id,
@@ -326,7 +332,7 @@ impl QqBot {
                 true,
                 attachments,
             ),
-            _ => return Ok(None),
+            _ => bail!("unsupported gateway event for ingest"),
         };
         // 富媒体合成进 prompt：语音用平台 ASR 转写，文件给下载地址让 agent 自取。
         // 图片不走这里（image_url 有独立通道，由消费方处理）。
@@ -363,6 +369,22 @@ impl QqBot {
             }
             prompt.push_str(content);
         }
+        // 幂等短路：同 msg_id 已入过队则直接回执原任务，不得先打断再判重
+        // （否则平台重推同一条消息会反而把原任务取消掉）。
+        let request_key = msg_request_key(msg_id);
+        if let Some(existing) = self
+            .store
+            .list(200)?
+            .into_iter()
+            .find(|task| task.request_key == request_key)
+        {
+            return Ok(IngestReceipt {
+                task_id: existing.id,
+                created: false,
+                interrupted: 0,
+                ahead: 0,
+            });
+        }
         let mut interrupted = 0_usize;
         if private {
             for task in self.store.list(50)? {
@@ -386,8 +408,8 @@ impl QqBot {
                 }
             }
         }
-        crate::app::task::TaskService::new(self.store.clone()).enqueue_with_notify(
-            &msg_request_key(msg_id),
+        let enqueued = crate::app::task::TaskService::new(self.store.clone()).enqueue_with_notify(
+            &request_key,
             &prompt,
             &self.backend,
             &NotifyRoute {
@@ -396,12 +418,58 @@ impl QqBot {
                 msg_id: Some(msg_id.clone()),
             },
         )?;
-        Ok(if interrupted > 0 {
-            Some(format!(
-                "⏹ 已打断上一条未完成的任务（{interrupted} 个），现在开始处理这条。"
-            ))
-        } else {
-            None
+        // 排队位置：除本任务外仍在排队/执行的任务数，让用户知道要等多久。
+        let mut ahead = 0_usize;
+        for task in self.store.list(50)? {
+            if task.id == enqueued.task.id {
+                continue;
+            }
+            if matches!(
+                task.status,
+                crate::domain::TaskStatus::Queued | crate::domain::TaskStatus::Running
+            ) {
+                ahead += 1;
+            }
+        }
+        Ok(IngestReceipt {
+            task_id: enqueued.task.id,
+            created: enqueued.created,
+            interrupted,
+            ahead,
         })
+    }
+}
+
+/// 消息入队后的即时回执：黑盒感的第一重消除——用户立刻知道消息变成了哪个任务。
+pub struct IngestReceipt {
+    pub task_id: i64,
+    pub created: bool,
+    pub interrupted: usize,
+    /// 除本任务外仍在排队/执行的任务数。
+    pub ahead: usize,
+}
+
+impl IngestReceipt {
+    pub fn notice(&self) -> String {
+        let mut lines = String::new();
+        if self.interrupted > 0 {
+            lines.push_str(&format!(
+                "⏹ 已打断上一条未完成的任务（{} 个）\n",
+                self.interrupted
+            ));
+        }
+        if self.created {
+            lines.push_str(&format!("✅ 已接单 `#{}`", self.task_id));
+            if self.ahead > 0 {
+                lines.push_str(&format!("（当前还有 {} 个任务在排队/执行）", self.ahead));
+            }
+            lines.push_str("\n> 开始执行和完成时都会通知你；中途可发 /任务 查看进度");
+        } else {
+            lines.push_str(&format!(
+                "ℹ️ 这条消息已在处理中（任务 `#{}`），不重复入队",
+                self.task_id
+            ));
+        }
+        lines
     }
 }
