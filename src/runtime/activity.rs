@@ -55,7 +55,7 @@ impl ActivityStreamer {
         }
         let mut file = tokio::fs::File::open(&self.path).await?;
         let mut carry: Vec<u8> = Vec::new();
-        let mut pending: Vec<String> = Vec::new();
+        let mut buffer = DisplayBuffer::default();
         let mut seq = 0_u32;
         let mut last_flush = std::time::Instant::now();
         loop {
@@ -75,16 +75,16 @@ impl ActivityStreamer {
                         continue;
                     };
                     if let Some(display) = display_line(&event) {
-                        pending.push(display);
+                        buffer.push(&event, display);
                     }
                 }
             }
             let due = last_flush.elapsed() >= self.interval;
             if stopped || due {
+                let pending = buffer.drain();
                 if !pending.is_empty() && seq < self.max_chunks {
                     self.write_chunk(seq, &pending)?;
                     seq += 1;
-                    pending.clear();
                     last_flush = std::time::Instant::now();
                 }
                 if stopped {
@@ -122,6 +122,43 @@ impl ActivityStreamer {
     }
 }
 
+/// 展示行缓冲。最后一条 agent_message 暂缓入队：它通常就是最终回答，
+/// 终态通知会完整送达；流里只保留中间过程，避免「截断预览 + 全文重发」
+/// 的重复观感（半截句子看起来就像消息被 QQ 截断了）。
+#[derive(Default)]
+struct DisplayBuffer {
+    pending: Vec<String>,
+    deferred: Option<String>,
+}
+
+impl DisplayBuffer {
+    fn push(&mut self, event: &serde_json::Value, line: String) {
+        // 新展示行到达说明上一条 agent_message 是中间过程，放行。
+        if let Some(buffered) = self.deferred.take() {
+            self.pending.push(buffered);
+        }
+        if is_agent_message(event) {
+            self.deferred = Some(line);
+        } else {
+            self.pending.push(line);
+        }
+    }
+
+    /// 取出当前可发送的行；deferred 不随 flush 发出，run 结束时自然丢弃。
+    fn drain(&mut self) -> Vec<String> {
+        std::mem::take(&mut self.pending)
+    }
+}
+
+fn is_agent_message(event: &serde_json::Value) -> bool {
+    event.get("type").and_then(|v| v.as_str()) == Some("item.completed")
+        && event
+            .get("item")
+            .and_then(|item| item.get("type"))
+            .and_then(|v| v.as_str())
+            == Some("agent_message")
+}
+
 /// 把一条 codex JSONL 事件映射为展示行；无关事件返回 None。
 /// 只取 item.completed（item.started 会成对重复）。
 pub fn display_line(event: &serde_json::Value) -> Option<String> {
@@ -131,7 +168,9 @@ pub fn display_line(event: &serde_json::Value) -> Option<String> {
             match item.get("type").and_then(|v| v.as_str()) {
                 Some("agent_message") => {
                     let text = item.get("text").and_then(|v| v.as_str())?.trim();
-                    (!text.is_empty()).then(|| format!("💬 {}", truncate(text, 120)))
+                    // 预览压成一行：多行原文在流里既难看又会重复终态通知的全文。
+                    let flat = text.split_whitespace().collect::<Vec<_>>().join(" ");
+                    (!flat.is_empty()).then(|| format!("💬 {}", truncate(&flat, 120)))
                 }
                 Some("reasoning") => {
                     let text = item
@@ -279,5 +318,30 @@ mod tests {
         );
         // 无消息字段的 error 不展示
         assert!(display_line(&event(r#"{"type":"error"}"#)).is_none());
+    }
+
+    #[test]
+    fn agent_message_preview_is_flattened_to_one_line() {
+        let line = display_line(&event(
+            r#"{"type":"item.completed","item":{"type":"agent_message","text":"第一行\n\n第二行　含空白"}}"#,
+        ));
+        assert_eq!(line.as_deref(), Some("💬 第一行 第二行 含空白"));
+    }
+
+    #[test]
+    fn buffer_defers_last_agent_message_until_more_activity() {
+        use super::DisplayBuffer;
+        let mut buffer = DisplayBuffer::default();
+        let msg1 = event(r#"{"type":"item.completed","item":{"type":"agent_message","text":"我先搜一下"}}"#);
+        let tool = event(r#"{"type":"item.completed","item":{"type":"local_shell_call","action":{"command":"curl x"}}}"#);
+        let msg2 = event(r#"{"type":"item.completed","item":{"type":"agent_message","text":"最终完整回答"}}"#);
+        buffer.push(&msg1, display_line(&msg1).unwrap());
+        assert!(buffer.drain().is_empty(), "中间消息先暂缓，等后续事件确认");
+        buffer.push(&tool, display_line(&tool).unwrap());
+        buffer.push(&msg2, display_line(&msg2).unwrap());
+        let flushed = buffer.drain();
+        assert_eq!(flushed, vec!["💬 我先搜一下", "⚙️ $ curl x"]);
+        // 最后一条 agent_message（最终回答）留在 deferred，随 run 结束丢弃，
+        // 完整内容由终态通知送达，流里不出现截断预览。
     }
 }
