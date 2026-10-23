@@ -62,6 +62,18 @@ services:
     volumes: *ru41-volumes
     command: ["--config", "/etc/ru41/ru41.toml", "--db", "/data/state.db", "chaoxing", "run"]
 
+  jwxt:
+    <<: *ru41-common
+    profiles: [jwxt]
+    volumes: *ru41-volumes
+    command: ["--config", "/etc/ru41/ru41.toml", "--db", "/data/state.db", "jwxt", "run"]
+
+  chaoxing-work:
+    <<: *ru41-common
+    profiles: [chaoxing]
+    volumes: *ru41-volumes
+    command: ["--config", "/etc/ru41/ru41.toml", "--db", "/data/state.db", "schedule", "run", "chaoxing-work"]
+
   todo:
     <<: *ru41-common
     profiles: [todo]
@@ -77,6 +89,21 @@ services:
       - "qq"
       - "--target"
       - "${RU41_TODO_NOTIFY_TARGET:?set RU41_TODO_NOTIFY_TARGET, e.g. user:openid}"
+
+  # 课程提醒（课前 20 分钟）：独立的 PollJob，启动时补发停机期间错过的课。
+  # 与 todo-remind 分离：todo 只管 todo，课程提醒走自己的调度。
+  class-remind:
+    <<: *ru41-common
+    profiles: [jwxt]
+    volumes: *ru41-volumes
+    command:
+      - "--config"
+      - "/etc/ru41/ru41.toml"
+      - "--db"
+      - "/data/state.db"
+      - schedule
+      - run
+      - class-remind
 
   # Obsidian 闭环：qq（/记一下）与 worker（执行整理任务）也需挂载 Vault。
   obsidian:

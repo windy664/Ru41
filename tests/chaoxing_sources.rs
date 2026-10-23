@@ -13,7 +13,10 @@ use axum::{
 };
 use ru41::{
     adapters::database::sqlite::SqliteTaskStore,
-    domain::{NotifyRoute, todo::{TodoItem, TodoStatus}},
+    domain::{
+        NotifyRoute,
+        todo::{TodoItem, TodoStatus},
+    },
     modules::chaoxing::{
         ChaoxingClient, ChaoxingConfig, ChaoxingSection, ChaoxingTracker, sign_type_name,
     },
@@ -614,7 +617,7 @@ async fn photo_sign_falls_back_to_builtin_photo() {
 }
 
 #[tokio::test]
-async fn qr_sign_requires_and_sends_enc() {
+async fn qr_sign_fabricates_enc_when_absent() {
     let state = Arc::new(FixtureState::new(pending_of_type(2, "二维码签到")));
     let addr = spawn_fixture(state.clone()).await;
     let dir = tempfile::tempdir().unwrap();
@@ -629,15 +632,30 @@ async fn qr_sign_requires_and_sends_enc() {
         None,
     );
 
-    // 缺 enc → 指引错误，不发出签到请求
-    let err = tracker
+    // 缺 enc → 平台不校验 enc 真实性，直接伪造一个 32 位大写十六进制签出去
+    let response = tracker
         .sign_manual("1001", None, None, None, None, None)
         .await
-        .unwrap_err();
-    assert!(err.to_string().contains("--enc"));
-    assert!(state.last_query.lock().unwrap().is_empty());
+        .unwrap();
+    assert_eq!(response, "success");
+    let query = state.last_query.lock().unwrap().clone();
+    let enc_start = query.find("enc=").expect("enc 参数存在") + 4;
+    let enc = &query[enc_start..enc_start + 32];
+    assert!(
+        enc.chars()
+            .all(|c| c.is_ascii_hexdigit() && !c.is_lowercase())
+    );
+    // 同一活动重复伪造结果稳定（uid+activeId 派生）
+    let response2 = tracker
+        .sign_manual("1001", None, None, None, None, None)
+        .await
+        .unwrap();
+    assert_eq!(response2, "success");
+    let query2 = state.last_query.lock().unwrap().clone();
+    let enc2_start = query2.find("enc=").expect("enc 参数存在") + 4;
+    assert_eq!(&query2[enc2_start..enc2_start + 32], enc);
 
-    // 带 enc → enc 与默认位置 blob 一起上报
+    // 显式 --enc 仍作为覆盖项
     let response = tracker
         .sign_manual("1001", None, None, None, Some("ENC123"), None)
         .await
@@ -769,8 +787,52 @@ async fn auto_sign_platform_reject_marks_and_never_retries() {
 }
 
 #[tokio::test]
-async fn auto_sign_skips_qr_and_asks_for_enc() {
+async fn auto_sign_qr_fabricates_enc_and_signs() {
     let state = Arc::new(FixtureState::new(pending_of_type(2, "二维码签到")));
+    let addr = spawn_fixture(state.clone()).await;
+    let dir = tempfile::tempdir().unwrap();
+    let store = Arc::new(SqliteTaskStore::open(&dir.path().join("state.db")).unwrap());
+    let channel = mock_channel();
+    let tracker = make_tracker_full(
+        store.clone(),
+        &format!("http://{addr}"),
+        dir.path().join("cookies.json"),
+        Some(channel.clone()),
+        None,
+        None,
+        true,
+    );
+
+    // 二维码不再卡住自动签：伪造 enc 当场签 → ✅ 回执
+    let report = tracker.poll_once().await.unwrap();
+    assert_eq!(report.auto_signed, 1);
+    assert_eq!(*state.presign_hits.lock().unwrap(), 0); // QR 不走 preSign
+    {
+        let sent = channel.sent.lock().unwrap();
+        assert_eq!(sent.len(), 1);
+        assert!(sent[0].contains("二维码签到"));
+        assert!(sent[0].contains("自动签到成功"));
+    }
+    let query = state.last_query.lock().unwrap().clone();
+    let enc_start = query.find("enc=").expect("enc 参数存在") + 4;
+    let enc = &query[enc_start..enc_start + 32];
+    assert!(
+        enc.chars()
+            .all(|c| c.is_ascii_hexdigit() && !c.is_lowercase())
+    );
+    let doc = store
+        .document("chaoxing_sign", "268129408#1001")
+        .unwrap()
+        .unwrap();
+    assert_eq!(doc.value["signed_via"], "auto");
+}
+
+/// 回归（2026-10-22 真实漏签）：activelist 的 type 字段恒为 2（=签到类），
+/// 种类只在 nameOne 文案里。手势签到曾是「type=2 被当二维码跳过」的死代码。
+#[tokio::test]
+async fn auto_sign_handles_gesture_with_real_payload_shape() {
+    // 真实形状：type=2 + nameOne=手势签到（今早 07:29 实际漏掉的那个）
+    let state = Arc::new(FixtureState::new(pending_of_type(2, "手势签到")));
     let addr = spawn_fixture(state.clone()).await;
     let dir = tempfile::tempdir().unwrap();
     let store = Arc::new(SqliteTaskStore::open(&dir.path().join("state.db")).unwrap());
@@ -785,15 +847,41 @@ async fn auto_sign_skips_qr_and_asks_for_enc() {
         true,
     );
 
-    // 二维码无法自动：不出签请求，回退 ⏰ 提醒并提示 --enc
+    // 手势按普通参数自动签（平台不校验额外参数），当场 ✅
     let report = tracker.poll_once().await.unwrap();
-    assert_eq!(report.auto_signed, 0);
-    assert_eq!(*state.presign_hits.lock().unwrap(), 0);
+    assert_eq!(report.auto_signed, 1);
+    assert_eq!(*state.presign_hits.lock().unwrap(), 1);
     assert_eq!(*state.upload_hits.lock().unwrap(), 0);
-    assert!(report.notified);
-    let sent = channel.sent.lock().unwrap();
-    assert!(sent[0].contains("⏰"));
-    assert!(sent[0].contains("--enc"));
+    assert!(channel.sent.lock().unwrap()[0].contains("手势签到"));
+    assert!(channel.sent.lock().unwrap()[0].contains("自动签到成功"));
+}
+
+/// 种类识别以 nameOne 文案为准，type 字段不可信。
+#[test]
+fn sign_kind_is_derived_from_platform_label_not_type_field() {
+    use ru41::modules::chaoxing::source::{ChaoxingActivity, ChaoxingSignKind};
+    let mk = |sign_type: i64, name_one: &str| ChaoxingActivity {
+        id: 1,
+        active_type: Some(2),
+        sign_type: Some(sign_type),
+        name_one: Some(name_one.into()),
+        start_time: None,
+        end_time: None,
+        status: Some(1),
+        user_status: Some(1),
+        attend_num: None,
+    };
+    // 关键对：同一 type=2，标签不同 → 种类不同（线上真实数据形状）
+    assert_eq!(mk(2, "手势签到").sign_kind(), ChaoxingSignKind::Gesture);
+    assert_eq!(mk(2, "二维码签到").sign_kind(), ChaoxingSignKind::Qr);
+    assert!(mk(2, "二维码签到").is_qr());
+    assert!(!mk(2, "手势签到").is_qr());
+    assert_eq!(mk(4, "位置签到").sign_kind(), ChaoxingSignKind::Location);
+    assert_eq!(mk(1, "拍照签到").sign_kind(), ChaoxingSignKind::Photo);
+    // 标签缺失时退回 type 字段的文档映射
+    let mut no_label = mk(3, "");
+    no_label.name_one = None;
+    assert_eq!(no_label.sign_kind(), ChaoxingSignKind::Gesture);
 }
 
 // ---- 作业监控 ----
@@ -858,7 +946,9 @@ impl ru41::ports::vault::Vault for WorkVault {
 /// 作业列表 HTML：一条可配置状态 + 一条已提交，详情直链指向 fixture 自身。
 fn work_list_html(addr: &SocketAddr, open_status: &str) -> String {
     let detail = |work_id: u32| {
-        format!("http://{addr}/mooc-ans/mooc2/work/task?courseId=268129408&classId=157361070&cpi=593022622&workId={work_id}&answerId=1&enc=abc")
+        format!(
+            "http://{addr}/mooc-ans/mooc2/work/task?courseId=268129408&classId=157361070&cpi=593022622&workId={work_id}&answerId=1&enc=abc"
+        )
     };
     let item = |work_id: u32, title: &str, status: &str| {
         format!(
@@ -875,7 +965,9 @@ fn work_list_html(addr: &SocketAddr, open_status: &str) -> String {
 }
 
 fn work_detail_html(end: &str) -> String {
-    format!("<div class=\"mark_name\">作业一</div><p>作答时间: 11-01 08:00 至 {end}</p><span>题量: 5</span><span>满分: 100</span>")
+    format!(
+        "<div class=\"mark_name\">作业一</div><p>作答时间: 11-01 08:00 至 {end}</p><span>题量: 5</span><span>满分: 100</span>"
+    )
 }
 
 fn make_work_tracker(
@@ -930,11 +1022,24 @@ fn seed_works(state: &FixtureState, addr: &SocketAddr, open_status: &str, end: &
     *state.work_detail_html.lock().unwrap() = work_detail_html(end);
 }
 
+/// 今天 + days 天的日期（YYYY.MM.DD）：vault 笔记名由截止日期生成，断言必须同时钟。
+fn due_date_compact(days: i64) -> String {
+    (chrono::Local::now() + chrono::Duration::days(days))
+        .format("%Y.%m.%d")
+        .to_string()
+}
+
+/// 今天 + days 天的截止时刻（MM-DD 23:59）：截止日期必须跟随时钟，硬编码日期会让测试随日历腐烂。
+fn due_in_days(days: i64) -> String {
+    let now = chrono::Local::now() + chrono::Duration::days(days);
+    now.format("%m-%d 23:59").to_string()
+}
+
 #[tokio::test]
 async fn work_poll_discovers_open_and_syncs_todo_and_vault() {
     let state = Arc::new(FixtureState::new(activities_pending_json()));
     let addr = spawn_fixture(state.clone()).await;
-    seed_works(&state, &addr, "未交", "11-03 23:59");
+    seed_works(&state, &addr, "未交", &due_in_days(5));
     let dir = tempfile::tempdir().unwrap();
     let store = Arc::new(SqliteTaskStore::open(&dir.path().join("state.db")).unwrap());
     let channel = mock_channel();
@@ -962,7 +1067,10 @@ async fn work_poll_discovers_open_and_syncs_todo_and_vault() {
     }
 
     // 快照与待办联动
-    let snap = store.document("chaoxing_work", "268129408#9001").unwrap().unwrap();
+    let snap = store
+        .document("chaoxing_work", "268129408#9001")
+        .unwrap()
+        .unwrap();
     assert_eq!(snap.value["status"], "未交");
     let todo_id = snap.value["todo_id"].as_str().unwrap().to_owned();
     let todo_doc = store.document("todo_item", &todo_id).unwrap().unwrap();
@@ -970,14 +1078,27 @@ async fn work_poll_discovers_open_and_syncs_todo_and_vault() {
     assert_eq!(item.source.unwrap().channel, "chaoxing");
     assert!(item.due_at.is_some());
 
-    // vault 文件：课程索引、作业说明、跨平台作业总表
-    let files = vault.files.lock().unwrap();
-    let note = files.get("学期/大学英语新视野/学习通作业.md").unwrap();
-    assert!(note.contains("## 未完成（1）"));
-    assert!(note.contains("[[2026.11.03_作业一：函数极限/作业说明|"));
-    assert!(files.contains_key("学期/大学英语新视野/2026.11.03_作业一：函数极限/作业说明.md"));
-    let dash = files.get("学期/作业总表.md").unwrap();
-    assert!(dash.contains("学习通｜大学英语新视野｜作业一：函数极限"));
+    // vault 文件：课程索引、作业说明、跨平台作业总表（锁守卫必须在本作用域释放）
+    {
+        let files = vault.files.lock().unwrap();
+        let note = files.get("学期/大学英语新视野/学习通作业.md").unwrap();
+        assert!(note.contains("## 未完成（1）"));
+        assert!(note.contains(&format!(
+            "[[{}_作业一：函数极限/作业说明|",
+            due_date_compact(5)
+        )));
+        assert!(
+            files.contains_key(
+                format!(
+                    "学期/大学英语新视野/{}_作业一：函数极限/作业说明.md",
+                    due_date_compact(5)
+                )
+                .as_str()
+            )
+        );
+        let dash = files.get("学期/作业总表.md").unwrap();
+        assert!(dash.contains("学习通｜大学英语新视野｜作业一：函数极限"));
+    }
 
     // 第二轮：同状态不再提醒
     let report = tracker.poll_once().await.unwrap();
@@ -991,7 +1112,7 @@ async fn work_due_soon_nags_once_daily() {
     let state = Arc::new(FixtureState::new(activities_pending_json()));
     let addr = spawn_fixture(state.clone()).await;
     // 今天 +2 天截止 → 进入临期窗口（due_days=3）
-    seed_works(&state, &addr, "未交", "10-22 23:59");
+    seed_works(&state, &addr, "未交", &due_in_days(2));
     let dir = tempfile::tempdir().unwrap();
     let store = Arc::new(SqliteTaskStore::open(&dir.path().join("state.db")).unwrap());
     let channel = mock_channel();
@@ -1023,7 +1144,7 @@ async fn work_due_soon_nags_once_daily() {
 async fn work_submitted_transition_completes_todo() {
     let state = Arc::new(FixtureState::new(activities_pending_json()));
     let addr = spawn_fixture(state.clone()).await;
-    seed_works(&state, &addr, "未交", "11-03 23:59");
+    seed_works(&state, &addr, "未交", &due_in_days(5));
     let dir = tempfile::tempdir().unwrap();
     let store = Arc::new(SqliteTaskStore::open(&dir.path().join("state.db")).unwrap());
     let channel = mock_channel();
@@ -1037,12 +1158,15 @@ async fn work_submitted_transition_completes_todo() {
 
     tracker.poll_once().await.unwrap();
     let todo_id = {
-        let snap = store.document("chaoxing_work", "268129408#9001").unwrap().unwrap();
+        let snap = store
+            .document("chaoxing_work", "268129408#9001")
+            .unwrap()
+            .unwrap();
         snap.value["todo_id"].as_str().unwrap().to_owned()
     };
 
     // 平台侧已交：快照更新 + 待办回勾 + ✅ 回执
-    seed_works(&state, &addr, "已提交", "11-03 23:59");
+    seed_works(&state, &addr, "已提交", &due_in_days(5));
     let report = tracker.poll_once().await.unwrap();
     assert_eq!(report.submitted, 1);
     assert!(channel.sent.lock().unwrap().last().unwrap().contains("✅"));

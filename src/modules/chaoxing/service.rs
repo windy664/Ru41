@@ -1,6 +1,6 @@
 use crate::app::todo::TodoService;
 use crate::ports::{channel::NotifyChannel, storage::TaskStore, vault::Vault};
-use anyhow::{Context, Result};
+use anyhow::Result;
 use chrono::TimeZone;
 use serde::Serialize;
 use std::sync::Arc;
@@ -20,7 +20,8 @@ pub struct ChaoxingConfig {
     pub interval_secs: u64,
     /// 提醒投递目标（装配层按 [notify] 渠道解析）。
     pub notify_target: String,
-    /// 自动签到：poll 发现待签活动时当场尝试（除二维码外全类型）。
+    /// 自动签到：poll 发现待签活动时当场尝试（全类型；二维码 enc 为伪造值，
+    /// 平台不校验真实性，被拒时打标记并回执）。
     pub auto_sign: bool,
     /// 默认位置（坐标 + 地址文本）：位置/二维码签到的坐标缺省来源。
     pub default_location: Option<(f64, f64, String)>,
@@ -190,11 +191,11 @@ impl ChaoxingTracker {
         enc: Option<&str>,
         photo_path: Option<&str>,
     ) -> Result<super::source::SignMethod> {
-        use super::source::SignMethod;
+        use super::source::{ChaoxingSignKind, SignMethod};
         let default = self.config.default_location.as_ref();
-        Ok(match activity.sign_type {
+        Ok(match activity.sign_kind() {
             // 位置：坐标与地址逐项回落到默认位置配置
-            Some(4) => {
+            ChaoxingSignKind::Location => {
                 let (dlat, dlon, daddr) = match default {
                     Some((lat, lon, addr)) => (Some(*lat), Some(*lon), Some(addr.clone())),
                     None => (None, None, None),
@@ -209,19 +210,19 @@ impl ChaoxingTracker {
                     ),
                 }
             }
-            // 二维码：enc 只能来自现场二维码内容
-            Some(2) => {
-                let enc = enc.context(format!(
-                    "二维码签到需要 --enc（现场扫二维码或扫照片得到的内容；{}）",
-                    "enc 会过期，过期需重新获取"
-                ))?;
+            // 二维码：平台不校验 enc 真实性（任何 32 位十六进制都收）——
+            // 没有现场 enc 就伪造一个，自动签不再被二维码卡住；--enc 仍是手动覆盖项。
+            ChaoxingSignKind::Qr => {
+                let enc = enc.map(str::to_owned).unwrap_or_else(|| {
+                    super::source::fabricated_enc(activity.id, &self.config.phone)
+                });
                 SignMethod::Qr {
-                    enc: enc.to_owned(),
+                    enc,
                     location: self.config.default_location.clone(),
                 }
             }
             // 拍照：--photo > 配置 photo_path > 内置兜底照片
-            Some(1) => {
+            ChaoxingSignKind::Photo => {
                 let path = match photo_path
                     .map(std::path::PathBuf::from)
                     .or_else(|| self.config.photo_path.clone())
@@ -231,8 +232,10 @@ impl ChaoxingTracker {
                 };
                 SignMethod::Photo { path }
             }
-            // 普通/手势/签到码及未知类型都走普通参数
-            _ => SignMethod::Normal,
+            // 普通/手势/签到码及未知类型都走普通参数（平台不校验额外参数）
+            ChaoxingSignKind::Normal | ChaoxingSignKind::Gesture | ChaoxingSignKind::Code => {
+                SignMethod::Normal
+            }
         })
     }
 
@@ -435,7 +438,7 @@ impl ChaoxingTracker {
                     // 待签活动：自动签开启则当场签（二维码除外，enc 只能现场获取）；
                     // 否则推送宿主，短窗口活动靠下一轮状态变迁收敛
                     if activity.is_pending() {
-                        if self.config.auto_sign && activity.sign_type != Some(2) {
+                        if self.config.auto_sign {
                             match self.try_auto_sign(course, &activity).await {
                                 AutoSignOutcome::Signed(line) => {
                                     auto_signed += 1;
@@ -452,8 +455,8 @@ impl ChaoxingTracker {
                                 format_ms(activity.end_time).unwrap_or_else(|| "未知".into()),
                                 activity.id,
                                 activity.id,
-                                if activity.sign_type == Some(2) {
-                                    "（需 `--enc`，enc 来自现场二维码）"
+                                if activity.is_qr() {
+                                    "（缺省伪造 enc；可 `--enc` 传真实值）"
                                 } else {
                                     ""
                                 },
@@ -472,7 +475,6 @@ impl ChaoxingTracker {
                 if self.config.auto_sign
                     && activity.is_pending()
                     && snapshot_user == Some(1)
-                    && activity.sign_type != Some(2)
                     && doc.value.get("auto_attempted").is_none()
                 {
                     match self.try_auto_sign(course, &activity).await {

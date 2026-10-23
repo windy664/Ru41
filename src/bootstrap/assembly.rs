@@ -20,6 +20,7 @@ use crate::{
         blog::{BlogPublishTracker, BlogSection},
         chaoxing::{ChaoxingClient, ChaoxingSection, ChaoxingTracker, ChaoxingWorkTracker},
         ecard::{EcardClient, EcardQqCommand, EcardSection, EcardTracker},
+        homework::HomeworkQqCommand,
         jwxt::{JwxtClient, JwxtQqCommand, JwxtSection, JwxtTracker},
         obsidian::ObsidianQqCommand,
         papers::{ArxivClient, ArxivSection, PaperTracker, PapersQqCommand},
@@ -66,8 +67,17 @@ pub fn qq_command_handlers(config: &Config, backend: &str) -> Result<Vec<Arc<dyn
                 .semester_start
                 .as_deref()
                 .and_then(|raw| chrono::NaiveDate::parse_from_str(raw.trim(), "%Y-%m-%d").ok()),
+            config.sources.jwxt.section_clock().ok().flatten(),
         )),
         Arc::new(TodoQqCommand::new(config.todo.options()?)),
+        // 跨平台聚合的 /作业 必须先于 ZhihuishuQqCommand 注册（first-match-wins）
+        Arc::new(HomeworkQqCommand::new(
+            config
+                .sources
+                .zhihuishu
+                .resolved(String::new())?
+                .report_path,
+        )),
         Arc::new(ZhihuishuQqCommand::new(
             config
                 .sources
@@ -242,6 +252,27 @@ pub fn jwxt_tracker(config: &Config, store: Arc<dyn TaskStore>) -> Result<JwxtTr
     )
     .with_browser_ua();
     Ok(JwxtTracker::new(store, client, notifier, resolved))
+}
+
+/// 由 [sources.jwxt] 配置组装课程提醒；依赖 jwxt 凭证（确认同步已开启）与全局通知出口。
+pub fn class_remind_tracker(
+    config: &Config,
+    store: Arc<dyn TaskStore>,
+) -> Result<crate::app::schedule::ClassRemindTracker> {
+    let jwxt = &config.sources.jwxt;
+    // 凭证校验：确保 jwxt 已配置（课表同步的前提是凭证可用）
+    jwxt.is_ready().then_some(()).context(
+        "class-remind requires sources.jwxt credentials (RU41_JWXT_USERNAME/RU41_JWXT_PASSWORD)",
+    )?;
+    let route = default_notify_route(config)?
+        .context("class-remind requires a default notify route ([notify] or --target)")?;
+    let notifier = default_notifier(config, &route.channel)?;
+    Ok(crate::app::schedule::ClassRemindTracker::new(
+        store,
+        notifier,
+        route,
+        config.todo.options()?,
+    ))
 }
 
 /// 由 [sources.zhihuishu] 配置组装智慧树作业提醒；报告文件由 zhihuishu-sidecar 产出。
@@ -445,7 +476,7 @@ pub fn scheduled_jobs(config: &Config) -> Vec<ScheduledJob> {
                     .unwrap_or(ChaoxingSection::DEFAULT_WORK_POLL_SECS),
             ),
             poll_command: "chaoxing work".into(),
-            run_command: "chaoxing work".into(),
+            run_command: "schedule run chaoxing-work".into(),
             enabled: sources.chaoxing.is_ready(),
             notes: (!sources.chaoxing.is_ready())
                 .then(|| "随 sources.chaoxing 凭证启用；作业轮询独立低频（默认 30 分钟）".into()),
@@ -533,6 +564,21 @@ pub fn scheduled_jobs(config: &Config) -> Vec<ScheduledJob> {
                 Some("需 [notify] 默认出口，或 schedule run --target 显式指定".into())
             },
         },
+        ScheduledJob {
+            module: "jwxt".into(),
+            name: "class-remind".into(),
+            interval_secs: Some(60), // 兜底轮询；精准睡眠按 fire_at 计算
+            poll_command: "class-remind poll".into(),
+            run_command: "schedule run class-remind".into(),
+            enabled: sources.jwxt.is_ready() && todo_route_ready,
+            notes: if !sources.jwxt.is_ready() {
+                Some("需 sources.jwxt 凭证（随 jwxt 启用）".into())
+            } else if !todo_route_ready {
+                Some("需 [notify] 默认出口，或 schedule run --target 显式指定".into())
+            } else {
+                Some("课前 20 分钟提醒；启动时补发停机期间错过的课".into())
+            },
+        },
     ]
 }
 
@@ -550,6 +596,7 @@ pub fn tracker_job(
         "chaoxing" => Box::new(chaoxing_tracker(config, store)?),
         "chaoxing-work" => Box::new(chaoxing_work_tracker(config, store)?),
         "jwxt" => Box::new(jwxt_tracker(config, store)?),
+        "class-remind" => Box::new(class_remind_tracker(config, store)?),
         "zhihuishu" => Box::new(zhihuishu_tracker(config, store)?),
         "obsidian" => Box::new(obsidian_service(config, store)?),
         "blog" => Box::new(blog_tracker(config, store)?),

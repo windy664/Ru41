@@ -52,6 +52,9 @@ impl ChaoxingSection {
     pub const DEFAULT_WORK_DUE_DAYS: i64 = 3;
     /// cookie 持久化路径默认值。
     pub const DEFAULT_COOKIE_PATH: &str = ".ru41/chaoxing/cookies.json";
+    /// Vault 学期目录默认值——必须与 sources.zhihuishu 的缺省一致，
+    /// 两个平台的作业才聚合到同一目录（作业总表.md 也落在这里）。
+    pub const DEFAULT_VAULT_COURSE_DIR: &str = "01-Courses-课程/2026-Fall-大一上";
 
     /// 由 [sources.chaoxing] 解析出运行时配置；默认值与凭证兜底只定义在这里。
     pub fn resolved(&self, notify_target: String) -> Result<ChaoxingConfig> {
@@ -93,7 +96,11 @@ impl ChaoxingSection {
             work_due_days: self.work_due_days.unwrap_or(Self::DEFAULT_WORK_DUE_DAYS),
             work_todo_sync: self.work_todo_sync.unwrap_or(true),
             work_vault_sync: self.work_vault_sync.unwrap_or(true),
-            vault_course_dir: self.vault_course_dir.clone(),
+            vault_course_dir: Some(
+                self.vault_course_dir
+                    .clone()
+                    .unwrap_or_else(|| Self::DEFAULT_VAULT_COURSE_DIR.into()),
+            ),
             vault_courses: self.vault_courses.clone().unwrap_or_default(),
         })
     }
