@@ -248,11 +248,13 @@ fn progress_text(doc: &crate::domain::records::Document, task: &Task) -> String 
             doc.value["error"].as_str().unwrap_or("未知错误")
         )
     } else {
+        let attempt = doc.value["attempt"]
+            .as_i64()
+            .or_else(|| doc.value["attempt_id"].as_i64())
+            .unwrap_or(1);
         format!(
             "▶️ 任务 `#{}` 开始执行（第 {} 次尝试 · 底座 `{}`）",
-            task.id,
-            doc.value["attempt_id"].as_i64().unwrap_or(1),
-            task.backend_id
+            task.id, attempt, task.backend_id
         )
     }
 }

@@ -121,6 +121,8 @@ impl Worker {
             &serde_json::json!({
                 "task_id": claim.task.id,
                 "attempt_id": claim.attempt_id,
+                // attempt_id 是全局 attempts 行号（会涨到几百），展示用 per-task 次数。
+                "attempt": claim.task.attempt_count,
                 "kind": "started",
                 "status": "pending",
                 "backend_id": claim.task.backend_id,

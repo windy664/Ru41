@@ -174,6 +174,12 @@ pub fn display_line(event: &serde_json::Value) -> Option<String> {
                 _ => None,
             }
         }
+        // 底座报错（如 provider 402/401）也进展示流：用户在 QQ 里能实时看到失败原因，
+        // 而不是等终态通知才看到一个干巴巴的「exit status: 1」。
+        Some("error") => {
+            let message = event.get("message").and_then(|v| v.as_str())?.trim();
+            (!message.is_empty()).then(|| format!("⚠️ {}", truncate(message, 140)))
+        }
         _ => None,
     }
 }
@@ -259,5 +265,19 @@ mod tests {
         .is_none());
         assert!(display_line(&event(r#"{"type":"turn.completed"}"#)).is_none());
         assert!(display_line(&event(r#"{"type":"thread.started"}"#)).is_none());
+    }
+
+    #[test]
+    fn maps_error_events_for_live_failure_visibility() {
+        let line = display_line(&event(
+            r#"{"type":"error","message":"unexpected status 402 Payment Required: Insufficient account balance"}"#,
+        ));
+        assert!(
+            line.as_deref()
+                .unwrap()
+                .starts_with("⚠️ unexpected status 402")
+        );
+        // 无消息字段的 error 不展示
+        assert!(display_line(&event(r#"{"type":"error"}"#)).is_none());
     }
 }
