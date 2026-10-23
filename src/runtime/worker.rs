@@ -244,16 +244,26 @@ impl Worker {
             Some(id) => self.store.document("conversation", id)?,
             None => None,
         };
+        // 会话续接按 底座+模型 双重匹配：换供应商/换模型后旧会话对供应商侧
+        // 不再有效（resume 会直接报错），不匹配就从头开始新会话。
+        // 旧文档没有 model 字段时视为不匹配（None != Some(model)）。
+        let current_model = agent.descriptor().model.clone();
         let resume_session_id = conversation.as_ref().and_then(|doc| {
-            if doc.value["backend_id"].as_str() == Some(claim.task.backend_id.as_str()) {
-                doc.value["session_id"]
-                    .as_str()
-                    .filter(|id| !id.is_empty())
-                    .map(str::to_owned)
-            } else {
-                None
+            let backend_match = doc.value["backend_id"].as_str() == Some(claim.task.backend_id.as_str());
+            let doc_model = doc
+                .value
+                .get("model")
+                .and_then(|v| v.as_str())
+                .map(str::to_owned);
+            if !backend_match || doc_model != current_model {
+                return None;
             }
+            doc.value["session_id"]
+                .as_str()
+                .filter(|id| !id.is_empty())
+                .map(str::to_owned)
         });
+        let resumed = resume_session_id.is_some();
         let run_id = format!("run-{}-{}", claim.task.id, claim.attempt_id);
         let request = AgentRequest {
             context: Some(crate::ports::agent::RunContext {
@@ -331,11 +341,28 @@ impl Worker {
         // 停活动流并等它 flush 完剩余行（丢弃 handle 会让最后的 chunk 丢失）。
         let _ = activity_stop.send(true);
         let _ = tokio::time::timeout(Duration::from_secs(6), stream_handle).await;
+        // 自愈：本次是续接旧会话且执行失败，说明供应商侧会话可能已失效
+        // （换 provider、会话过期等），清掉会话让下一条消息从头开始。
+        if outcome.is_err() && resumed {
+            if let Some(id) = &conversation_id
+                && let Ok(Some(doc)) = self.store.document("conversation", id)
+            {
+                let mut value = doc.value.clone();
+                value["session_id"] = serde_json::Value::Null;
+                if let Err(error) =
+                    self.store
+                        .put_document("conversation", id, Some(doc.revision), &value)
+                {
+                    eprintln!("[worker] conversation self-heal failed: {error:#}");
+                }
+            }
+        }
         let session_id = outcome?;
         if let (Some(id), Some(session)) = (&conversation_id, &session_id) {
             let record = serde_json::json!({
                 "backend_id": claim.task.backend_id,
                 "session_id": session,
+                "model": current_model,
             });
             let revision = conversation.as_ref().map(|doc| doc.revision);
             match self.store.put_document("conversation", id, revision, &record) {
