@@ -92,6 +92,61 @@ async fn rejects_nonzero_exit_bad_json_and_missing_completion() {
 }
 
 #[tokio::test]
+async fn cli_caps_probe_controls_ephemeral_and_ignore_user_config() {
+    let dir = tempfile::tempdir().unwrap();
+    let log = dir.path().join("args.log");
+    let make_fake = |name: &str, help_text: &str| {
+        let path = dir.path().join(name);
+        let script = format!(
+            r#"#!/bin/sh
+if [ "$1" = exec ] && [ "$2" = --help ]; then
+  printf '%s\n' '{help_text}'
+  exit 0
+fi
+printf '%s\n' "$@" > "{log}"
+output=''
+while [ "$#" -gt 0 ]; do
+  if [ "$1" = '--output-last-message' ]; then shift; output="$1"; fi
+  shift
+done
+cat > /dev/null
+echo '{{"type":"turn.completed"}}'
+printf '%s' '{{"summary":"ok"}}' > "$output"
+"#,
+            log = log.display()
+        );
+        std::fs::write(&path, script).unwrap();
+        std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o700)).unwrap();
+        path
+    };
+    // 新版 help 声明全部能力；旧版（如 0.80，用于 GLM chat 端点）没有后两个 flag。
+    let modern = make_fake("modern-codex", "--ephemeral --ignore-user-config --json");
+    let legacy = make_fake("legacy-codex", "--json");
+
+    for (bin, expect_modern) in [(modern, true), (legacy, false)] {
+        std::fs::remove_file(&log).ok();
+        let agent = CodexAgent {
+            executable: bin.clone(),
+            model: None,
+            config_overrides: Vec::new(),
+            output_schema: true,
+        };
+        agent.run(request(dir.path())).await.unwrap();
+        let args = std::fs::read_to_string(&log).unwrap();
+        assert_eq!(
+            args.contains("--ephemeral"),
+            expect_modern,
+            "bin={bin:?} args={args}"
+        );
+        assert_eq!(
+            args.contains("--ignore-user-config"),
+            expect_modern,
+            "bin={bin:?} args={args}"
+        );
+    }
+}
+
+#[tokio::test]
 async fn turn_failed_surfaces_provider_error_message() {
     let dir = tempfile::tempdir().unwrap();
     let body = r#"echo '{"type":"error","message":"Reconnecting... 5/5 (unexpected status 402 Payment Required: Insufficient account balance)"}'
