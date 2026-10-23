@@ -110,11 +110,8 @@ async fn dispatches_terminal_result_to_matching_channel_once() {
     assert_eq!(sent.len(), 1);
     assert_eq!(sent[0].0, "group:G1");
     assert_eq!(sent[0].1.as_deref(), Some("m1"));
-    // 终态回复带页脚：任务号、底座、尝试次数。
-    assert!(sent[0].2.starts_with("处理完成"));
-    assert!(sent[0].2.contains("任务 `#1`"), "text: {}", sent[0].2);
-    assert!(sent[0].2.contains("底座 `codex`"), "text: {}", sent[0].2);
-    assert!(sent[0].2.contains("尝试 1 次"), "text: {}", sent[0].2);
+    // 终态回复只有原生结果，不加脚手架页脚。
+    assert_eq!(sent[0].2, "处理完成");
     assert!(other.sent.lock().unwrap().is_empty());
 }
 

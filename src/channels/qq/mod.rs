@@ -261,7 +261,12 @@ impl QqBot {
             }
         }
         let receipt = self.ingest(event)?;
-        Ok(DispatchOutcome::Reply(receipt.notice().into()))
+        // 只有发生打断才即时回复；正常入队不再发接单回执，
+        // 用户直接看活动流（原生 codex 消息）即可。
+        if let Some(text) = receipt.interrupt_text() {
+            return Ok(DispatchOutcome::Reply(text.into()));
+        }
+        Ok(DispatchOutcome::Ingested)
     }
 
     /// 命令的即时被动回复；msg_seq 经共享序号器分配，与终态/进度通知不撞车。
@@ -440,36 +445,24 @@ impl QqBot {
     }
 }
 
-/// 消息入队后的即时回执：黑盒感的第一重消除——用户立刻知道消息变成了哪个任务。
+/// 消息入队后的回执：任务 id、是否新创建、打断数量。
+/// 默认不回执（用户直接看活动流）；只有打断时才需要即时说明。
 pub struct IngestReceipt {
     pub task_id: i64,
     pub created: bool,
     pub interrupted: usize,
-    /// 除本任务外仍在排队/执行的任务数。
+    /// 除本任务外仍在排队/执行的任务数（保留供 CLI/HTTP 复用）。
     pub ahead: usize,
 }
 
 impl IngestReceipt {
-    pub fn notice(&self) -> String {
-        let mut lines = String::new();
-        if self.interrupted > 0 {
-            lines.push_str(&format!(
-                "⏹ 已打断上一条未完成的任务（{} 个）\n",
+    /// 发生打断时的即时提示；正常入队返回 None（不回执）。
+    pub fn interrupt_text(&self) -> Option<String> {
+        (self.interrupted > 0).then(|| {
+            format!(
+                "⏹ 已打断上一条未完成的任务（{} 个）",
                 self.interrupted
-            ));
-        }
-        if self.created {
-            lines.push_str(&format!("✅ 已接单 `#{}`", self.task_id));
-            if self.ahead > 0 {
-                lines.push_str(&format!("（当前还有 {} 个任务在排队/执行）", self.ahead));
-            }
-            lines.push_str("\n> 开始执行和完成时都会通知你；中途可发 /任务 查看进度");
-        } else {
-            lines.push_str(&format!(
-                "ℹ️ 这条消息已在处理中（任务 `#{}`），不重复入队",
-                self.task_id
-            ));
-        }
-        lines
+            )
+        })
     }
 }
