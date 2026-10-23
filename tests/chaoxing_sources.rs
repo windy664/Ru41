@@ -60,6 +60,8 @@ struct FixtureState {
     login_ok: Mutex<bool>,
     activities: Mutex<String>,
     presign_hits: Mutex<usize>,
+    /// stuSignajax（实际签到请求）命中次数。
+    sign_hits: Mutex<usize>,
     /// stuSignajax 最后一次请求的 (activeId, latitude)。
     last_sign: Mutex<Option<(String, String)>>,
     /// stuSignajax 最后一次完整 query（enc/objectId/address 断言用）。
@@ -82,6 +84,7 @@ impl FixtureState {
             login_ok: Mutex::new(true),
             activities: Mutex::new(activities),
             presign_hits: Mutex::new(0),
+            sign_hits: Mutex::new(0),
             last_sign: Mutex::new(None),
             last_query: Mutex::new(String::new()),
             upload_hits: Mutex::new(0),
@@ -199,6 +202,7 @@ async fn spawn_fixture(state: Arc<FixtureState>) -> SocketAddr {
                         get("latitude").unwrap_or_default(),
                     ));
                     *state.last_query.lock().unwrap() = query.clone();
+                    *state.sign_hits.lock().unwrap() += 1;
                     state.sign_response.lock().unwrap().clone()
                 },
             ),
@@ -617,7 +621,7 @@ async fn photo_sign_falls_back_to_builtin_photo() {
 }
 
 #[tokio::test]
-async fn qr_sign_fabricates_enc_when_absent() {
+async fn qr_sign_requires_real_enc_or_photo() {
     let state = Arc::new(FixtureState::new(pending_of_type(2, "二维码签到")));
     let addr = spawn_fixture(state.clone()).await;
     let dir = tempfile::tempdir().unwrap();
@@ -632,30 +636,15 @@ async fn qr_sign_fabricates_enc_when_absent() {
         None,
     );
 
-    // 缺 enc → 平台不校验 enc 真实性，直接伪造一个 32 位大写十六进制签出去
-    let response = tracker
+    // 缺 enc → 拒签并指路图片通道（伪造 enc 已被平台证伪：2026-10-23 实测
+    // 「签到失败，请重新扫描。」）。enc 只在二维码图片里，自动签必须图片驱动。
+    let err = tracker
         .sign_manual("1001", None, None, None, None, None)
         .await
-        .unwrap();
-    assert_eq!(response, "success");
-    let query = state.last_query.lock().unwrap().clone();
-    let enc_start = query.find("enc=").expect("enc 参数存在") + 4;
-    let enc = &query[enc_start..enc_start + 32];
-    assert!(
-        enc.chars()
-            .all(|c| c.is_ascii_hexdigit() && !c.is_lowercase())
-    );
-    // 同一活动重复伪造结果稳定（uid+activeId 派生）
-    let response2 = tracker
-        .sign_manual("1001", None, None, None, None, None)
-        .await
-        .unwrap();
-    assert_eq!(response2, "success");
-    let query2 = state.last_query.lock().unwrap().clone();
-    let enc2_start = query2.find("enc=").expect("enc 参数存在") + 4;
-    assert_eq!(&query2[enc2_start..enc2_start + 32], enc);
+        .unwrap_err();
+    assert!(err.to_string().contains("二维码照片发给机器人"));
 
-    // 显式 --enc 仍作为覆盖项
+    // 显式 --enc（来自解出的真实二维码图片）走正常签到
     let response = tracker
         .sign_manual("1001", None, None, None, Some("ENC123"), None)
         .await
@@ -787,7 +776,7 @@ async fn auto_sign_platform_reject_marks_and_never_retries() {
 }
 
 #[tokio::test]
-async fn auto_sign_qr_fabricates_enc_and_signs() {
+async fn auto_sign_skips_qr_and_reminds_photo() {
     let state = Arc::new(FixtureState::new(pending_of_type(2, "二维码签到")));
     let addr = spawn_fixture(state.clone()).await;
     let dir = tempfile::tempdir().unwrap();
@@ -803,28 +792,24 @@ async fn auto_sign_qr_fabricates_enc_and_signs() {
         true,
     );
 
-    // 二维码不再卡住自动签：伪造 enc 当场签 → ✅ 回执
+    // 二维码不进自动签（enc 伪造被平台证伪）：推送⏰提醒并指路图片通道，
+    // 不发 sign 请求、不打「已尝试」标记（等用户把二维码照片发给机器人）。
     let report = tracker.poll_once().await.unwrap();
-    assert_eq!(report.auto_signed, 1);
-    assert_eq!(*state.presign_hits.lock().unwrap(), 0); // QR 不走 preSign
+    assert_eq!(report.auto_signed, 0);
+    assert_eq!(*state.presign_hits.lock().unwrap(), 0);
+    assert_eq!(*state.sign_hits.lock().unwrap(), 0);
     {
         let sent = channel.sent.lock().unwrap();
         assert_eq!(sent.len(), 1);
         assert!(sent[0].contains("二维码签到"));
-        assert!(sent[0].contains("自动签到成功"));
+        assert!(sent[0].contains("把二维码照片发给机器人"));
     }
-    let query = state.last_query.lock().unwrap().clone();
-    let enc_start = query.find("enc=").expect("enc 参数存在") + 4;
-    let enc = &query[enc_start..enc_start + 32];
-    assert!(
-        enc.chars()
-            .all(|c| c.is_ascii_hexdigit() && !c.is_lowercase())
-    );
     let doc = store
         .document("chaoxing_sign", "268129408#1001")
         .unwrap()
         .unwrap();
-    assert_eq!(doc.value["signed_via"], "auto");
+    assert!(doc.value.get("signed_via").is_none());
+    assert!(doc.value.get("auto_attempted").is_none());
 }
 
 /// 回归（2026-10-22 真实漏签）：activelist 的 type 字段恒为 2（=签到类），

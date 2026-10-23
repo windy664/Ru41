@@ -3,7 +3,8 @@ use clap::Parser;
 use ru41::bootstrap::agents::{AgentOverrides, registry};
 use ru41::bootstrap::assembly::{
     chaoxing_tracker, chaoxing_work_tracker, default_notify_route, jwxt_tracker,
-    notifier_for_route, notify_channels, qq_api, qq_command_handlers, scheduled_jobs,
+    notifier_for_route, notify_channels, qq_api, qq_command_handlers, qq_image_consumers,
+    scheduled_jobs,
     todo_notify_route, tracker_job,
 };
 use ru41::bootstrap::store::{open_store, resolve as resolve_store};
@@ -154,6 +155,7 @@ async fn main() -> Result<()> {
                 let api = Arc::new(qq_api(&credentials, &config)?);
                 let store = open_store(&store_config)?;
                 let command_handlers = qq_command_handlers(&config, &backend)?;
+                let image_consumers = qq_image_consumers(&config)?;
                 // 回执与终态/进度通知共享序号器，同 msg_id 被动回复 seq 不撞车。
                 let sequencer = Arc::new(ReplySequencer::default());
                 let bot = QqBot {
@@ -162,6 +164,7 @@ async fn main() -> Result<()> {
                     backend,
                     bind_secret,
                     command_handlers,
+                    image_consumers,
                     sequencer: sequencer.clone(),
                 };
                 let dispatcher = NotifyDispatcher {
@@ -517,6 +520,30 @@ async fn run_todo_remind_loop(
     let options = config.todo.options()?;
     let route = todo_notify_route(config, channel, target)?;
     let notifier = notifier_for_route(config, &route)?;
+
+    // 启动补发：进程停机期间错过的课程提醒，合并成一条消息发出。
+    {
+        let events = ScheduleService::new(service.store().clone(), options);
+        match ru41::app::schedule::send_missed_class_reminders(
+            &events,
+            notifier.as_ref(),
+            &route,
+            options,
+        )
+        .await
+        {
+            Ok((count, sent)) if sent => {
+                println!(
+                    "{}",
+                    serde_json::to_string(&serde_json::json!({"missed_classes": count}))?
+                );
+            }
+            Ok(_) => {}
+            Err(error) => eprintln!("[todo-remind] missed-class catch-up failed: {error:#}"),
+        }
+    }
+
+    // 到点提醒循环：只发 todo 到点。课程提醒走独立的 class-remind 任务（schedule run class-remind）。
     let service_ref = service;
     let notifier_ref = notifier;
     ru41::ingress::schedule::run_periodic(
@@ -524,20 +551,11 @@ async fn run_todo_remind_loop(
         Duration::from_secs(interval_secs),
         move || {
             let service = service_ref;
-            let events = ScheduleService::new(service.store().clone(), options);
             let notifier = notifier_ref.clone();
             let route = route.clone();
             async move {
                 let todo_report = ru41::app::todo::send_due_reminders(
                     service,
-                    notifier.as_ref(),
-                    &route,
-                    options,
-                )
-                .await?;
-                // 同一循环顺带发送行程到点提醒；任一失败让本轮报错下轮重试。
-                ru41::app::schedule::send_event_reminders(
-                    &events,
                     notifier.as_ref(),
                     &route,
                     options,

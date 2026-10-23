@@ -86,6 +86,16 @@ impl MarkupButton {
     }
 }
 
+/// 图片消息消费者：业务模块自行下载图片并判断归属，返回 Some(回执文本)
+/// 表示该消息已按图片语义处理完毕（不再进命令/Agent 通道）；返回 None
+/// 表示与己无关，消息继续走原有通道。渠道适配器本身不认识具体业务。
+pub trait ImageConsumer: Send + Sync {
+    fn handle_image<'a>(
+        &'a self,
+        image_url: &'a str,
+    ) -> Pin<Box<dyn Future<Output = Option<String>> + Send + 'a>>;
+}
+
 /// 渠道扩展命令：由业务模块实现、装配层注册，渠道适配器本身不认识具体业务。
 /// 返回 Ok(None) 表示不拦截（如参数非法），消息继续按自然语言入队给 Agent。
 pub trait CommandHandler: Send + Sync {

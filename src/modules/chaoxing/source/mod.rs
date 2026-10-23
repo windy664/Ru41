@@ -8,5 +8,5 @@ mod parse;
 pub use client::ChaoxingClient;
 pub use model::{
     ChaoxingActivity, ChaoxingCourse, ChaoxingWork, ChaoxingSignKind, CourseEncs, SignMethod,
-    fabricated_enc, fallback_photo_bytes,
+    fallback_photo_bytes,
 };

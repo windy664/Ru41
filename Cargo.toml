@@ -20,7 +20,6 @@ rusqlite = { version = "0.40", features = ["bundled"] }
 aes-gcm = "0.10"
 aes = "0.8"
 cbc = { version = "0.1", features = ["alloc"] }
-md-5 = "0.10"
 url = "2"
 base64 = "0.22"
 qrcode = "0.14"
@@ -38,6 +37,8 @@ tempfile = "3"
 axum = { version = "0.8", features = ["json", "tokio", "http1"] }
 quick-xml = "0.42.0"
 chrono = { version = "0.4", default-features = false, features = ["std", "clock"] }
+rqrr = "0.11.0"
+image = { version = "0.25.10", default-features = false, features = ["png", "jpeg"] }
 
 [target.'cfg(unix)'.dependencies]
 libc = "0.2"

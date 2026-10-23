@@ -18,7 +18,10 @@ use crate::{
     },
     modules::{
         blog::{BlogPublishTracker, BlogSection},
-        chaoxing::{ChaoxingClient, ChaoxingSection, ChaoxingTracker, ChaoxingWorkTracker},
+        chaoxing::{
+            ChaoxingClient, ChaoxingQrSigner, ChaoxingSection, ChaoxingTracker,
+            ChaoxingWorkTracker,
+        },
         ecard::{EcardClient, EcardQqCommand, EcardSection, EcardTracker},
         homework::HomeworkQqCommand,
         jwxt::{JwxtClient, JwxtQqCommand, JwxtSection, JwxtTracker},
@@ -28,7 +31,12 @@ use crate::{
         rss::{RssSection, RssTracker},
         zhihuishu::{ZhihuishuQqCommand, ZhihuishuSection, ZhihuishuTracker},
     },
-    ports::{channel::NotifyChannel, commands::CommandHandler, storage::TaskStore, vault::Vault},
+    ports::{
+        channel::NotifyChannel,
+        commands::{CommandHandler, ImageConsumer},
+        storage::TaskStore,
+        vault::Vault,
+    },
 };
 use anyhow::{Context, Result};
 use std::sync::Arc;
@@ -52,8 +60,7 @@ pub fn notify_channels(
 }
 
 /// 注册各业务模块提供的 QQ 扩展命令；这是唯一同时认识 QQ 与业务模块的位置。
-pub fn qq_command_handlers(config: &Config, backend: &str) -> Result<Vec<Arc<dyn CommandHandler>>> {
-    let mut handlers: Vec<Arc<dyn CommandHandler>> = vec![
+pub fn qq_command_handlers(config: &Config, backend: &str) -> Result<Vec<Arc<dyn CommandHandler>>> {    let mut handlers: Vec<Arc<dyn CommandHandler>> = vec![
         Arc::new(PapersQqCommand::new(
             ArxivClient::new(),
             config.sources.arxiv.interests.clone().unwrap_or_default(),
@@ -96,6 +103,26 @@ pub fn qq_command_handlers(config: &Config, backend: &str) -> Result<Vec<Arc<dyn
         )));
     }
     Ok(handlers)
+}
+
+/// QQ 图片消费者装配：学习通二维码照片签到（把二维码图片发给机器人即签）。
+/// [sources.chaoxing] 未配置齐时返回空，消息全部走原有通道。
+pub fn qq_image_consumers(config: &Config) -> Result<Vec<Arc<dyn ImageConsumer>>> {
+    let mut consumers: Vec<Arc<dyn ImageConsumer>> = Vec::new();
+    if config.sources.chaoxing.is_ready() {
+        let cfg = config.sources.chaoxing.resolved(String::new())?;
+        // 与签到轮询各用一份 cookie 文件，避免两进程争写同一会话文件。
+        let client = ChaoxingClient::new(
+            cfg.phone.clone(),
+            cfg.password.clone(),
+            cfg.cookie_path.with_extension("qr.json"),
+        );
+        consumers.push(Arc::new(ChaoxingQrSigner::new(
+            client,
+            cfg.default_location.clone(),
+        )));
+    }
+    Ok(consumers)
 }
 
 /// 飞书 webhook URL：环境变量 RU41_FEISHU_WEBHOOK_URL > 配置文件；空串视为未配置。

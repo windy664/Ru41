@@ -547,6 +547,7 @@ fn c2c_new_message_interrupts_unfinished_tasks_same_conversation() {
         backend: "codex".into(),
         bind_secret: None,
         command_handlers: vec![],
+        image_consumers: vec![],
         sequencer: Arc::new(ru41::channels::qq::ReplySequencer::default()),
     };
     let c2c = |msg_id: &str, content: &str| GatewayEvent::C2cMessage {
