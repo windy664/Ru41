@@ -1,7 +1,36 @@
 use anyhow::{Context, Result};
 use serde::Deserialize;
 
-use super::service::ChaoxingConfig;
+/// 学习通签到监控运行时配置（由 ChaoxingSection::resolved 解析产出）。
+#[derive(Debug, Clone)]
+pub struct ChaoxingConfig {
+    pub phone: String,
+    pub password: String,
+    /// 会话 cookie 持久化路径。
+    pub cookie_path: std::path::PathBuf,
+    pub interval_secs: u64,
+    /// 提醒投递目标（装配层按 [notify] 渠道解析）。
+    pub notify_target: String,
+    /// 自动签到：poll 发现待签活动时当场尝试（全类型；二维码 enc 为伪造值，
+    /// 平台不校验真实性，被拒时打标记并回执）。
+    pub auto_sign: bool,
+    /// 默认位置（坐标 + 地址文本）：位置/二维码签到的坐标缺省来源。
+    pub default_location: Option<(f64, f64, String)>,
+    /// 拍照签到默认照片路径；未配置且命令行未给 --photo 时用内置兜底照片。
+    pub photo_path: Option<std::path::PathBuf>,
+    /// 作业轮询间隔（秒）。
+    pub work_poll_secs: u64,
+    /// 截止前 N 天开始临期提醒。
+    pub work_due_days: i64,
+    /// 未交作业自动进待办、平台已交自动回勾。
+    pub work_todo_sync: bool,
+    /// 作业清单同步进 Obsidian 课程目录 + 跨平台作业总表。
+    pub work_vault_sync: bool,
+    /// Vault 内课程所在学期目录；None 表示不落 vault。
+    pub vault_course_dir: Option<String>,
+    /// 学习通课程名 → Vault 课程目录名映射。
+    pub vault_courses: std::collections::BTreeMap<String, String>,
+}
 
 /// 学习通签到监控配置；chaoxing poll/run/sign 使用。
 #[derive(Debug, Default, Deserialize)]

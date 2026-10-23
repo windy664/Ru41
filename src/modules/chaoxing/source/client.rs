@@ -1,10 +1,10 @@
-//! 学习通（超星）协议客户端：登录、课程列表、签到活动、手动签到。
-//!
-//! 协议为纯 HTTP（无浏览器、无验证码路径），端点经社区多项目长期验证：
-//! 登录 `fanyalogin`（AES-CBC 加密账密）、课程列表 `courselistdata`（HTML），
-//! 活动列表与签到在 mobilelearn 域（JSON / GET 参数）。会话 cookie 持久化到
-//! 本地文件，轮询时校验复用，失效才重登录（降频保号）。
+//! 学习通 HTTP 协议客户端：登录（AES）、会话 cookie 持久化、
+//! 课程/活动/签到/云盘传图/作业列表抓取。
 
+use super::model::{
+    ChaoxingActivity, ChaoxingCourse, ChaoxingWork, CourseEncs, SignMethod,
+};
+use super::parse::{capture, decode_course_list, parse_work_deadline, parse_work_list};
 use anyhow::{Context, Result, bail};
 use base64::Engine;
 use cbc::cipher::{BlockEncryptMut, KeyIvInit};
@@ -24,180 +24,14 @@ const PAN_UPLOAD_PATH: &str = "/upload";
 const STU_COURSE_MIDDLE_PATH: &str = "/visit/stucoursemiddle";
 const WORK_LIST_PATH: &str = "/mooc2/work/list";
 
+const AES_KEY: &[u8; 16] = b"u2oh6Vu^HWe4_AES";
+type Aes128CbcEnc = cbc::Encryptor<aes::Aes128>;
+
 const PASSPORT_BASE: &str = "https://passport2.chaoxing.com";
 const MOOC_BASE: &str = "https://mooc2-ans.chaoxing.com";
 const MOBILELEARN_BASE: &str = "https://mobilelearn.chaoxing.com";
 const PAN_BASE: &str = "https://pan-yz.chaoxing.com";
 const MOOC1_BASE: &str = "https://mooc1.chaoxing.com";
-
-/// 内置兜底签到照片（与远端 cxsign 曾用图为同一张，平台已验证可用）。
-/// 仅在未配置 `photo_path` 且命令行未给 `--photo` 时使用。
-pub fn fallback_photo_bytes() -> &'static [u8] {
-    include_bytes!("assets/black.jpg")
-}
-
-/// 签到方式：统一走 stuSignajax，类型差异只体现在参数填充上。
-#[derive(Debug, Clone, PartialEq)]
-pub enum SignMethod {
-    /// 普通 / 手势 / 签到码（平台不校验额外参数）。
-    Normal,
-    /// 位置签到：经纬度 + 地址文本（address 参数，教师端可见）。
-    Location { lat: f64, lon: f64, addr: String },
-    /// 二维码签到：enc 为现场二维码内容里的时效 token，过期需重新扫。
-    /// location 为可选的坐标/地址（随 location JSON 参数上报）。
-    Qr {
-        enc: String,
-        location: Option<(f64, f64, String)>,
-    },
-    /// 拍照签到：path 为本地照片文件，先传云盘换 objectId 再签。
-    Photo { path: PathBuf },
-}
-
-/// 课程上下文令牌（stucoursemiddle 服务端渲染的隐藏域），作业列表鉴权三件套。
-#[derive(Debug, Clone, PartialEq)]
-pub struct CourseEncs {
-    /// 页面通用 enc（stuenc 伴随参数）。
-    pub enc: String,
-    pub openc: String,
-    /// 作业 tab 专用 enc——必须用它而非页面 enc，否则「无权限」。
-    pub work_enc: String,
-}
-
-/// 作业条目（mooc2/work/list 的 li[data] 项）。
-#[derive(Debug, Clone, PartialEq)]
-pub struct ChaoxingWork {
-    pub work_id: String,
-    pub title: String,
-    /// 平台原话状态：未交/已提交/待批阅/待互评/已完成/已过期。
-    pub status: String,
-    /// 详情页直链（带独立 enc）；拉截止时间用。
-    pub detail_url: String,
-}
-
-impl ChaoxingWork {
-    /// 是否仍未交（状态含「未」：未交/未提交）。
-    pub fn is_open(&self) -> bool {
-        self.status.contains('未')
-    }
-}
-
-/// 登录接口的 AES-128-CBC key/iv（社区通用公开值，非机密）。
-const AES_KEY: &[u8; 16] = b"u2oh6Vu^HWe4_AES";
-
-type Aes128CbcEnc = cbc::Encryptor<aes::Aes128>;
-
-/// 学习通课程（courselistdata HTML 中 div.course 块）。
-#[derive(Debug, Clone, PartialEq)]
-pub struct ChaoxingCourse {
-    pub course_id: String,
-    pub clazz_id: String,
-    pub cpi: String,
-    pub title: String,
-    pub teacher: String,
-}
-
-/// 伪造二维码签到 enc：平台对 enc 不做真实性校验（任何 32 位十六进制都收），
-/// 用 uid+activityId 派生一个稳定的假 token，形状对齐真实 enc（32 位大写十六进制）。
-pub fn fabricated_enc(activity_id: i64, uid: &str) -> String {
-    use md5::{Digest, Md5};
-    let mut hasher = Md5::new();
-    hasher.update(uid.as_bytes());
-    hasher.update(b":");
-    hasher.update(activity_id.to_string().as_bytes());
-    let digest = hasher.finalize();
-    digest
-        .iter()
-        .map(|b| format!("{:02X}", b))
-        .collect::<Vec<_>>()
-        .join("")
-}
-
-/// 签到活动（activelist JSON 条目，camelCase）。
-#[derive(Debug, Clone, PartialEq, Deserialize)]
-#[serde(rename_all = "camelCase")]
-pub struct ChaoxingActivity {
-    pub id: i64,
-    /// 2 = 签到类活动。
-    #[serde(default)]
-    pub active_type: Option<i64>,
-    /// 签到子类型：0普通 1拍照 2二维码 3手势 4位置 5签到码。
-    #[serde(rename = "type", default)]
-    pub sign_type: Option<i64>,
-    /// 平台类型标签，如「二维码签到」。
-    #[serde(default)]
-    pub name_one: Option<String>,
-    #[serde(default)]
-    pub start_time: Option<i64>,
-    #[serde(default)]
-    pub end_time: Option<i64>,
-    /// 1 = 进行中，2 = 已结束。
-    #[serde(default)]
-    pub status: Option<i64>,
-    /// 1 = 未签到。
-    #[serde(default)]
-    pub user_status: Option<i64>,
-    #[serde(default)]
-    pub attend_num: Option<i64>,
-}
-
-impl ChaoxingActivity {
-    pub fn is_sign(&self) -> bool {
-        self.active_type == Some(2)
-    }
-    /// 进行中且本人未签，需要提醒/动手。
-    pub fn is_pending(&self) -> bool {
-        self.is_sign() && self.status == Some(1) && self.user_status == Some(1)
-    }
-    /// 签到种类。以平台标签 nameOne 文案为准——实测 activelist 的 type 字段
-    /// 恒为 2（与 activeType 同义，指「签到类活动」），并不区分子类型；
-    /// nameOne 缺失时才退回 type 字段的文档映射。
-    pub fn sign_kind(&self) -> ChaoxingSignKind {
-        let label = self.name_one.as_deref().unwrap_or_default();
-        if label.contains("二维码") {
-            return ChaoxingSignKind::Qr;
-        }
-        if label.contains("手势") {
-            return ChaoxingSignKind::Gesture;
-        }
-        if label.contains("位置") {
-            return ChaoxingSignKind::Location;
-        }
-        if label.contains("拍照") {
-            return ChaoxingSignKind::Photo;
-        }
-        if label.contains("签到码") {
-            return ChaoxingSignKind::Code;
-        }
-        match self.sign_type {
-            Some(1) => ChaoxingSignKind::Photo,
-            Some(2) => ChaoxingSignKind::Qr,
-            Some(3) => ChaoxingSignKind::Gesture,
-            Some(4) => ChaoxingSignKind::Location,
-            Some(5) => ChaoxingSignKind::Code,
-            _ => ChaoxingSignKind::Normal,
-        }
-    }
-    /// 二维码是唯一不能远程自动签的：enc 是现场二维码内容里的时效 token。
-    pub fn is_qr(&self) -> bool {
-        self.sign_kind() == ChaoxingSignKind::Qr
-    }
-    pub fn type_label(&self) -> String {
-        self.name_one
-            .clone()
-            .unwrap_or_else(|| super::service::sign_type_name(self.sign_type).to_owned())
-    }
-}
-
-/// 签到子类型（识别自 nameOne 文案，见 `sign_kind`）。
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum ChaoxingSignKind {
-    Normal,
-    Gesture,
-    Location,
-    Photo,
-    Qr,
-    Code,
-}
 
 #[derive(Debug, Deserialize)]
 struct LoginResponse {
@@ -780,75 +614,7 @@ impl ChaoxingClient {
     }
 }
 
-/// 解析作业列表页：li[data=详情直链] + 标题 + 状态。
-fn parse_work_list(html: &str) -> Vec<ChaoxingWork> {
-    let re_li =
-        regex::Regex::new(r#"(?s)<li[^>]*data="([^"]+)"[^>]*>(.*?)</li>"#).expect("li regex");
-    let re_title = regex::Regex::new(r#"class="overHidden2[^"]*">([^<]+)<"#).expect("title regex");
-    let re_status = regex::Regex::new(r#"class="status[^"]*">([^<]+)<"#).expect("status regex");
-    let re_id = regex::Regex::new(r"[?&]workId=(\d+)").expect("workId regex");
-    let mut out = Vec::new();
-    for cap in re_li.captures_iter(html) {
-        let (url, body) = (&cap[1], &cap[2]);
-        let Some(work_id) = re_id.captures(url).map(|c| c[1].to_owned()) else {
-            continue;
-        };
-        out.push(ChaoxingWork {
-            work_id,
-            title: re_title
-                .captures(body)
-                .map(|c| c[1].trim().to_owned())
-                .unwrap_or_else(|| "未命名作业".into()),
-            status: re_status
-                .captures(body)
-                .map(|c| c[1].trim().to_owned())
-                .unwrap_or_else(|| "未知".into()),
-            detail_url: url.replace("&amp;", "&"),
-        });
-    }
-    out
-}
 
-/// 从详情页提取截止时间，归一化为 "YYYY-MM-DD HH:MM"。
-/// 平台渲染「作答时间: MM-DD HH:MM 至 MM-DD HH:MM」（缺年份）；
-/// 跨年按「距今不超过 180 天的最近未来」补年。
-fn parse_work_deadline(html: &str, now: i64) -> Option<String> {
-    // 全格式（含年份）
-    if let Some(end) = capture(
-        html,
-        r"作答时间[^<]*?\d{4}-\d{2}-\d{2} \d{2}:\d{2}[^<]*?至[^<]*?(\d{4}-\d{2}-\d{2} \d{2}:\d{2})",
-    ) {
-        return Some(end);
-    }
-    // 缺年份变体：按「距今不超过 180 天的最近合理年份」补全
-    let end = capture(
-        html,
-        r"作答时间[^<]*?\d{2}-\d{2} \d{2}:\d{2}[^<]*?至[^<]*?(\d{2}-\d{2} \d{2}:\d{2})",
-    )?;
-    let year = infer_deadline_year(now, &end)?;
-    Some(format!("{year}-{end}"))
-}
-
-/// 把 "MM-DD HH:MM" 补全到距今 180 天内的最近年份。
-fn infer_deadline_year(now: i64, end_mmdd: &str) -> Option<i32> {
-    use chrono::Datelike;
-    let today = chrono::DateTime::from_timestamp(now, 0)?.date_naive();
-    let current = today.year();
-    for year in [current, current + 1, current - 1] {
-        // end_mmdd 形如 "MM-DD HH:MM"，只取前 5 位日期
-        let Ok(date) =
-            chrono::NaiveDate::parse_from_str(&format!("{year}-{}", &end_mmdd[..5]), "%Y-%m-%d")
-        else {
-            continue;
-        };
-        if (-180..=180).contains(&(date - today).num_days()) {
-            return Some(year);
-        }
-    }
-    None
-}
-
-/// 学习通登录参数加密：AES-128-CBC（key=iv）+ PKCS7 + base64。
 fn cx_encrypt(plaintext: &str) -> String {
     let encrypted =
         Aes128CbcEnc::new(AES_KEY.into(), AES_KEY.into())
@@ -859,45 +625,7 @@ fn cx_encrypt(plaintext: &str) -> String {
 /// 解析 courselistdata 返回的课程列表 HTML。
 /// 按协议库（BeautifulSoup 选择器）语义做分块正则提取；页面改版会集中体现在此函数。
 /// 真实页面的课程块形如 class="course clearfix learnCourse stu_157361070"，
-/// 因此按「class 列表以 course 开头」分块（不会误切 course-cover 等子元素）。
-fn decode_course_list(html: &str) -> Vec<ChaoxingCourse> {
-    let re_div = regex::Regex::new(r#"<div class="course(?: [^"]*)?""#).expect("course div regex");
-    let mut courses = Vec::new();
-    for chunk in re_div.split(html).skip(1) {
-        if chunk.contains("not-open-tip") {
-            continue;
-        }
-        let Some(course_id) = capture(chunk, r#"name="courseId"\s+value="(\d+)""#) else {
-            continue;
-        };
-        let Some(clazz_id) = capture(chunk, r#"name="clazzId"\s+value="(\d+)""#) else {
-            continue;
-        };
-        let Some(cpi) = capture(chunk, r#"cpi=(\d+)&"#) else {
-            continue;
-        };
-        let Some(title) = capture(chunk, r#"class="course-name[^"]*"[^>]*title="([^"]+)""#) else {
-            continue;
-        };
-        let teacher =
-            capture(chunk, r#"class="[^"]*color3[^"]*"[^>]*title="([^"]*)""#).unwrap_or_default();
-        courses.push(ChaoxingCourse {
-            course_id,
-            clazz_id,
-            cpi,
-            title,
-            teacher,
-        });
-    }
-    courses
-}
 
-fn capture(text: &str, pattern: &str) -> Option<String> {
-    let re = regex::Regex::new(pattern).ok()?;
-    re.captures(text)?.get(1).map(|m| m.as_str().to_owned())
-}
-
-/// 只在测试中做 AES 向量比对，保证与参考实现字节级一致。
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -906,43 +634,6 @@ mod tests {
     fn encrypt_matches_reference_vectors() {
         assert_eq!(cx_encrypt("15322883180"), "M6ccj1g5qPxp7tsBQ44/6g==");
         assert_eq!(cx_encrypt("test-password"), "xZ9dYlVASzFVINL+G69JXA==");
-    }
-
-    #[test]
-    fn decode_course_list_skips_not_open() {
-        let html = r#"<div class="course" id="c1">
-            <input type="hidden" name="clazzId" value="111" class="clazzId">
-            <input type="hidden" name="courseId" value="222" class="courseId">
-            <a href="https://x.chaoxing.com/learn?cpi=333&x=1"></a>
-            <span class="course-name" title="高等数学I(理)">高等数学I(理)</span>
-            <p class="color3" title="张老师">张老师</p>
-        </div>
-        <div class="course" id="c2">
-            <a class="not-open-tip"></a>
-            <input type="hidden" name="clazzId" value="444" class="clazzId">
-            <input type="hidden" name="courseId" value="555" class="courseId">
-            <a href="https://x.chaoxing.com/learn?cpi=666&x=1"></a>
-            <span class="course-name" title="未开放课">未开放课</span>
-        </div>"#;
-        let courses = decode_course_list(html);
-        assert_eq!(courses.len(), 1);
-        assert_eq!(courses[0].course_id, "222");
-        assert_eq!(courses[0].clazz_id, "111");
-        assert_eq!(courses[0].cpi, "333");
-        assert_eq!(courses[0].title, "高等数学I(理)");
-        assert_eq!(courses[0].teacher, "张老师");
-    }
-
-    #[test]
-    fn parse_activity_json() {
-        let raw = r#"{"userStatus":1,"nameOne":"二维码签到","attendNum":57,
-            "activeType":2,"type":2,"startTime":1792135761000,"id":1000174332257,
-            "endTime":1792135881000,"status":2,"unknown_field":true}"#;
-        let a: ChaoxingActivity = serde_json::from_str(raw).unwrap();
-        assert_eq!(a.id, 1000174332257);
-        assert!(a.is_sign());
-        assert!(!a.is_pending());
-        assert_eq!(a.type_label(), "二维码签到");
     }
 
     #[test]
