@@ -361,11 +361,12 @@ impl ru41::ports::interaction::InteractionHandler for NoInteractions {
 #[tokio::test]
 async fn resumes_native_codex_session_for_conversation() {
     let dir = tempfile::tempdir().unwrap();
+    // 假 codex 不在 help 里声明 --output-last-message（旧版，如 0.80）：
+    // resume 不得传该 flag，最终消息改从事件流的 agent_message 提取。
     let bin = executable(
         dir.path(),
         r#"
-printf '%s\n' '{"type":"thread.started","thread_id":"thread-abc"}' '{"type":"turn.completed"}'
-printf '%s' 'resumed' > "$output"
+printf '%s\n' '{"type":"thread.started","thread_id":"thread-abc"}' '{"type":"item.completed","item":{"type":"agent_message","text":"resumed"}}' '{"type":"turn.completed"}'
 "#,
     );
     let agent = CodexAgent {
@@ -401,6 +402,55 @@ printf '%s' 'resumed' > "$output"
     let args = std::fs::read_to_string(dir.path().join("run/received-args.txt")).unwrap();
     let argv: Vec<&str> = args.lines().collect();
     assert_eq!(&argv[..3], &["exec", "resume", "thread-abc"]);
+    assert!(!argv.contains(&"--output-last-message"));
     assert!(!argv.contains(&"--ephemeral"));
     assert!(!argv.contains(&"--color"));
+}
+
+#[tokio::test]
+async fn modern_resume_keeps_output_last_message_flag() {
+    let dir = tempfile::tempdir().unwrap();
+    let bin = dir.path().join("modern-codex");
+    std::fs::write(
+        &bin,
+        r#"#!/bin/sh
+if [ "$1" = exec ] && [ "$2" = --help ]; then
+  printf '%s\n' '--ephemeral' '--ignore-user-config' '--json'
+  exit 0
+fi
+if [ "$1" = exec ] && [ "$2" = resume ] && [ "$3" = --help ]; then
+  printf '%s\n' '--json' '--output-last-message'
+  exit 0
+fi
+printf '%s\n' "$@" > received-args.txt
+output=''
+while [ "$#" -gt 0 ]; do
+  if [ "$1" = '--output-last-message' ]; then shift; output="$1"; fi
+  shift
+done
+cat > input.txt
+printf '%s\n' '{"type":"thread.started","thread_id":"thread-abc"}' '{"type":"turn.completed"}'
+printf '%s' 'resumed-from-file' > "$output"
+"#,
+    )
+    .unwrap();
+    std::fs::set_permissions(&bin, std::fs::Permissions::from_mode(0o700)).unwrap();
+    let agent = CodexAgent {
+        config_overrides: Vec::new(),
+        output_schema: false,
+        executable: bin,
+        model: None,
+    };
+    let mut request = request(dir.path());
+    request.context = Some(ru41::ports::agent::RunContext {
+        run_id: "run-1".into(),
+        interactions: std::sync::Arc::new(NoInteractions),
+        conversation_id: Some("qq:user:U1".into()),
+        resume_session_id: Some("thread-abc".into()),
+        skills: vec![],
+    });
+    let output = agent.run(request).await.unwrap();
+    assert_eq!(output.result.summary, "resumed-from-file");
+    let args = std::fs::read_to_string(dir.path().join("run/received-args.txt")).unwrap();
+    assert!(args.contains("--output-last-message"));
 }

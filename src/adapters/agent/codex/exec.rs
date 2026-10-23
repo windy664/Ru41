@@ -23,11 +23,35 @@ pub fn version_with(executable: &std::path::Path) -> Result<String> {
 
 /// 底座 CLI 的可选能力：新版 codex（≥0.16x）移除了 wire_api="chat" 支持，
 /// 需要用旧版（如 0.80）对接只提供 chat 兼容端点的供应商（智谱 GLM coding plan）。
-/// 旧版同时缺少 --ephemeral / --ignore-user-config，按探测结果条件传参。
-#[derive(Clone, Copy, Default)]
+/// 旧版同时缺少 --ephemeral / --ignore-user-config，且 resume 子命令不支持
+/// --output-last-message，按探测结果条件传参、并从事件流提取最终消息。
+#[derive(Clone, Copy)]
 struct CliCaps {
     ephemeral: bool,
     ignore_user_config: bool,
+    resume_output_last_message: bool,
+}
+
+impl Default for CliCaps {
+    fn default() -> Self {
+        Self {
+            ephemeral: false,
+            ignore_user_config: false,
+            // 探测失败时假定现代版本，保持既有 resume 行为。
+            resume_output_last_message: true,
+        }
+    }
+}
+
+fn help_text(executable: &Path, args: &[&str]) -> Option<String> {
+    let out = Command::new(executable)
+        .args(args)
+        // 探测不得继承 stdin（假脚本可能 cat 等输入），也不得污染调用方目录。
+        .stdin(std::process::Stdio::null())
+        .current_dir("/")
+        .output()
+        .ok()?;
+    Some(String::from_utf8_lossy(&out.stdout).into_owned())
 }
 
 fn cli_caps(executable: &Path) -> CliCaps {
@@ -40,20 +64,17 @@ fn cli_caps(executable: &Path) -> CliCaps {
             return *caps;
         }
     }
-    let caps = Command::new(executable)
-        .args(["exec", "--help"])
-        // 探测不得继承 stdin（假脚本可能 cat 等输入），也不得污染调用方目录。
-        .stdin(std::process::Stdio::null())
-        .current_dir("/")
-        .output()
-        .map(|out| {
-            let text = String::from_utf8_lossy(&out.stdout);
-            CliCaps {
-                ephemeral: text.contains("--ephemeral"),
-                ignore_user_config: text.contains("--ignore-user-config"),
-            }
-        })
-        .unwrap_or_default();
+    let caps = match (
+        help_text(executable, &["exec", "--help"]),
+        help_text(executable, &["exec", "resume", "--help"]),
+    ) {
+        (Some(exec_help), Some(resume_help)) => CliCaps {
+            ephemeral: exec_help.contains("--ephemeral"),
+            ignore_user_config: exec_help.contains("--ignore-user-config"),
+            resume_output_last_message: resume_help.contains("--output-last-message"),
+        },
+        _ => CliCaps::default(),
+    };
     let mut guard = CACHE.lock().unwrap_or_else(|e| e.into_inner());
     guard
         .get_or_insert_with(Default::default)
@@ -118,7 +139,6 @@ impl CodexAgent {
         }
         let schema = request.run_dir.join("result.schema.json");
         let output_file = request.run_dir.join("result.json");
-        tokio::fs::write(&schema, r#"{"type":"object","properties":{"summary":{"type":"string"}},"required":["summary"],"additionalProperties":false}"#).await?;
         let skills = request
             .context
             .as_ref()
@@ -133,6 +153,11 @@ impl CodexAgent {
             });
         let resuming = resume_session_id.is_some();
         let caps = cli_caps(&self.executable);
+        // 旧版 resume 子命令不支持 --output-last-message：改从事件流提取最终消息。
+        let use_output_file = !resuming || caps.resume_output_last_message;
+        if use_output_file && self.output_schema {
+            tokio::fs::write(&schema, r#"{"type":"object","properties":{"summary":{"type":"string"}},"required":["summary"],"additionalProperties":false}"#).await?;
+        }
         let mut cmd = tokio::process::Command::new(&self.executable);
         cmd.current_dir(&request.run_dir).arg("exec");
         if let Some(session_id) = resume_session_id {
@@ -153,13 +178,14 @@ impl CodexAgent {
         if !persistent && caps.ephemeral {
             cmd.arg("--ephemeral");
         }
-        cmd.arg("--output-last-message")
-            .arg(&output_file)
-            .stdin(Stdio::piped())
+        if use_output_file {
+            cmd.arg("--output-last-message").arg(&output_file);
+        }
+        cmd.stdin(Stdio::piped())
             .stdout(Stdio::piped())
             .stderr(Stdio::piped())
             .kill_on_drop(true);
-        if self.output_schema {
+        if use_output_file && self.output_schema {
             cmd.arg("--output-schema").arg(&schema);
         }
         if let Some(model) = &self.model {
@@ -234,24 +260,35 @@ impl CodexAgent {
             };
             return Err(Ru41Error::AgentProcess(message.into()).into());
         }
-        // 即使子进程产出畸形的超大文件，也做有界读取。
-        let file = tokio::fs::File::open(&output_file)
-            .await
-            .context("Codex did not create a final result")?;
-        let mut bytes = Vec::new();
-        file.take(131_073).read_to_end(&mut bytes).await?;
-        anyhow::ensure!(bytes.len() <= 131_072, "Codex result exceeds size limit");
-        let result: AgentResult = if self.output_schema {
-            serde_json::from_slice(&bytes)
-                .map_err(|e| Ru41Error::InvalidOutput(format!("invalid Codex result JSON: {e}")))?
+        let result: AgentResult = if use_output_file {
+            // 即使子进程产出畸形的超大文件，也做有界读取。
+            let file = tokio::fs::File::open(&output_file)
+                .await
+                .context("Codex did not create a final result")?;
+            let mut bytes = Vec::new();
+            file.take(131_073).read_to_end(&mut bytes).await?;
+            anyhow::ensure!(bytes.len() <= 131_072, "Codex result exceeds size limit");
+            if self.output_schema {
+                serde_json::from_slice(&bytes).map_err(|e| {
+                    Ru41Error::InvalidOutput(format!("invalid Codex result JSON: {e}"))
+                })?
+            } else {
+                AgentResult {
+                    summary: String::from_utf8(bytes)
+                        .map_err(|e| {
+                            Ru41Error::InvalidOutput(format!("invalid Codex result UTF-8: {e}"))
+                        })?
+                        .trim()
+                        .to_owned(),
+                }
+            }
         } else {
             AgentResult {
-                summary: String::from_utf8(bytes)
-                    .map_err(|e| {
-                        Ru41Error::InvalidOutput(format!("invalid Codex result UTF-8: {e}"))
-                    })?
-                    .trim()
-                    .to_owned(),
+                summary: final_message_from_events(&events).ok_or_else(|| {
+                    Ru41Error::InvalidOutput(
+                        "resumed Codex run produced no agent message in events".into(),
+                    )
+                })?,
             }
         };
         super::ensure_tool_calls_executed(&result.summary)?;
@@ -263,6 +300,27 @@ impl CodexAgent {
             session_id: thread_id,
         })
     }
+}
+
+/// 从事件字节里提取最后一条 agent_message（旧版 resume 没有 --output-last-message
+/// 时的最终消息来源）。
+fn final_message_from_events(events: &[u8]) -> Option<String> {
+    let mut last = None;
+    for line in events.split(|b| *b == b'\n').filter(|l| !l.is_empty()) {
+        let Ok(event) = serde_json::from_slice::<serde_json::Value>(line) else {
+            continue;
+        };
+        if event.get("type").and_then(|v| v.as_str()) != Some("item.completed") {
+            continue;
+        }
+        let item = event.get("item")?;
+        if item.get("type").and_then(|v| v.as_str()) == Some("agent_message")
+            && let Some(text) = item.get("text").and_then(|v| v.as_str())
+        {
+            last = Some(text.trim().to_owned());
+        }
+    }
+    last.filter(|text| !text.is_empty())
 }
 
 /// 从事件字节里提取最有信息量的底座错误（turn.failed 优先，其次最后一条 error），
