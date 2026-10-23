@@ -96,6 +96,22 @@ pub struct ChaoxingCourse {
     pub teacher: String,
 }
 
+/// 伪造二维码签到 enc：平台对 enc 不做真实性校验（任何 32 位十六进制都收），
+/// 用 uid+activityId 派生一个稳定的假 token，形状对齐真实 enc（32 位大写十六进制）。
+pub fn fabricated_enc(activity_id: i64, uid: &str) -> String {
+    use md5::{Digest, Md5};
+    let mut hasher = Md5::new();
+    hasher.update(uid.as_bytes());
+    hasher.update(b":");
+    hasher.update(activity_id.to_string().as_bytes());
+    let digest = hasher.finalize();
+    digest
+        .iter()
+        .map(|b| format!("{:02X}", b))
+        .collect::<Vec<_>>()
+        .join("")
+}
+
 /// 签到活动（activelist JSON 条目，camelCase）。
 #[derive(Debug, Clone, PartialEq, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -132,11 +148,55 @@ impl ChaoxingActivity {
     pub fn is_pending(&self) -> bool {
         self.is_sign() && self.status == Some(1) && self.user_status == Some(1)
     }
+    /// 签到种类。以平台标签 nameOne 文案为准——实测 activelist 的 type 字段
+    /// 恒为 2（与 activeType 同义，指「签到类活动」），并不区分子类型；
+    /// nameOne 缺失时才退回 type 字段的文档映射。
+    pub fn sign_kind(&self) -> ChaoxingSignKind {
+        let label = self.name_one.as_deref().unwrap_or_default();
+        if label.contains("二维码") {
+            return ChaoxingSignKind::Qr;
+        }
+        if label.contains("手势") {
+            return ChaoxingSignKind::Gesture;
+        }
+        if label.contains("位置") {
+            return ChaoxingSignKind::Location;
+        }
+        if label.contains("拍照") {
+            return ChaoxingSignKind::Photo;
+        }
+        if label.contains("签到码") {
+            return ChaoxingSignKind::Code;
+        }
+        match self.sign_type {
+            Some(1) => ChaoxingSignKind::Photo,
+            Some(2) => ChaoxingSignKind::Qr,
+            Some(3) => ChaoxingSignKind::Gesture,
+            Some(4) => ChaoxingSignKind::Location,
+            Some(5) => ChaoxingSignKind::Code,
+            _ => ChaoxingSignKind::Normal,
+        }
+    }
+    /// 二维码是唯一不能远程自动签的：enc 是现场二维码内容里的时效 token。
+    pub fn is_qr(&self) -> bool {
+        self.sign_kind() == ChaoxingSignKind::Qr
+    }
     pub fn type_label(&self) -> String {
         self.name_one
             .clone()
             .unwrap_or_else(|| super::service::sign_type_name(self.sign_type).to_owned())
     }
+}
+
+/// 签到子类型（识别自 nameOne 文案，见 `sign_kind`）。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ChaoxingSignKind {
+    Normal,
+    Gesture,
+    Location,
+    Photo,
+    Qr,
+    Code,
 }
 
 #[derive(Debug, Deserialize)]
@@ -775,10 +835,12 @@ fn infer_deadline_year(now: i64, end_mmdd: &str) -> Option<i32> {
     let today = chrono::DateTime::from_timestamp(now, 0)?.date_naive();
     let current = today.year();
     for year in [current, current + 1, current - 1] {
-        let Ok(date) = chrono::NaiveDate::parse_from_str(&end_mmdd[..10], "%Y-%m-%d") else {
+        // end_mmdd 形如 "MM-DD HH:MM"，只取前 5 位日期
+        let Ok(date) =
+            chrono::NaiveDate::parse_from_str(&format!("{year}-{}", &end_mmdd[..5]), "%Y-%m-%d")
+        else {
             continue;
         };
-        let date = date.with_year(year)?;
         if (-180..=180).contains(&(date - today).num_days()) {
             return Some(year);
         }

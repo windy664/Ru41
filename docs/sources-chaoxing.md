@@ -35,6 +35,32 @@ ru41 chaoxing sign 1000174332257 --enc "XXXX"        # 二维码签到（enc 来
 ru41 chaoxing sign 1000174332257 --photo ~/me.jpg    # 拍照签到（缺省用 photo_path 配置）
 ```
 
+## 作业监控（chaoxing-work，独立低频任务）
+
+纯 Rust 直采（无 sidecar），与签到共用登录会话和 cookie：
+
+```
+stucoursemiddle（进课）→ 提取 enc/openc/workEnc 三件套
+  → mooc2/work/list（enc 必须用 workEnc，t/stuenc 伴随）
+  → 未交作业才拉详情页 work/task 取截止时间（请求预算控制）
+```
+
+- 轮询间隔默认 1800s（`work_poll_secs`），与签到 60s 是两个独立调度任务
+- records kind `chaoxing_work`（key `{courseId}#{workId}`）快照去重；
+  临期/过期每日最多提醒一次（kind `chaoxing_work_alert`）
+- 新作业提醒一次；未交→已交变迁 → ✅ 回执并自动回勾待办（`work_todo_sync`，默认开）
+- **Obsidian 聚合**（`work_vault_sync`，默认开）：每课写 `学习通作业.md` 课程索引 +
+  `{截止日}_{作业名}/作业说明.md`（结构与智慧树同构），并聚合两平台快照写学期级
+  `作业总表.md`；`vault_course_dir` 缺省与 zhihuishu 相同学期目录，`vault_courses`
+  映射跨平台同名课程到同一目录。后续新作业平台按同一结构接入。
+- 红线：作业只提醒/跟踪/归档，不做自动作答（自动答题=代写）
+- QQ 查询：`/作业` 是跨平台聚合命令（`modules/homework`），学习通 records 快照 +
+  智慧树 sidecar 报告合并出一张清单；注册顺序保证它先于单平台 handler 命中。
+
+```bash
+ru41 chaoxing work     # 采集一轮作业并按需提醒/同步（cron 友好）
+```
+
 ## 数据模型与幂等键
 
 - records kind `chaoxing_sign`，key `{courseId}#{activityId}`：活动快照

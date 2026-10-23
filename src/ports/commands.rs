@@ -131,6 +131,8 @@ pub struct CommandContext<'a> {
     pub author_openid: &'a str,
     /// 是否单聊；只有单聊且已绑定时才聚合该用户跨会话的任务。
     pub is_c2c: bool,
+    /// 消息里的图片附件 URL（如二维码照片）；纯文本消息为 None。
+    pub image_url: Option<&'a str>,
     /// 渠道标识（如 "qq"），由渠道适配器注入，模块内不得手写。
     pub reply_channel: &'a str,
 }
