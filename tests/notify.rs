@@ -274,6 +274,95 @@ async fn dispatches_retry_progress_with_reason() {
     );
 }
 
+/// 活动流 chunk 按序送达会话；任务终态后剩余 chunk 直接消化。
+#[tokio::test]
+async fn dispatches_activity_chunks_in_order() {
+    let dir = tempfile::tempdir().unwrap();
+    let route = NotifyRoute {
+        channel: "qq".into(),
+        target: "user:U1".into(),
+        msg_id: Some("m1".into()),
+    };
+    let store: Arc<dyn TaskStore> =
+        Arc::new(SqliteTaskStore::open(&dir.path().join("state.db")).unwrap());
+    let task = store
+        .enqueue_with_notify("qq:msg:m1", "hello", "codex", RunContract::AnalysisV1, &route)
+        .unwrap()
+        .task;
+    let claim = store.claim("worker", 100, 30).unwrap().unwrap();
+    for (seq, lines) in [
+        (0, vec!["💭 先分析需求"]),
+        (1, vec!["⚙️ $ ls -la", "💬 目录如下"]),
+    ] {
+        store
+            .put_document(
+                "activity",
+                &format!("run-1-1-a{seq:03}"),
+                None,
+                &serde_json::json!({
+                    "task_id": task.id,
+                    "attempt_id": claim.attempt_id,
+                    "run_id": "run-1-1",
+                    "seq": seq,
+                    "lines": lines,
+                    "status": "pending",
+                }),
+            )
+            .unwrap();
+    }
+    let qq = Arc::new(MockChannel {
+        id: "qq",
+        ..Default::default()
+    });
+    let d = dispatcher(store.clone(), vec![qq.clone()]);
+    assert_eq!(d.run_once().await.unwrap(), 2);
+    assert_eq!(d.run_once().await.unwrap(), 0);
+    let sent = qq.sent.lock().unwrap();
+    assert_eq!(sent.len(), 2);
+    assert_eq!(sent[0].2, "💭 先分析需求");
+    assert_eq!(sent[1].2, "⚙️ $ ls -la\n💬 目录如下");
+    let doc = store.document("activity", "run-1-1-a000").unwrap().unwrap();
+    assert_eq!(doc.value["status"], "sent");
+}
+
+/// 任务终态后残留的 activity chunk 不再补发。
+#[tokio::test]
+async fn stale_activity_for_terminal_task_is_skipped() {
+    let dir = tempfile::tempdir().unwrap();
+    let route = NotifyRoute {
+        channel: "qq".into(),
+        target: "user:U1".into(),
+        msg_id: Some("m1".into()),
+    };
+    let store = store_with_terminal_task(&dir, route);
+    store
+        .put_document(
+            "activity",
+            "run-1-1-a000",
+            None,
+            &serde_json::json!({
+                "task_id": 1,
+                "attempt_id": 1,
+                "run_id": "run-1-1",
+                "seq": 0,
+                "lines": ["💭 迟到的事件"],
+                "status": "pending",
+            }),
+        )
+        .unwrap();
+    let qq = Arc::new(MockChannel {
+        id: "qq",
+        ..Default::default()
+    });
+    let d = dispatcher(store.clone(), vec![qq.clone()]);
+    assert_eq!(d.run_once().await.unwrap(), 1);
+    let sent = qq.sent.lock().unwrap();
+    assert_eq!(sent.len(), 1);
+    assert!(sent[0].2.starts_with("处理完成"));
+    let doc = store.document("activity", "run-1-1-a000").unwrap().unwrap();
+    assert_eq!(doc.value["status"], "done");
+}
+
 /// 任务已终态时 started 进度不再补发，直接消化。
 #[tokio::test]
 async fn stale_progress_for_terminal_task_is_skipped() {

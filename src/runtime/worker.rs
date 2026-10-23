@@ -252,9 +252,10 @@ impl Worker {
                 None
             }
         });
+        let run_id = format!("run-{}-{}", claim.task.id, claim.attempt_id);
         let request = AgentRequest {
             context: Some(crate::ports::agent::RunContext {
-                run_id: format!("run-{}-{}", claim.task.id, claim.attempt_id),
+                run_id: run_id.clone(),
                 interactions: Arc::new(crate::app::interactions::InteractionService {
                     store: self.store.clone(),
                 }),
@@ -263,51 +264,85 @@ impl Worker {
                 skills: self.backends.skills.clone(),
             }),
             prompt,
-            run_dir,
+            run_dir: run_dir.clone(),
             contract: claim.task.contract,
         };
+        // 活动流推送器：尾随底座的 events.jsonl，把执行过程实时写进 store，
+        // QQ 网关的通知循环扫描后发回会话（像正常使用 codex 那样可见）。
+        let (activity_stop, activity_stop_rx) = watch::channel(false);
+        let streamer = crate::runtime::activity::ActivityStreamer {
+            store: self.store.clone(),
+            run_id: run_id.clone(),
+            task_id: claim.task.id,
+            attempt_id: claim.attempt_id,
+            path: run_dir.join("events.jsonl"),
+            interval: Duration::from_secs(4),
+            max_chunks: 40,
+        };
+        let stream_handle = tokio::spawn(async move { streamer.run(activity_stop_rx).await });
         let execution = agent.run(request);
         tokio::pin!(execution);
         let timeout = tokio::time::sleep(self.config.timeout);
         tokio::pin!(timeout);
         let mut poll = tokio::time::interval(Duration::from_secs(1));
         poll.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
-        loop {
+        // loop/break 结构：所有退出路径统一在循环外停掉活动流，避免泄漏推送任务。
+        let outcome: Result<Option<String>> = loop {
             tokio::select! {
                 biased;
-                _ = shutdown.changed() => anyhow::bail!("worker shutting down"),
-                _ = &mut timeout => return Err(Ru41Error::Timeout.into()),
+                _ = shutdown.changed() => break Err(anyhow::anyhow!("worker shutting down")),
+                _ = &mut timeout => break Err(Ru41Error::Timeout.into()),
                 _ = poll.tick() => {
-                    ensure!(!*shutdown.borrow(), "worker shutting down");
-                    ensure!(self.store.heartbeat(claim, now(), self.config.lease_secs)?, "task cancelled or lease lost");
+                    if *shutdown.borrow() {
+                        break Err(anyhow::anyhow!("worker shutting down"));
+                    }
+                    match self.store.heartbeat(claim, now(), self.config.lease_secs) {
+                        Ok(true) => {}
+                        Ok(false) => break Err(anyhow::anyhow!("task cancelled or lease lost")),
+                        Err(error) => break Err(error),
+                    }
                 }
                 result = &mut execution => {
-                    let output = result?;
-                    // 回填真值后再校验落库，库里与渠道通知都是真实内容。
-                    let output = AgentOutput {
-                        result: AgentResult {
-                            summary: self.sanitizer.restore(&output.result.summary, &mapping),
-                        },
-                        session_id: output.session_id,
-                    };
-                    output.result.validate().map_err(Ru41Error::InvalidOutput)?;
-                    ensure!(self.store.succeed(claim, &output.result, output.session_id.as_deref(), now())?, "task cancelled or lease lost before commit");
-                    if let (Some(id), Some(session)) = (&conversation_id, &output.session_id) {
-                        let record = serde_json::json!({
-                            "backend_id": claim.task.backend_id,
-                            "session_id": session,
-                        });
-                        let revision = conversation.as_ref().map(|doc| doc.revision);
-                        match self.store.put_document("conversation", id, revision, &record) {
-                            Ok(true) => {}
-                            Ok(false) => eprintln!("[worker] conversation state update conflict"),
-                            Err(error) => eprintln!("[worker] conversation state update failed: {error:#}"),
+                    match result {
+                        Ok(output) => {
+                            // 回填真值后再校验落库，库里与渠道通知都是真实内容。
+                            let output = AgentOutput {
+                                result: AgentResult {
+                                    summary: self.sanitizer.restore(&output.result.summary, &mapping),
+                                },
+                                session_id: output.session_id,
+                            };
+                            if let Err(error) = output.result.validate() {
+                                break Err(Ru41Error::InvalidOutput(error).into());
+                            }
+                            match self.store.succeed(claim, &output.result, output.session_id.as_deref(), now()) {
+                                Ok(true) => break Ok(output.session_id),
+                                Ok(false) => break Err(anyhow::anyhow!("task cancelled or lease lost before commit")),
+                                Err(error) => break Err(error),
+                            }
                         }
+                        Err(error) => break Err(error),
                     }
-                    return Ok(output.session_id);
                 }
             }
+        };
+        // 停活动流并等它 flush 完剩余行（丢弃 handle 会让最后的 chunk 丢失）。
+        let _ = activity_stop.send(true);
+        let _ = tokio::time::timeout(Duration::from_secs(6), stream_handle).await;
+        let session_id = outcome?;
+        if let (Some(id), Some(session)) = (&conversation_id, &session_id) {
+            let record = serde_json::json!({
+                "backend_id": claim.task.backend_id,
+                "session_id": session,
+            });
+            let revision = conversation.as_ref().map(|doc| doc.revision);
+            match self.store.put_document("conversation", id, revision, &record) {
+                Ok(true) => {}
+                Ok(false) => eprintln!("[worker] conversation state update conflict"),
+                Err(error) => eprintln!("[worker] conversation state update failed: {error:#}"),
+            }
         }
+        Ok(session_id)
     }
 }
 

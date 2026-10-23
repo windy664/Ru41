@@ -16,10 +16,10 @@ pub struct NotifyDispatcher {
 }
 
 impl NotifyDispatcher {
-    /// 处理一批终态通知与进度通知，返回成功送达的总数。
+    /// 处理一批终态通知、进度通知与活动流 chunk，返回成功送达的总数。
     pub async fn run_once(&self) -> Result<usize> {
         let sent = self.dispatch_terminal().await?;
-        Ok(sent + self.dispatch_progress().await?)
+        Ok(sent + self.dispatch_progress().await? + self.dispatch_activity().await?)
     }
 
     /// 终态任务通知：成功用结果摘要（带页脚），失败带原因。
@@ -101,13 +101,13 @@ impl NotifyDispatcher {
                 continue;
             }
             let Some(task_id) = doc.value["task_id"].as_i64() else {
-                self.mark_progress(&doc, "invalid")?;
+                self.mark_doc("progress", &doc, "invalid")?;
                 continue;
             };
             let task = match self.store.get(task_id)? {
                 Some(task) => task,
                 None => {
-                    self.mark_progress(&doc, "orphan")?;
+                    self.mark_doc("progress", &doc, "orphan")?;
                     continue;
                 }
             };
@@ -117,11 +117,11 @@ impl NotifyDispatcher {
                 TaskStatus::Succeeded | TaskStatus::Failed | TaskStatus::Cancelled
             );
             let Some(route) = &task.notify else {
-                self.mark_progress(&doc, "done")?;
+                self.mark_doc("progress", &doc, "done")?;
                 continue;
             };
             if terminal {
-                self.mark_progress(&doc, "done")?;
+                self.mark_doc("progress", &doc, "done")?;
                 continue;
             }
             let Some(channel) = self
@@ -139,7 +139,7 @@ impl NotifyDispatcher {
             .await;
             match result {
                 Ok(Ok(())) => {
-                    if self.mark_progress(&doc, "sent")? {
+                    if self.mark_doc("progress", &doc, "sent")? {
                         sent += 1;
                     }
                 }
@@ -149,15 +149,82 @@ impl NotifyDispatcher {
         Ok(sent)
     }
 
-    fn mark_progress(
+    /// 活动流 chunk：worker 从底座 events.jsonl 翻译过来的执行过程（💬💭⚙️🔍），
+    /// 逐 chunk 发回原会话，让用户像看 codex 终端一样看到 agent 在做什么。
+    /// 任务已终态时剩余 chunk 直接消化，不打断终态结果。
+    async fn dispatch_activity(&self) -> Result<usize> {
+        let docs = self.store.documents("activity", self.batch)?;
+        let mut sent = 0;
+        for doc in docs {
+            if doc.value["status"] != "pending" {
+                continue;
+            }
+            let Some(task_id) = doc.value["task_id"].as_i64() else {
+                self.mark_doc("activity", &doc, "invalid")?;
+                continue;
+            };
+            let Some(task) = self.store.get(task_id)? else {
+                self.mark_doc("activity", &doc, "orphan")?;
+                continue;
+            };
+            let Some(route) = &task.notify else {
+                self.mark_doc("activity", &doc, "done")?;
+                continue;
+            };
+            // 终态收口后不再补发流式过程，避免晚到的 chunk 盖过最终结果。
+            let terminal = matches!(
+                task.status,
+                TaskStatus::Succeeded | TaskStatus::Failed | TaskStatus::Cancelled
+            );
+            if terminal {
+                self.mark_doc("activity", &doc, "done")?;
+                continue;
+            }
+            let Some(channel) = self
+                .channels
+                .iter()
+                .find(|c| c.channel_id() == route.channel)
+            else {
+                continue;
+            };
+            let lines: Vec<&str> = doc.value["lines"]
+                .as_array()
+                .map(|items| {
+                    items
+                        .iter()
+                        .filter_map(|line| line.as_str())
+                        .collect::<Vec<_>>()
+                })
+                .unwrap_or_default();
+            let text = lines.join("\n");
+            let result = tokio::time::timeout(
+                Duration::from_secs(30),
+                channel.send(&route.target, route.msg_id.as_deref(), &text),
+            )
+            .await;
+            match result {
+                Ok(Ok(())) => {
+                    if self.mark_doc("activity", &doc, "sent")? {
+                        sent += 1;
+                    }
+                }
+                _ => eprintln!("[notify] activity {} failed or timed out", doc.id),
+            }
+        }
+        Ok(sent)
+    }
+
+    /// 把文档标记为指定状态；集合名必须与读取时的 kind 一致（ Revision CAS ）。
+    fn mark_doc(
         &self,
+        collection: &str,
         doc: &crate::domain::records::Document,
         status: &str,
     ) -> Result<bool> {
         let mut value = doc.value.clone();
         value["status"] = status.into();
         self.store
-            .put_document("progress", &doc.id, Some(doc.revision), &value)
+            .put_document(collection, &doc.id, Some(doc.revision), &value)
     }
 
     pub async fn run_loop(&self, mut shutdown: watch::Receiver<bool>) -> Result<()> {

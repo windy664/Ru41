@@ -38,8 +38,12 @@ impl AgentBackend for FakeAgent {
     }
 }
 fn worker(dir: &std::path::Path, delay: Duration, summary: &'static str) -> Worker {
+    worker_with(dir, FakeAgent { delay, summary })
+}
+
+fn worker_with(dir: &std::path::Path, agent: impl AgentBackend + 'static) -> Worker {
     let mut backends = BackendRegistry::default();
-    backends.register(FakeAgent { delay, summary }).unwrap();
+    backends.register(agent).unwrap();
     Worker {
         store: Arc::new(SqliteTaskStore::open(&dir.join("state.db")).unwrap()),
         backends: Arc::new(backends),
@@ -52,6 +56,90 @@ fn worker(dir: &std::path::Path, delay: Duration, summary: &'static str) -> Work
             retry_delay_secs: 10,
         },
     }
+}
+
+/// 写 codex 风格 events.jsonl 后延迟完成的底座，验证活动流被翻译进 store。
+struct EventfulAgent;
+impl AgentBackend for EventfulAgent {
+    fn descriptor(&self) -> BackendDescriptor {
+        BackendDescriptor {
+            id: "codex".into(),
+            model: None,
+            contracts: vec![RunContract::AnalysisV1],
+            supports_resume: false,
+        }
+    }
+    fn run(
+        &self,
+        request: AgentRequest,
+    ) -> Pin<Box<dyn Future<Output = anyhow::Result<AgentOutput>> + Send + '_>> {
+        Box::pin(async move {
+            let events = request.run_dir.join("events.jsonl");
+            tokio::fs::write(
+                &events,
+                concat!(
+                    r#"{"type":"thread.started","thread_id":"t1"}"#,
+                    "\n",
+                    r#"{"type":"item.completed","item":{"type":"reasoning","summary":"先分析"}}"#,
+                    "\n",
+                    r#"{"type":"item.completed","item":{"type":"agent_message","text":"我看完了"}}"#,
+                    "\n",
+                    r#"{"type":"item.completed","item":{"type":"local_shell_call","action":{"command":"ls"}}}"#,
+                    "\n",
+                    r#"{"type":"turn.completed"}"#,
+                    "\n"
+                ),
+            )
+            .await?;
+            tokio::time::sleep(Duration::from_millis(200)).await;
+            Ok(AgentOutput {
+                result: AgentResult {
+                    summary: "done".into(),
+                },
+                session_id: Some("t1".into()),
+            })
+        })
+    }
+}
+
+#[tokio::test]
+async fn agent_events_are_streamed_to_activity_chunks() {
+    let dir = tempfile::tempdir().unwrap();
+    let mut w = worker_with(dir.path(), EventfulAgent);
+    let enqueued = w.store.enqueue("event", "hello").unwrap();
+    let (_sender, receiver) = watch::channel(false);
+    let report = w.run_once(receiver).await.unwrap().unwrap();
+    assert_eq!(report.status, TaskStatus::Succeeded);
+    let run_id = format!("run-{}-{}", report.task_id, report.attempt_id);
+    // 停止信号后 streamer 会 flush 剩余行；稍等一拍再查。
+    for _ in 0..50 {
+        let docs = w.store.documents("activity", 10).unwrap();
+        let mine: Vec<_> = docs
+            .iter()
+            .filter(|d| d.id.starts_with(&run_id))
+            .collect();
+        let all_sent = !mine.is_empty()
+            && mine.iter().all(|d| d.value["status"] == "pending");
+        if all_sent {
+            let lines: Vec<&str> = mine[0].value["lines"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .filter_map(|v| v.as_str())
+                .collect();
+            let text = lines.join("\n");
+            assert!(text.contains("💭 先分析"), "chunk: {text}");
+            assert!(text.contains("💬 我看完了"), "chunk: {text}");
+            assert!(text.contains("⚙️ $ ls"), "chunk: {text}");
+            assert!(
+                !text.contains("turn.completed"),
+                "无关事件不应进展示行: {text}"
+            );
+            return;
+        }
+        tokio::time::sleep(Duration::from_millis(100)).await;
+    }
+    panic!("no activity chunk written for {run_id}");
 }
 #[tokio::test]
 async fn validated_result_is_persisted_and_not_run_twice() {
