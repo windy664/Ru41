@@ -284,6 +284,18 @@ impl ChaoxingTracker {
     }
 
     /// 自动签到一次：成功/拒绝给回执文案，瞬时错误静默（下轮重试）。
+    /// 科研线 B：窗口探测后台化（详情页 + preSign 找 enc 泄漏）。
+    /// 失败只进 stderr，绝不影响轮询与提醒。
+    fn spawn_enc_probe(&self, activity_id: i64) {
+        let Some(path) = self.config.enc_sample_path.clone() else {
+            return;
+        };
+        let client = self.client.clone();
+        tokio::spawn(async move {
+            super::enc_sample::probe_window(&client, activity_id, &path).await;
+        });
+    }
+
     async fn try_auto_sign(
         &self,
         course: &crate::modules::chaoxing::source::ChaoxingCourse,
@@ -418,20 +430,26 @@ impl ChaoxingTracker {
                                 AutoSignOutcome::Rejected(line) => outcome_lines.push(line),
                                 AutoSignOutcome::Transient => {}
                             }
-                        } else if self.notifier.is_some() {
-                            pending_lines.push(format!(
-                                "- ⏰{}｜{}｜进行中，截止 {}｜id={}｜`chaoxing sign {}`{}",
-                                course.title,
-                                activity.type_label(),
-                                format_ms(activity.end_time).unwrap_or_else(|| "未知".into()),
-                                activity.id,
-                                activity.id,
-                                if activity.is_qr() {
-                                    "（把二维码照片发给机器人即可代签）"
-                                } else {
-                                    ""
-                                },
-                            ));
+                        } else {
+                            if activity.is_qr() {
+                                // 科研线 B：窗口期间侦测学生端接口是否泄漏当前 enc
+                                self.spawn_enc_probe(activity.id);
+                            }
+                            if self.notifier.is_some() {
+                                pending_lines.push(format!(
+                                    "- ⏰{}｜{}｜进行中，截止 {}｜id={}｜`chaoxing sign {}`{}",
+                                    course.title,
+                                    activity.type_label(),
+                                    format_ms(activity.end_time).unwrap_or_else(|| "未知".into()),
+                                    activity.id,
+                                    activity.id,
+                                    if activity.is_qr() {
+                                        "（把二维码照片发给机器人即可代签）"
+                                    } else {
+                                        ""
+                                    },
+                                ));
+                            }
                         }
                     }
                     continue;

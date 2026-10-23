@@ -1,6 +1,7 @@
 //! 学习通服务层。按作业域拆分：`sign` 签到监控、`work` 作业监控；
 //! 对外路径保持 `chaoxing::service::*` 不变。
 
+mod enc_sample;
 mod qr;
 mod sign;
 mod work;
