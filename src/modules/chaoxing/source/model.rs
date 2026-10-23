@@ -65,20 +65,18 @@ pub struct ChaoxingCourse {
     pub teacher: String,
 }
 
-/// 伪造二维码签到 enc：平台对 enc 不做真实性校验（任何 32 位十六进制都收），
-/// 用 uid+activityId 派生一个稳定的假 token，形状对齐真实 enc（32 位大写十六进制）。
-pub fn fabricated_enc(activity_id: i64, uid: &str) -> String {
-    use md5::{Digest, Md5};
-    let mut hasher = Md5::new();
-    hasher.update(uid.as_bytes());
-    hasher.update(b":");
-    hasher.update(activity_id.to_string().as_bytes());
-    let digest = hasher.finalize();
-    digest
-        .iter()
-        .map(|b| format!("{:02X}", b))
-        .collect::<Vec<_>>()
-        .join("")
+impl ChaoxingCourse {
+    /// 二维码图片签到用的占位课程：QR 签到请求不使用课程字段，
+    /// 只依赖活动 id 与 enc。
+    pub fn bare() -> Self {
+        Self {
+            course_id: String::new(),
+            clazz_id: String::new(),
+            cpi: String::new(),
+            title: String::new(),
+            teacher: String::new(),
+        }
+    }
 }
 
 /// 签到活动（activelist JSON 条目，camelCase）。
@@ -110,6 +108,22 @@ pub struct ChaoxingActivity {
 }
 
 impl ChaoxingActivity {
+    /// 二维码图片解出的活动占位：只有 id，QR 签到请求只依赖 id 与 enc，
+    /// 其余字段（标签/时间/状态）在图片签到路径上不参与协议。
+    pub fn bare(activity_id: i64) -> Self {
+        Self {
+            id: activity_id,
+            active_type: Some(2),
+            sign_type: Some(2),
+            name_one: Some("二维码签到".into()),
+            start_time: None,
+            end_time: None,
+            status: None,
+            user_status: None,
+            attend_num: None,
+        }
+    }
+
     pub fn is_sign(&self) -> bool {
         self.active_type == Some(2)
     }

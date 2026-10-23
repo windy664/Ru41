@@ -97,6 +97,8 @@ pub struct QqBot {
     pub bind_secret: Option<String>,
     /// 业务模块注册的扩展命令；QQ 渠道不直接依赖业务模块。
     pub command_handlers: Vec<Arc<dyn CommandHandler>>,
+    /// 业务模块注册的图片消费者（如学习通二维码照片签到）；同样不感知具体业务。
+    pub image_consumers: Vec<Arc<dyn crate::ports::commands::ImageConsumer>>,
     /// 与 QqNotifier 共享的被动回复序号器，防止同 msg_id 下 seq 撞车。
     pub sequencer: Arc<ReplySequencer>,
 }
@@ -233,6 +235,17 @@ impl QqBot {
             image_url,
             reply_channel: "qq",
         };
+        // 图片独立通道：模块消费者优先（如二维码照片签到）。都不认的图片
+        // 保持原行为（image_url 已随 CommandContext 交 agent 处理）。
+        if !self.image_consumers.is_empty()
+            && let Some(url) = image_url
+        {
+            for consumer in &self.image_consumers {
+                if let Some(text) = consumer.handle_image(url).await {
+                    return Ok(DispatchOutcome::Reply(Reply::text(text)));
+                }
+            }
+        }
         if let Some(command) = commands::parse_command(content) {
             let reply = if command == commands::Command::Help {
                 // 帮助文本需汇总扩展命令，单独构造；按钮与 /帮助 execute 一致。

@@ -23,7 +23,7 @@ pub fn sign_type_name(sign_type: Option<i64>) -> &'static str {
 /// 平台签到响应的成败判定：stuSignajax 成功返回含 success 的文本；
 /// 「已签到/签到成功」视为正向（可能手机端已签，命令行补签无害）。
 /// 其余（距离不足、参数错误等）按失败处理。
-fn sign_response_ok(response: &str) -> bool {
+pub(super) fn sign_response_ok(response: &str) -> bool {
     let text = response.to_lowercase();
     text.contains("success") || response.contains("签到成功") || response.contains("已签到")
 }
@@ -62,8 +62,9 @@ enum AutoSignOutcome {
 /// 新活动落 records 去重 → 待签活动经默认出口提醒。
 ///
 /// 通知策略：
-/// - 待签活动（进行中且未签）首次发现 → auto_sign 开启时当场自动签（二维码除外，
-///   enc 只能现场获取，回退为提醒）；关闭或二维码 → 提醒一次（含 activity_id）；
+/// - 待签活动（进行中且未签）首次发现 → auto_sign 开启时当场自动签（二维码除外：
+///   enc 只在二维码图片里，提醒把照片发给机器人，由 service::qr 消费签入）；
+///   关闭或二维码 → 提醒一次（含 activity_id）；
 /// - 已结束/已签活动只入快照，不提醒；
 /// - 登录态失效 → 每日最多提醒一次。
 ///
@@ -176,12 +177,15 @@ impl ChaoxingTracker {
                     ),
                 }
             }
-            // 二维码：平台不校验 enc 真实性（任何 32 位十六进制都收）——
-            // 没有现场 enc 就伪造一个，自动签不再被二维码卡住；--enc 仍是手动覆盖项。
+            // 二维码：enc 由服务端生成、只随二维码图片分发，平台校验真实性
+            // （伪造值被「签到失败，请重新扫描。」拒绝，2026-10-23 实测）。
+            // 缺 enc 直接报错并指路图片通道（service::qr）。
             ChaoxingSignKind::Qr => {
-                let enc = enc.map(str::to_owned).unwrap_or_else(|| {
-                    crate::modules::chaoxing::source::fabricated_enc(activity.id, &self.config.phone)
-                });
+                let Some(enc) = enc.map(str::to_owned) else {
+                    anyhow::bail!(
+                        "二维码签到需要真实 enc：把二维码照片发给机器人（自动识别代签），或 CLI 传 --enc"
+                    )
+                };
                 SignMethod::Qr {
                     enc,
                     location: self.config.default_location.clone(),
@@ -401,10 +405,11 @@ impl ChaoxingTracker {
                         }),
                     )?;
                     new_activities += 1;
-                    // 待签活动：自动签开启则当场签（二维码除外，enc 只能现场获取）；
+                    // 待签活动：自动签开启则当场签（二维码除外——enc 只在二维码
+                    // 图片里，提醒用户把照片发给机器人，由 service::qr 消费签入）；
                     // 否则推送宿主，短窗口活动靠下一轮状态变迁收敛
                     if activity.is_pending() {
-                        if self.config.auto_sign {
+                        if self.config.auto_sign && !activity.is_qr() {
                             match self.try_auto_sign(course, &activity).await {
                                 AutoSignOutcome::Signed(line) => {
                                     auto_signed += 1;
@@ -422,7 +427,7 @@ impl ChaoxingTracker {
                                 activity.id,
                                 activity.id,
                                 if activity.is_qr() {
-                                    "（缺省伪造 enc；可 `--enc` 传真实值）"
+                                    "（把二维码照片发给机器人即可代签）"
                                 } else {
                                     ""
                                 },
