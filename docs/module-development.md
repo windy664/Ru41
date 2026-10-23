@@ -66,17 +66,18 @@ src/modules/<name>/
 
 - 校验必填配置并给出带配置路径的错误信息
 - 构造来源客户端与业务 Config
-- 需要默认通知时复用装配层的路由助手
+- 需要默认通知时复用装配层的路由助手：`notify_pair(config, section.notify)` 一次拿到 `(notifier, target)`；需要 Obsidian 同步时用 `vault_if_ready(config, section.vault_sync)` 接线 Vault
 - 不在业务模块里硬编码 webhook、QQ target 或渠道名称
 
 ### 3. 接入 CLI 与定时执行
 
 在 `ingress/cli.rs` 增加命令定义，在 `main.rs` 增加命令分发：
 
+- main.rs 只做参数路由；模块专属的处理逻辑放 `modules/<name>/cli.rs`（参考 jwxt 的 `classes_json`/`login_json`），核心入口不得认识附属内部
 - `poll`：执行一轮并输出 JSON 报告，适合系统 cron 和调试
 - `run`：调用 `ingress/schedule.rs::run_periodic`，适合常驻进程
 
-同时在 `bootstrap/assembly.rs::scheduled_jobs` 登记一个 `ScheduledJob` 条目（模块、任务名、间隔、poll/run 入口、启用条件）。登记后任务自动出现在 `ru41 schedule list`，并可被 `ru41 schedule run <name>` 统一启动；这是注册表唯一需要改动的位置。
+同时在 `bootstrap/assembly.rs::scheduled_jobs` 用 `job()` 构造器登记一个条目（模块、任务名、间隔、启用条件）；poll/run 命令按 `{name} poll|run` 约定自动生成，不合约定的用结构体更新语法覆盖。登记后任务自动出现在 `ru41 schedule list`，并可被 `ru41 schedule run <name>` 统一启动；这是注册表唯一需要改动的位置。
 
 如果模块提供轮询 tracker，还需两步：
 

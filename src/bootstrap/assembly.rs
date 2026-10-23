@@ -146,6 +146,29 @@ fn source_notify(config: &Config, enabled: Option<bool>) -> Result<Option<Notify
     }
 }
 
+/// 追踪器装配共用的通知对：开启时解析具体通知器与目标，关闭时为 (None, 空目标)。
+fn notify_pair(
+    config: &Config,
+    enabled: Option<bool>,
+) -> Result<(Option<Arc<dyn NotifyChannel>>, String)> {
+    match source_notify(config, enabled)? {
+        Some(route) => Ok((
+            Some(default_notifier(config, &route.channel)?),
+            route.target,
+        )),
+        None => Ok((None, String::new())),
+    }
+}
+
+/// Obsidian Vault 句柄：开关打开且 [obsidian] 已配置时才接线，否则不同步。
+fn vault_if_ready(config: &Config, enabled: bool) -> Result<Option<Arc<dyn Vault>>> {
+    if enabled && config.obsidian.is_ready() {
+        Ok(Some(vault_client(&config.obsidian.resolved(None)?)))
+    } else {
+        Ok(None)
+    }
+}
+
 /// 由 [sources.arxiv] 配置组装追踪器；通知路由来自全局 [notify] 出口。
 pub fn paper_tracker(config: &Config, store: Arc<dyn TaskStore>) -> Result<PaperTracker> {
     let arxiv = &config.sources.arxiv;
@@ -196,13 +219,7 @@ pub fn ecard_tracker(config: &Config, store: Arc<dyn TaskStore>) -> Result<Ecard
         .base_url
         .clone()
         .context("sources.ecard.base_url required")?;
-    let (notifier, notify_target) = match source_notify(config, ecard.notify)? {
-        Some(route) => (
-            Some(default_notifier(config, &route.channel)?),
-            route.target,
-        ),
-        None => (None, String::new()),
-    };
+    let (notifier, notify_target) = notify_pair(config, ecard.notify)?;
     Ok(EcardTracker::new(
         store,
         EcardClient::new(base_url),
@@ -214,13 +231,7 @@ pub fn ecard_tracker(config: &Config, store: Arc<dyn TaskStore>) -> Result<Ecard
 /// 由 [sources.chaoxing] 配置组装学习通签到监控；协议端直连，无 sidecar。
 pub fn chaoxing_tracker(config: &Config, store: Arc<dyn TaskStore>) -> Result<ChaoxingTracker> {
     let chaoxing = &config.sources.chaoxing;
-    let (notifier, notify_target) = match source_notify(config, chaoxing.notify)? {
-        Some(route) => (
-            Some(default_notifier(config, &route.channel)?),
-            route.target,
-        ),
-        None => (None, String::new()),
-    };
+    let (notifier, notify_target) = notify_pair(config, chaoxing.notify)?;
     let resolved = chaoxing.resolved(notify_target)?;
     let client = ChaoxingClient::new(
         resolved.phone.clone(),
@@ -233,13 +244,7 @@ pub fn chaoxing_tracker(config: &Config, store: Arc<dyn TaskStore>) -> Result<Ch
 /// 由 [sources.jwxt] 配置组装教务课表监控；CAS 单点登录，TGT 持久化。
 pub fn jwxt_tracker(config: &Config, store: Arc<dyn TaskStore>) -> Result<JwxtTracker> {
     let jwxt = &config.sources.jwxt;
-    let (notifier, notify_target) = match source_notify(config, jwxt.notify)? {
-        Some(route) => (
-            Some(default_notifier(config, &route.channel)?),
-            route.target,
-        ),
-        None => (None, String::new()),
-    };
+    let (notifier, notify_target) = notify_pair(config, jwxt.notify)?;
     let resolved = jwxt.resolved(notify_target)?;
     let client = JwxtClient::new(
         resolved.username.clone(),
@@ -278,25 +283,12 @@ pub fn class_remind_tracker(
 /// 由 [sources.zhihuishu] 配置组装智慧树作业提醒；报告文件由 zhihuishu-sidecar 产出。
 pub fn zhihuishu_tracker(config: &Config, store: Arc<dyn TaskStore>) -> Result<ZhihuishuTracker> {
     let zhihuishu = &config.sources.zhihuishu;
-    let (notifier, notify_target) = match source_notify(config, zhihuishu.notify)? {
-        Some(route) => (
-            Some(default_notifier(config, &route.channel)?),
-            route.target,
-        ),
-        None => (None, String::new()),
-    };
+    let (notifier, notify_target) = notify_pair(config, zhihuishu.notify)?;
     // Obsidian 课程同步：[obsidian] 配好 Vault 才启用；经核心 Vault 端口读写
-    let vault: Option<Arc<dyn Vault>> =
-        if zhihuishu.resolved(notify_target.clone())?.vault_sync && config.obsidian.is_ready() {
-            let resolved = config.obsidian.resolved(None)?;
-            Some(Arc::new(GitVault::new(
-                resolved.vault_path.clone(),
-                resolved.remote.clone(),
-                resolved.branch.clone(),
-            )))
-        } else {
-            None
-        };
+    let vault = vault_if_ready(
+        config,
+        zhihuishu.resolved(notify_target.clone())?.vault_sync,
+    )?;
     Ok(ZhihuishuTracker::new(
         store,
         notifier,
@@ -313,24 +305,9 @@ pub fn chaoxing_work_tracker(
     store: Arc<dyn TaskStore>,
 ) -> Result<ChaoxingWorkTracker> {
     let chaoxing = &config.sources.chaoxing;
-    let (notifier, notify_target) = match source_notify(config, chaoxing.notify)? {
-        Some(route) => (
-            Some(default_notifier(config, &route.channel)?),
-            route.target,
-        ),
-        None => (None, String::new()),
-    };
+    let (notifier, notify_target) = notify_pair(config, chaoxing.notify)?;
     let resolved = chaoxing.resolved(notify_target.clone())?;
-    let vault: Option<Arc<dyn Vault>> = if resolved.work_vault_sync && config.obsidian.is_ready() {
-        let obsidian = config.obsidian.resolved(None)?;
-        Some(Arc::new(GitVault::new(
-            obsidian.vault_path.clone(),
-            obsidian.remote.clone(),
-            obsidian.branch.clone(),
-        )))
-    } else {
-        None
-    };
+    let vault = vault_if_ready(config, resolved.work_vault_sync)?;
     Ok(ChaoxingWorkTracker::new(
         store,
         ChaoxingClient::new(
@@ -400,6 +377,26 @@ pub fn blog_tracker(config: &Config, store: Arc<dyn TaskStore>) -> Result<BlogPu
     ))
 }
 
+/// 定时任务条目的构造器：poll/run 命令按 `{name} poll|run` 约定生成；
+/// 命令不合约定的条目用结构体更新语法覆盖（chaoxing-work/todo-remind/class-remind）。
+fn job(
+    module: &str,
+    name: &str,
+    interval_secs: u64,
+    enabled: bool,
+    notes: Option<String>,
+) -> ScheduledJob {
+    ScheduledJob {
+        module: module.into(),
+        name: name.into(),
+        interval_secs: Some(interval_secs),
+        poll_command: format!("{name} poll"),
+        run_command: format!("{name} run"),
+        enabled,
+        notes,
+    }
+}
+
 /// 定时任务注册表：汇总各模块登记的轮询任务、间隔与启停状态。
 /// 这是唯一同时认识全部模块与调度核心入口的位置；新附属在此追加条目。
 pub fn scheduled_jobs(config: &Config) -> Vec<ScheduledJob> {
@@ -409,91 +406,72 @@ pub fn scheduled_jobs(config: &Config) -> Vec<ScheduledJob> {
     let ecard = &sources.ecard;
     let todo_route_ready = default_notify_route(config).ok().flatten().is_some();
     vec![
-        ScheduledJob {
-            module: "papers".into(),
-            name: "papers".into(),
-            interval_secs: Some(
-                arxiv
-                    .interval_secs
-                    .unwrap_or(ArxivSection::DEFAULT_INTERVAL_SECS),
-            ),
-            poll_command: "papers poll".into(),
-            run_command: "papers run".into(),
-            enabled: arxiv.categories.as_ref().is_some_and(|c| !c.is_empty()),
-            notes: (!arxiv.categories.as_ref().is_some_and(|c| !c.is_empty()))
+        job(
+            "papers",
+            "papers",
+            arxiv
+                .interval_secs
+                .unwrap_or(ArxivSection::DEFAULT_INTERVAL_SECS),
+            arxiv.categories.as_ref().is_some_and(|c| !c.is_empty()),
+            (!arxiv.categories.as_ref().is_some_and(|c| !c.is_empty()))
                 .then(|| "配置 sources.arxiv.categories 后启用".into()),
-        },
-        ScheduledJob {
-            module: "rss".into(),
-            name: "rss".into(),
-            interval_secs: Some(
-                rss.interval_secs
-                    .unwrap_or(RssSection::DEFAULT_INTERVAL_SECS),
-            ),
-            poll_command: "rss poll".into(),
-            run_command: "rss run".into(),
-            enabled: rss.feeds.as_ref().is_some_and(|f| !f.is_empty()),
-            notes: (!rss.feeds.as_ref().is_some_and(|f| !f.is_empty()))
+        ),
+        job(
+            "rss",
+            "rss",
+            rss.interval_secs
+                .unwrap_or(RssSection::DEFAULT_INTERVAL_SECS),
+            rss.feeds.as_ref().is_some_and(|f| !f.is_empty()),
+            (!rss.feeds.as_ref().is_some_and(|f| !f.is_empty()))
                 .then(|| "配置 sources.rss.feeds 后启用".into()),
-        },
-        ScheduledJob {
-            module: "ecard".into(),
-            name: "ecard".into(),
-            interval_secs: Some(
-                ecard
-                    .interval_secs
-                    .unwrap_or(EcardSection::DEFAULT_INTERVAL_SECS),
-            ),
-            poll_command: "ecard poll".into(),
-            run_command: "ecard run".into(),
-            enabled: ecard.is_ready(),
-            notes: (!ecard.is_ready())
+        ),
+        job(
+            "ecard",
+            "ecard",
+            ecard
+                .interval_secs
+                .unwrap_or(EcardSection::DEFAULT_INTERVAL_SECS),
+            ecard.is_ready(),
+            (!ecard.is_ready())
                 .then(|| "需 sources.ecard 房间信息及 token（或 RU41_ECARD_TOKEN）".into()),
-        },
-        ScheduledJob {
-            module: "chaoxing".into(),
-            name: "chaoxing".into(),
-            interval_secs: Some(
-                sources
-                    .chaoxing
-                    .interval_secs
-                    .unwrap_or(ChaoxingSection::DEFAULT_INTERVAL_SECS),
-            ),
-            poll_command: "chaoxing poll".into(),
-            run_command: "chaoxing run".into(),
-            enabled: sources.chaoxing.is_ready(),
-            notes: (!sources.chaoxing.is_ready()).then(|| {
+        ),
+        job(
+            "chaoxing",
+            "chaoxing",
+            sources
+                .chaoxing
+                .interval_secs
+                .unwrap_or(ChaoxingSection::DEFAULT_INTERVAL_SECS),
+            sources.chaoxing.is_ready(),
+            (!sources.chaoxing.is_ready()).then(|| {
                 "需 sources.chaoxing 手机号与密码（或 RU41_XXT_PHONE/RU41_XXT_PASSWORD）".into()
             }),
-        },
+        ),
         ScheduledJob {
-            module: "chaoxing".into(),
-            name: "chaoxing-work".into(),
-            interval_secs: Some(
+            poll_command: "chaoxing work".into(),
+            run_command: "schedule run chaoxing-work".into(),
+            ..job(
+                "chaoxing",
+                "chaoxing-work",
                 sources
                     .chaoxing
                     .work_poll_secs
                     .unwrap_or(ChaoxingSection::DEFAULT_WORK_POLL_SECS),
-            ),
-            poll_command: "chaoxing work".into(),
-            run_command: "schedule run chaoxing-work".into(),
-            enabled: sources.chaoxing.is_ready(),
-            notes: (!sources.chaoxing.is_ready())
-                .then(|| "随 sources.chaoxing 凭证启用；作业轮询独立低频（默认 30 分钟）".into()),
+                sources.chaoxing.is_ready(),
+                (!sources.chaoxing.is_ready()).then(|| {
+                    "随 sources.chaoxing 凭证启用；作业轮询独立低频（默认 30 分钟）".into()
+                }),
+            )
         },
-        ScheduledJob {
-            module: "jwxt".into(),
-            name: "jwxt".into(),
-            interval_secs: Some(
-                sources
-                    .jwxt
-                    .interval_secs
-                    .unwrap_or(JwxtSection::DEFAULT_INTERVAL_SECS),
-            ),
-            poll_command: "jwxt poll".into(),
-            run_command: "jwxt run".into(),
-            enabled: sources.jwxt.is_ready(),
-            notes: if !sources.jwxt.is_ready() {
+        job(
+            "jwxt",
+            "jwxt",
+            sources
+                .jwxt
+                .interval_secs
+                .unwrap_or(JwxtSection::DEFAULT_INTERVAL_SECS),
+            sources.jwxt.is_ready(),
+            if !sources.jwxt.is_ready() {
                 Some(
                     "需 sources.jwxt 用户名与密码（或 RU41_JWXT_USERNAME/RU41_JWXT_PASSWORD）"
                         .into(),
@@ -503,81 +481,73 @@ pub fn scheduled_jobs(config: &Config) -> Vec<ScheduledJob> {
             } else {
                 None
             },
-        },
-        ScheduledJob {
-            module: "zhihuishu".into(),
-            name: "zhihuishu".into(),
-            interval_secs: Some(
-                sources
-                    .zhihuishu
-                    .interval_secs
-                    .unwrap_or(ZhihuishuSection::DEFAULT_INTERVAL_SECS),
-            ),
-            poll_command: "zhihuishu poll".into(),
-            run_command: "zhihuishu run".into(),
-            enabled: true,
-            notes: None,
-        },
-        ScheduledJob {
-            module: "blog".into(),
-            name: "blog".into(),
-            interval_secs: Some(
-                sources
-                    .blog
-                    .interval_secs
-                    .unwrap_or(BlogSection::DEFAULT_INTERVAL_SECS),
-            ),
-            poll_command: "blog poll".into(),
-            run_command: "blog run".into(),
-            enabled: sources.blog.is_ready() && config.obsidian.is_ready(),
-            notes: (!sources.blog.is_ready())
+        ),
+        job(
+            "zhihuishu",
+            "zhihuishu",
+            sources
+                .zhihuishu
+                .interval_secs
+                .unwrap_or(ZhihuishuSection::DEFAULT_INTERVAL_SECS),
+            true,
+            None,
+        ),
+        job(
+            "blog",
+            "blog",
+            sources
+                .blog
+                .interval_secs
+                .unwrap_or(BlogSection::DEFAULT_INTERVAL_SECS),
+            sources.blog.is_ready() && config.obsidian.is_ready(),
+            (!sources.blog.is_ready())
                 .then(|| "配置 sources.blog.repo_path 后启用".into())
                 .or_else(|| {
                     (!config.obsidian.is_ready())
                         .then(|| "依赖 obsidian.vault_path（待发布文件在 Vault 仓库）".into())
                 }),
-        },
+        ),
+        job(
+            "obsidian",
+            "obsidian",
+            config
+                .obsidian
+                .interval_secs
+                .unwrap_or(crate::bootstrap::config::ObsidianSection::DEFAULT_INTERVAL_SECS),
+            config.obsidian.is_ready(),
+            (!config.obsidian.is_ready()).then(|| "配置 obsidian.vault_path 后启用".into()),
+        ),
         ScheduledJob {
-            module: "obsidian".into(),
-            name: "obsidian".into(),
-            interval_secs: Some(
-                config
-                    .obsidian
-                    .interval_secs
-                    .unwrap_or(crate::bootstrap::config::ObsidianSection::DEFAULT_INTERVAL_SECS),
-            ),
-            poll_command: "obsidian poll".into(),
-            run_command: "obsidian run".into(),
-            enabled: config.obsidian.is_ready(),
-            notes: (!config.obsidian.is_ready()).then(|| "配置 obsidian.vault_path 后启用".into()),
-        },
-        ScheduledJob {
-            module: "planner".into(),
-            name: "todo-remind".into(),
-            interval_secs: Some(60),
             poll_command: "todo remind --once".into(),
             run_command: "todo remind".into(),
-            enabled: todo_route_ready,
-            notes: if todo_route_ready {
-                Some("间隔可用 --interval-secs 覆盖".into())
-            } else {
-                Some("需 [notify] 默认出口，或 schedule run --target 显式指定".into())
-            },
+            ..job(
+                "planner",
+                "todo-remind",
+                60,
+                todo_route_ready,
+                if todo_route_ready {
+                    Some("间隔可用 --interval-secs 覆盖".into())
+                } else {
+                    Some("需 [notify] 默认出口，或 schedule run --target 显式指定".into())
+                },
+            )
         },
         ScheduledJob {
-            module: "jwxt".into(),
-            name: "class-remind".into(),
-            interval_secs: Some(60), // 兜底轮询；精准睡眠按 fire_at 计算
             poll_command: "class-remind poll".into(),
             run_command: "schedule run class-remind".into(),
-            enabled: sources.jwxt.is_ready() && todo_route_ready,
-            notes: if !sources.jwxt.is_ready() {
-                Some("需 sources.jwxt 凭证（随 jwxt 启用）".into())
-            } else if !todo_route_ready {
-                Some("需 [notify] 默认出口，或 schedule run --target 显式指定".into())
-            } else {
-                Some("课前 20 分钟提醒；启动时补发停机期间错过的课".into())
-            },
+            ..job(
+                "jwxt",
+                "class-remind",
+                60, // 兜底轮询；精准睡眠按 fire_at 计算
+                sources.jwxt.is_ready() && todo_route_ready,
+                if !sources.jwxt.is_ready() {
+                    Some("需 sources.jwxt 凭证（随 jwxt 启用）".into())
+                } else if !todo_route_ready {
+                    Some("需 [notify] 默认出口，或 schedule run --target 显式指定".into())
+                } else {
+                    Some("课前 20 分钟提醒；启动时补发停机期间错过的课".into())
+                },
+            )
         },
     ]
 }

@@ -6,7 +6,7 @@ use ru41::bootstrap::assembly::{
     notifier_for_route, notify_channels, qq_api, qq_command_handlers, scheduled_jobs,
     todo_notify_route, tracker_job,
 };
-use ru41::bootstrap::store::{StoreOptions, open_store, resolve as resolve_store};
+use ru41::bootstrap::store::{open_store, resolve as resolve_store};
 use ru41::{
     app::{schedule::ScheduleService, task::TaskService, todo::TodoService},
     bootstrap::config::Config,
@@ -259,9 +259,13 @@ async fn main() -> Result<()> {
             }
             JwxtCommand::Login { captcha } => {
                 let tracker = jwxt_tracker(&config, open_store(&store_config)?)?;
-                jwxt_login(&tracker, captcha.as_deref()).await?
+                ru41::modules::jwxt::cli::login_json(&tracker, captcha.as_deref()).await?
             }
-            JwxtCommand::Classes { when } => jwxt_classes(&config, &store_config, &when)?,
+            JwxtCommand::Classes { when } => ru41::modules::jwxt::cli::classes_json(
+                open_store(&store_config)?,
+                &config.sources.jwxt,
+                &when,
+            )?,
         },
         Command::Obsidian { command } => {
             tracker_or_exit(tracker_cli("obsidian", command, &config, &store_config).await?)?
@@ -501,78 +505,6 @@ async fn tracker_cli(
 /// Run 常驻至退出信号，没有可打印的报告；此时 main 直接结束。
 fn tracker_or_exit(report: Option<serde_json::Value>) -> Result<serde_json::Value> {
     report.context("tracker run exited")
-}
-
-/// 读本地课表缓存（jwxt_timetable 快照）回答某天/本周的课。
-/// 只读缓存，不触网、不需要登录态，供 agent skill 与排障使用。
-fn jwxt_classes(
-    config: &Config,
-    store_config: &StoreOptions,
-    when: &str,
-) -> Result<serde_json::Value> {
-    use chrono::Datelike;
-    let store = open_store(store_config)?;
-    let semester_start = config
-        .sources
-        .jwxt
-        .semester_start
-        .as_deref()
-        .and_then(|raw| chrono::NaiveDate::parse_from_str(raw.trim(), "%Y-%m-%d").ok());
-    let clock = config.sources.jwxt.section_clock()?;
-    let today = chrono::Local::now().date_naive();
-    let when = when.trim();
-    if when == "week" || when.contains('周') {
-        let mut lines = Vec::new();
-        for offset in 0..(7 - today.weekday().num_days_from_monday() as i64) {
-            let day = today + chrono::Duration::days(offset);
-            let text = ru41::modules::jwxt::describe_day_from_store(
-                &store,
-                semester_start,
-                clock.as_ref(),
-                day,
-            )?;
-            let body = text.split_once("\n\n").map(|(_, b)| b).unwrap_or(&text);
-            lines.push(format!("**{}**\n{}", day.format("%m月%d日"), body));
-        }
-        return Ok(format!("## 本周课表\n\n{}", lines.join("\n\n")).into());
-    }
-    let date = match when {
-        "" | "today" | "今天" => today,
-        "tomorrow" | "明天" => today + chrono::Duration::days(1),
-        raw => chrono::NaiveDate::parse_from_str(raw, "%Y-%m-%d").with_context(|| {
-            format!("无法识别的时间：{raw}（支持 today/tomorrow/week/YYYY-MM-DD）")
-        })?,
-    };
-    Ok(
-        ru41::modules::jwxt::describe_day_from_store(&store, semester_start, clock.as_ref(), date)?
-            .into(),
-    )
-}
-
-/// CAS 验证码登录的两步交互：无 --captcha 时下载验证码图片并提示路径；
-/// 带 --captcha 时取持久化的 uid 提交答案，成功后 TGT 已入会话文件。
-async fn jwxt_login(
-    tracker: &ru41::modules::jwxt::JwxtTracker,
-    captcha: Option<&str>,
-) -> Result<serde_json::Value> {
-    let client = tracker.client();
-    match captcha {
-        Some(code) => {
-            let uid = client
-                .pending_captcha_uid()
-                .context("没有待验证的验证码：请先运行 `ru41 jwxt login` 下载验证码图片")?;
-            client.cas_login(&uid, code.trim()).await?;
-            Ok(serde_json::json!({"login": "ok"}))
-        }
-        None => {
-            let (uid, path) = client.download_captcha().await?;
-            Ok(serde_json::json!({
-                "message": "查看验证码图片后运行 `ru41 jwxt login --captcha <答案>`",
-                "uid": uid,
-                "image": path.display().to_string(),
-            }))
-        }
-    }
 }
 
 async fn run_todo_remind_loop(
