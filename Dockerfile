@@ -15,6 +15,7 @@ RUN sed -i 's|deb.debian.org|mirrors.aliyun.com|g; s|security.debian.org|mirrors
 RUN apt-get update \
     && apt-get install -y --no-install-recommends ca-certificates sqlite3 git \
         python3 python3-pip curl jq \
+        ripgrep zip unzip ffmpeg pandoc imagemagick \
     && rm -rf /var/lib/apt/lists/* \
     && pip3 install --break-system-packages --no-cache-dir requests beautifulsoup4 lxml \
     && npm install -g "@openai/codex@${CODEX_VERSION}" \
