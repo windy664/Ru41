@@ -152,7 +152,8 @@ impl CodexAgent {
         )?;
         if !status.success() {
             return Err(Ru41Error::AgentProcess(format!(
-                "Codex exited with {status}; inspect the attempt stderr.log"
+                "Codex exited with {status}{}",
+                last_event_error(&events)
             ))
             .into());
         }
@@ -171,9 +172,10 @@ impl CodexAgent {
                 }
                 Some("turn.completed") => completed = true,
                 Some("turn.failed") => {
-                    return Err(Ru41Error::AgentProcess(
-                        "Codex reported an error; inspect the attempt events.jsonl".into(),
-                    )
+                    return Err(Ru41Error::AgentProcess(format!(
+                        "Codex turn failed{}",
+                        last_event_error(&events)
+                    ))
                     .into());
                 }
                 Some("error") => error_reported = true,
@@ -182,9 +184,9 @@ impl CodexAgent {
         }
         if !completed {
             let message = if error_reported {
-                "Codex reported an error; inspect the attempt events.jsonl"
+                format!("Codex reported an error{}", last_event_error(&events))
             } else {
-                "Codex did not report turn.completed"
+                "Codex did not report turn.completed".to_owned()
             };
             return Err(Ru41Error::AgentProcess(message.into()).into());
         }
@@ -217,6 +219,41 @@ impl CodexAgent {
             session_id: thread_id,
         })
     }
+}
+
+/// 从事件字节里提取最有信息量的底座错误（turn.failed 优先，其次最后一条 error），
+/// 让任务失败原因直接可读（如 provider 402 余额不足），而不是让用户去翻日志。
+fn last_event_error(events: &[u8]) -> String {
+    let mut last_error = None;
+    let mut turn_failed = None;
+    for line in events.split(|b| *b == b'\n').filter(|l| !l.is_empty()) {
+        let Ok(event) = serde_json::from_slice::<serde_json::Value>(line) else {
+            continue;
+        };
+        match event.get("type").and_then(|v| v.as_str()) {
+            Some("error") => {
+                if let Some(message) = event.get("message").and_then(|v| v.as_str()) {
+                    last_error = Some(message.to_owned());
+                }
+            }
+            Some("turn.failed") => {
+                if let Some(message) = event
+                    .get("error")
+                    .and_then(|e| e.get("message"))
+                    .and_then(|v| v.as_str())
+                {
+                    turn_failed = Some(message.to_owned());
+                }
+            }
+            _ => {}
+        }
+    }
+    let message = turn_failed.or(last_error);
+    message.map_or(String::new(), |text| {
+        let mut text = text.trim().to_owned();
+        text.truncate(240);
+        format!(": {text}")
+    })
 }
 
 /// 并发地排空两个流；日志超过上限则停止运行。

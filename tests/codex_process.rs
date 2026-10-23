@@ -92,6 +92,27 @@ async fn rejects_nonzero_exit_bad_json_and_missing_completion() {
 }
 
 #[tokio::test]
+async fn turn_failed_surfaces_provider_error_message() {
+    let dir = tempfile::tempdir().unwrap();
+    let body = r#"echo '{"type":"error","message":"Reconnecting... 5/5 (unexpected status 402 Payment Required: Insufficient account balance)"}'
+echo '{"type":"turn.failed","error":{"message":"unexpected status 402 Payment Required: Insufficient account balance"}}'
+exit 1"#;
+    let agent = CodexAgent {
+        config_overrides: Vec::new(),
+        output_schema: true,
+        executable: executable(dir.path(), body),
+        model: None,
+    };
+    let error = match agent.run(request(dir.path())).await {
+        Ok(_) => panic!("expected failure for turn.failed case"),
+        Err(error) => error,
+    };
+    let text = format!("{error:#}");
+    assert!(text.contains("402"), "error: {text}");
+    assert!(text.contains("Insufficient account balance"), "error: {text}");
+}
+
+#[tokio::test]
 async fn drains_stderr_concurrently_and_limits_log_size() {
     let dir = tempfile::tempdir().unwrap();
     let agent = CodexAgent {
