@@ -21,6 +21,46 @@ pub fn version_with(executable: &std::path::Path) -> Result<String> {
         .to_owned())
 }
 
+/// 底座 CLI 的可选能力：新版 codex（≥0.16x）移除了 wire_api="chat" 支持，
+/// 需要用旧版（如 0.80）对接只提供 chat 兼容端点的供应商（智谱 GLM coding plan）。
+/// 旧版同时缺少 --ephemeral / --ignore-user-config，按探测结果条件传参。
+#[derive(Clone, Copy, Default)]
+struct CliCaps {
+    ephemeral: bool,
+    ignore_user_config: bool,
+}
+
+fn cli_caps(executable: &Path) -> CliCaps {
+    static CACHE: std::sync::Mutex<Option<std::collections::BTreeMap<String, CliCaps>>> =
+        std::sync::Mutex::new(None);
+    let key = executable.to_string_lossy().into_owned();
+    {
+        let guard = CACHE.lock().unwrap_or_else(|e| e.into_inner());
+        if let Some(caps) = guard.as_ref().and_then(|map| map.get(&key)) {
+            return *caps;
+        }
+    }
+    let caps = Command::new(executable)
+        .args(["exec", "--help"])
+        // 探测不得继承 stdin（假脚本可能 cat 等输入），也不得污染调用方目录。
+        .stdin(std::process::Stdio::null())
+        .current_dir("/")
+        .output()
+        .map(|out| {
+            let text = String::from_utf8_lossy(&out.stdout);
+            CliCaps {
+                ephemeral: text.contains("--ephemeral"),
+                ignore_user_config: text.contains("--ignore-user-config"),
+            }
+        })
+        .unwrap_or_default();
+    let mut guard = CACHE.lock().unwrap_or_else(|e| e.into_inner());
+    guard
+        .get_or_insert_with(Default::default)
+        .insert(key, caps);
+    caps
+}
+
 use crate::{
     domain::{AgentResult, RunContract, error::Ru41Error},
     ports::agent::{AgentBackend, AgentOutput, AgentRequest, BackendDescriptor},
@@ -92,6 +132,7 @@ impl CodexAgent {
                 )
             });
         let resuming = resume_session_id.is_some();
+        let caps = cli_caps(&self.executable);
         let mut cmd = tokio::process::Command::new(&self.executable);
         cmd.current_dir(&request.run_dir).arg("exec");
         if let Some(session_id) = resume_session_id {
@@ -99,14 +140,17 @@ impl CodexAgent {
         }
         cmd.args([
             "--json",
-            "--ignore-user-config",
             "--skip-git-repo-check",
             "--dangerously-bypass-approvals-and-sandbox",
         ]);
+        if caps.ignore_user_config {
+            cmd.arg("--ignore-user-config");
+        }
         if !resuming {
             cmd.args(["--color", "never"]);
         }
-        if !persistent {
+        // 旧版没有 --ephemeral：默认就会持久化会话，续接行为不受影响。
+        if !persistent && caps.ephemeral {
             cmd.arg("--ephemeral");
         }
         cmd.arg("--output-last-message")
