@@ -1,11 +1,12 @@
 use crate::{
-    domain::Task,
+    domain::{Task, TaskStatus},
     ports::{channel::NotifyChannel, storage::TaskStore},
 };
 use anyhow::Result;
 use std::{sync::Arc, time::Duration};
 use tokio::sync::watch;
-/// 终态任务的渠道通知：轮询未通知任务，按 notify_channel 路由，送达后标记。
+/// 终态任务的渠道通知 + 进程内进度通知（started/retry）：
+/// 轮询未通知任务与 pending 进度文档，按 notify_channel 路由，送达后标记。
 /// 发送失败不标记，下一轮重试；未注册的渠道跳过（留待对应网关上线）。
 pub struct NotifyDispatcher {
     pub store: Arc<dyn TaskStore>,
@@ -15,8 +16,14 @@ pub struct NotifyDispatcher {
 }
 
 impl NotifyDispatcher {
-    /// 处理一批未通知任务，返回成功通知的数量。
+    /// 处理一批终态通知与进度通知，返回成功送达的总数。
     pub async fn run_once(&self) -> Result<usize> {
+        let sent = self.dispatch_terminal().await?;
+        Ok(sent + self.dispatch_progress().await?)
+    }
+
+    /// 终态任务通知：成功用结果摘要（带页脚），失败带原因。
+    async fn dispatch_terminal(&self) -> Result<usize> {
         let tasks = self.store.list_unnotified(self.batch)?;
         let mut sent = 0;
         for task in tasks {
@@ -84,6 +91,75 @@ impl NotifyDispatcher {
         Ok(sent)
     }
 
+    /// 进度通知：worker 写入的 pending「开始执行/首次失败重试」文档。
+    /// 任务已终态或通知渠道缺失时直接标记消化，避免残留。
+    async fn dispatch_progress(&self) -> Result<usize> {
+        let docs = self.store.documents("progress", self.batch)?;
+        let mut sent = 0;
+        for doc in docs {
+            if doc.value["status"] != "pending" {
+                continue;
+            }
+            let Some(task_id) = doc.value["task_id"].as_i64() else {
+                self.mark_progress(&doc, "invalid")?;
+                continue;
+            };
+            let task = match self.store.get(task_id)? {
+                Some(task) => task,
+                None => {
+                    self.mark_progress(&doc, "orphan")?;
+                    continue;
+                }
+            };
+            // 终态任务由终态通知收口，进度通知不再补发。
+            let terminal = matches!(
+                task.status,
+                TaskStatus::Succeeded | TaskStatus::Failed | TaskStatus::Cancelled
+            );
+            let Some(route) = &task.notify else {
+                self.mark_progress(&doc, "done")?;
+                continue;
+            };
+            if terminal {
+                self.mark_progress(&doc, "done")?;
+                continue;
+            }
+            let Some(channel) = self
+                .channels
+                .iter()
+                .find(|c| c.channel_id() == route.channel)
+            else {
+                continue;
+            };
+            let text = progress_text(&doc, &task);
+            let result = tokio::time::timeout(
+                Duration::from_secs(30),
+                channel.send(&route.target, route.msg_id.as_deref(), &text),
+            )
+            .await;
+            match result {
+                Ok(Ok(())) => {
+                    if self.mark_progress(&doc, "sent")? {
+                        sent += 1;
+                    }
+                }
+                _ => eprintln!("[notify] progress {} failed or timed out", doc.id),
+            }
+        }
+        Ok(sent)
+    }
+
+    fn mark_progress(
+        &self,
+        doc: &crate::domain::records::Document,
+        status: &str,
+    ) -> Result<bool> {
+        let mut value = doc.value.clone();
+        value["status"] = status.into();
+        self.store
+            .put_document("progress", &doc.id, Some(doc.revision), &value)
+    }
+
     pub async fn run_loop(&self, mut shutdown: watch::Receiver<bool>) -> Result<()> {
         let mut poll = tokio::time::interval(self.interval);
         loop {
@@ -96,13 +172,70 @@ impl NotifyDispatcher {
     }
 }
 
-/// 通知文本：成功用结果摘要，失败带原因。
+/// 进度通知文本。
+fn progress_text(doc: &crate::domain::records::Document, task: &Task) -> String {
+    if doc.value["kind"] == "retry" {
+        format!(
+            "## ⚠️ 任务 `#{}` 首次执行失败\n\n已自动安排重试，结果出来会通知你。\n\n错误：\n{}",
+            task.id,
+            doc.value["error"].as_str().unwrap_or("未知错误")
+        )
+    } else {
+        format!(
+            "▶️ 任务 `#{}` 开始执行（第 {} 次尝试 · 底座 `{}`）",
+            task.id,
+            doc.value["attempt_id"].as_i64().unwrap_or(1),
+            task.backend_id
+        )
+    }
+}
+
+/// 通知文本：成功用结果摘要，失败带原因；都附页脚说明任务身份与开销。
 fn notify_text(task: &Task) -> String {
-    match &task.result {
+    let body = match &task.result {
         Some(result) => result.summary.clone(),
         None => format!(
             "## 任务失败\n\n{}",
             task.last_error.as_deref().unwrap_or("未知错误")
         ),
+    };
+    format!("{body}\n\n{}", task_footer(task))
+}
+
+/// 终态回复页脚：任务号、底座、尝试次数、用时，消除「这是哪条任务」的黑盒感。
+fn task_footer(task: &Task) -> String {
+    let mut parts = vec![
+        format!("任务 `#{}`", task.id),
+        format!("底座 `{}`", task.backend_id),
+        format!("尝试 {} 次", task.attempt_count),
+    ];
+    if let Some(elapsed) = elapsed_label(&task.created_at, &task.updated_at) {
+        parts.push(format!("用时 {elapsed}"));
+    }
+    format!("—— {}", parts.join(" · "))
+}
+
+/// 解析 created_at/updated_at（ISO-UTC，'%Y-%m-%dT%H:%M:%S%.3fZ'）求人类可读时长。
+fn elapsed_label(created_at: &str, updated_at: &str) -> Option<String> {
+    let parse = |raw: &str| {
+        chrono::DateTime::parse_from_rfc3339(raw)
+            .map(|dt| dt.timestamp())
+            .ok()
+            .or_else(|| {
+                chrono::NaiveDateTime::parse_from_str(raw, "%Y-%m-%dT%H:%M:%S%.fZ")
+                    .ok()
+                    .map(|naive| naive.and_utc().timestamp())
+            })
+    };
+    let secs = parse(updated_at)? - parse(created_at)?;
+    if secs < 0 {
+        return None;
+    }
+    if secs < 60 {
+        Some(format!("{secs} 秒"))
+    } else if secs < 3600 {
+        Some(format!("{} 分钟", secs / 60))
+    } else {
+        Some(format!("{} 小时 {} 分钟", secs / 3600, (secs % 3600) / 60))
     }
 }

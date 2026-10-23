@@ -9,7 +9,7 @@ use crate::{
     bootstrap::config::Config,
     channels::{
         feishu::{self, FeishuWebhookNotifier},
-        qq::{QqNotifier, api::QqApiClient},
+        qq::{QqNotifier, ReplySequencer, api::QqApiClient},
     },
     domain::NotifyRoute,
     ingress::{
@@ -32,14 +32,17 @@ use crate::{
 use anyhow::{Context, Result};
 use std::sync::Arc;
 
-/// 终态通知渠道装配：QQ 网关进程传入 api 时注册 QQ；配置了飞书 webhook 即注册飞书。
+/// 终态通知渠道装配：QQ 网关进程传入 api + 共享序号器时注册 QQ；配置了飞书 webhook 即注册飞书。
+/// qq_seq 必须与 QqBot 共享同一实例，保证同 msg_id 被动回复 seq 不重复。
 pub fn notify_channels(
     config: &Config,
     qq: Option<Arc<QqApiClient>>,
+    qq_seq: Option<Arc<ReplySequencer>>,
 ) -> Result<Vec<Arc<dyn NotifyChannel>>> {
     let mut channels: Vec<Arc<dyn NotifyChannel>> = Vec::new();
     if let Some(api) = qq {
-        channels.push(Arc::new(QqNotifier::new(api)));
+        let sequencer = qq_seq.unwrap_or_else(|| Arc::new(ReplySequencer::default()));
+        channels.push(Arc::new(QqNotifier::new(api, sequencer)));
     }
     if let Some(url) = feishu_webhook_url(config) {
         channels.push(Arc::new(FeishuWebhookNotifier::new(url)));
@@ -161,13 +164,17 @@ fn default_notifier(config: &Config, channel: &str) -> Result<Arc<dyn NotifyChan
                 "feishu webhook required: RU41_FEISHU_WEBHOOK_URL or channel.feishu.webhook_url",
             )?,
         ))),
-        "qq" => Ok(Arc::new(QqNotifier::new(Arc::new(qq_api(
-            &QqCredentials {
-                app_id: None,
-                app_secret: None,
-            },
-            config,
-        )?)))),
+        "qq" => Ok(Arc::new(QqNotifier::new(
+            Arc::new(qq_api(
+                &QqCredentials {
+                    app_id: None,
+                    app_secret: None,
+                },
+                config,
+            )?),
+            // 跟踪器进程只发主动消息，序号器进程内独立即可。
+            Arc::new(ReplySequencer::default()),
+        ))),
         other => anyhow::bail!("unknown notify channel: {other}"),
     }
 }

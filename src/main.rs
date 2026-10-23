@@ -10,7 +10,7 @@ use ru41::bootstrap::store::{StoreOptions, open_store, resolve as resolve_store}
 use ru41::{
     app::{schedule::ScheduleService, task::TaskService, todo::TodoService},
     bootstrap::config::Config,
-    channels::qq::QqBot,
+    channels::qq::{QqBot, ReplySequencer},
     domain::schedule::{EventInput, EventSource, parse_event_when},
     domain::todo::{TodoInput, parse_due},
     ingress::cli::{
@@ -154,16 +154,19 @@ async fn main() -> Result<()> {
                 let api = Arc::new(qq_api(&credentials, &config)?);
                 let store = open_store(&store_config)?;
                 let command_handlers = qq_command_handlers(&config, &backend)?;
+                // 回执与终态/进度通知共享序号器，同 msg_id 被动回复 seq 不撞车。
+                let sequencer = Arc::new(ReplySequencer::default());
                 let bot = QqBot {
                     api: api.clone(),
                     store: store.clone(),
                     backend,
                     bind_secret,
                     command_handlers,
+                    sequencer: sequencer.clone(),
                 };
                 let dispatcher = NotifyDispatcher {
                     store,
-                    channels: notify_channels(&config, Some(api))?,
+                    channels: notify_channels(&config, Some(api), Some(sequencer))?,
                     batch: 20,
                     interval: Duration::from_secs(2),
                 };
@@ -185,7 +188,7 @@ async fn main() -> Result<()> {
             QqCommand::Doctor { .. } | QqCommand::Onboard => unreachable!("handled by cli_ops"),
         },
         Command::Notify => {
-            let channels = notify_channels(&config, None)?;
+            let channels = notify_channels(&config, None, None)?;
             anyhow::ensure!(
                 !channels.is_empty(),
                 "no notify channel configured (e.g. channel.feishu.webhook_url)"

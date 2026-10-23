@@ -110,7 +110,11 @@ async fn dispatches_terminal_result_to_matching_channel_once() {
     assert_eq!(sent.len(), 1);
     assert_eq!(sent[0].0, "group:G1");
     assert_eq!(sent[0].1.as_deref(), Some("m1"));
-    assert_eq!(sent[0].2, "处理完成");
+    // 终态回复带页脚：任务号、底座、尝试次数。
+    assert!(sent[0].2.starts_with("处理完成"));
+    assert!(sent[0].2.contains("任务 `#1`"), "text: {}", sent[0].2);
+    assert!(sent[0].2.contains("底座 `codex`"), "text: {}", sent[0].2);
+    assert!(sent[0].2.contains("尝试 1 次"), "text: {}", sent[0].2);
     assert!(other.sent.lock().unwrap().is_empty());
 }
 
@@ -172,4 +176,138 @@ async fn delivery_record_prevents_double_send_across_dispatchers() {
     assert_eq!(qq.sent.lock().unwrap().len(), 1);
     let doc = store.document("delivery", "task-1-1").unwrap().unwrap();
     assert_eq!(doc.value["status"], "sent");
+}
+
+/// 运行中任务的 started 进度文档会送达会话，且只送一次。
+#[tokio::test]
+async fn dispatches_started_progress_once() {
+    let dir = tempfile::tempdir().unwrap();
+    let route = NotifyRoute {
+        channel: "qq".into(),
+        target: "user:U1".into(),
+        msg_id: Some("m1".into()),
+    };
+    let store: Arc<dyn TaskStore> =
+        Arc::new(SqliteTaskStore::open(&dir.path().join("state.db")).unwrap());
+    let task = store
+        .enqueue_with_notify("qq:msg:m1", "hello", "codex", RunContract::AnalysisV1, &route)
+        .unwrap()
+        .task;
+    let claim = store.claim("worker", 100, 30).unwrap().unwrap();
+    // 模拟 worker 认领后写入的 started 进度文档。
+    store
+        .put_document(
+            "progress",
+            "run-1-1-started",
+            None,
+            &serde_json::json!({
+                "task_id": task.id,
+                "attempt_id": claim.attempt_id,
+                "kind": "started",
+                "status": "pending",
+                "backend_id": "codex",
+            }),
+        )
+        .unwrap();
+    let qq = Arc::new(MockChannel {
+        id: "qq",
+        ..Default::default()
+    });
+    let d = dispatcher(store.clone(), vec![qq.clone()]);
+    assert_eq!(d.run_once().await.unwrap(), 1);
+    assert_eq!(d.run_once().await.unwrap(), 0);
+    let sent = qq.sent.lock().unwrap();
+    assert_eq!(sent.len(), 1);
+    assert_eq!(sent[0].1.as_deref(), Some("m1"));
+    assert!(sent[0].2.contains("开始执行"), "text: {}", sent[0].2);
+    assert!(sent[0].2.contains("底座 `codex`"), "text: {}", sent[0].2);
+    let doc = store.document("progress", "run-1-1-started").unwrap().unwrap();
+    assert_eq!(doc.value["status"], "sent");
+}
+
+/// 首次失败重试的 retry 进度文档带错误原因送达。
+#[tokio::test]
+async fn dispatches_retry_progress_with_reason() {
+    let dir = tempfile::tempdir().unwrap();
+    let route = NotifyRoute {
+        channel: "qq".into(),
+        target: "user:U1".into(),
+        msg_id: Some("m1".into()),
+    };
+    let store: Arc<dyn TaskStore> =
+        Arc::new(SqliteTaskStore::open(&dir.path().join("state.db")).unwrap());
+    let task = store
+        .enqueue_with_notify("qq:msg:m1", "hello", "codex", RunContract::AnalysisV1, &route)
+        .unwrap()
+        .task;
+    let claim = store.claim("worker", 100, 30).unwrap().unwrap();
+    store
+        .fail(&claim, "Codex returned an unexecuted tool call", 101, 60, false, true)
+        .unwrap();
+    store
+        .put_document(
+            "progress",
+            "run-1-1-retry",
+            None,
+            &serde_json::json!({
+                "task_id": task.id,
+                "attempt_id": claim.attempt_id,
+                "kind": "retry",
+                "status": "pending",
+                "error": "Codex returned an unexecuted tool call",
+            }),
+        )
+        .unwrap();
+    let qq = Arc::new(MockChannel {
+        id: "qq",
+        ..Default::default()
+    });
+    let d = dispatcher(store.clone(), vec![qq.clone()]);
+    assert_eq!(d.run_once().await.unwrap(), 1);
+    let sent = qq.sent.lock().unwrap();
+    assert_eq!(sent.len(), 1);
+    assert!(sent[0].2.contains("首次执行失败"), "text: {}", sent[0].2);
+    assert!(
+        sent[0].2.contains("unexecuted tool call"),
+        "text: {}",
+        sent[0].2
+    );
+}
+
+/// 任务已终态时 started 进度不再补发，直接消化。
+#[tokio::test]
+async fn stale_progress_for_terminal_task_is_skipped() {
+    let dir = tempfile::tempdir().unwrap();
+    let route = NotifyRoute {
+        channel: "qq".into(),
+        target: "user:U1".into(),
+        msg_id: Some("m1".into()),
+    };
+    let store = store_with_terminal_task(&dir, route);
+    store
+        .put_document(
+            "progress",
+            "run-1-1-started",
+            None,
+            &serde_json::json!({
+                "task_id": 1,
+                "attempt_id": 1,
+                "kind": "started",
+                "status": "pending",
+                "backend_id": "codex",
+            }),
+        )
+        .unwrap();
+    let qq = Arc::new(MockChannel {
+        id: "qq",
+        ..Default::default()
+    });
+    let d = dispatcher(store.clone(), vec![qq.clone()]);
+    // 只发终态通知；过期的 started 进度被消化不重发。
+    assert_eq!(d.run_once().await.unwrap(), 1);
+    let sent = qq.sent.lock().unwrap();
+    assert_eq!(sent.len(), 1);
+    assert!(sent[0].2.starts_with("处理完成"));
+    let doc = store.document("progress", "run-1-1-started").unwrap().unwrap();
+    assert_eq!(doc.value["status"], "done");
 }

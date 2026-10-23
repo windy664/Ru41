@@ -547,6 +547,7 @@ fn c2c_new_message_interrupts_unfinished_tasks_same_conversation() {
         backend: "codex".into(),
         bind_secret: None,
         command_handlers: vec![],
+        sequencer: Arc::new(ru41::channels::qq::ReplySequencer::default()),
     };
     let c2c = |msg_id: &str, content: &str| GatewayEvent::C2cMessage {
         msg_id: msg_id.into(),
@@ -556,12 +557,24 @@ fn c2c_new_message_interrupts_unfinished_tasks_same_conversation() {
         attachments: vec![],
     };
 
-    // 第一条直接入队，无打断提示。
-    assert!(bot.ingest(&c2c("m1", "第一条")).unwrap().is_none());
-    // 同会话第二条：打断第一条（排队中），并给出提示。
-    let notice = bot.ingest(&c2c("m2", "第二条")).unwrap().unwrap();
+    // 第一条直接入队，回执提示已接单、无打断。
+    let receipt = bot.ingest(&c2c("m1", "第一条")).unwrap();
+    assert!(receipt.created);
+    assert_eq!(receipt.interrupted, 0);
+    let notice = receipt.notice();
+    assert!(notice.contains("已接单"), "notice: {notice}");
+    assert!(!notice.contains("已打断"), "notice: {notice}");
+    // 同会话第二条：打断第一条（排队中），回执里同时体现。
+    let receipt = bot.ingest(&c2c("m2", "第二条")).unwrap();
+    assert_eq!(receipt.interrupted, 1);
+    let notice = receipt.notice();
     assert!(notice.contains("已打断"));
-    // 群消息不打断单聊任务。
+    assert!(notice.contains("已接单"));
+    // 重复消息（同 msg_id）：不重复创建任务，回执说明在处理中。
+    let receipt = bot.ingest(&c2c("m2", "第二条")).unwrap();
+    assert!(!receipt.created);
+    assert!(receipt.notice().contains("已在处理中"));
+    // 群消息不打断单聊任务，也回执已接单。
     let group = GatewayEvent::GroupMessage {
         msg_id: "g9".into(),
         content: "群消息".into(),
@@ -569,7 +582,9 @@ fn c2c_new_message_interrupts_unfinished_tasks_same_conversation() {
         author_openid: "U9".into(),
         attachments: vec![],
     };
-    assert!(bot.ingest(&group).unwrap().is_none());
+    let receipt = bot.ingest(&group).unwrap();
+    assert_eq!(receipt.interrupted, 0);
+    assert!(receipt.notice().contains("已接单"));
 
     let tasks = fixture.store.list(10).unwrap();
     let status_of = |key: &str| {
