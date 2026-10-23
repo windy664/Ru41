@@ -112,24 +112,7 @@ impl Worker {
         };
         self.store
             .put_document("run", &run_id, None, &serde_json::to_value(&run)?)?;
-        // 进度通知（pending）：由 NotifyDispatcher 扫描后发给任务绑定的会话，
-        // 让用户看到「开始执行」；失败路径另写 retry 进度。
-        if let Err(error) = self.store.put_document(
-            "progress",
-            &format!("{run_id}-started"),
-            None,
-            &serde_json::json!({
-                "task_id": claim.task.id,
-                "attempt_id": claim.attempt_id,
-                // attempt_id 是全局 attempts 行号（会涨到几百），展示用 per-task 次数。
-                "attempt": claim.task.attempt_count,
-                "kind": "started",
-                "status": "pending",
-                "backend_id": claim.task.backend_id,
-            }),
-        ) {
-            eprintln!("[worker] progress doc for task {} failed: {error:#}", claim.task.id);
-        }
+        // 进度通知不再写 started（用户直接看活动流原生消息）；失败路径仍会写 retry。
         let result = self.run_claim(&claim, agent, &mut shutdown).await;
         if let Ok(session_id) = &result {
             run.session_id = session_id.clone();

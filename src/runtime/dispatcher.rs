@@ -65,7 +65,7 @@ impl NotifyDispatcher {
             let revision = current.as_ref().map(|d| d.revision + 1).unwrap_or(1);
             let result = tokio::time::timeout(
                 Duration::from_secs(30),
-                channel.send(&route.target, route.msg_id.as_deref(), &notify_text(&task)),
+                channel.send(&route.target, effective_msg_id(&task, now), &notify_text(&task)),
             )
             .await;
             match result {
@@ -134,7 +134,7 @@ impl NotifyDispatcher {
             let text = progress_text(&doc, &task);
             let result = tokio::time::timeout(
                 Duration::from_secs(30),
-                channel.send(&route.target, route.msg_id.as_deref(), &text),
+                channel.send(&route.target, effective_msg_id(&task, crate::runtime::worker::now()), &text),
             )
             .await;
             match result {
@@ -199,7 +199,7 @@ impl NotifyDispatcher {
             let text = lines.join("\n");
             let result = tokio::time::timeout(
                 Duration::from_secs(30),
-                channel.send(&route.target, route.msg_id.as_deref(), &text),
+                channel.send(&route.target, effective_msg_id(&task, crate::runtime::worker::now()), &text),
             )
             .await;
             match result {
@@ -259,52 +259,93 @@ fn progress_text(doc: &crate::domain::records::Document, task: &Task) -> String 
     }
 }
 
-/// 通知文本：成功用结果摘要，失败带原因；都附页脚说明任务身份与开销。
+/// 通知文本：成功用结果摘要，失败带原因。不加脚手架页脚——
+/// 用户要的是原生 codex 输出，不是 ru41 的机械说明。
 fn notify_text(task: &Task) -> String {
-    let body = match &task.result {
+    match &task.result {
         Some(result) => result.summary.clone(),
         None => format!(
             "## 任务失败\n\n{}",
             task.last_error.as_deref().unwrap_or("未知错误")
         ),
-    };
-    format!("{body}\n\n{}", task_footer(task))
+    }
 }
 
-/// 终态回复页脚：任务号、底座、尝试次数、用时，消除「这是哪条任务」的黑盒感。
-fn task_footer(task: &Task) -> String {
-    let mut parts = vec![
-        format!("任务 `#{}`", task.id),
-        format!("底座 `{}`", task.backend_id),
-        format!("尝试 {} 次", task.attempt_count),
-    ];
-    if let Some(elapsed) = elapsed_label(&task.created_at, &task.updated_at) {
-        parts.push(format!("用时 {elapsed}"));
-    }
-    format!("—— {}", parts.join(" · "))
-}
+/// QQ 被动回复窗口：msg_id 只在消息到达后约 5 分钟内有效（CodeX-to-QQ 的
+/// PROACTIVE_FINAL_REPLY_AFTER_MS=30000 同款经验），超窗后转主动消息，
+/// 否则慢任务的结果会因为过期被动回复而被平台拒绝。
+const PASSIVE_WINDOW_SECS: i64 = 240;
 
-/// 解析 created_at/updated_at（ISO-UTC，'%Y-%m-%dT%H:%M:%S%.3fZ'）求人类可读时长。
-fn elapsed_label(created_at: &str, updated_at: &str) -> Option<String> {
-    let parse = |raw: &str| {
-        chrono::DateTime::parse_from_rfc3339(raw)
-            .map(|dt| dt.timestamp())
-            .ok()
-            .or_else(|| {
-                chrono::NaiveDateTime::parse_from_str(raw, "%Y-%m-%dT%H:%M:%S%.fZ")
-                    .ok()
-                    .map(|naive| naive.and_utc().timestamp())
-            })
+/// 超窗的会话把 msg_id 丢掉转主动发送；无 msg_id 或无法解析时间时按原样。
+fn effective_msg_id<'a>(task: &'a Task, now: i64) -> Option<&'a str> {
+    let route = task.notify.as_ref()?;
+    let msg_id = route.msg_id.as_deref()?;
+    let created = match chrono::NaiveDateTime::parse_from_str(
+        &task.created_at,
+        "%Y-%m-%dT%H:%M:%S%.fZ",
+    ) {
+        Ok(parsed) => parsed.and_utc().timestamp(),
+        // 时间解析不出时不改变既有行为。
+        Err(_) => return Some(msg_id),
     };
-    let secs = parse(updated_at)? - parse(created_at)?;
-    if secs < 0 {
-        return None;
-    }
-    if secs < 60 {
-        Some(format!("{secs} 秒"))
-    } else if secs < 3600 {
-        Some(format!("{} 分钟", secs / 60))
+    if now - created > PASSIVE_WINDOW_SECS {
+        None
     } else {
-        Some(format!("{} 小时 {} 分钟", secs / 3600, (secs % 3600) / 60))
+        Some(msg_id)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::domain::{NotifyRoute, TaskStatus};
+
+    fn task(created_at: &str) -> Task {
+        Task {
+            id: 1,
+            request_key: "k".into(),
+            backend_id: "codex".into(),
+            contract: crate::domain::RunContract::AnalysisV1,
+            prompt: "p".into(),
+            status: TaskStatus::Queued,
+            created_at: created_at.into(),
+            updated_at: created_at.into(),
+            attempt_count: 0,
+            max_attempts: 3,
+            active_attempt_id: None,
+            lease_until: None,
+            available_at: 0,
+            result: None,
+            last_error: None,
+            notify: Some(NotifyRoute {
+                channel: "qq".into(),
+                target: "user:U1".into(),
+                msg_id: Some("m1".into()),
+            }),
+            notified_at: None,
+        }
+    }
+
+    #[test]
+    fn passive_msg_id_kept_within_window_and_dropped_after() {
+        // created_at 是 ISO-UTC；窗口内保留被动锚点，超窗转主动。
+        let task = task("2026-01-01T00:00:00.000Z");
+        let created = chrono::NaiveDateTime::parse_from_str(
+            &task.created_at,
+            "%Y-%m-%dT%H:%M:%S%.fZ",
+        )
+        .unwrap()
+        .and_utc()
+        .timestamp();
+        assert_eq!(effective_msg_id(&task, created + 60), Some("m1"));
+        assert_eq!(effective_msg_id(&task, created + PASSIVE_WINDOW_SECS + 1), None);
+    }
+
+    #[test]
+    fn msg_id_passthrough_when_unparseable_or_absent() {
+        let mut task = task("garbage");
+        assert_eq!(effective_msg_id(&task, 999), Some("m1"));
+        task.notify.as_mut().unwrap().msg_id = None;
+        assert_eq!(effective_msg_id(&task, 999), None);
     }
 }

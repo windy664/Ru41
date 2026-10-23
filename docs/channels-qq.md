@@ -39,16 +39,17 @@ cargo run --locked -- qq doctor
 - **凭证**：`POST https://bots.qq.com/app/getAppAccessToken`，body `{"appId", "clientSecret"}`，返回 `access_token` 与 `expires_in`（字符串）。客户端缓存 token 并提前 60 秒重新申请；鉴权相关关闭码（4002/4004）会清缓存重新取。
 - **WebSocket**：`GET https://api.sgroup.qq.com/gateway`（请求头 `Authorization: QQBot {token}`）拿 wss 地址 → 连接 → 收 HELLO（op 10，含 heartbeat_interval）→ 发 IDENTIFY（op 2，shard [0,1]）→ 心跳 op 1（间隔减 5 秒）保活 → DISPATCH（op 0）解析事件 → READY 记录 session_id，断线后带 session_id + 最后 seq 发 RESUME（op 6）；关闭码 4009 或 INVALID_SESSION（op 9, d=false）清会话强制重新 IDENTIFY。
 - **事件**：`GROUP_AT_MESSAGE_CREATE`（`d.id/content/group_openid/author.member_openid`）、`C2C_MESSAGE_CREATE`（`d.author.user_openid`）。内容先去首尾空白，空消息不入队。
-- **发消息**：`POST /v2/groups/{group_openid}/messages` 或 `/v2/users/{user_openid}/messages`，body `{content, msg_type: 0, msg_id, msg_seq}`。msg_type 0 为文本；同一 msg_id 多条回复需 msg_seq 自增。`ReplySequencer`（内存计数器）由 QqBot 与 QqNotifier 在同一进程内共享，保证回执、进度通知、终态结果在同 msg_id 下不撞 seq。
+- **发消息**：`POST /v2/groups/{group_openid}/messages` 或 `/v2/users/{user_openid}/messages`，body `{content, msg_type: 0, msg_id, msg_seq}`。msg_type 0 为文本；同一 msg_id 多条回复需 msg_seq 自增。`ReplySequencer`（内存计数器）由 QqBot 与 QqNotifier 在同一进程内共享，保证命令回复/打断提示、进度通知、终态结果在同 msg_id 下不撞 seq。
 
 ## 与任务系统的衔接
 
 - 入队键 `qq:msg:{msg_id}`，同一消息重复投递幂等（先查重再打断，平台重推同 msg_id 不会误取消原任务）；路由信息存 `tasks.notify_channel="qq"`、`notify_target="group:{openid}"` 或 `"user:{openid}"`、`notify_msg_id`。
-- 消息入队后立即被动回复**接单回执**（任务号、打断提示、排队情况），消除「消息发出去没人理」的黑盒感。
+- 消息入队后**不发接单回执**（用户要的是原生 codex 体验）；只有单聊打断同会话未完成任务时才即时回「已打断」提示。
 - 通知循环每 2 秒轮询三类出站消息：
-  - **活动流**：worker 尾随底座的 `events.jsonl`，把事件翻译成展示行（💬 对话 / 💭 思考 / ⚙️ 工具 / 🔍 搜索 / 📋 计划），按 4 秒节流攒批写入 `activity` chunk 文档；通知循环按序发回原会话，像看 codex 终端一样实时可见 agent 在做什么。单次尝试最多 40 个 chunk，超出后提示「不再逐条推送」；任务终态后残留 chunk 直接消化，不打断最终结果。
-  - **进度通知**：`progress` 文档（worker 认领任务后写 `started`、首次失败进重试写 `retry` 含错误原因），发给任务绑定的会话；任务已终态时直接消化不重发。
-  - **终态通知**：成功发结果摘要，失败带原因；两者都附页脚（任务号、底座、尝试次数、用时）。成功后 `mark_notified`（条件更新，并发下最多标记一次）；发送失败只记日志，下轮重试。
+  - **活动流**：worker 尾随底座的 `events.jsonl`，把事件翻译成展示行（💬 对话 / 💭 思考 / ⚙️ 工具 / 🔍 搜索 / 📋 计划 / ⚠️ 底座错误），按 4 秒节流攒批写入 `activity` chunk 文档；通知循环按序发回原会话，像看 codex 终端一样实时可见 agent 在做什么。单次尝试最多 40 个 chunk，超出后提示「不再逐条推送」；任务终态后残留 chunk 直接消化，不打断最终结果。
+  - **进度通知**：`progress` 文档（首次失败进重试时写 `retry`，含错误原因）；任务已终态时直接消化不重发。
+  - **终态通知**：成功发结果摘要，失败带原因，不加页脚。成功后 `mark_notified`（条件更新，并发下最多标记一次）；发送失败只记日志，下轮重试。
+- **被动回复窗口**：QQ 的 msg_id 被动回复只在消息到达后约 5 分钟有效；创建超过 240 秒的任务，终态/进度/活动流发送都会丢弃 msg_id 转主动消息，避免慢任务结果被平台拒绝（借鉴 CodeX-to-QQ 的 PROACTIVE_FINAL_REPLY_AFTER_MS）。
 - 网关与 Worker 是独立进程；`qq run` 只负责收发，执行仍由 `worker` 完成。
 
 ## 命令与身份绑定
