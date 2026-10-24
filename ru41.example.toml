@@ -81,6 +81,8 @@ app_secret = ""
 # [sources.projects]
 # projects_dir = "02-Projects-项目"
 # interval_secs = 86400
+# github_user = "yourname"      # 配置后每日全量同步该账号公开仓库（各建目录+README.md）
+# archive_after_days = 180      # 最后更新超过该天数的仓库自动归 Archived-已归档
 
 # 校园卡水电监控（ru41 ecard poll/run），协议见 docs/ecard-waterfee.md。
 # base_url 与 token 只存本地；token 建议用环境变量 RU41_ECARD_TOKEN。

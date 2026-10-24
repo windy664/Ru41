@@ -7,7 +7,7 @@
 
 use crate::adapters::sources::github::{GithubClient, GithubRepoMeta};
 use crate::ports::vault::Vault;
-use anyhow::{Context, Result};
+use anyhow::Result;
 use serde::Serialize;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
@@ -20,7 +20,18 @@ pub struct ProjectsConfig {
     /// Vault 内项目库根目录（相对路径）。
     pub projects_dir: String,
     pub interval_secs: u64,
+    /// GitHub 账号：配置后每日全量同步该账号公开仓库。
+    pub github_user: Option<String>,
+    /// 仓库最后更新超过该天数自动归入 Archived-已归档。
+    pub archive_after_days: u64,
 }
+
+/// 进行中分组目录名（顶层 英文-中文 约定）。
+pub const ACTIVE_DIR: &str = "Active-进行中";
+/// 归档分组目录名。
+pub const ARCHIVED_DIR: &str = "Archived-已归档";
+/// 账号同步的机器文件名（frontmatter 元数据 + README 正文）。
+pub const REPO_FILE: &str = "README.md";
 
 /// 一个项目目录 + 它的 GitHub 锚点。
 #[derive(Debug, Clone)]
@@ -62,14 +73,22 @@ impl ProjectsTracker {
     }
 
     pub async fn poll_once(&self) -> Result<ProjectsSyncReport> {
+        let mut updated = Vec::new();
+        let mut errors = Vec::new();
+        let mut github_projects = 0usize;
+        // 账号同步：配置 github_user 时全量拉取，按 pushed_at 自动分组。
+        if let Some(user) = self.config.github_user.clone() {
+            match self.sync_account(&user, &mut updated).await {
+                Ok(count) => github_projects += count,
+                Err(error) => errors.push(format!("account {user}: {error:#}")),
+            }
+        }
+        // 锚点扫描：手工维护的 repo: 笔记（非本账号项目也支持）。
         let entries = self.scan_projects().unwrap_or_else(|error| {
-            // 扫描失败（目录未建等）不算任务失败，退化为空集。
             eprintln!("[projects] scan failed: {error:#}");
             Vec::new()
         });
-        let mut updated = Vec::new();
-        let mut errors = Vec::new();
-        let github_projects = entries.len();
+        github_projects += entries.len();
         for entry in &entries {
             match self.sync_one(entry).await {
                 Ok(true) => updated.push(entry.name.clone()),
@@ -80,8 +99,7 @@ impl ProjectsTracker {
         let committed = if updated.is_empty() {
             false
         } else {
-            self.vault
-                .commit_all("[ru41] projects GitHub 同步")?
+            self.vault.commit_all("[ru41] projects GitHub 同步")?
         };
         if committed {
             self.vault.push()?;
@@ -95,44 +113,105 @@ impl ProjectsTracker {
         })
     }
 
-    /// 扫描项目库：projects_dir 下一层目录即项目（平铺结构，无状态分组；
-    /// 归档用笔记 frontmatter `status: archived` 标记，不影响同步）。
-    /// 目录不存在视为未启用（空集），不报错。
-    fn scan_projects(&self) -> Result<Vec<ProjectEntry>> {
-        let root = self.config.vault_root.join(&self.config.projects_dir);
-        let mut entries = Vec::new();
-        let Ok(projects) = std::fs::read_dir(&root) else {
-            return Ok(entries);
-        };
-        for project in projects.flatten() {
-            if !project.file_type().is_ok_and(|t| t.is_dir()) {
-                continue;
+    /// 账号全量同步：列出用户公开仓库，按 pushed_at 是否超过
+    /// archive_after_days 决定落 Active-进行中 还是 Archived-已归档；
+    /// 已在另一组的目录先写新位置再删旧文件（git mv 语义）。
+    /// 返回成功同步的仓库数。
+    async fn sync_account(&self, user: &str, updated: &mut Vec<String>) -> Result<usize> {
+        let repos = self.github.list_user_repos(user).await?;
+        let cutoff = crate::util::now() - (self.config.archive_after_days as i64) * 86_400;
+        let mut synced = 0usize;
+        for meta in &repos {
+            let stale = if meta.pushed_at.is_empty() {
+                false
+            } else {
+                chrono::DateTime::parse_from_rfc3339(&meta.pushed_at)
+                    .map(|dt| dt.timestamp() < cutoff)
+                    .unwrap_or(false)
+            };
+            let group = if meta.archived || stale {
+                ARCHIVED_DIR
+            } else {
+                ACTIVE_DIR
+            };
+            let name = meta
+                .full_name
+                .rsplit('/')
+                .next()
+                .unwrap_or(&meta.full_name)
+                .to_owned();
+            let entry = ProjectEntry {
+                rel_dir: format!("{}/{group}/{name}", self.config.projects_dir),
+                note_rel: "github-account".into(),
+                repo: {
+                    let mut parts = meta.full_name.split('/');
+                    (parts.next().unwrap_or(user).to_owned(), parts.next().unwrap_or_default().to_owned())
+                },
+                name,
+            };
+            match self.sync_one(&entry).await {
+                Ok(true) => updated.push(entry.name.clone()),
+                Ok(false) => {}
+                Err(error) => eprintln!("[projects] {} 同步失败: {error:#}", entry.name),
             }
-            let name = project.file_name().to_string_lossy().into_owned();
-            let found = find_repo_note(&project.path(), &self.config.projects_dir, &name);
-            let Some((note_rel, repo)) = found else {
+            synced += 1;
+            // 分组迁移：另一组里有同项目的机器文件就删掉（内容已写到新位置）。
+            let other = if group == ACTIVE_DIR { ARCHIVED_DIR } else { ACTIVE_DIR };
+            let stale_path = format!(
+                "{}/{other}/{}/{REPO_FILE}",
+                self.config.projects_dir, entry.name
+            );
+            if self.vault.remove_file(&stale_path).unwrap_or(false) {
+                updated.push(format!("{}（移至 {group}）", entry.name));
+            }
+        }
+        Ok(synced)
+    }
+
+    /// 扫描项目库：projects_dir/<分组>/<项目>/ 下找带 `repo:` 的手工锚点笔记。
+    /// 账号同步的目录没有锚点笔记，不会被扫到，互不干扰。
+    fn scan_projects(&self) -> Result<Vec<ProjectEntry>> {
+        let mut entries = Vec::new();
+        for group in [ACTIVE_DIR, ARCHIVED_DIR] {
+            let root = self.config.vault_root.join(&self.config.projects_dir).join(group);
+            let Ok(projects) = std::fs::read_dir(&root) else {
                 continue;
             };
-            entries.push(ProjectEntry {
-                rel_dir: format!("{}/{name}", self.config.projects_dir),
-                name,
-                note_rel,
-                repo,
-            });
+            for project in projects.flatten() {
+                if !project.file_type().is_ok_and(|t| t.is_dir()) {
+                    continue;
+                }
+                let name = project.file_name().to_string_lossy().into_owned();
+                let found =
+                    find_repo_note(&project.path(), &self.config.projects_dir, group, &name);
+                let Some((note_rel, repo)) = found else {
+                    continue;
+                };
+                entries.push(ProjectEntry {
+                    rel_dir: format!("{}/{group}/{name}", self.config.projects_dir),
+                    name,
+                    note_rel,
+                    repo,
+                });
+            }
         }
         entries.sort_by(|a, b| a.rel_dir.cmp(&b.rel_dir));
         Ok(entries)
     }
 
     fn count_project_dirs(&self) -> Result<usize> {
-        let root = self.config.vault_root.join(&self.config.projects_dir);
-        let Ok(projects) = std::fs::read_dir(&root) else {
-            return Ok(0);
-        };
-        Ok(projects
-            .flatten()
-            .filter(|e| e.file_type().is_ok_and(|t| t.is_dir()))
-            .count())
+        let mut count = 0usize;
+        for group in [ACTIVE_DIR, ARCHIVED_DIR] {
+            let root = self.config.vault_root.join(&self.config.projects_dir).join(group);
+            let Ok(projects) = std::fs::read_dir(&root) else {
+                continue;
+            };
+            count += projects
+                .flatten()
+                .filter(|e| e.file_type().is_ok_and(|t| t.is_dir()))
+                .count();
+        }
+        Ok(count)
     }
 
     /// 同步单个项目：README + 元数据渲染后与 vault 现状比对，变化才覆写。
@@ -141,12 +220,15 @@ impl ProjectsTracker {
     /// 元数据只更新 README；首次同步没有旧文件兜底才算失败。
     async fn sync_one(&self, entry: &ProjectEntry) -> Result<bool> {
         let (owner, repo) = &entry.repo;
-        let target = format!("{}/Repo-GitHub.md", entry.rel_dir);
+        let target = format!("{}/{REPO_FILE}", entry.rel_dir);
         let existing = self.vault.read_file(&target)?;
         let meta = match self.github.repo_meta(owner, repo).await {
             Ok(meta) => Some(meta),
             Err(error) => {
-                eprintln!("[projects] {} meta 拉取失败，沿用旧元数据: {error:#}", entry.name);
+                eprintln!(
+                    "[projects] {} meta 拉取失败，沿用旧元数据: {error:#}",
+                    entry.name
+                );
                 None
             }
         };
@@ -202,12 +284,15 @@ impl crate::ingress::schedule::PollJob for ProjectsTracker {
 fn find_repo_note(
     project_dir: &Path,
     projects_dir: &str,
+    group: &str,
     name: &str,
 ) -> Option<(String, (String, String))> {
     let mut notes = std::fs::read_dir(project_dir).ok()?.flatten();
     while let Some(note) = notes.next() {
         let file_name = note.file_name().to_string_lossy().into_owned();
-        if !file_name.ends_with(".md") || file_name == "Repo-GitHub.md" {
+        if !file_name.ends_with(".md")
+            || matches!(file_name.as_str(), "Repo-GitHub.md" | "README.md")
+        {
             continue;
         }
         let text = std::fs::read_to_string(note.path()).ok()?;
@@ -217,10 +302,7 @@ fn find_repo_note(
         let Some(repo) = GithubClient::parse_repo(&repo_url) else {
             continue;
         };
-        return Some((
-            format!("{projects_dir}/{name}/{file_name}"),
-            repo,
-        ));
+        return Some((format!("{projects_dir}/{group}/{name}/{file_name}"), repo));
     }
     None
 }
@@ -278,7 +360,8 @@ mod tests {
 
     #[test]
     fn frontmatter_repo_extracts_github_url() {
-        let text = "---\nname: Ru41\nrepo: https://github.com/windy664/Ru41\nstatus: active\n---\n# 正文";
+        let text =
+            "---\nname: Ru41\nrepo: https://github.com/windy664/Ru41\nstatus: active\n---\n# 正文";
         assert_eq!(
             frontmatter_repo(text).as_deref(),
             Some("https://github.com/windy664/Ru41")
@@ -295,19 +378,27 @@ mod tests {
     #[test]
     fn repo_note_skips_machine_file_and_non_github() {
         let dir = tempfile::tempdir().unwrap();
-        std::fs::write(dir.path().join("Repo-GitHub.md"), "---\nrepo: https://github.com/o/r\n---\n").unwrap();
+        std::fs::write(
+            dir.path().join("Repo-GitHub.md"),
+            "---\nrepo: https://github.com/o/r\n---\n",
+        )
+        .unwrap();
         // 机器文件被跳过 → None。
-        assert!(find_repo_note(dir.path(), "P", "n").is_none());
-        std::fs::write(dir.path().join("笔记.md"), "---\nrepo: https://gitee.com/a/b\n---\n").unwrap();
+        assert!(find_repo_note(dir.path(), "P", "G", "n").is_none());
+        std::fs::write(
+            dir.path().join("笔记.md"),
+            "---\nrepo: https://gitee.com/a/b\n---\n",
+        )
+        .unwrap();
         // 非 GitHub 链接不算 GitHub 项目。
-        assert!(find_repo_note(dir.path(), "P", "n").is_none());
+        assert!(find_repo_note(dir.path(), "P", "G", "n").is_none());
         std::fs::write(
             dir.path().join("项目笔记.md"),
             "---\nrepo: https://github.com/o/r\n---\n# Ru41\n",
         )
         .unwrap();
-        let (rel, repo) = find_repo_note(dir.path(), "P", "n").unwrap();
-        assert_eq!(rel, "P/n/项目笔记.md");
+        let (rel, repo) = find_repo_note(dir.path(), "P", "G", "n").unwrap();
+        assert_eq!(rel, "P/G/n/项目笔记.md");
         assert_eq!(repo, ("o".to_string(), "r".to_string()));
     }
 }

@@ -7,11 +7,11 @@ description: 管理用户的项目库（02-Projects-项目）。当用户问「�
 
 ## 结构
 
-`02-Projects-项目/<项目名>/`（平铺，无分组目录）：
+`02-Projects-项目/<分组>/<项目名>/`，两个分组：
 
-- 项目目录里**至少一个笔记**带 frontmatter 的 `repo:` 行（GitHub 链接）即成为 GitHub 项目，每日自动同步 `Repo-GitHub.md`（README + stars/pushed_at 等元数据，机器所有勿手改）
-- 无 `repo:` 行的项目纯笔记管理，同样有效
-- 项目停了/黄了：笔记 frontmatter 加 `status: archived`，不用挪目录
+- `Active-进行中/`：活跃项目 · `Archived-已归档/`：GitHub 最后更新超过 180 天（或仓库已 archived）自动归入，恢复活跃自动移回
+- 账号同步：配置了 github_user 后，账号全部公开仓库每日自动建目录，`README.md`（元数据 frontmatter + README 正文，机器所有勿手改）
+- 手工项目：目录里放一个带 frontmatter `repo:` 行的笔记即成为锚点项目（适合非本账号仓库）；无锚点的纯笔记项目（如挖洞记录）手工维护，同步器不碰
 
 ## 新建项目笔记模板
 
@@ -40,5 +40,5 @@ repo: https://github.com/<owner>/<repo>   # GitHub 项目才需要这行
 ## 纪律
 
 - 进度、结论、复盘写进**项目笔记**（人写文件），不写 Repo-GitHub.md（机器覆写会清掉）
-- 项目黄了/停了：frontmatter 标 `status: archived`，GitHub 项目依旧会同步元数据
+- 分组由同步器按 pushed_at 自动维护，不要手工把账号项目挪组；手工项目想归档自己挪到 Archived-已归档/
 - 回答项目问题时区分「仓库事实」（Repo-GitHub.md）与「用户立场」（项目笔记），注明来源
