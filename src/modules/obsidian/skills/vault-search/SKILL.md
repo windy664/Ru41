@@ -20,12 +20,14 @@ description: 在用户的 Obsidian 知识库中检索笔记并回答问题。当
 - `05-Opportunities-机会/`：竞赛、科研、实习、黑客松等机会情报
 - `06-Blog-博客/`：Drafts-草稿 / Published-已发布
 
-## 检索方法（先宽后窄）
+## 检索方法（语义优先，关键词兜底）
 
-1. 全文搜关键词：`rg -i -l "关键词" /vault`，同义词各试一次（中/英、缩写）
-2. 按目录收窄：`rg -i "关键词" "/vault/03-Knowledge-知识"`
-3. 命中后用 Read 读全文再回答；没命中就换关键词或直说没有
+1. **语义检索**：`ru41 --config /etc/ru41/config.toml --db /data/state.db knowledge search "<问题或描述>"`
+   ——向量索引覆盖全部笔记，记不清准确关键词时也能命中（如「选导师的东西」）
+2. 命中后用 Read 读 `/vault/<path>` 全文再回答；score 低于 0.4 的结果可信度低，交叉验证
+3. **关键词兜底**：语义检索结果不理想时用 `rg -i -l "关键词" /vault`，同义词各试一次（中/英、缩写）；按目录收窄如 `rg -i "关键词" "/vault/03-Knowledge-知识"`
 4. 文件名本身也是线索：`rg --files /vault | rg -i "模式"`
+5. 若 knowledge search 报错（索引未建），提醒用户运行 `ru41 knowledge index`
 
 ## 回答要求
 
