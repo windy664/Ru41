@@ -28,7 +28,7 @@ src/modules/<name>/
 - `ingress/schedule.rs`：`run_periodic` 定时循环与 `PollJob` trait
 - `ports/`：核心公开接口
 
-现有范例：自包含附属 `modules/papers`、`modules/rss`、`modules/ecard`；薄门面附属 `modules/planner`（QQ 待办/日程入口，持久化由核心 `app/todo.rs` 与 `app/schedule.rs` 提供）、`modules/obsidian`（QQ 记一下 + 归档技能，Vault 读写由核心 `app/obsidian.rs` 提供）。
+现有范例：自包含附属 `modules/papers`、`modules/rss`、`modules/ecard`、`modules/projects`（GitHub 项目库同步）；薄门面附属 `modules/planner`（QQ 待办/日程入口，持久化由核心 `app/todo.rs` 与 `app/schedule.rs` 提供）、`modules/obsidian`（QQ 记一下 + 归档技能，Vault 读写由核心 `app/obsidian.rs` 提供）。
 
 ## 两种附属形态与升级路径
 
