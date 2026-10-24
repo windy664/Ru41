@@ -70,7 +70,6 @@ fn infer_deadline_year(now: i64, end_mmdd: &str) -> Option<i32> {
     None
 }
 
-
 pub(super) fn decode_course_list(html: &str) -> Vec<ChaoxingCourse> {
     let re_div = regex::Regex::new(r#"<div class="course(?: [^"]*)?""#).expect("course div regex");
     let mut courses = Vec::new();

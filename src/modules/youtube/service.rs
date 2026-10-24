@@ -1,0 +1,464 @@
+use crate::{
+    app::{digest::keyword_match, task::TaskService},
+    domain::NotifyRoute,
+    ports::storage::TaskStore,
+};
+use anyhow::Result;
+use serde::Serialize;
+use std::sync::Arc;
+
+use super::source::{
+    TranscriptSegment, VideoEntry, VideoMeta, YtDlpClient, format_ts, render_transcript,
+};
+
+/// YouTube 英语预习配置（对应配置文件的 [sources.youtube]，由 YoutubeSection 解析）。
+#[derive(Debug, Clone)]
+pub struct YoutubeConfig {
+    /// 归一化后的频道 videos 列表页。
+    pub channels: Vec<String>,
+    /// 标题关键词粗筛；空列表不过滤。
+    pub keywords: Vec<String>,
+    /// 个人关注方向描述，注入预习单 prompt。
+    pub interests: String,
+    /// 学习者英语水平描述。
+    pub level: String,
+    /// 短于该秒数的视频跳过（过滤 shorts）。
+    pub min_duration_secs: u64,
+    pub max_per_channel: u32,
+    pub max_per_poll: u32,
+    /// 视频发布时间的最大回溯天数；0 表示不做时效窗口。
+    pub max_age_days: u64,
+    pub max_transcript_chars: usize,
+    pub interval_secs: u64,
+    pub backend: String,
+    pub notify: Option<NotifyRoute>,
+    pub ytdlp_bin: String,
+    pub proxy_url: Option<String>,
+}
+
+/// 一轮轮询的结果报告；单频道/单视频失败不中断，错误收进 errors。
+#[derive(Debug, Serialize)]
+pub struct YoutubePollReport {
+    pub channels: usize,
+    pub fetched: usize,
+    /// 本轮新登记的视频数（含被过滤/失败的，均已登记去重）。
+    pub new_videos: usize,
+    /// 本轮成功入队的预习任务数。
+    pub prepared: usize,
+    pub errors: Vec<String>,
+    pub task_ids: Vec<i64>,
+}
+
+/// seen 记录状态机：pending（字幕待拉/重试）→ done（已入队）/ failed（重试耗尽）；
+/// filtered（关键词未命中）/ short（时长不足）/ old（超新鲜度窗口）为终态跳过；
+/// baseline（首次接触频道的存量快照）永不入队——自动追踪只追新，存量用 /预习 手动点播。
+const SEEN_KIND: &str = "youtube_seen";
+/// 频道首见基线：首次轮询只登记不预习，杜绝历史积压刷屏。
+const BASELINE_KIND: &str = "youtube_baseline";
+const MAX_TRANSCRIPT_ATTEMPTS: u64 = 3;
+
+/// YouTube 英语预习追踪：频道列表 → 去重与粗筛 → 字幕转写 → 逐视频入队预习任务。
+/// 终态推送即 Agent 输出的预习单原文（含视频链接），经 [notify] 默认出口投递。
+pub struct YoutubeTracker {
+    store: Arc<dyn TaskStore>,
+    client: YtDlpClient,
+    config: YoutubeConfig,
+}
+
+impl YoutubeTracker {
+    pub fn new(store: Arc<dyn TaskStore>, config: YoutubeConfig) -> Self {
+        let client = YtDlpClient::new(config.ytdlp_bin.clone(), config.proxy_url.clone());
+        Self {
+            store,
+            client,
+            config,
+        }
+    }
+
+    pub async fn poll_once(&self) -> Result<YoutubePollReport> {
+        let mut fetched = 0;
+        let mut new_videos = 0;
+        let mut errors = Vec::new();
+        let mut candidates = Vec::new();
+        for channel in &self.config.channels {
+            let videos = match self
+                .client
+                .list_videos(channel, self.config.max_per_channel)
+                .await
+            {
+                Ok(videos) => videos,
+                Err(error) => {
+                    errors.push(format!("{channel}: {error:#}"));
+                    continue;
+                }
+            };
+            fetched += videos.len();
+            // 首次接触频道：只登记存量快照（baseline），不预习任何历史视频。
+            let is_new_channel = match self.store.document(BASELINE_KIND, channel) {
+                Ok(None) => true,
+                Ok(_) => false,
+                Err(error) => {
+                    errors.push(format!("{channel}: {error:#}"));
+                    continue;
+                }
+            };
+            if is_new_channel {
+                for video in &videos {
+                    // 覆盖式登记：旧版本存量 seen（如历史积压 pending）一并改写为 baseline。
+                    if let Err(error) =
+                        self.upsert_seen(channel, &video.id, "baseline", &video.title)
+                    {
+                        errors.push(format!("{}#{}: {error:#}", channel, video.id));
+                    }
+                }
+                if let Err(error) = self.store.put_document(
+                    BASELINE_KIND,
+                    channel,
+                    None,
+                    &serde_json::json!({
+                        "baseline_at": crate::util::now(),
+                        "items": videos.len(),
+                    }),
+                ) {
+                    errors.push(format!("{channel}: {error:#}"));
+                }
+                new_videos += videos.len();
+                continue;
+            }
+            for video in videos {
+                match self.register_seen(channel, &video) {
+                    Ok(SeenDecision::Candidate) => {
+                        new_videos += 1;
+                        candidates.push((channel.clone(), video));
+                    }
+                    Ok(SeenDecision::Registered) => new_videos += 1,
+                    Ok(SeenDecision::Skip) => {}
+                    Err(error) => errors.push(format!("{}#{}: {error:#}", channel, video.id)),
+                }
+            }
+        }
+        candidates.truncate(self.config.max_per_poll as usize);
+
+        let cutoff = if self.config.max_age_days == 0 {
+            None
+        } else {
+            Some(crate::util::now() - (self.config.max_age_days as i64) * 86_400)
+        };
+        let mut prepared = 0;
+        let mut task_ids = Vec::new();
+        for (channel, video) in candidates {
+            // flat 列表通常缺发布时间：预习前补一次元数据，超窗的老视频只登记不入队。
+            let timestamp = match video.timestamp {
+                Some(ts) => Some(ts),
+                None => match self.client.video_meta(&video.id).await {
+                    Ok(meta) => meta.timestamp,
+                    Err(error) => {
+                        errors.push(format!("meta {}: {error:#}", video.id));
+                        None
+                    }
+                },
+            };
+            if let (Some(ts), Some(cutoff)) = (timestamp, cutoff)
+                && (ts as i64) < cutoff
+            {
+                self.mark_seen(&channel, &video.id, "old", 0);
+                continue;
+            }
+            match self.client.transcript(&video.id).await {
+                Ok(segments) if !segments.is_empty() => {
+                    match self.enqueue_preview(&channel, &video, &segments) {
+                        Ok(task_id) => {
+                            prepared += 1;
+                            task_ids.push(task_id);
+                            self.mark_seen(&channel, &video.id, "done", 0);
+                        }
+                        Err(error) => errors.push(format!("enqueue {}#: {error:#}", video.id)),
+                    }
+                }
+                Ok(_) => self.record_transcript_failure(&channel, &video, "空转写", &mut errors),
+                Err(error) => self.record_transcript_failure(
+                    &channel,
+                    &video,
+                    &format!("{error:#}"),
+                    &mut errors,
+                ),
+            }
+        }
+        Ok(YoutubePollReport {
+            channels: self.config.channels.len(),
+            fetched,
+            new_videos,
+            prepared,
+            errors,
+            task_ids,
+        })
+    }
+
+    /// 去重登记与候选判定：新视频按关键词/时长终态登记或列为候选；
+    /// pending 的历史记录在重试额度内再次候选（字幕拉取是网络操作，失败可重试）。
+    fn register_seen(&self, channel: &str, video: &VideoEntry) -> Result<SeenDecision> {
+        let seen_key = format!("{channel}#{}", video.id);
+        if let Some(doc) = self.store.document(SEEN_KIND, &seen_key)? {
+            return match doc.value["status"].as_str() {
+                Some("pending")
+                    if doc.value["attempts"].as_u64().unwrap_or(0) < MAX_TRANSCRIPT_ATTEMPTS =>
+                {
+                    Ok(SeenDecision::Candidate)
+                }
+                Some("pending") => {
+                    self.mark_seen(
+                        channel,
+                        &video.id,
+                        "failed",
+                        doc.value["attempts"].as_u64().unwrap_or(0),
+                    );
+                    Ok(SeenDecision::Skip)
+                }
+                _ => Ok(SeenDecision::Skip),
+            };
+        }
+        let status = if !keyword_match(&self.config.keywords, &video.title) {
+            "filtered"
+        } else if video
+            .duration_secs
+            .is_some_and(|d| d < self.config.min_duration_secs)
+        {
+            "short"
+        } else {
+            self.write_seen(channel, &video.id, "pending", 0, &video.title)?;
+            return Ok(SeenDecision::Candidate);
+        };
+        self.write_seen(channel, &video.id, status, 0, &video.title)?;
+        Ok(SeenDecision::Registered)
+    }
+
+    fn record_transcript_failure(
+        &self,
+        channel: &str,
+        video: &VideoEntry,
+        reason: &str,
+        errors: &mut Vec<String>,
+    ) {
+        let seen_key = format!("{channel}#{}", video.id);
+        let attempts = self
+            .store
+            .document(SEEN_KIND, &seen_key)
+            .ok()
+            .flatten()
+            .and_then(|doc| doc.value["attempts"].as_u64())
+            .unwrap_or(0)
+            + 1;
+        let status = if attempts >= MAX_TRANSCRIPT_ATTEMPTS {
+            "failed"
+        } else {
+            "pending"
+        };
+        self.mark_seen(channel, &video.id, status, attempts);
+        errors.push(format!("transcript {}: {reason}", video.id));
+    }
+
+    fn write_seen(
+        &self,
+        channel: &str,
+        video_id: &str,
+        status: &str,
+        attempts: u64,
+        title: &str,
+    ) -> Result<bool> {
+        let seen_key = format!("{channel}#{video_id}");
+        self.store.put_document(
+            SEEN_KIND,
+            &seen_key,
+            None,
+            &serde_json::json!({
+                "status": status,
+                "attempts": attempts,
+                "title": title,
+                "first_seen": crate::util::now(),
+            }),
+        )
+    }
+
+    /// 幂等更新（CAS 失败仅见于并发轮询，忽略即可）。
+    fn mark_seen(&self, channel: &str, video_id: &str, status: &str, attempts: u64) {
+        let seen_key = format!("{channel}#{video_id}");
+        if let Ok(Some(doc)) = self.store.document(SEEN_KIND, &seen_key) {
+            let mut value = doc.value.clone();
+            value["status"] = status.into();
+            value["attempts"] = attempts.into();
+            let _ = self
+                .store
+                .put_document(SEEN_KIND, &seen_key, Some(doc.revision), &value);
+        }
+    }
+
+    /// 存在则改写状态（保留 attempts 等字段），不存在则新建。
+    fn upsert_seen(&self, channel: &str, video_id: &str, status: &str, title: &str) -> Result<()> {
+        let seen_key = format!("{channel}#{video_id}");
+        match self.store.document(SEEN_KIND, &seen_key)? {
+            Some(doc) => {
+                let mut value = doc.value.clone();
+                value["status"] = status.into();
+                let _ =
+                    self.store
+                        .put_document(SEEN_KIND, &seen_key, Some(doc.revision), &value)?;
+            }
+            None => {
+                self.write_seen(channel, video_id, status, 0, title)?;
+            }
+        }
+        Ok(())
+    }
+
+    /// 拉好的转写合成预习单 prompt 并入队；任务幂等键按 video_id。
+    fn enqueue_preview(
+        &self,
+        channel: &str,
+        video: &VideoEntry,
+        segments: &[TranscriptSegment],
+    ) -> Result<i64> {
+        let transcript = render_transcript(segments, self.config.max_transcript_chars);
+        let prompt = preview_prompt(
+            &self.config.interests,
+            &self.config.level,
+            channel,
+            video,
+            &transcript,
+        );
+        let key = format!("youtube:prep:{}", video.id);
+        let mut service = TaskService::new(self.store.clone());
+        let result = match &self.config.notify {
+            Some(route) => {
+                service.enqueue_with_notify(&key, &prompt, &self.config.backend, route)?
+            }
+            None => service.enqueue_for(&key, &prompt, &self.config.backend)?,
+        };
+        Ok(result.task.id)
+    }
+}
+
+enum SeenDecision {
+    /// 新登记且通过筛选，列为本轮候选。
+    Candidate,
+    /// 新登记但被终态过滤（关键词/短时长），只登记不入队。
+    Registered,
+    /// 已登记过，跳过。
+    Skip,
+}
+
+/// 手动点播一个视频：拉元数据与转写并入队预习任务（QQ `/预习` 与 CLI `youtube prep` 共用）。
+/// 幂等键与轮询路径一致（`youtube:prep:<id>`），同一视频重复提交返回既有任务。
+#[allow(clippy::too_many_arguments)]
+pub async fn prep_video_task(
+    store: &Arc<dyn TaskStore>,
+    client: &YtDlpClient,
+    video_id: &str,
+    interests: &str,
+    level: &str,
+    max_transcript_chars: usize,
+    backend: &str,
+    route: Option<&NotifyRoute>,
+) -> Result<String> {
+    let meta = client
+        .video_meta(video_id)
+        .await
+        .unwrap_or_else(|_| VideoMeta {
+            title: video_id.to_owned(),
+            duration_secs: None,
+            timestamp: None,
+        });
+    let segments = match client.transcript(video_id).await {
+        Ok(segments) if !segments.is_empty() => segments,
+        Ok(_) => return Ok("未能获取该视频的英文字幕（转写为空），可能不是英文视频。".into()),
+        Err(error) => return Ok(format!("拉取字幕失败：{error:#}")),
+    };
+    let video = VideoEntry {
+        id: video_id.to_owned(),
+        title: meta.title,
+        duration_secs: meta.duration_secs,
+        view_count: None,
+        timestamp: meta.timestamp,
+    };
+    let transcript = render_transcript(&segments, max_transcript_chars);
+    let prompt = preview_prompt(interests, level, "手动提交", &video, &transcript);
+    let key = format!("youtube:prep:{video_id}");
+    let mut service = TaskService::new(store.clone());
+    let result = match route {
+        Some(route) => service.enqueue_with_notify(&key, &prompt, backend, route)?,
+        None => service.enqueue_for(&key, &prompt, backend)?,
+    };
+    Ok(if result.created {
+        format!(
+            "预习任务已创建：#{}《{}》，完成后推送预习单",
+            result.task.id, video.title
+        )
+    } else {
+        format!("该视频已有预习任务：#{}《{}》", result.task.id, video.title)
+    })
+}
+
+/// 预习单 prompt：推送文本即 Agent 输出原文，因此链接/格式都要求写进输出。
+/// 时间戳硬约束「逐字照抄行标记」缓解模型自行换算的漂移；代码锚定留给 v2。
+fn preview_prompt(
+    interests: &str,
+    level: &str,
+    channel: &str,
+    video: &VideoEntry,
+    transcript: &str,
+) -> String {
+    let url = format!("https://www.youtube.com/watch?v={}", video.id);
+    let duration = video
+        .duration_secs
+        .map(format_ts)
+        .unwrap_or_else(|| "未知".into());
+    let interests = if interests.is_empty() {
+        String::new()
+    } else {
+        format!("个人关注方向：{interests}\n")
+    };
+    format!(
+        "你在为中国大学生（英语水平约 {level}）生成 YouTube 视频的「英语预习单」。\n\
+         他先看预习单认识重点语言点，然后再去看视频学英语。频道：{channel}\n\
+         {interests}\
+         视频标题：{title}\n\
+         视频链接：{url}\n\
+         视频时长：{duration}\n\n\
+         输出格式（这就是最终推送的消息，不要输出格式以外的任何内容）：\n\
+         📺 {{一句话概括这期视频}}\n\
+         🔗 {url}\n\
+         ⏱ {{时长}}\n\n\
+         📖 重点词句（8-12 个）：\n\
+         1. **word** /音标/ 一行中文释义 — \"原句片段\" [m:ss]\n\
+         ...\n\
+         ✏️ 实用句式（2-3 个）：\n\
+         - **\"句式框架\"** — 怎么用一句话说明 — \"原句\" [m:ss]\n\n\
+         ⚠️ 听力提示：一句话点出这个视频里值得注意的连读/弱读/语速/术语现象。\n\n\
+         硬性要求：\n\
+         - 转写每行行首形如 [L12 2:14]；引用的时间戳必须逐字照抄自对应行标记，禁止自己换算。\n\
+         - 引用的原句必须逐字出现在转写里，禁止改写。\n\
+         - 不挑基础词；挑「看得懂但听不出、不会主动用」的实用词和视频主题核心术语。\n\
+         - 全文 600 字以内。\n\n\
+         == 英文字幕转写 ==\n{transcript}",
+        level = level,
+        channel = channel,
+        interests = interests,
+        title = video.title,
+        url = url,
+        duration = duration,
+        transcript = transcript,
+    )
+}
+
+impl crate::ingress::schedule::PollJob for YoutubeTracker {
+    fn job_interval(&self) -> std::time::Duration {
+        std::time::Duration::from_secs(self.config.interval_secs)
+    }
+
+    fn poll_json(
+        &self,
+    ) -> std::pin::Pin<
+        Box<dyn std::future::Future<Output = anyhow::Result<serde_json::Value>> + Send + '_>,
+    > {
+        Box::pin(async move { Ok(serde_json::to_value(self.poll_once().await?)?) })
+    }
+}

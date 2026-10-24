@@ -5,6 +5,11 @@ x-ru41: &ru41-common
     dockerfile: Dockerfile
   init: true
   restart: unless-stopped
+  # agent 在容器里裸跑 `ru41 jwxt classes` 等命令时，靠这两个变量拿到
+  # 正确的配置与数据库（clap env 兜底），不必记得带 --config/--db。
+  environment:
+    RU41_CONFIG: /etc/ru41/ru41.toml
+    RU41_DB: /data/state.db
 
 x-ru41-volumes: &ru41-volumes
   - ../ru41.toml:/etc/ru41/ru41.toml:ro

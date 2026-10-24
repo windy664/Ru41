@@ -140,10 +140,7 @@ mod tests {
             extract_note("帮我记一下，周三交实验报告").as_deref(),
             Some("周三交实验报告")
         );
-        assert_eq!(
-            extract_note("Note: buy milk").as_deref(),
-            Some("buy milk")
-        );
+        assert_eq!(extract_note("Note: buy milk").as_deref(), Some("buy milk"));
     }
 
     #[test]

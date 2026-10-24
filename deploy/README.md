@@ -71,6 +71,9 @@ docker compose -f deploy/compose.yaml --profile rss --profile notify up -d worke
 # 水电监控（纯 Rust 阈值判断，不要求 worker）
 docker compose -f deploy/compose.yaml --profile ecard up -d ecard
 
+# 教务课表（CAS 自动登录、变更提醒、明日课表、日程同步；需先配置 [sources.jwxt]）
+docker compose -f deploy/compose.yaml --profile jwxt up -d jwxt
+
 # 私人待办到点提醒（需要设置 QQ 单聊目标）
 RU41_TODO_NOTIFY_TARGET="user:<openid>" docker compose -f deploy/compose.yaml --profile todo up -d todo
 
@@ -89,6 +92,8 @@ docker compose -f deploy/compose.yaml down
 ```
 
 升级时先重新构建，再用原来的 profile 组合启动。Compose 会为所有服务设置 `init: true` 和 `restart: unless-stopped`，但自动重启不等于数据备份。
+
+镜像内置 `TZ=Asia/Shanghai`（见 Dockerfile）：课表日程、每日提醒、日期边界都按本地时区计算。容器若跑在 UTC，所有时刻会差 8 小时，且宿主与容器会互相覆盖对方的日程数据。改时区只需改 Dockerfile 里的 `TZ` 与 `/etc/localtime`。
 
 ## 4. 备份与恢复
 

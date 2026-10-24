@@ -225,12 +225,18 @@ impl Worker {
         let prompt = match &self.knowledge {
             Some(knowledge) => match knowledge.retrieval_context(&prompt) {
                 Ok(Some(context)) => {
-                    eprintln!("[knowledge] task {} injected retrieval context", claim.task.id);
+                    eprintln!(
+                        "[knowledge] task {} injected retrieval context",
+                        claim.task.id
+                    );
                     format!("{context}\n---\n用户消息：\n{prompt}")
                 }
                 Ok(None) => prompt,
                 Err(error) => {
-                    eprintln!("[knowledge] task {} retrieval failed: {error:#}", claim.task.id);
+                    eprintln!(
+                        "[knowledge] task {} retrieval failed: {error:#}",
+                        claim.task.id
+                    );
                     prompt
                 }
             },

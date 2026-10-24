@@ -1,14 +1,15 @@
 //! 教务系统（正方 jwglxt）协议客户端：联奕 CAS 单点登录 + 课表查询。
 //!
 //! 登录链路（协议调研见 docs/jwxt-recon.md）：
-//! 1. CAS REST `POST /v1/tickets`（Ohdave 裸 RSA 密码；该校必须图形验证码，
-//!    由 `jwxt login` 一次性人工完成，TGT 持久化）；
+//! 1. CAS REST `POST /v1/tickets`（Ohdave 裸 RSA 密码；该校强制图形验证码，
+//!    为算术题，模块内置模板匹配求解器自动完成，见 captcha.rs）；
 //! 2. `POST /v1/tickets/<TGT>` 换 ST（免验证码）；
 //! 3. `GET <jwxt>/sso/lyiotlogin?ticket=<ST>` 302 链建立教务会话；
 //! 4. `POST /jwglxt/kbcx/xskbcx_cxXsgrkb.html?gnmkdm=N2151` 拉整学期课表。
 //!
-//! 会话（TGT + cookie）持久化到本地文件，失效才重新走 CAS；TGT 无效时返回
-//! [`JwxtError::LoginRequired`]，由调用方提醒用户重新 `jwxt login`。
+//! 会话（TGT + cookie）持久化到本地文件；实测该校 TGT 时效很短（分钟级），
+//! 所以轮询路径 = 会话复用 → TGT 换 ST → 自动验证码登录，全程无需人工。
+//! 仅当密码错误/账号锁定等硬失败时才提醒人工介入。
 
 use anyhow::{Context, Result, bail};
 use base64::Engine;
@@ -18,6 +19,31 @@ use reqwest::cookie::CookieStore;
 use serde::Deserialize;
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
+
+/// 从基址 URL 提取主机名（DoH 兜底按主机注入 resolve 表）。
+fn host_of(base: &str) -> String {
+    url::Url::parse(base)
+        .ok()
+        .and_then(|u| u.host_str().map(|h| h.to_owned()))
+        .unwrap_or_default()
+}
+
+/// 统一构建教务 HTTP 客户端：UA/超时/cookie jar + DNS 兜底覆盖
+/// （系统解析失败的 host 走公共 DoH 直连，见 [`crate::util::dns_fallback_overrides`]）。
+fn build_http(
+    user_agent: &'static str,
+    jar: &Arc<CookieJar>,
+    hosts: &[(&str, u16)],
+) -> reqwest::Client {
+    let mut builder = reqwest::Client::builder()
+        .user_agent(user_agent)
+        .timeout(crate::util::HTTP_TIMEOUT)
+        .cookie_provider(jar.clone());
+    for o in crate::util::dns_fallback_overrides(hosts) {
+        builder = builder.resolve(&o.host, o.addr);
+    }
+    builder.build().expect("reqwest client build")
+}
 
 /// 生成验证码 uid（CAS 接受任意客户端提供的字符串，用 32 位 hex）。
 fn random_uid() -> String {
@@ -138,8 +164,11 @@ struct PersistedCookie {
 /// CAS 登录失败的具体形态，调用方据此决定提示语。
 #[derive(Debug, thiserror::Error)]
 pub enum JwxtError {
-    /// 需要人工验证码登录（`ru41 jwxt login --captcha <答案>`）。
-    #[error("需要验证码登录：请运行 `ru41 jwxt login --captcha <答案>` 完成一次人工登录")]
+    /// 自动登录仍无法建立会话（验证码风格变化等）；手动兜底：
+    /// `ru41 jwxt login` 下载验证码图，人工读数后 `--captcha <答案>` 提交。
+    #[error(
+        "自动登录失败：可手动运行 `ru41 jwxt login` 查看验证码后用 `--captcha <答案>` 完成登录"
+    )]
     LoginRequired,
     /// CAS 拒绝（密码错误、账号锁定等）。
     #[error("CAS 登录被拒绝：{0}")]
@@ -235,12 +264,13 @@ impl JwxtClient {
         session_path: std::path::PathBuf,
     ) -> Self {
         let jar = Arc::new(CookieJar::default());
-        let http = reqwest::Client::builder()
-            .user_agent(concat!("ru41/", env!("CARGO_PKG_VERSION")))
-            .timeout(crate::util::HTTP_TIMEOUT)
-            .cookie_provider(jar.clone())
-            .build()
-            .expect("reqwest client build");
+        let cas_host = host_of(&cas_base);
+        let jwxt_host = host_of(&jwxt_base);
+        let http = build_http(
+            concat!("ru41/", env!("CARGO_PKG_VERSION")),
+            &jar,
+            &[(&cas_host, 443), (&jwxt_host, 443)],
+        );
         Self {
             jar,
             http,
@@ -256,15 +286,14 @@ impl JwxtClient {
 
     /// 测试用：浏览器 UA（部分校园中间件对非浏览器 UA 敏感）。
     pub fn with_browser_ua(mut self) -> Self {
-        self.http = reqwest::Client::builder()
-            .user_agent(
-                "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 \
-                 (KHTML, like Gecko) Chrome/126.0 Safari/537.36",
-            )
-            .timeout(crate::util::HTTP_TIMEOUT)
-            .cookie_provider(self.jar.clone())
-            .build()
-            .expect("reqwest client build");
+        let cas_host = host_of(&self.cas_base);
+        let jwxt_host = host_of(&self.jwxt_base);
+        self.http = build_http(
+            "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 \
+             (KHTML, like Gecko) Chrome/126.0 Safari/537.36",
+            &self.jar,
+            &[(&cas_host, 443), (&jwxt_host, 443)],
+        );
         self
     }
 
@@ -396,7 +425,23 @@ impl JwxtClient {
     }
 
     /// 用 TGT 换 ST 并建立教务会话；成功后持久化会话 cookie。
+    /// SSO 验票端点有防抖/限流（实测连续验票会 404 甚至超时），重试必须换
+    /// 新 ST（失败的那张可能已被烧掉），间隔 1s，最多 2 次。
     async fn establish_session(&self, tgt: &str) -> Result<()> {
+        let mut last_err = anyhow::anyhow!("未尝试");
+        for attempt in 0..2 {
+            if attempt > 0 {
+                tokio::time::sleep(std::time::Duration::from_secs(1)).await;
+            }
+            match self.establish_session_once(tgt).await {
+                Ok(()) => return Ok(()),
+                Err(err) => last_err = err,
+            }
+        }
+        Err(last_err)
+    }
+
+    async fn establish_session_once(&self, tgt: &str) -> Result<()> {
         let st = self
             .http
             .post(format!(
@@ -432,7 +477,10 @@ impl JwxtClient {
             .await
             .context("教务验票请求失败")?;
         let final_url = response.url().clone();
-        let _ = response.error_for_status().context("教务验票跳转失败")?;
+        let status = response.status();
+        let _ = response
+            .error_for_status()
+            .with_context(|| format!("教务验票跳转失败：{status} @ {final_url}"))?;
         if !final_url.as_str().contains("login_slogin") {
             self.persist_tgt(tgt)?;
             return Ok(());
@@ -442,12 +490,53 @@ impl JwxtClient {
 
     /// 确保教务会话可用：持久化 cookie 有效则复用，其次 TGT 换新 ST；
     /// 都不行时返回 [`JwxtError::LoginRequired`]（需要人工验证码登录）。
+    /// 自动登录：下载验证码 → 本地求解（算术题模板匹配）→ 提交。
+    /// 验证码识别失败或答案被拒（CODEFALSE）时换新图重试，最多 3 张；
+    /// 密码错误/账号锁定等不可恢复错误立即返回（不重试，防触发风控）。
+    pub async fn cas_login_auto(&self) -> Result<()> {
+        let mut last_err: Option<anyhow::Error> = None;
+        for _ in 0..3 {
+            let (uid, path) = self.download_captcha().await?;
+            let png = std::fs::read(&path).context("读取验证码图片失败")?;
+            let Some(answer) = super::captcha::solve(&png) else {
+                continue; // 认不出这张图，换新的一张
+            };
+            match self.cas_login(&uid, &answer).await {
+                Ok(()) => return Ok(()),
+                Err(err) if err.to_string().contains("CODEFALSE") => {
+                    last_err = Some(err); // 识别错了，换图重试
+                }
+                Err(err) => return Err(err),
+            }
+        }
+        Err(last_err.unwrap_or_else(|| anyhow::anyhow!("验证码识别连续失败，请检查模板库")))
+    }
+
+    /// 确保教务会话可用：持久化 cookie 有效则复用；否则 TGT 换新 ST；
+    /// TGT 缺失/失效时自动完成验证码登录（算术题本地求解，无需人工）。
+    /// 只有密码错误/账号锁定等硬失败才返回错误，由调用方提醒。
     pub async fn ensure_session(&self) -> std::result::Result<(), JwxtError> {
         if self.session_valid().await {
             return Ok(());
         }
-        let tgt = self.load_session().cas_tgt;
-        let Some(tgt) = tgt else {
+        if let Some(tgt) = self.load_session().cas_tgt {
+            if self.establish_session(&tgt).await.is_ok() && self.session_valid().await {
+                return Ok(());
+            }
+            // TGT 失效：清除本地记录，转自动登录
+            let mut session = self.load_session();
+            session.cas_tgt = None;
+            let _ = self.save_session(&session);
+        }
+        self.cas_login_auto().await.map_err(|err| {
+            let text = err.to_string();
+            if text.contains("PASSERROR") || text.contains("USERLOCK") {
+                JwxtError::CasRejected(text)
+            } else {
+                JwxtError::Other(err)
+            }
+        })?;
+        let Some(tgt) = self.load_session().cas_tgt else {
             return Err(JwxtError::LoginRequired);
         };
         self.establish_session(&tgt)
@@ -456,10 +545,6 @@ impl JwxtClient {
         if self.session_valid().await {
             Ok(())
         } else {
-            // TGT 大概率已过期（或被服务端吊销）：清除本地 TGT，提示人工登录
-            let mut session = self.load_session();
-            session.cas_tgt = None;
-            let _ = self.save_session(&session);
             Err(JwxtError::LoginRequired)
         }
     }

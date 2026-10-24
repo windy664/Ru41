@@ -164,7 +164,10 @@ exit 1"#;
     };
     let text = format!("{error:#}");
     assert!(text.contains("402"), "error: {text}");
-    assert!(text.contains("Insufficient account balance"), "error: {text}");
+    assert!(
+        text.contains("Insufficient account balance"),
+        "error: {text}"
+    );
 }
 
 #[tokio::test]

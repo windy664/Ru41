@@ -43,9 +43,9 @@ impl DigestMode {
         match raw {
             None | Some("realtime") => Ok(Self::Realtime),
             Some("daily") => Ok(Self::Daily),
-            Some(other) => anyhow::bail!(
-                "unknown digest_mode {other:?} (expected realtime or daily)"
-            ),
+            Some(other) => {
+                anyhow::bail!("unknown digest_mode {other:?} (expected realtime or daily)")
+            }
         }
     }
 }
@@ -322,7 +322,7 @@ impl RssTracker {
         ))
     }
 
-        /// 机会雷达归档：把已完成的 rss digest 精选写成
+    /// 机会雷达归档：把已完成的 rss digest 精选写成
     /// `05-Opportunities-机会/雷达-日报/<日期>-digest-<task_id>.md`，
     /// 游标记录最后一个已归档任务 id（records 文档）。
     fn archive_digests(&self) -> Result<Vec<String>> {
@@ -505,7 +505,7 @@ mod tests {
                 digest_mode: DigestMode::Daily,
                 evening_hour,
                 morning_hour: None,
-            max_age_days: 2,
+                max_age_days: 2,
             },
         )
     }
@@ -514,7 +514,8 @@ mod tests {
     fn daily_pool_fires_digest_at_hour_and_dedups() {
         let dir = tempfile::tempdir().unwrap();
         let store: Arc<dyn TaskStore> = Arc::new(
-            crate::adapters::database::sqlite::SqliteTaskStore::open(&dir.path().join("s.db")).unwrap(),
+            crate::adapters::database::sqlite::SqliteTaskStore::open(&dir.path().join("s.db"))
+                .unwrap(),
         );
         // evening_hour = 0 → 任何时刻都到点：入池即出报并清池。
         let tracker = daily_tracker(store.clone(), 0);
@@ -542,18 +543,20 @@ mod tests {
     fn daily_before_evening_hour_only_pools() {
         let dir = tempfile::tempdir().unwrap();
         let store: Arc<dyn TaskStore> = Arc::new(
-            crate::adapters::database::sqlite::SqliteTaskStore::open(&dir.path().join("s.db")).unwrap(),
+            crate::adapters::database::sqlite::SqliteTaskStore::open(&dir.path().join("s.db"))
+                .unwrap(),
         );
         let (_, hour) = local_date_hour(crate::util::now());
         if hour == 23 {
             return; // 23 点后无更晚时刻可测，跳过
         }
         let tracker = daily_tracker(store.clone(), hour + 1);
-        let (outcome, pool) = tracker.poll_daily(vec![item("a")], &["AI".to_owned()], "i").unwrap();
+        let (outcome, pool) = tracker
+            .poll_daily(vec![item("a")], &["AI".to_owned()], "i")
+            .unwrap();
         assert_eq!(outcome.candidates, 1);
         assert!(outcome.digest_task_id.is_none(), "未到点不出报");
         assert_eq!(pool, 1, "候选留在池中");
         assert_eq!(store.list(10).unwrap().len(), 0);
     }
 }
-

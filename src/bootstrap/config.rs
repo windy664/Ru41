@@ -64,7 +64,10 @@ impl KnowledgeSection {
             .parent()
             .map(Path::to_path_buf)
             .unwrap_or_else(|| PathBuf::from("."));
-        let db = self.db_path.clone().unwrap_or_else(|| dir.join("knowledge.db"));
+        let db = self
+            .db_path
+            .clone()
+            .unwrap_or_else(|| dir.join("knowledge.db"));
         let cache = self
             .cache_dir
             .clone()
@@ -234,10 +237,12 @@ pub struct SourcesSection {
     pub arxiv: crate::modules::papers::ArxivSection,
     pub rss: crate::modules::rss::RssSection,
     pub projects: crate::modules::projects::ProjectsSection,
+    pub youtube: crate::modules::youtube::YoutubeSection,
     pub ecard: crate::modules::ecard::EcardSection,
     pub chaoxing: crate::modules::chaoxing::ChaoxingSection,
     pub jwxt: crate::modules::jwxt::JwxtSection,
     pub zhihuishu: crate::modules::zhihuishu::ZhihuishuSection,
+    pub teachermate: crate::modules::teachermate::TeachermateSection,
     pub blog: crate::modules::blog::BlogSection,
 }
 

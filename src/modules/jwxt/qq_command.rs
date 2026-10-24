@@ -1,6 +1,8 @@
 use crate::ports::commands::{CommandContext, CommandHandler, Reply};
 use anyhow::Result;
 use chrono::{Datelike, Duration, NaiveDate};
+
+use super::service::SectionClock;
 use std::future::Future;
 use std::pin::Pin;
 
@@ -8,11 +10,16 @@ use std::pin::Pin;
 pub struct JwxtQqCommand {
     /// 学期第一周周一（来自 [sources.jwxt]），周次过滤依赖。
     semester_start: Option<NaiveDate>,
+    /// 节次时刻表：把节次换算成具体钟点显示；未配置则回退节次文本。
+    clock: Option<SectionClock>,
 }
 
 impl JwxtQqCommand {
-    pub fn new(semester_start: Option<NaiveDate>) -> Self {
-        Self { semester_start }
+    pub fn new(semester_start: Option<NaiveDate>, clock: Option<SectionClock>) -> Self {
+        Self {
+            semester_start,
+            clock,
+        }
     }
 }
 
@@ -56,8 +63,13 @@ impl CommandHandler for JwxtQqCommand {
                 return Ok(Some(reply.into()));
             }
             Ok(Some(
-                super::service::describe_day_from_store(ctx.store, self.semester_start, date)?
-                    .into(),
+                super::service::describe_day_from_store(
+                    ctx.store,
+                    self.semester_start,
+                    self.clock.as_ref(),
+                    date,
+                )?
+                .into(),
             ))
         })
     }
@@ -91,8 +103,12 @@ impl JwxtQqCommand {
             let mut lines = Vec::new();
             for offset in 0..(7 - today.weekday().num_days_from_monday() as i64) {
                 let day = today + Duration::days(offset);
-                let text =
-                    super::service::describe_day_from_store(ctx.store, self.semester_start, day)?;
+                let text = super::service::describe_day_from_store(
+                    ctx.store,
+                    self.semester_start,
+                    self.clock.as_ref(),
+                    day,
+                )?;
                 lines.push(format!(
                     "**{}**\n{}",
                     day.format("%m月%d日"),
@@ -106,7 +122,13 @@ impl JwxtQqCommand {
             today
         };
         Ok(Some(
-            super::service::describe_day_from_store(ctx.store, self.semester_start, date)?.into(),
+            super::service::describe_day_from_store(
+                ctx.store,
+                self.semester_start,
+                self.clock.as_ref(),
+                date,
+            )?
+            .into(),
         ))
     }
 }

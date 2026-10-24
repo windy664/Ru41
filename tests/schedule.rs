@@ -226,6 +226,142 @@ fn event_reminder_fires_once_per_occurrence() {
     assert!(far.is_empty());
 }
 
+/// 进程停机后重启：已过 fire_at 的课被识别为错过。
+#[test]
+fn missed_class_reminders_after_downtime() {
+    use ru41::domain::schedule::EventSource;
+
+    let (_dir, store) = fixture();
+    let service = ScheduleService::new(store.clone(), options());
+    let now = now_anchor();
+    // 一门 10 分钟前开课的课（fire_at = 30 分钟前）：停机期间错过。
+    let started = now - 600;
+    service
+        .add(
+            EventInput {
+                title: "高等数学".to_owned(),
+                starts_at: started,
+                ends_at: started + 3600,
+                location: None,
+                recurrence: EventRecurrence::None,
+                source: Some(EventSource {
+                    channel: "jwxt".into(),
+                    source_id: Some("2026#3|7|MATH1|2|1-2|U102".into()),
+                }),
+            },
+            now - 86400,
+        )
+        .unwrap();
+    // 明天的课不在错过范围。
+    let tomorrow = now + 86400;
+    service
+        .add(
+            EventInput {
+                title: "大学英语".to_owned(),
+                starts_at: tomorrow,
+                ends_at: tomorrow + 3600,
+                location: None,
+                recurrence: EventRecurrence::None,
+                source: Some(EventSource {
+                    channel: "jwxt".into(),
+                    source_id: Some("2026#3|8|ENG1|3|3-4|B202".into()),
+                }),
+            },
+            now - 86400,
+        )
+        .unwrap();
+
+    let missed = service.missed_class_reminders(now).unwrap();
+    assert_eq!(missed.len(), 1);
+    assert_eq!(missed[0].title, "高等数学");
+
+    // 标记后不再重复识别。
+    service.mark_reminded(&missed[0], now).unwrap();
+    assert!(service.missed_class_reminders(now).unwrap().is_empty());
+}
+
+/// 已提醒过的发生不会再进错过列表（重启安全）。
+#[test]
+fn reminded_events_are_not_missed() {
+    use ru41::domain::schedule::EventSource;
+
+    let (_dir, store) = fixture();
+    let service = ScheduleService::new(store.clone(), options());
+    let now = now_anchor();
+    let started = now - 600;
+    let event = service
+        .add(
+            EventInput {
+                title: "高等数学".to_owned(),
+                starts_at: started,
+                ends_at: started + 3600,
+                location: None,
+                recurrence: EventRecurrence::None,
+                source: Some(EventSource {
+                    channel: "jwxt".into(),
+                    source_id: Some("2026#3|7|MATH1|2|1-2|U102".into()),
+                }),
+            },
+            now - 86400,
+        )
+        .unwrap();
+    let occurrence = ru41::domain::schedule::EventOccurrence {
+        event_id: event.id.clone(),
+        title: event.title.clone(),
+        location: None,
+        starts_at: started,
+        ends_at: started + 3600,
+        recurring: false,
+    };
+    service.mark_reminded(&occurrence, now - 600).unwrap();
+
+    assert!(service.missed_class_reminders(now).unwrap().is_empty());
+}
+
+/// 课表事件按 20 分钟提前提醒，其它事件仍是 15 分钟。
+#[test]
+fn class_events_remind_twenty_minutes_ahead() {
+    use ru41::domain::schedule::{CLASS_REMIND_LEAD_SECS, EventSource};
+
+    let (_dir, store) = fixture();
+    let service = ScheduleService::new(store.clone(), options());
+    let now = now_anchor();
+    // 一门 18 分钟后开始的课：落在 20 分钟窗口内、但超出 15 分钟默认窗口。
+    let starts = now + 18 * 60;
+    service
+        .add(
+            EventInput {
+                title: "高等数学".to_owned(),
+                starts_at: starts,
+                ends_at: starts + 3600,
+                location: None,
+                recurrence: EventRecurrence::None,
+                source: Some(EventSource {
+                    channel: "jwxt".into(),
+                    source_id: Some("2026#3|7|MATH1|2|1-2|U102".into()),
+                }),
+            },
+            now,
+        )
+        .unwrap();
+    // 同一时刻的非课表事件不在这 18 分钟内被提醒（默认 15 分钟尚未到）。
+    let plain = add_event(
+        &service,
+        "自习",
+        starts,
+        starts + 3600,
+        EventRecurrence::None,
+        now,
+    );
+    assert_eq!(plain.source.as_ref().unwrap().channel, "test");
+
+    let due = service.due_event_reminders(now, 15 * 60, 10).unwrap();
+    assert_eq!(due.len(), 1, "只有课表事件到期");
+    assert_eq!(due[0].title, "高等数学");
+    assert_eq!(CLASS_REMIND_LEAD_SECS, 20 * 60);
+}
+
+/// 标签决定提前量：高铁 75 分钟、多标签取最宽、中文别名归一。
 #[test]
 fn event_time_label_weekly_prefix() {
     let now = now_anchor();

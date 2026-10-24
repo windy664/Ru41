@@ -29,7 +29,9 @@ pub fn decode_sign_qr(bytes: &[u8]) -> Option<DecodedSignQr> {
     let img = image::load_from_memory(bytes).ok()?.into_luma8();
     let mut prepared = rqrr::PreparedImage::prepare(img);
     for grid in prepared.detect_grids() {
-        let Ok((_, text)) = grid.decode() else { continue };
+        let Ok((_, text)) = grid.decode() else {
+            continue;
+        };
         if let Some(qr) = parse_sign_qr_url(&text) {
             return Some(qr);
         }
@@ -115,18 +117,34 @@ impl ChaoxingQrSigner {
         };
         let outcome = match self
             .client
-            .sign(&ChaoxingCourse::bare(), &ChaoxingActivity::bare(qr.activity_id), &method)
+            .sign(
+                &ChaoxingCourse::bare(),
+                &ChaoxingActivity::bare(qr.activity_id),
+                &method,
+            )
             .await
         {
             Ok(response) => {
                 let ok = sign_response_ok(&response);
-                (ok, if ok { format!("✅ 二维码签到成功（图片识别，活动 {}）", qr.activity_id) } else { format!(
-                    "❌ 二维码签到被平台拒绝（活动 {}，响应：{}）；可能已结束或已签",
-                    qr.activity_id,
-                    response.trim()
-                ) }, response)
+                (
+                    ok,
+                    if ok {
+                        format!("✅ 二维码签到成功（图片识别，活动 {}）", qr.activity_id)
+                    } else {
+                        format!(
+                            "❌ 二维码签到被平台拒绝（活动 {}，响应：{}）；可能已结束或已签",
+                            qr.activity_id,
+                            response.trim()
+                        )
+                    },
+                    response,
+                )
             }
-            Err(err) => (false, format!("❌ 二维码签到请求失败（活动 {}）：{err:#}", qr.activity_id), format!("{err:#}")),
+            Err(err) => (
+                false,
+                format!("❌ 二维码签到请求失败（活动 {}）：{err:#}", qr.activity_id),
+                format!("{err:#}"),
+            ),
         };
         // 科研线 C：成败都落样本（拒绝文本是 token 有效期分析的关键数据）
         if let Some(logger) = &self.enc_log {
@@ -162,10 +180,7 @@ mod tests {
             code.render::<image::Luma<u8>>().build();
         let mut png = Vec::new();
         image::DynamicImage::ImageLuma8(img)
-            .write_to(
-                &mut std::io::Cursor::new(&mut png),
-                image::ImageFormat::Png,
-            )
+            .write_to(&mut std::io::Cursor::new(&mut png), image::ImageFormat::Png)
             .unwrap();
         png
     }
@@ -181,10 +196,9 @@ mod tests {
 
     #[test]
     fn parses_new_style_id_param() {
-        let qr = parse_sign_qr_url(
-            "https://mobilelearn.chaoxing.com/widget/sign/e?id=8812&enc=ABC",
-        )
-        .unwrap();
+        let qr =
+            parse_sign_qr_url("https://mobilelearn.chaoxing.com/widget/sign/e?id=8812&enc=ABC")
+                .unwrap();
         assert_eq!(qr.activity_id, 8812);
         assert_eq!(qr.enc, "ABC");
     }

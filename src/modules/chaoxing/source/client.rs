@@ -1,9 +1,7 @@
 //! 学习通 HTTP 协议客户端：登录（AES）、会话 cookie 持久化、
 //! 课程/活动/签到/云盘传图/作业列表抓取。
 
-use super::model::{
-    ChaoxingActivity, ChaoxingCourse, ChaoxingWork, CourseEncs, SignMethod,
-};
+use super::model::{ChaoxingActivity, ChaoxingCourse, ChaoxingWork, CourseEncs, SignMethod};
 use super::parse::{capture, decode_course_list, parse_work_deadline, parse_work_list};
 use anyhow::{Context, Result, bail};
 use base64::Engine;
@@ -445,7 +443,9 @@ impl ChaoxingClient {
 
     /// preSign 预签（普通类签到的平台流程前置）。
     async fn pre_sign(&self, course: &ChaoxingCourse, activity_id: &str, uid: &str) -> Result<()> {
-        self.pre_sign_body(course, activity_id, uid).await.map(|_| ())
+        self.pre_sign_body(course, activity_id, uid)
+            .await
+            .map(|_| ())
     }
 
     /// preSign 响应体（科研线：窗口探测用它找 enc 泄漏）。
@@ -645,7 +645,6 @@ impl ChaoxingClient {
     }
 }
 
-
 fn cx_encrypt(plaintext: &str) -> String {
     let encrypted =
         Aes128CbcEnc::new(AES_KEY.into(), AES_KEY.into())
@@ -656,7 +655,6 @@ fn cx_encrypt(plaintext: &str) -> String {
 /// 解析 courselistdata 返回的课程列表 HTML。
 /// 按协议库（BeautifulSoup 选择器）语义做分块正则提取；页面改版会集中体现在此函数。
 /// 真实页面的课程块形如 class="course clearfix learnCourse stu_157361070"，
-
 #[cfg(test)]
 mod tests {
     use super::*;

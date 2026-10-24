@@ -187,7 +187,13 @@ async fn dispatches_started_progress_once() {
     let store: Arc<dyn TaskStore> =
         Arc::new(SqliteTaskStore::open(&dir.path().join("state.db")).unwrap());
     let task = store
-        .enqueue_with_notify("qq:msg:m1", "hello", "codex", RunContract::AnalysisV1, &route)
+        .enqueue_with_notify(
+            "qq:msg:m1",
+            "hello",
+            "codex",
+            RunContract::AnalysisV1,
+            &route,
+        )
         .unwrap()
         .task;
     let claim = store.claim("worker", 100, 30).unwrap().unwrap();
@@ -218,7 +224,10 @@ async fn dispatches_started_progress_once() {
     assert_eq!(sent[0].1.as_deref(), Some("m1"));
     assert!(sent[0].2.contains("开始执行"), "text: {}", sent[0].2);
     assert!(sent[0].2.contains("底座 `codex`"), "text: {}", sent[0].2);
-    let doc = store.document("progress", "run-1-1-started").unwrap().unwrap();
+    let doc = store
+        .document("progress", "run-1-1-started")
+        .unwrap()
+        .unwrap();
     assert_eq!(doc.value["status"], "sent");
 }
 
@@ -234,12 +243,25 @@ async fn dispatches_retry_progress_with_reason() {
     let store: Arc<dyn TaskStore> =
         Arc::new(SqliteTaskStore::open(&dir.path().join("state.db")).unwrap());
     let task = store
-        .enqueue_with_notify("qq:msg:m1", "hello", "codex", RunContract::AnalysisV1, &route)
+        .enqueue_with_notify(
+            "qq:msg:m1",
+            "hello",
+            "codex",
+            RunContract::AnalysisV1,
+            &route,
+        )
         .unwrap()
         .task;
     let claim = store.claim("worker", 100, 30).unwrap().unwrap();
     store
-        .fail(&claim, "Codex returned an unexecuted tool call", 101, 60, false, true)
+        .fail(
+            &claim,
+            "Codex returned an unexecuted tool call",
+            101,
+            60,
+            false,
+            true,
+        )
         .unwrap();
     store
         .put_document(
@@ -283,7 +305,13 @@ async fn dispatches_activity_chunks_in_order() {
     let store: Arc<dyn TaskStore> =
         Arc::new(SqliteTaskStore::open(&dir.path().join("state.db")).unwrap());
     let task = store
-        .enqueue_with_notify("qq:msg:m1", "hello", "codex", RunContract::AnalysisV1, &route)
+        .enqueue_with_notify(
+            "qq:msg:m1",
+            "hello",
+            "codex",
+            RunContract::AnalysisV1,
+            &route,
+        )
         .unwrap()
         .task;
     let claim = store.claim("worker", 100, 30).unwrap().unwrap();
@@ -394,6 +422,9 @@ async fn stale_progress_for_terminal_task_is_skipped() {
     let sent = qq.sent.lock().unwrap();
     assert_eq!(sent.len(), 1);
     assert!(sent[0].2.starts_with("处理完成"));
-    let doc = store.document("progress", "run-1-1-started").unwrap().unwrap();
+    let doc = store
+        .document("progress", "run-1-1-started")
+        .unwrap()
+        .unwrap();
     assert_eq!(doc.value["status"], "done");
 }

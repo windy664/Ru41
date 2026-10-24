@@ -97,7 +97,10 @@ impl ObsidianService {
     }
 
     /// 挂载知识库索引器；不挂则同步只管 git 闭环，不建向量索引。
-    pub fn with_knowledge(mut self, knowledge: Arc<crate::app::knowledge::KnowledgeService>) -> Self {
+    pub fn with_knowledge(
+        mut self,
+        knowledge: Arc<crate::app::knowledge::KnowledgeService>,
+    ) -> Self {
         self.knowledge = Some(knowledge);
         self
     }
@@ -170,7 +173,9 @@ impl ObsidianService {
         target: &str,
         committed: bool,
     ) {
-        let Some(knowledge) = &self.knowledge else { return };
+        let Some(knowledge) = &self.knowledge else {
+            return;
+        };
         let changed = committed || head_before != target;
         if !changed || state.pending.is_some() {
             return;

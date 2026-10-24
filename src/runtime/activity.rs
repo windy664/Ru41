@@ -31,11 +31,17 @@ impl ActivityStreamer {
         match self.run_inner(&mut stop).await {
             Ok(chunks) => {
                 if chunks > 0 {
-                    eprintln!("[activity] {run} streamed {chunks} chunks", run = self.run_id);
+                    eprintln!(
+                        "[activity] {run} streamed {chunks} chunks",
+                        run = self.run_id
+                    );
                 }
             }
             Err(error) => {
-                eprintln!("[activity] {run} streamer error: {error:#}", run = self.run_id)
+                eprintln!(
+                    "[activity] {run} streamer error: {error:#}",
+                    run = self.run_id
+                )
             }
         }
     }
@@ -298,10 +304,12 @@ mod tests {
 
     #[test]
     fn ignores_started_pairs_and_other_events() {
-        assert!(display_line(&event(
-            r#"{"type":"item.started","item":{"type":"agent_message","text":"重复"}}"#
-        ))
-        .is_none());
+        assert!(
+            display_line(&event(
+                r#"{"type":"item.started","item":{"type":"agent_message","text":"重复"}}"#
+            ))
+            .is_none()
+        );
         assert!(display_line(&event(r#"{"type":"turn.completed"}"#)).is_none());
         assert!(display_line(&event(r#"{"type":"thread.started"}"#)).is_none());
     }
@@ -332,9 +340,15 @@ mod tests {
     fn buffer_defers_last_agent_message_until_more_activity() {
         use super::DisplayBuffer;
         let mut buffer = DisplayBuffer::default();
-        let msg1 = event(r#"{"type":"item.completed","item":{"type":"agent_message","text":"我先搜一下"}}"#);
-        let tool = event(r#"{"type":"item.completed","item":{"type":"local_shell_call","action":{"command":"curl x"}}}"#);
-        let msg2 = event(r#"{"type":"item.completed","item":{"type":"agent_message","text":"最终完整回答"}}"#);
+        let msg1 = event(
+            r#"{"type":"item.completed","item":{"type":"agent_message","text":"我先搜一下"}}"#,
+        );
+        let tool = event(
+            r#"{"type":"item.completed","item":{"type":"local_shell_call","action":{"command":"curl x"}}}"#,
+        );
+        let msg2 = event(
+            r#"{"type":"item.completed","item":{"type":"agent_message","text":"最终完整回答"}}"#,
+        );
         buffer.push(&msg1, display_line(&msg1).unwrap());
         assert!(buffer.drain().is_empty(), "中间消息先暂缓，等后续事件确认");
         buffer.push(&tool, display_line(&tool).unwrap());

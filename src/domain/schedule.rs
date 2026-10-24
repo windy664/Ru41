@@ -16,6 +16,26 @@ pub const EVENT_KIND: &str = "event";
 /// 事件开始前多少秒触发提醒；与 todo-remind 循环的轮询间隔配合。
 pub const REMIND_LEAD_SECS: i64 = 15 * 60;
 
+/// 课表事件的提前量：上课要走到教室，默认 15 分钟对 80 分钟一大节的作息偏紧。
+/// 这个决定由 jwxt 附属拥有（按事件来源渠道判定）；未来其它附属同理，各自定自己的节奏。
+pub const CLASS_REMIND_LEAD_SECS: i64 = 20 * 60;
+
+/// 课表事件的来源渠道标识。
+pub const CLASS_EVENT_CHANNEL: &str = "jwxt";
+
+/// 按事件来源决定提前提醒秒数：课表用 [`CLASS_REMIND_LEAD_SECS`]，其余用 [`REMIND_LEAD_SECS`]。
+pub fn remind_lead_secs(item: &EventItem) -> i64 {
+    if item
+        .source
+        .as_ref()
+        .is_some_and(|s| s.channel == CLASS_EVENT_CHANNEL)
+    {
+        CLASS_REMIND_LEAD_SECS
+    } else {
+        REMIND_LEAD_SECS
+    }
+}
+
 /// 单事件时长上限（3 天）：跨天行程用起止时间表达，超上限视为误输入。
 const MAX_DURATION_SECS: i64 = 3 * 24 * 3600;
 

@@ -98,10 +98,7 @@ pub async fn probe_window(
     }
 
     for (kind, body) in [
-        (
-            "page",
-            client.sign_page_html(activity_id).await,
-        ),
+        ("page", client.sign_page_html(activity_id).await),
         (
             "presign",
             client

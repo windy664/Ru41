@@ -218,7 +218,10 @@ impl ChaoxingTracker {
             .unwrap_or_else(|| std::path::Path::new("."));
         std::fs::create_dir_all(dir)?;
         let path = dir.join("fallback-photo.jpg");
-        std::fs::write(&path, crate::modules::chaoxing::source::fallback_photo_bytes())?;
+        std::fs::write(
+            &path,
+            crate::modules::chaoxing::source::fallback_photo_bytes(),
+        )?;
         Ok(path)
     }
 
