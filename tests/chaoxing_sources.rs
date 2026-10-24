@@ -326,6 +326,8 @@ fn make_tracker_full(
             work_vault_sync: true,
             vault_course_dir: None,
             vault_courses: Default::default(),
+            work_vault_task_dirs: ru41::ports::vault::VaultTaskDirs::All,
+            enc_sample_path: None,
         },
     )
 }
@@ -991,6 +993,8 @@ fn make_work_tracker(
             work_vault_sync: true,
             vault_course_dir: Some("学期".into()),
             vault_courses: Default::default(),
+            work_vault_task_dirs: ru41::ports::vault::VaultTaskDirs::All,
+            enc_sample_path: None,
         },
         ru41::domain::todo::TodoOptions {
             offset_seconds: 28_800,

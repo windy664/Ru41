@@ -133,7 +133,10 @@ impl ChaoxingWorkTracker {
                 Err(_) => continue, // 单课失败不破坏整体，也不刷屏
             };
             works_total += works.len();
-            let mut note_items: Vec<(crate::modules::chaoxing::source::ChaoxingWork, Option<String>)> = Vec::new();
+            let mut note_items: Vec<(
+                crate::modules::chaoxing::source::ChaoxingWork,
+                Option<String>,
+            )> = Vec::new();
 
             for work in works {
                 let key = format!("{}#{}", course.course_id, work.work_id);
@@ -378,12 +381,18 @@ impl ChaoxingWorkTracker {
                 .cloned()
                 .unwrap_or_else(|| course_title.clone());
             let course_base = format!("{base}/{dir}");
+            let dirs = self.config.work_vault_task_dirs;
             vault.write_file(
                 &format!("{course_base}/学习通作业.md"),
-                &render_work_course_note(course_title, items, now, offset),
+                &render_work_course_note(course_title, items, now, offset, dirs),
             )?;
             written += 1;
             for (work, deadline) in items {
+                // substantive 策略：作业说明不含正文，只为未交作业建目录；
+                // 已交作业的空壳目录纯属噪音，索引里降级为纯文本行。
+                if dirs == crate::ports::vault::VaultTaskDirs::Substantive && !work.is_open() {
+                    continue;
+                }
                 let folder = work_folder_name(work, deadline);
                 vault.write_file(
                     &format!("{course_base}/{folder}/作业说明.md"),
@@ -406,7 +415,7 @@ impl ChaoxingWorkTracker {
         }
     }
 
-    /// 跨平台作业总表：从 records 快照聚合（新平台接入时在此加一行映射）。
+    /// 跨平台作业总表：从 records 快照聚合（学习通 + 智慧树 + 微助教）。
     fn render_homework_dashboard(&self, now: i64, offset_seconds: i32) -> Result<String> {
         let mut rows: Vec<(Option<String>, String, String, String, String, bool)> = Vec::new();
         // (end_at, platform, course_dir, course, title, open)
@@ -436,6 +445,25 @@ impl ChaoxingWorkTracker {
                 !completed,
             ));
         }
+        // 微助教：快照字段与学习通对齐（course/title/end_at），status 为状态数字
+        for doc in self.store.documents("teachermate_work", 500)? {
+            let course = str_field(&doc.value, "course").unwrap_or_default();
+            let title = str_field(&doc.value, "title").unwrap_or_default();
+            let end_at = str_field(&doc.value, "end_at");
+            let status = doc
+                .value
+                .get("status")
+                .and_then(serde_json::Value::as_i64)
+                .unwrap_or(0);
+            rows.push((
+                end_at,
+                "微助教".into(),
+                course.clone(),
+                course,
+                title,
+                crate::modules::teachermate::homework_status_open(status),
+            ));
+        }
         // 未完成在前按截止升序（空截止垫底），已完成按截止降序
         rows.sort_by(|a, b| b.5.cmp(&a.5).then(a.0.cmp(&b.0)));
 
@@ -445,9 +473,7 @@ impl ChaoxingWorkTracker {
         out.push_str("tags:\n  - 作业\n  - 作业总表\n");
         out.push_str(&format!("updated: {stamp}\n---\n\n"));
         out.push_str("# 作业总表\n\n");
-        out.push_str(
-            "> 由 Ru41 跨平台聚合自动覆写（学习通 + 智慧树，新平台随接入追加）；请勿手改。\n\n",
-        );
+        out.push_str("> 由 Ru41 跨平台聚合自动覆写（学习通 + 智慧树 + 微助教）；请勿手改。\n\n");
         let open: Vec<_> = rows.iter().filter(|r| r.5).collect();
         let done: Vec<_> = rows.iter().filter(|r| !r.5).collect();
         out.push_str(&format!("## 未完成（{}）\n\n", open.len()));
@@ -507,8 +533,32 @@ fn str_field(value: &serde_json::Value, key: &str) -> Option<String> {
         .map(str::to_owned)
 }
 
+/// 作业索引行：建目录的作业双链到作业文件夹；substantive 策略下已交作业
+/// 没有目录，降级为纯文本行，避免 Obsidian 里挂着空链接。
+fn work_line_item(
+    work: &crate::modules::chaoxing::source::ChaoxingWork,
+    deadline: &Option<String>,
+    dirs: crate::ports::vault::VaultTaskDirs,
+    done: bool,
+) -> String {
+    let checked = if done { "x" } else { " " };
+    let date = deadline.as_deref().unwrap_or("未知");
+    if dirs == crate::ports::vault::VaultTaskDirs::All || !done {
+        let folder = work_folder_name(work, deadline);
+        format!(
+            "- [{checked}] [[{folder}/作业说明|{}]] 📅 {date}\n",
+            work.title
+        )
+    } else {
+        format!("- [{checked}] {} 📅 {date}\n", work.title)
+    }
+}
+
 /// 作业文件夹名：`YYYY.MM.DD_作业名`（日期取截止日，缺省用作业名）。
-fn work_folder_name(work: &crate::modules::chaoxing::source::ChaoxingWork, deadline: &Option<String>) -> String {
+fn work_folder_name(
+    work: &crate::modules::chaoxing::source::ChaoxingWork,
+    deadline: &Option<String>,
+) -> String {
     let date = deadline
         .as_deref()
         .and_then(|s| s.get(..10))
@@ -533,9 +583,13 @@ fn work_folder_name(work: &crate::modules::chaoxing::source::ChaoxingWork, deadl
 /// 课程级索引：`学习通作业.md`（未完成/已完成清单，与智慧树作业.md 同构）。
 fn render_work_course_note(
     course: &str,
-    items: &[(crate::modules::chaoxing::source::ChaoxingWork, Option<String>)],
+    items: &[(
+        crate::modules::chaoxing::source::ChaoxingWork,
+        Option<String>,
+    )],
     now: i64,
     offset_seconds: i32,
+    dirs: crate::ports::vault::VaultTaskDirs,
 ) -> String {
     let stamp = local_stamp(now, offset_seconds);
     let mut out = String::new();
@@ -553,25 +607,12 @@ fn render_work_course_note(
         out.push_str("当前没有未完成作业 🎉\n");
     }
     for (work, deadline) in &open {
-        let folder = work_folder_name(work, deadline);
-        out.push_str(&format!(
-            "- [ ] [[{folder}/作业说明|{}]] 📅 {}\n",
-            work.title,
-            deadline.as_deref().unwrap_or("未知")
-        ));
+        out.push_str(&work_line_item(work, deadline, dirs, false));
     }
     if !done.is_empty() {
         out.push_str(&format!("\n## 已完成（{}）\n\n", done.len()));
         for (work, deadline) in &done {
-            let folder = work_folder_name(work, deadline);
-            let date = deadline
-                .as_deref()
-                .and_then(|s| s.get(..10))
-                .unwrap_or("未知");
-            out.push_str(&format!(
-                "- [x] [[{folder}/作业说明|{}]] 📅 {date}\n",
-                work.title
-            ));
+            out.push_str(&work_line_item(work, deadline, dirs, true));
         }
     }
     out

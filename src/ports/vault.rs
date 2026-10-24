@@ -1,5 +1,28 @@
 use anyhow::Result;
 
+/// 作业任务目录策略：`All` 每个任务都建目录（旧行为）；
+/// `Substantive` 只有实质作业建目录——平台纯在线任务（课前测等）不建，
+/// 减少 vault 噪音。由配置 `vault_task_dirs = "all" | "substantive"` 选择。
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum VaultTaskDirs {
+    #[default]
+    All,
+    Substantive,
+}
+
+impl VaultTaskDirs {
+    /// 由配置串解析；非法值报错让配置错误在启动期暴露。
+    pub fn parse(raw: Option<&str>) -> anyhow::Result<Self> {
+        match raw {
+            None | Some("all") => Ok(Self::All),
+            Some("substantive") => Ok(Self::Substantive),
+            Some(other) => anyhow::bail!(
+                "unknown vault task dirs policy {other:?} (expected all or substantive)"
+            ),
+        }
+    }
+}
+
 /// Vault 写入服务的端口：所有附属（digest 落 Vault、周报、博客管线等）经它读写
 /// Vault，保证「单一写入服务」的串行与幂等。实现当前为 git 工作副本（adapters::vault）。
 ///
