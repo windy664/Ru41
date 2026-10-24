@@ -173,19 +173,34 @@ impl ProjectsTracker {
                 },
                 name,
             };
-            match self.sync_one(&entry).await {
-                Ok(true) => updated.push(entry.name.clone()),
-                Ok(false) => {}
-                Err(error) => eprintln!("[projects] {} 同步失败: {error:#}", entry.name),
-            }
-            synced += 1;
-            // 分组迁移：另一组里有同项目的机器文件就删掉（内容已写到新位置）。
             let other = if group == ACTIVE_DIR { ARCHIVED_DIR } else { ACTIVE_DIR };
             let stale_path = format!(
                 "{}/{other}/{}/{REPO_FILE}",
                 self.config.projects_dir, entry.name
             );
-            if self.vault.remove_file(&stale_path).unwrap_or(false) {
+            let mut write_ok = false;
+            match self.sync_one(&entry).await {
+                Ok(true) => {
+                    updated.push(entry.name.clone());
+                    write_ok = true;
+                }
+                Ok(false) => write_ok = true,
+                Err(error) => {
+                    eprintln!("[projects] {} 同步失败: {error:#}", entry.name);
+                    // 同步失败（限流等）但旧位置有内容：原样搬到新分组，
+                    // 保证迁移不丢数据；元数据下次限流缓解时再刷新。
+                    if let Ok(Some(content)) = self.vault.read_file(&stale_path) {
+                        let target = format!("{}/{REPO_FILE}", entry.rel_dir);
+                        if self.vault.write_file(&target, &content).is_ok() {
+                            write_ok = true;
+                        }
+                    }
+                }
+            }
+            synced += 1;
+            // 分组迁移：只有新位置确认有内容后才删旧文件——
+            // 先删后写会把限流期的仓库 README 整个抹掉。
+            if write_ok && self.vault.remove_file(&stale_path).unwrap_or(false) {
                 updated.push(format!("{}（移至 {group}）", entry.name));
             }
         }
