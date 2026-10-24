@@ -1,11 +1,11 @@
-FROM rust:1.98-bookworm AS builder
+FROM rust:1.98-trixie AS builder
 WORKDIR /build
 COPY Cargo.toml Cargo.lock ./
 COPY src ./src
 COPY migrations ./migrations
 RUN cargo build --locked --release --bin ru41
 
-FROM node:22-bookworm-slim
+FROM node:22-trixie-slim
 ARG CODEX_VERSION=0.163.0
 # 容器出国际方向不稳定（宿主机代理不覆盖 docker 桥接），apt 统一走阿里云镜像。
 RUN sed -i 's|deb.debian.org|mirrors.aliyun.com|g; s|security.debian.org|mirrors.aliyun.com|g' \
