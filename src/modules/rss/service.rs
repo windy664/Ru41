@@ -1,7 +1,7 @@
 use crate::{
     adapters::sources::feed::{FeedClient, FeedItem},
-    domain::NotifyRoute,
-    ports::storage::TaskStore,
+    domain::{NotifyRoute, TaskStatus},
+    ports::{storage::TaskStore, vault::Vault},
 };
 use anyhow::Result;
 use serde::Serialize;
@@ -31,6 +31,8 @@ pub struct RssPollReport {
     pub candidates: usize,
     pub errors: Vec<String>,
     pub digest_task_id: Option<i64>,
+    /// 本轮归档进 05-Opportunities 的笔记路径。
+    pub archived: Vec<String>,
 }
 
 /// RSS 信息流追踪：逐源抓取 → 去重 → 关键词粗筛 → 合成精选 digest 任务。
@@ -40,6 +42,8 @@ pub struct RssTracker {
     store: Arc<dyn TaskStore>,
     client: FeedClient,
     config: RssConfig,
+    /// 挂 Vault 后：每轮顺带把新完成的 digest 精选归档进 05-Opportunities。
+    vault: Option<Arc<dyn Vault>>,
 }
 
 impl RssTracker {
@@ -48,7 +52,14 @@ impl RssTracker {
             store,
             client,
             config,
+            vault: None,
         }
+    }
+
+    /// 挂载机会雷达归档器；不挂则只抓 feed + 建 digest，不落 vault。
+    pub fn with_vault(mut self, vault: Arc<dyn Vault>) -> Self {
+        self.vault = Some(vault);
+        self
     }
 
     pub async fn poll_once(&self) -> Result<RssPollReport> {
@@ -115,6 +126,11 @@ impl RssTracker {
                 },
             },
         )?;
+        let archived = self.archive_digests().unwrap_or_else(|error| {
+            // 归档失败不影响 feed 轮询本体，下轮自然重试。
+            eprintln!("[rss] opportunity archive failed: {error:#}");
+            Vec::new()
+        });
         Ok(RssPollReport {
             feeds: self.config.feeds.len(),
             fetched,
@@ -122,7 +138,58 @@ impl RssTracker {
             candidates: outcome.candidates,
             errors,
             digest_task_id: outcome.digest_task_id,
+            archived,
         })
+    }
+
+    /// 机会雷达归档：把已完成的 rss digest 精选写成
+    /// `05-Opportunities-机会/雷达-日报/<日期>-digest-<task_id>.md`，
+    /// 游标记录最后一个已归档任务 id（records 文档）。
+    fn archive_digests(&self) -> Result<Vec<String>> {
+        let Some(vault) = &self.vault else {
+            return Ok(Vec::new());
+        };
+        let cursor = self
+            .store
+            .document("opportunity_archive", "cursor")?
+            .and_then(|doc| doc.value["last_task_id"].as_i64())
+            .unwrap_or(0);
+        let tasks = self.store.list(200)?;
+        let mut new_cursor = cursor;
+        let mut written = Vec::new();
+        for task in tasks.iter().filter(|task| {
+            task.id > cursor
+                && task.request_key.starts_with("rss:digest:")
+                && task.status == TaskStatus::Succeeded
+                && task.result.is_some()
+        }) {
+            let result = task.result.as_ref().expect("filtered by result.is_some");
+            let date = task.updated_at.get(..10).unwrap_or("unknown-date");
+            let path = format!(
+                "05-Opportunities-机会/雷达-日报/{date}-digest-{}.md",
+                task.id
+            );
+            let note = format!(
+                "---\ndate: {date}\nsource: rss\ntask_id: {}\ntags:\n  - 机会\n  - 雷达\n---\n\n\
+                 # 机会雷达精选（{date}）\n\n> 由 Ru41 机会雷达自动归档（{}），请勿手改。\n\n{}\n",
+                task.id, task.request_key, result.summary
+            );
+            vault.write_file(&path, &note)?;
+            written.push(path);
+            new_cursor = new_cursor.max(task.id);
+        }
+        if !written.is_empty() {
+            if vault.commit_all("[ru41] 机会雷达精选归档")? {
+                vault.push()?;
+            }
+            self.store.put_document(
+                "opportunity_archive",
+                "cursor",
+                None,
+                &serde_json::json!({ "last_task_id": new_cursor }),
+            )?;
+        }
+        Ok(written)
     }
 }
 
