@@ -120,32 +120,39 @@ impl GithubClient {
         Ok(metas)
     }
 
-    /// HTML 抓取账号仓库名列表（repositories 标签页）。
+    /// HTML 抓取账号仓库名列表（repositories 标签页，每页 30 个需翻页）。
     async fn list_repo_names_html(&self, user: &str) -> Result<Vec<String>> {
-        let url = format!("https://github.com/{user}?tab=repositories");
-        let html = self.get_html(&url).await?;
         let mut names = Vec::new();
-        let prefix = format!("href=\"/{user}/");
-        for chunk in html.split(&prefix).skip(1) {
-            let name: String = chunk
-                .chars()
-                .take_while(|c| c.is_alphanumeric() || matches!(c, '-' | '_' | '.'))
-                .collect();
-            if !name.is_empty()
-                && !matches!(
-                    name.as_str(),
-                    "stargazers"
-                        | "followers"
-                        | "following"
-                        | "repositories"
-                        | "projects"
-                        | "packages"
-                        | "sponsors"
-                        | "watching"
-                )
-                && !names.contains(&name)
-            {
-                names.push(name);
+        for page in 1..=10 {
+            let url = format!("https://github.com/{user}?tab=repositories&page={page}");
+            let html = self.get_html(&url).await?;
+            let prefix = format!("href=\"/{user}/");
+            let before = names.len();
+            for chunk in html.split(&prefix).skip(1) {
+                let name: String = chunk
+                    .chars()
+                    .take_while(|c| c.is_alphanumeric() || matches!(c, '-' | '_' | '.'))
+                    .collect();
+                if !name.is_empty()
+                    && !matches!(
+                        name.as_str(),
+                        "stargazers"
+                            | "followers"
+                            | "following"
+                            | "repositories"
+                            | "projects"
+                            | "packages"
+                            | "sponsors"
+                            | "watching"
+                    )
+                    && !names.contains(&name)
+                {
+                    names.push(name);
+                }
+            }
+            // 本页没有新名字说明翻完了（末页或反爬空页）。
+            if names.len() == before {
+                break;
             }
         }
         names.sort();
