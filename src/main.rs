@@ -111,7 +111,11 @@ async fn main() -> Result<()> {
                 store: open_store(&store_config)?,
                 backends: Arc::new(backends),
                 sanitizer,
-                knowledge: knowledge_service(&config)?,
+                // 知识库初始化失败（模型缓存损坏等）不拖垮 worker，降级为无注入。
+                knowledge: knowledge_service(&config).unwrap_or_else(|error| {
+                    eprintln!("[knowledge] disabled: {error:#}");
+                    None
+                }),
                 config: WorkerConfig {
                     worker_id: format!("worker-{}", std::process::id()),
                     runs_dir: runs_dir
