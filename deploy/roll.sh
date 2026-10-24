@@ -34,7 +34,7 @@ for name in "${NAMES[@]}"; do
     continue
   fi
   CUR_ID="$(jq -r '.[0].Image' "$BACKUP/$name.json")"
-  if [[ "$CUR_ID" == "$NEW_ID" ]]; then
+  if [[ "$CUR_ID" == "$NEW_ID" && "${RU41_ROLL_FORCE:-0}" != "1" ]]; then
     echo "SKIP $name: 已是 $TARGET_IMAGE"
     continue
   fi
@@ -47,8 +47,9 @@ for name in "${NAMES[@]}"; do
     + (if $c.Config.WorkingDir != "" then ["-w", $c.Config.WorkingDir] else [] end)
     + (($c.Config.Env // []) | map("--env", .))
     + ($c.Mounts | map("-v", .Source + ":" + .Destination + (if .RW then "" else ":ro" end)))
-    + (if ($c.HostConfig.NetworkMode // "bridge") as $n | $n != "default" and $n != "bridge"
-         then ["--network", $n] else [] end)
+    + (if (($c.HostConfig.NetworkMode // "bridge") != "default")
+           and (($c.HostConfig.NetworkMode // "bridge") != "bridge")
+         then ["--network", ($c.HostConfig.NetworkMode // "bridge")] else [] end)
     + (($c.HostConfig.ExtraHosts // []) | map("--add-host", .))
     | .[]
   ' "$BACKUP/$name.json")
