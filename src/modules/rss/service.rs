@@ -447,7 +447,7 @@ mod tests {
     #[test]
     fn parses_common_publish_formats() {
         // RFC 2822（RSS 2.0 标准）
-        assert!(parse_item_time("Fri, 24 Oct 2026 08:00:00 GMT").is_some());
+        assert!(parse_item_time("Sat, 24 Oct 2026 08:00:00 GMT").is_some());
         // RFC 3339（Atom 标准）
         assert!(parse_item_time("2026-10-24T08:00:00Z").is_some());
         // 裸日期/裸时间（部分中文聚合源）
