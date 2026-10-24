@@ -27,8 +27,6 @@ pub struct ProjectsConfig {
 pub struct ProjectEntry {
     /// 目录名即项目名。
     pub name: String,
-    /// 状态分组目录名（Active-进行中 / Research-研究 / Archived-已归档）。
-    pub status_dir: String,
     /// 相对 vault 的项目目录路径。
     pub rel_dir: String,
     /// 含 `repo:` 行的笔记相对路径（人写，只读）。
@@ -97,40 +95,30 @@ impl ProjectsTracker {
         })
     }
 
-    /// 扫描项目库：状态分组目录 → 项目目录 → 找带 `repo:` 的笔记。
+    /// 扫描项目库：projects_dir 下一层目录即项目（平铺结构，无状态分组；
+    /// 归档用笔记 frontmatter `status: archived` 标记，不影响同步）。
     /// 目录不存在视为未启用（空集），不报错。
     fn scan_projects(&self) -> Result<Vec<ProjectEntry>> {
         let root = self.config.vault_root.join(&self.config.projects_dir);
         let mut entries = Vec::new();
-        let Ok(status_dirs) = std::fs::read_dir(&root) else {
+        let Ok(projects) = std::fs::read_dir(&root) else {
             return Ok(entries);
         };
-        for status in status_dirs.flatten() {
-            if !status.file_type().is_ok_and(|t| t.is_dir()) {
+        for project in projects.flatten() {
+            if !project.file_type().is_ok_and(|t| t.is_dir()) {
                 continue;
             }
-            let status_dir = status.file_name().to_string_lossy().into_owned();
-            let Ok(projects) = std::fs::read_dir(status.path()) else {
+            let name = project.file_name().to_string_lossy().into_owned();
+            let found = find_repo_note(&project.path(), &self.config.projects_dir, &name);
+            let Some((note_rel, repo)) = found else {
                 continue;
             };
-            for project in projects.flatten() {
-                if !project.file_type().is_ok_and(|t| t.is_dir()) {
-                    continue;
-                }
-                let name = project.file_name().to_string_lossy().into_owned();
-                let found =
-                    find_repo_note(&project.path(), &self.config.projects_dir, &status_dir, &name);
-                let Some((note_rel, repo)) = found else {
-                    continue;
-                };
-                entries.push(ProjectEntry {
-                    rel_dir: format!("{}/{status_dir}/{name}", self.config.projects_dir),
-                    status_dir: status_dir.clone(),
-                    name,
-                    note_rel,
-                    repo,
-                });
-            }
+            entries.push(ProjectEntry {
+                rel_dir: format!("{}/{name}", self.config.projects_dir),
+                name,
+                note_rel,
+                repo,
+            });
         }
         entries.sort_by(|a, b| a.rel_dir.cmp(&b.rel_dir));
         Ok(entries)
@@ -138,23 +126,13 @@ impl ProjectsTracker {
 
     fn count_project_dirs(&self) -> Result<usize> {
         let root = self.config.vault_root.join(&self.config.projects_dir);
-        let mut count = 0usize;
-        let Ok(status_dirs) = std::fs::read_dir(&root) else {
+        let Ok(projects) = std::fs::read_dir(&root) else {
             return Ok(0);
         };
-        for status in status_dirs.flatten() {
-            if !status.file_type().is_ok_and(|t| t.is_dir()) {
-                continue;
-            }
-            let Ok(projects) = std::fs::read_dir(status.path()) else {
-                continue;
-            };
-            count += projects
-                .flatten()
-                .filter(|e| e.file_type().is_ok_and(|t| t.is_dir()))
-                .count();
-        }
-        Ok(count)
+        Ok(projects
+            .flatten()
+            .filter(|e| e.file_type().is_ok_and(|t| t.is_dir()))
+            .count())
     }
 
     /// 同步单个项目：README + 元数据渲染后与 vault 现状比对，变化才覆写。
@@ -207,7 +185,6 @@ impl crate::ingress::schedule::PollJob for ProjectsTracker {
 fn find_repo_note(
     project_dir: &Path,
     projects_dir: &str,
-    status_dir: &str,
     name: &str,
 ) -> Option<(String, (String, String))> {
     let mut notes = std::fs::read_dir(project_dir).ok()?.flatten();
@@ -224,7 +201,7 @@ fn find_repo_note(
             continue;
         };
         return Some((
-            format!("{projects_dir}/{status_dir}/{name}/{file_name}"),
+            format!("{projects_dir}/{name}/{file_name}"),
             repo,
         ));
     }
@@ -303,17 +280,17 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         std::fs::write(dir.path().join("Repo-GitHub.md"), "---\nrepo: https://github.com/o/r\n---\n").unwrap();
         // 机器文件被跳过 → None。
-        assert!(find_repo_note(dir.path(), "P", "S", "n").is_none());
+        assert!(find_repo_note(dir.path(), "P", "n").is_none());
         std::fs::write(dir.path().join("笔记.md"), "---\nrepo: https://gitee.com/a/b\n---\n").unwrap();
         // 非 GitHub 链接不算 GitHub 项目。
-        assert!(find_repo_note(dir.path(), "P", "S", "n").is_none());
+        assert!(find_repo_note(dir.path(), "P", "n").is_none());
         std::fs::write(
             dir.path().join("项目笔记.md"),
             "---\nrepo: https://github.com/o/r\n---\n# Ru41\n",
         )
         .unwrap();
-        let (rel, repo) = find_repo_note(dir.path(), "P", "S", "n").unwrap();
-        assert_eq!(rel, "P/S/n/项目笔记.md");
+        let (rel, repo) = find_repo_note(dir.path(), "P", "n").unwrap();
+        assert_eq!(rel, "P/n/项目笔记.md");
         assert_eq!(repo, ("o".to_string(), "r".to_string()));
     }
 }
