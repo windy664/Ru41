@@ -65,10 +65,15 @@ app_secret = ""
 # notify = true
 
 # RSS 信息流追踪（ru41 rss poll/run），模式与论文追踪一致。
+# digest_mode = "daily" 时攒候选池按点出日报（少量 GLM 调用换高信噪比），
+# realtime 为有候选即精选。归档的精选会落 vault 05-Opportunities/雷达-日报/。
 # [sources.rss]
 # feeds = ["https://www.jiqizhixin.com/rss"]
 # keywords = ["agent", "llm", "安全"]
 # interests = "AI 安全方向本科生"
+# digest_mode = "daily"      # realtime | daily（默认 realtime）
+# evening_hour = 21          # daily 晚报时刻（本地时）
+# morning_hour = 8           # daily 早报时刻（缺省不出早报）
 
 # 项目库管理（ru41 projects poll/run）：扫 02-Projects 项目笔记，
 # frontmatter 带 repo: https://github.com/... 的项目每日同步 README+元数据到 Repo-GitHub.md。

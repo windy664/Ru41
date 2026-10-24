@@ -160,6 +160,9 @@ fn make_tracker(
                 target: "default".into(),
                 msg_id: None,
             }),
+            digest_mode: ru41::modules::rss::service::DigestMode::Realtime,
+            evening_hour: 21,
+            morning_hour: None,
         },
     )
 }

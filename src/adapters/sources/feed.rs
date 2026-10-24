@@ -2,7 +2,7 @@ use anyhow::{Context, Result};
 use quick_xml::{Reader, events::Event};
 
 /// 一条订阅源资讯条目（RSS 2.0 或 Atom；摘要已去 HTML 标签并截断）。
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize)]
 pub struct FeedItem {
     /// 条目唯一标识：guid/id 优先，缺省退回 link，再退回 title+published。
     pub id: String,
