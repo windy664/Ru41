@@ -134,3 +134,25 @@ services:
     command: ["--config", "/etc/ru41/ru41.toml", "--db", "/data/state.db", "serve", "--listen", "0.0.0.0:4141"]
     ports:
       - "127.0.0.1:4141:4141"
+
+  # 共享无头浏览器（browserless/chrome）：JS 重度页面（X、知乎、SPA）的统一
+  # 渲染出口。附属与 agent 都用 HTTP API 直连，不再各自背一套 chromium。
+  browser:
+    image: docker.m.daocloud.io/browserless/chrome:latest
+    init: true
+    restart: unless-stopped
+    profiles: [browser]
+    # 独立网络 + 固定别名：各容器经 http://ru41-browser:3000 访问，
+    # 不把渲染端口暴露到宿主机/局域网。
+    networks:
+      ru41-net:
+        aliases: [ru41-browser]
+    environment:
+      # 国际站点经 mihomo 代理（docker0 网关）；国内站点 GEOIP 直连。
+      HTTP_PROXY: http://172.17.0.1:7890
+      HTTPS_PROXY: http://172.17.0.1:7890
+      NO_PROXY: localhost,127.0.0.1
+
+networks:
+  ru41-net:
+    name: ru41-net
