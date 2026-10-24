@@ -215,6 +215,9 @@ async fn main() -> Result<()> {
         Command::Rss { command } => {
             tracker_or_exit(tracker_cli("rss", command, &config, &store_config).await?)?
         }
+        Command::Projects { command } => {
+            tracker_or_exit(tracker_cli("projects", command, &config, &store_config).await?)?
+        }
         Command::Ecard { command } => {
             tracker_or_exit(tracker_cli("ecard", command, &config, &store_config).await?)?
         }

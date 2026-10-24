@@ -102,6 +102,11 @@ pub enum Command {
         #[command(subcommand)]
         command: TrackerCommand,
     },
+    /// 项目库管理：扫 02-Projects 项目笔记，GitHub 项目同步 README+元数据入库。
+    Projects {
+        #[command(subcommand)]
+        command: TrackerCommand,
+    },
     /// 校园卡水电监控：查询余额、记录历史、低余额提醒。
     Ecard {
         #[command(subcommand)]
