@@ -272,6 +272,17 @@ impl RssTracker {
                 continue;
             }
             let key = format!("rss:digest:{slot}:{date}");
+            // 今天的这份报可能已出过（同 key）：prompt 后续迭代会让幂等检查
+            // 报「key 冲突」，所以先按 key 查存在性——存在即视为已出报，跳过。
+            let existing = self
+                .store
+                .list(500)?
+                .into_iter()
+                .find(|task| task.request_key == key);
+            if let Some(task) = existing {
+                digest_task_id = Some(task.id);
+                continue;
+            }
             let mut service = crate::app::task::TaskService::new(self.store.clone());
             let prompt = digest_prompt(interests, &pool);
             let result = match &self.config.notify {
