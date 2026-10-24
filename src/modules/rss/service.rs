@@ -25,6 +25,9 @@ pub struct RssConfig {
     pub evening_hour: u32,
     /// daily 模式早报时刻；None 不出早报。
     pub morning_hour: Option<u32>,
+    /// 条目最大年龄（天）：发布时间更早的视为旧闻直接丢弃，
+    /// 防止聚合类源（CSDN 头条等）的考古帖刷屏日报。默认 2。
+    pub max_age_days: u64,
 }
 
 /// digest 产出节奏：有候选即精选 vs 攒一天到点出日报。
@@ -102,10 +105,17 @@ impl RssTracker {
                 }
             };
             fetched += feed_items.len();
+            let cutoff = crate::util::now() - (self.config.max_age_days as i64) * 86_400;
             items.extend(
                 feed_items
                     .into_iter()
                     .take(self.config.max_items_per_feed as usize)
+                    .filter(|item| match parse_item_time(&item.published) {
+                        Some(ts) => ts >= cutoff,
+                        // 日期无法解析的不丢（多数源日期正常，漏解析不等于旧闻），
+                        // 交给 digest 判断。
+                        None => true,
+                    })
                     .map(|item| (url.clone(), item)),
             );
         }
@@ -347,6 +357,33 @@ impl RssTracker {
     }
 }
 
+/// 条目发布时间宽容解析：RFC 2822（RSS 2.0）/ RFC 3339（Atom）/ 纯日期。
+/// 聚合类源的日期格式不统一，全部试一遍；都失败返回 None 由调用方决定。
+fn parse_item_time(published: &str) -> Option<i64> {
+    let raw = published.trim();
+    if raw.is_empty() {
+        return None;
+    }
+    if let Ok(dt) = chrono::DateTime::parse_from_rfc2822(raw) {
+        return Some(dt.timestamp());
+    }
+    if let Ok(dt) = chrono::DateTime::parse_from_rfc3339(raw) {
+        return Some(dt.timestamp());
+    }
+    // "2026-10-24" / "2026-10-24 08:00:00" 类裸格式，按 UTC+8 解释。
+    for fmt in ["%Y-%m-%d %H:%M:%S", "%Y-%m-%dT%H:%M:%S", "%Y-%m-%d"] {
+        if let Ok(naive) = chrono::NaiveDateTime::parse_from_str(raw, fmt) {
+            return Some(naive.and_utc().timestamp() - 8 * 3600);
+        }
+        if let Ok(date) = chrono::NaiveDate::parse_from_str(raw, fmt) {
+            return date
+                .and_hms_opt(0, 0, 0)
+                .map(|dt| dt.and_utc().timestamp() - 8 * 3600);
+        }
+    }
+    None
+}
+
 /// 北京时间（UTC+8）的日期与小时：日报时刻按用户本地时区判断。
 fn local_date_hour(now: i64) -> (String, u32) {
     use chrono::{TimeZone, Timelike};
@@ -369,8 +406,10 @@ fn digest_hash(candidates: &[(String, FeedItem)]) -> u64 {
 /// 资讯精选 prompt：输出口径按设计文档 3.4 的四段式，区分事实与推断。
 fn digest_prompt(interests: &str, candidates: &[FeedItem]) -> String {
     let mut prompt = format!(
-        "你是信息筛选助手。以下是最新采集到的资讯条目（含标题与摘要级内容）。\n\
+        "你是信息筛选助手，正在为用户出一份日报。以下是最新采集到的资讯条目（含标题与摘要级内容）。\n\
          个人关注方向：{interests}\n\n\
+         时效纪律：这是日报，优先近 48 小时的条目；发布时间超过 3 天的视为旧闻，\n\
+         除非仍在行动窗口内（如未过截止日期/仍可领取），否则一律舍弃并简要说明。\n\
          请筛选出真正有信息增量、与关注方向相关的条目（搬运、纯营销、无实质内容的直接舍弃），\n\
          对每条输出：标题 / 链接 / 发生了什么 / 为什么重要 / 与我有关之处 / 建议的下一步行动。\n\
          区分事实与推断，事实必须能在所给材料中找到依据。\n\
@@ -403,7 +442,21 @@ impl crate::ingress::schedule::PollJob for RssTracker {
 
 #[cfg(test)]
 mod tests {
-    use super::{DigestMode, FeedItem, RssConfig, RssTracker, local_date_hour};
+    use super::{DigestMode, FeedItem, RssConfig, RssTracker, local_date_hour, parse_item_time};
+
+    #[test]
+    fn parses_common_publish_formats() {
+        // RFC 2822（RSS 2.0 标准）
+        assert!(parse_item_time("Fri, 24 Oct 2026 08:00:00 GMT").is_some());
+        // RFC 3339（Atom 标准）
+        assert!(parse_item_time("2026-10-24T08:00:00Z").is_some());
+        // 裸日期/裸时间（部分中文聚合源）
+        assert!(parse_item_time("2026-10-24").is_some());
+        assert!(parse_item_time("2026-10-24 08:00:00").is_some());
+        // 垃圾与空串不解析
+        assert!(parse_item_time("").is_none());
+        assert!(parse_item_time("昨天").is_none());
+    }
     use crate::adapters::sources::feed::FeedClient;
     use crate::ports::storage::TaskStore;
     use std::sync::Arc;
@@ -436,6 +489,7 @@ mod tests {
                 digest_mode: DigestMode::Daily,
                 evening_hour,
                 morning_hour: None,
+            max_age_days: 2,
             },
         )
     }

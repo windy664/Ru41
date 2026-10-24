@@ -29,6 +29,8 @@ pub struct RssSection {
     pub evening_hour: Option<u32>,
     /// daily 模式早报时刻（本地时，0-23）；缺省不出早报。
     pub morning_hour: Option<u32>,
+    /// 条目最大年龄（天），更旧的直接丢弃；默认 2。
+    pub max_age_days: Option<u64>,
 }
 
 impl RssSection {
@@ -53,6 +55,7 @@ impl RssSection {
             digest_mode: super::service::DigestMode::parse(self.digest_mode.as_deref())?,
             evening_hour: self.evening_hour.unwrap_or(21),
             morning_hour: self.morning_hour,
+            max_age_days: self.max_age_days.unwrap_or(2),
         })
     }
 }
