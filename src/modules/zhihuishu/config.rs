@@ -24,6 +24,9 @@ pub struct ZhihuishuSection {
     /// 智慧树课程名 → Vault 课程目录名映射；缺省用内置的当前学期映射，未映射课程按原名建目录。
     #[serde(default)]
     pub vault_courses: Option<std::collections::BTreeMap<String, String>>,
+    /// 任务目录策略："all"（默认，每个任务都建目录）或 "substantive"
+    /// （只有实质作业——有正文要求或附件——才建目录，纯在线任务不进 vault）。
+    pub vault_task_dirs: Option<String>,
 }
 
 impl ZhihuishuSection {
@@ -78,6 +81,9 @@ impl ZhihuishuSection {
                 .clone()
                 .unwrap_or_else(|| "01-Courses-课程/2026-Fall-大一上".into()),
             vault_courses,
+            vault_task_dirs: crate::ports::vault::VaultTaskDirs::parse(
+                self.vault_task_dirs.as_deref(),
+            )?,
             notify_target,
         })
     }

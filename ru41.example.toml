@@ -88,6 +88,7 @@ app_secret = ""
 # deadline_days = 3        # 截止前 N 天进入每日提醒
 # interval_secs = 21600
 # notify = true
+# vault_task_dirs = "substantive"  # 任务目录策略：all=每个任务建目录；substantive=只有有正文要求/附件的作业才建
 
 # 学习通签到监控：协议端直连，检测待签活动并提醒（见 docs/sources-chaoxing.md）。
 # 凭证建议用环境变量 RU41_XXT_PHONE / RU41_XXT_PASSWORD 注入。
@@ -102,6 +103,7 @@ app_secret = ""
 # work_todo_sync = true    # 未交作业自动进待办、已交自动回勾
 # work_vault_sync = true   # 作业清单进 Obsidian（需 [obsidian]）；与智慧树同窗目录即聚合
 # vault_course_dir = "01-Courses-课程/2026-Fall-大一上"   # 缺省与 zhihuishu 一致
+# work_vault_task_dirs = "substantive"  # 任务目录策略：all=全部；substantive=只为未交作业建目录（学习通说明无正文）
 # vault_courses = { "大学英语新视野" = "大学英语" }         # 跨平台同名课程映射到同一目录
 # default_lat = 30.000000  # 宿舍纬度：位置/二维码签到的坐标缺省
 # default_lon = 114.000000 # 宿舍经度

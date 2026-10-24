@@ -145,6 +145,7 @@ fn make_tracker_with(
             vault_courses: [("职业生涯规划".to_owned(), "大学生职业生涯规划".to_owned())]
                 .into_iter()
                 .collect(),
+            vault_task_dirs: ru41::ports::vault::VaultTaskDirs::All,
             notify_target: "user:mock".into(),
         },
         ru41::domain::todo::TodoOptions {

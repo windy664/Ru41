@@ -8,7 +8,8 @@ use serde::Serialize;
 use std::{collections::BTreeMap, path::PathBuf, sync::Arc};
 
 use super::source::{
-    ZhihuishuCourse, ZhihuishuReport, ZhihuishuTask, load_report, parse_platform_time,
+    ZhihuishuAttachment, ZhihuishuCourse, ZhihuishuReport, ZhihuishuTask, load_report,
+    parse_platform_time,
 };
 
 /// 智慧树作业提醒配置（对应配置文件的 [sources.zhihuishu]）。
@@ -29,6 +30,8 @@ pub struct ZhihuishuConfig {
     pub vault_course_dir: String,
     /// 智慧树课程名 → Vault 课程目录名映射。
     pub vault_courses: BTreeMap<String, String>,
+    /// 任务目录策略：实质作业才建目录，纯在线任务（课前测等）不进 vault。
+    pub vault_task_dirs: crate::ports::vault::VaultTaskDirs,
     /// 提醒投递目标（装配层按 [notify] 渠道解析）。
     pub notify_target: String,
 }
@@ -352,11 +355,18 @@ impl ZhihuishuTracker {
             // 课程级索引：未完成/已完成清单，任务行双链到作业文件夹
             vault.write_file(
                 &format!("{course_base}/智慧树作业.md"),
-                &render_course_note(course, now, offset),
+                &render_course_note(course, now, offset, self.config.vault_task_dirs),
             )?;
             written += 1;
             // 任务级资料夹：{YYYY.MM.DD}_{作业名}/作业说明.md + 平台附件
             for task in &course.tasks {
+                // substantive 策略：纯在线任务（无正文要求、无附件）不建目录，
+                // 它们只出现在课程索引与作业总表里。
+                if self.config.vault_task_dirs == crate::ports::vault::VaultTaskDirs::Substantive
+                    && !is_substantive(task)
+                {
+                    continue;
+                }
                 let folder = task_folder_name(task);
                 vault.write_file(
                     &format!("{course_base}/{folder}/作业说明.md"),
@@ -471,7 +481,12 @@ fn truncate_err(err: &anyhow::Error) -> String {
 }
 
 /// 渲染单门课程的作业清单笔记（Obsidian Tasks 格式，每轮整体覆写）。
-fn render_course_note(course: &ZhihuishuCourse, now: i64, offset_seconds: i32) -> String {
+fn render_course_note(
+    course: &ZhihuishuCourse,
+    now: i64,
+    offset_seconds: i32,
+    dirs: crate::ports::vault::VaultTaskDirs,
+) -> String {
     let mut open: Vec<&ZhihuishuTask> = Vec::new();
     let mut done: Vec<&ZhihuishuTask> = Vec::new();
     for task in &course.tasks {
@@ -502,30 +517,49 @@ fn render_course_note(course: &ZhihuishuCourse, now: i64, offset_seconds: i32) -
         out.push_str("当前没有未完成作业 🎉\n");
     }
     for task in &open {
-        let folder = task_folder_name(task);
-        out.push_str(&format!(
-            "- [ ] [[{}/作业说明|{}]]\n",
-            folder,
-            task_line(task, now)
-        ));
+        out.push_str(&task_line_item(task, now, dirs));
     }
 
     if !done.is_empty() {
         out.push_str(&format!("\n## 已完成（{}）\n\n", done.len()));
         for task in &done {
-            let date = task
-                .end_at
-                .as_deref()
-                .and_then(|s| s.get(..10))
-                .unwrap_or("未知");
-            out.push_str(&format!(
-                "- [x] [[{}/作业说明|{}]] 📅 {date}\n",
-                task_folder_name(task),
-                task.title
-            ));
+            out.push_str(&task_line_item(task, now, dirs));
         }
     }
     out
+}
+
+/// 任务索引行：建目录的任务双链到作业文件夹；substantive 策略下不建目录的
+/// 纯在线任务降级为纯文本行，避免 Obsidian 里挂着一堆空链接。
+fn task_line_item(
+    task: &ZhihuishuTask,
+    now: i64,
+    dirs: crate::ports::vault::VaultTaskDirs,
+) -> String {
+    let checked = if task.completed.unwrap_or(false) {
+        "x"
+    } else {
+        " "
+    };
+    let link = dirs == crate::ports::vault::VaultTaskDirs::All || is_substantive(task);
+    let line = task_line(task, now);
+    if link {
+        format!(
+            "- [{checked}] [[{}/作业说明|{line}]]\n",
+            task_folder_name(task)
+        )
+    } else {
+        format!("- [{checked}] {line}\n")
+    }
+}
+
+/// 实质作业：有正文要求或平台附件——值得在 vault 留档、让 agent 协助产出；
+/// 课前测等纯在线客观题内容在平台内，任务目录纯属噪音。
+fn is_substantive(task: &ZhihuishuTask) -> bool {
+    task.content
+        .as_deref()
+        .is_some_and(|c| !c.trim().is_empty())
+        || task.attachments.as_ref().is_some_and(|a| !a.is_empty())
 }
 
 /// 任务文件夹名：`YYYY.MM.DD_作业名`（日期取布置日，缺省用截止日，都没有则只留作业名）。
@@ -641,6 +675,64 @@ fn task_line(task: &ZhihuishuTask, now: i64) -> String {
         line.push_str(&format!(" 📅 {date}"));
     }
     line
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{ZhihuishuTask, is_substantive};
+    use crate::ports::vault::VaultTaskDirs;
+
+    fn task(content: Option<&str>, attachments: usize) -> ZhihuishuTask {
+        ZhihuishuTask {
+            activity_task_id: "id".into(),
+            title: "课前测".into(),
+            kind: None,
+            start_at: None,
+            end_at: None,
+            completed: None,
+            total_score: None,
+            exam_duration_minutes: None,
+            video_invigilate: None,
+            late_submit: None,
+            content: content.map(str::to_owned),
+            attachments: if attachments > 0 {
+                Some(vec![
+                    crate::modules::zhihuishu::source::ZhihuishuAttachment {
+                        name: "a.docx".into(),
+                        file: "attachments/x/a.docx".into(),
+                    },
+                ])
+            } else {
+                None
+            },
+        }
+    }
+
+    #[test]
+    fn online_quiz_is_not_substantive() {
+        assert!(!is_substantive(&task(None, 0)));
+        assert!(!is_substantive(&task(Some("   "), 0)));
+    }
+
+    #[test]
+    fn written_work_and_attachment_are_substantive() {
+        assert!(is_substantive(&task(Some("写不少于300字"), 0)));
+        assert!(is_substantive(&task(None, 1)));
+    }
+
+    #[test]
+    fn task_dirs_policy_parse() {
+        assert_eq!(VaultTaskDirs::parse(None).unwrap(), VaultTaskDirs::All);
+        assert_eq!(
+            VaultTaskDirs::parse(Some("all")).unwrap(),
+            VaultTaskDirs::All
+        );
+        assert_eq!(
+            VaultTaskDirs::parse(Some("substantive")).unwrap(),
+            VaultTaskDirs::Substantive
+        );
+        assert!(VaultTaskDirs::parse(Some("bogus")).is_err());
+    }
 }
 
 /// 用户时区（固定偏移，容器安全）的 `%Y-%m-%d %H:%M` 时间戳。
