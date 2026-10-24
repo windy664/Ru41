@@ -50,6 +50,8 @@ pub struct Worker {
     pub store: Arc<dyn TaskStore>,
     pub backends: Arc<BackendRegistry>,
     pub sanitizer: Arc<dyn Sanitizer>,
+    /// 配置了 [knowledge] 时挂载：每条用户消息执行前自动检索知识库并注入上下文。
+    pub knowledge: Option<Arc<crate::app::knowledge::KnowledgeService>>,
     pub config: WorkerConfig,
 }
 
@@ -218,6 +220,22 @@ impl Worker {
                 mapping.rule_counts()
             );
         }
+        // RAG 自动注入：每条消息先查知识库，命中达阈值就把资料前置进 prompt，
+        // 模型不必自己想到去调 vault-search。检索故障降级为无注入，不影响任务。
+        let prompt = match &self.knowledge {
+            Some(knowledge) => match knowledge.retrieval_context(&prompt) {
+                Ok(Some(context)) => {
+                    eprintln!("[knowledge] task {} injected retrieval context", claim.task.id);
+                    format!("{context}\n---\n用户消息：\n{prompt}")
+                }
+                Ok(None) => prompt,
+                Err(error) => {
+                    eprintln!("[knowledge] task {} retrieval failed: {error:#}", claim.task.id);
+                    prompt
+                }
+            },
+            None => prompt,
+        };
         let conversation_id = claim
             .task
             .notify
@@ -232,7 +250,8 @@ impl Worker {
         // 旧文档没有 model 字段时视为不匹配（None != Some(model)）。
         let current_model = agent.descriptor().model.clone();
         let resume_session_id = conversation.as_ref().and_then(|doc| {
-            let backend_match = doc.value["backend_id"].as_str() == Some(claim.task.backend_id.as_str());
+            let backend_match =
+                doc.value["backend_id"].as_str() == Some(claim.task.backend_id.as_str());
             let doc_model = doc
                 .value
                 .get("model")
@@ -348,7 +367,10 @@ impl Worker {
                 "model": current_model,
             });
             let revision = conversation.as_ref().map(|doc| doc.revision);
-            match self.store.put_document("conversation", id, revision, &record) {
+            match self
+                .store
+                .put_document("conversation", id, revision, &record)
+            {
                 Ok(true) => {}
                 Ok(false) => eprintln!("[worker] conversation state update conflict"),
                 Err(error) => eprintln!("[worker] conversation state update failed: {error:#}"),

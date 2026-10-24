@@ -147,6 +147,7 @@ printf '%s\n' '{"id":"ru41-prompt","type":"response","success":true}' '{"type":"
         store: store.clone(),
         backends: Arc::new(registry),
         sanitizer: Arc::new(NoopSanitizer),
+        knowledge: None,
         config: WorkerConfig {
             worker_id: "test".into(),
             runs_dir: dir.path().join("runs"),

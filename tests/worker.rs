@@ -48,6 +48,7 @@ fn worker_with(dir: &std::path::Path, agent: impl AgentBackend + 'static) -> Wor
         store: Arc::new(SqliteTaskStore::open(&dir.join("state.db")).unwrap()),
         backends: Arc::new(backends),
         sanitizer: Arc::new(ru41::privacy::RandomSanitizer::default()),
+        knowledge: None,
         config: WorkerConfig {
             worker_id: "test".into(),
             runs_dir: dir.join("runs"),
@@ -114,12 +115,8 @@ async fn agent_events_are_streamed_to_activity_chunks() {
     // 停止信号后 streamer 会 flush 剩余行；稍等一拍再查。
     for _ in 0..50 {
         let docs = w.store.documents("activity", 10).unwrap();
-        let mine: Vec<_> = docs
-            .iter()
-            .filter(|d| d.id.starts_with(&run_id))
-            .collect();
-        let all_sent = !mine.is_empty()
-            && mine.iter().all(|d| d.value["status"] == "pending");
+        let mine: Vec<_> = docs.iter().filter(|d| d.id.starts_with(&run_id)).collect();
+        let all_sent = !mine.is_empty() && mine.iter().all(|d| d.value["status"] == "pending");
         if all_sent {
             let lines: Vec<&str> = mine[0].value["lines"]
                 .as_array()
@@ -254,6 +251,7 @@ async fn permanent_failure_skips_retry_budget() {
         store: store.clone(),
         backends: Arc::new(backends),
         sanitizer: Arc::new(NoopSanitizer),
+        knowledge: None,
         config: WorkerConfig {
             worker_id: "test".into(),
             runs_dir: dir.path().join("runs"),
@@ -335,6 +333,7 @@ async fn conversation_session_is_saved_and_resumed() {
         store: store.clone(),
         backends: Arc::new(backends),
         sanitizer: Arc::new(NoopSanitizer),
+        knowledge: None,
         config: WorkerConfig {
             worker_id: "test".into(),
             runs_dir: dir.path().join("runs"),
@@ -420,6 +419,7 @@ async fn conversation_resume_requires_matching_model() {
         store: store.clone(),
         backends: Arc::new(backends),
         sanitizer: Arc::new(NoopSanitizer),
+        knowledge: None,
         config: WorkerConfig {
             worker_id: "test".into(),
             runs_dir: dir.path().join("runs"),
