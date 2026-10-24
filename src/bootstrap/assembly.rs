@@ -211,11 +211,16 @@ pub fn paper_tracker(config: &Config, store: Arc<dyn TaskStore>) -> Result<Paper
 /// 由 [sources.rss] 配置组装追踪器；通知路由同样来自全局 [notify] 出口。
 pub fn rss_tracker(config: &Config, store: Arc<dyn TaskStore>) -> Result<RssTracker> {
     let rss = &config.sources.rss;
-    Ok(RssTracker::new(
+    let mut tracker = RssTracker::new(
         store,
         FeedClient::new(),
         rss.resolved(source_notify(config, rss.notify)?)?,
-    ))
+    );
+    // 挂 Vault：digest 精选完成后归档进 05-Opportunities（机会雷达闭环）。
+    if let Some(vault) = vault_if_ready(config, true)? {
+        tracker = tracker.with_vault(vault);
+    }
+    Ok(tracker)
 }
 
 /// 按 [notify] 渠道构造具体通知器；渠道知识只存在于装配层。
