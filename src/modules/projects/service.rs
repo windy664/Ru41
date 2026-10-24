@@ -137,29 +137,46 @@ impl ProjectsTracker {
 
     /// 同步单个项目：README + 元数据渲染后与 vault 现状比对，变化才覆写。
     /// 返回 true 表示发生了写入。
+    /// 元数据拉取失败（api.github.com 限流等）不致命：保留旧 frontmatter
+    /// 元数据只更新 README；首次同步没有旧文件兜底才算失败。
     async fn sync_one(&self, entry: &ProjectEntry) -> Result<bool> {
         let (owner, repo) = &entry.repo;
-        let meta = self
-            .github
-            .repo_meta(owner, repo)
-            .await
-            .with_context(|| format!("github meta 拉取失败 {owner}/{repo}"))?;
+        let target = format!("{}/Repo-GitHub.md", entry.rel_dir);
+        let existing = self.vault.read_file(&target)?;
+        let meta = match self.github.repo_meta(owner, repo).await {
+            Ok(meta) => Some(meta),
+            Err(error) => {
+                eprintln!("[projects] {} meta 拉取失败，沿用旧元数据: {error:#}", entry.name);
+                None
+            }
+        };
+        let default_branch = meta
+            .as_ref()
+            .map(|m| m.default_branch.as_str())
+            .unwrap_or("main");
         let readme = self
             .github
-            .readme(owner, repo, &meta.default_branch)
+            .readme(owner, repo, default_branch)
             .await
             .unwrap_or_else(|error| {
-                // 无 README 的仓库不判失败，元数据照样落。
                 eprintln!("[projects] {} readme skipped: {error:#}", entry.name);
                 String::new()
             });
-        let rendered = render_repo_note(&entry.note_rel, owner, repo, &meta, &readme);
-        let target = format!("{}/Repo-GitHub.md", entry.rel_dir);
-        let unchanged = self
-            .vault
-            .read_file(&target)?
-            .is_some_and(|current| current == rendered);
-        if unchanged {
+        let rendered = match &meta {
+            Some(meta) => render_repo_note(&entry.note_rel, owner, repo, meta, &readme),
+            None => {
+                let Some(current) = &existing else {
+                    anyhow::bail!("github meta 拉取失败且无历史文件兜底");
+                };
+                // 保留旧 frontmatter（元数据可能过时，但比报错强），只换正文。
+                let frontmatter = current
+                    .split_once("\n---\n")
+                    .map(|(head, _)| head.to_owned())
+                    .unwrap_or_else(|| current.clone());
+                format!("{frontmatter}\n---\n\n{readme}\n")
+            }
+        };
+        if existing.as_deref() == Some(rendered.as_str()) {
             return Ok(false);
         }
         self.vault.write_file(&target, &rendered)?;
