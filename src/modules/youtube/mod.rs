@@ -10,3 +10,60 @@ pub mod source;
 
 pub use config::YoutubeSection;
 pub use service::{YoutubeConfig, YoutubePollReport, YoutubeTracker};
+
+/// yt-dlp 客户端工厂：tracker、QQ 命令与 CLI prep 共用同一份配置来源。
+pub fn ytdlp_client(config: &crate::bootstrap::config::Config) -> source::YtDlpClient {
+    let youtube = &config.sources.youtube;
+    source::YtDlpClient::new(
+        youtube.ytdlp_bin.clone().unwrap_or_else(|| "yt-dlp".into()),
+        youtube.proxy_url.clone(),
+    )
+}
+
+/// 注册表定义：youtube 的调度清单、tracker 构造、QQ 命令都在本模块内闭环。
+pub const DEF: super::ModuleDef = super::ModuleDef {
+    name: "youtube",
+    schedule: |config| {
+        let youtube = &config.sources.youtube;
+        let ready = youtube.channels.as_ref().is_some_and(|c| !c.is_empty());
+        vec![super::JobSchedule::simple(
+            "youtube",
+            youtube
+                .interval_secs
+                .unwrap_or(config::YoutubeSection::DEFAULT_INTERVAL_SECS),
+            ready,
+            (!ready).then(|| "配置 sources.youtube.channels 后启用".into()),
+        )]
+    },
+    tracker: |config, store, name| {
+        if name != "youtube" {
+            return Ok(None);
+        }
+        let youtube = &config.sources.youtube;
+        Ok(Some(Box::new(YoutubeTracker::new(
+            store,
+            youtube.resolved(crate::bootstrap::assembly::source_notify(
+                config,
+                youtube.notify,
+            )?)?,
+        ))))
+    },
+    qq_handlers: |config, backend| {
+        Ok(vec![std::sync::Arc::new(qq_command::YoutubeQqCommand::new(
+            ytdlp_client(config),
+            config.sources.youtube.interests.clone().unwrap_or_default(),
+            config
+                .sources
+                .youtube
+                .level
+                .clone()
+                .unwrap_or_else(|| config::YoutubeSection::DEFAULT_LEVEL.into()),
+            config
+                .sources
+                .youtube
+                .max_transcript_chars
+                .unwrap_or(config::YoutubeSection::DEFAULT_MAX_TRANSCRIPT_CHARS),
+            backend.to_owned(),
+        ))])
+    },
+};

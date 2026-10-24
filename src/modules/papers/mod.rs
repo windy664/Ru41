@@ -14,14 +14,14 @@ pub const DEF: super::ModuleDef = super::ModuleDef {
     schedule: |config| {
         let arxiv = &config.sources.arxiv;
         let ready = arxiv.categories.as_ref().is_some_and(|c| !c.is_empty());
-        vec![super::JobSchedule {
-            name: "papers",
-            interval_secs: arxiv
+        vec![super::JobSchedule::simple(
+            "papers",
+            arxiv
                 .interval_secs
                 .unwrap_or(config::ArxivSection::DEFAULT_INTERVAL_SECS),
-            enabled: ready,
-            disabled_reason: (!ready).then(|| "配置 sources.arxiv.categories 后启用".into()),
-        }]
+            ready,
+            (!ready).then(|| "配置 sources.arxiv.categories 后启用".into()),
+        )]
     },
     tracker: |config, store, name| {
         if name != "papers" {
