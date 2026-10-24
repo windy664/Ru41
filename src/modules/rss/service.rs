@@ -20,6 +20,31 @@ pub struct RssConfig {
     pub interval_secs: u64,
     pub backend: String,
     pub notify: Option<NotifyRoute>,
+    pub digest_mode: DigestMode,
+    /// daily 模式晚报时刻（本地时）。
+    pub evening_hour: u32,
+    /// daily 模式早报时刻；None 不出早报。
+    pub morning_hour: Option<u32>,
+}
+
+/// digest 产出节奏：有候选即精选 vs 攒一天到点出日报。
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum DigestMode {
+    #[default]
+    Realtime,
+    Daily,
+}
+
+impl DigestMode {
+    pub fn parse(raw: Option<&str>) -> anyhow::Result<Self> {
+        match raw {
+            None | Some("realtime") => Ok(Self::Realtime),
+            Some("daily") => Ok(Self::Daily),
+            Some(other) => anyhow::bail!(
+                "unknown digest_mode {other:?} (expected realtime or daily)"
+            ),
+        }
+    }
 }
 
 /// 一轮轮询的结果报告；单源失败不中断其他源，错误收进 errors。
@@ -33,6 +58,8 @@ pub struct RssPollReport {
     pub digest_task_id: Option<i64>,
     /// 本轮归档进 05-Opportunities 的笔记路径。
     pub archived: Vec<String>,
+    /// daily 模式候选池当前条数（realtime 恒为 0）。
+    pub pool_size: usize,
 }
 
 /// RSS 信息流追踪：逐源抓取 → 去重 → 关键词粗筛 → 合成精选 digest 任务。
@@ -84,6 +111,23 @@ impl RssTracker {
         }
         let keywords = self.config.keywords.clone();
         let interests = self.config.interests.clone();
+        if self.config.digest_mode == DigestMode::Daily {
+            let (outcome, pool_size) = self.poll_daily(items, &keywords, &interests)?;
+            let archived = self.archive_digests().unwrap_or_else(|error| {
+                eprintln!("[rss] opportunity archive failed: {error:#}");
+                Vec::new()
+            });
+            return Ok(RssPollReport {
+                feeds: self.config.feeds.len(),
+                fetched,
+                new_items: outcome.new_items,
+                candidates: outcome.candidates,
+                errors,
+                digest_task_id: outcome.digest_task_id,
+                archived,
+                pool_size,
+            });
+        }
         let outcome = crate::app::digest::register_digest(
             crate::app::digest::DigestSink {
                 store: &self.store,
@@ -139,10 +183,120 @@ impl RssTracker {
             errors,
             digest_task_id: outcome.digest_task_id,
             archived,
+            pool_size: 0,
         })
     }
 
-    /// 机会雷达归档：把已完成的 rss digest 精选写成
+    /// daily 模式：去重 + 关键词筛后进候选池（records 按天分组），
+    /// 到早/晚报时刻才合成一次 digest 任务。GLM 调用从每批一次降到每天 1-2 次。
+    fn poll_daily(
+        &self,
+        items: Vec<(String, FeedItem)>,
+        keywords: &[String],
+        interests: &str,
+    ) -> Result<(crate::app::digest::DigestOutcome, usize)> {
+        // 1. 去重（与 register_digest 同一套 rss_seen 语义）
+        let mut fresh = Vec::new();
+        for (url, item) in items {
+            let seen_key = format!("{url}#{}", item.id);
+            if self.store.document("rss_seen", &seen_key)?.is_some() {
+                continue;
+            }
+            self.store.put_document(
+                "rss_seen",
+                &seen_key,
+                None,
+                &serde_json::json!({
+                    "title": item.title,
+                    "link": item.link,
+                    "first_seen": crate::util::now(),
+                }),
+            )?;
+            fresh.push(item);
+        }
+        let new_items = fresh.len();
+        let candidates: Vec<FeedItem> = fresh
+            .into_iter()
+            .filter(|item| {
+                crate::app::digest::keyword_match(
+                    keywords,
+                    &format!("{} {}", item.title, item.summary),
+                )
+            })
+            .collect();
+        let candidate_count = candidates.len();
+
+        // 2. 入池：当天的池文档追加（按条目 id 去重，封顶 80 条保最新）
+        let (date, hour) = local_date_hour(crate::util::now());
+        let pool_id = format!("pool:{date}");
+        let mut pool: Vec<FeedItem> = self
+            .store
+            .document("rss_pool", &pool_id)?
+            .and_then(|doc| serde_json::from_value(doc.value["items"].clone()).ok())
+            .unwrap_or_default();
+        let mut pool_ids: std::collections::HashSet<String> =
+            pool.iter().map(|i| i.id.clone()).collect();
+        for item in candidates {
+            if pool_ids.insert(item.id.clone()) {
+                pool.push(item);
+            }
+        }
+        if pool.len() > 80 {
+            pool.drain(..pool.len() - 80);
+        }
+        self.store.put_document(
+            "rss_pool",
+            &pool_id,
+            None,
+            &serde_json::json!({ "items": pool }),
+        )?;
+
+        // 3. 到点出报：早报/晚报各自一天一份（request_key 天然幂等），出报即清池
+        let mut digest_task_id = None;
+        for (slot, slot_hour) in [
+            ("morning", self.config.morning_hour),
+            ("evening", Some(self.config.evening_hour)),
+        ] {
+            let Some(slot_hour) = slot_hour else { continue };
+            if hour < slot_hour || pool.is_empty() {
+                continue;
+            }
+            let key = format!("rss:digest:{slot}:{date}");
+            let mut service = crate::app::task::TaskService::new(self.store.clone());
+            let prompt = digest_prompt(interests, &pool);
+            let result = match &self.config.notify {
+                Some(route) => {
+                    service.enqueue_with_notify(&key, &prompt, &self.config.backend, route)?
+                }
+                None => service.enqueue_for(&key, &prompt, &self.config.backend)?,
+            };
+            if result.created {
+                digest_task_id = Some(result.task.id);
+                // 出报即清池：晚报只覆盖早报之后的新候选，早报覆盖隔夜积累。
+                self.store.put_document(
+                    "rss_pool",
+                    &pool_id,
+                    None,
+                    &serde_json::json!({ "items": [] }),
+                )?;
+                pool.clear();
+            } else {
+                // 今天这份已建过（重复轮询/重启），不重复建任务。
+                digest_task_id = Some(result.task.id);
+            }
+        }
+
+        Ok((
+            crate::app::digest::DigestOutcome {
+                new_items,
+                candidates: candidate_count,
+                digest_task_id,
+            },
+            pool.len(),
+        ))
+    }
+
+        /// 机会雷达归档：把已完成的 rss digest 精选写成
     /// `05-Opportunities-机会/雷达-日报/<日期>-digest-<task_id>.md`，
     /// 游标记录最后一个已归档任务 id（records 文档）。
     fn archive_digests(&self) -> Result<Vec<String>> {
@@ -193,6 +347,14 @@ impl RssTracker {
     }
 }
 
+/// 北京时间（UTC+8）的日期与小时：日报时刻按用户本地时区判断。
+fn local_date_hour(now: i64) -> (String, u32) {
+    use chrono::{TimeZone, Timelike};
+    let tz = chrono::FixedOffset::east_opt(8 * 3600).expect("valid offset");
+    let dt = tz.timestamp_opt(now, 0).single().expect("valid timestamp");
+    (dt.format("%Y-%m-%d").to_string(), dt.hour())
+}
+
 /// 候选集合的稳定散列，用于 digest 幂等键（同一批重复 poll 不重复建任务）。
 fn digest_hash(candidates: &[(String, FeedItem)]) -> u64 {
     use std::hash::{Hash, Hasher};
@@ -238,3 +400,90 @@ impl crate::ingress::schedule::PollJob for RssTracker {
         Box::pin(async move { Ok(serde_json::to_value(self.poll_once().await?)?) })
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::{DigestMode, FeedItem, RssConfig, RssTracker, local_date_hour};
+    use crate::adapters::sources::feed::FeedClient;
+    use crate::ports::storage::TaskStore;
+    use std::sync::Arc;
+
+    fn item(id: &str) -> (String, FeedItem) {
+        (
+            "https://feed".into(),
+            FeedItem {
+                id: id.into(),
+                title: format!("AI 机会 {id}"),
+                link: format!("https://x/{id}"),
+                summary: "免费额度".into(),
+                published: "2026-10-24".into(),
+            },
+        )
+    }
+
+    fn daily_tracker(store: Arc<dyn TaskStore>, evening_hour: u32) -> RssTracker {
+        RssTracker::new(
+            store,
+            FeedClient::new(),
+            RssConfig {
+                feeds: vec!["https://feed".into()],
+                keywords: vec!["AI".into()],
+                interests: "测试关注方向".into(),
+                max_items_per_feed: 50,
+                interval_secs: 1800,
+                backend: "codex".into(),
+                notify: None,
+                digest_mode: DigestMode::Daily,
+                evening_hour,
+                morning_hour: None,
+            },
+        )
+    }
+
+    #[test]
+    fn daily_pool_fires_digest_at_hour_and_dedups() {
+        let dir = tempfile::tempdir().unwrap();
+        let store: Arc<dyn TaskStore> = Arc::new(
+            crate::adapters::database::sqlite::SqliteTaskStore::open(&dir.path().join("s.db")).unwrap(),
+        );
+        // evening_hour = 0 → 任何时刻都到点：入池即出报并清池。
+        let tracker = daily_tracker(store.clone(), 0);
+        let (outcome, pool) = tracker
+            .poll_daily(vec![item("a"), item("b")], &["AI".to_owned()], "i")
+            .unwrap();
+        assert_eq!(outcome.new_items, 2);
+        assert_eq!(outcome.candidates, 2);
+        assert!(outcome.digest_task_id.is_some(), "到点应出报");
+        assert_eq!(pool, 0, "出报后清池");
+        let tasks = store.list(10).unwrap();
+        assert_eq!(tasks.len(), 1);
+        let (date, _) = local_date_hour(crate::util::now());
+        assert_eq!(tasks[0].request_key, format!("rss:digest:evening:{date}"));
+
+        // 重复轮询：条目已 seen，候选 0，不重复建任务。
+        let (outcome, _) = tracker
+            .poll_daily(vec![item("a"), item("b")], &["AI".to_owned()], "i")
+            .unwrap();
+        assert_eq!(outcome.new_items, 0);
+        assert_eq!(store.list(10).unwrap().len(), 1);
+    }
+
+    #[test]
+    fn daily_before_evening_hour_only_pools() {
+        let dir = tempfile::tempdir().unwrap();
+        let store: Arc<dyn TaskStore> = Arc::new(
+            crate::adapters::database::sqlite::SqliteTaskStore::open(&dir.path().join("s.db")).unwrap(),
+        );
+        let (_, hour) = local_date_hour(crate::util::now());
+        if hour == 23 {
+            return; // 23 点后无更晚时刻可测，跳过
+        }
+        let tracker = daily_tracker(store.clone(), hour + 1);
+        let (outcome, pool) = tracker.poll_daily(vec![item("a")], &["AI".to_owned()], "i").unwrap();
+        assert_eq!(outcome.candidates, 1);
+        assert!(outcome.digest_task_id.is_none(), "未到点不出报");
+        assert_eq!(pool, 1, "候选留在池中");
+        assert_eq!(store.list(10).unwrap().len(), 0);
+    }
+}
+

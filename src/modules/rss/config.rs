@@ -22,6 +22,13 @@ pub struct RssSection {
     pub backend: Option<String>,
     /// 终态后是否经默认通知出口推送（[notify] channel）；默认 true。
     pub notify: Option<bool>,
+    /// digest 模式："realtime"（默认，有候选即精选）或 "daily"（攒候选池，
+    /// 到点出日报）。daily 用少量 GLM 调用换固定节奏的高信噪比推送。
+    pub digest_mode: Option<String>,
+    /// daily 模式晚报时刻（本地时，0-23），默认 21。
+    pub evening_hour: Option<u32>,
+    /// daily 模式早报时刻（本地时，0-23）；缺省不出早报。
+    pub morning_hour: Option<u32>,
 }
 
 impl RssSection {
@@ -43,6 +50,9 @@ impl RssSection {
             interval_secs: self.interval_secs.unwrap_or(Self::DEFAULT_INTERVAL_SECS),
             backend: self.backend.clone().unwrap_or_else(|| "codex".into()),
             notify,
+            digest_mode: super::service::DigestMode::parse(self.digest_mode.as_deref())?,
+            evening_hour: self.evening_hour.unwrap_or(21),
+            morning_hour: self.morning_hour,
         })
     }
 }
