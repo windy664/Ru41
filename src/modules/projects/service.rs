@@ -122,10 +122,40 @@ impl ProjectsTracker {
         let cutoff = crate::util::now() - (self.config.archive_after_days as i64) * 86_400;
         let mut synced = 0usize;
         for meta in &repos {
-            let stale = if meta.pushed_at.is_empty() {
+            let name = meta
+                .full_name
+                .rsplit('/')
+                .next()
+                .unwrap_or(&meta.full_name)
+                .to_owned();
+            // 分组判定的 pushed_at：新鲜元数据优先；限流期（API/HTML 都受限）
+            // 回退读已同步 README.md 的 frontmatter——分类在限流 drought 里保持稳定，
+            // 不会因为取不到时间戳把一切默认成"进行中"。
+            let pushed_at = if meta.pushed_at.is_empty() {
+                self.vault
+                    .read_file(&format!(
+                        "{}/{ACTIVE_DIR}/{name}/{REPO_FILE}",
+                        self.config.projects_dir
+                    ))?
+                    .and_then(|text| frontmatter_value(&text, "pushed_at"))
+                    .or_else(|| {
+                        self.vault
+                            .read_file(&format!(
+                                "{}/{ARCHIVED_DIR}/{name}/{REPO_FILE}",
+                                self.config.projects_dir
+                            ))
+                            .ok()
+                            .flatten()
+                            .and_then(|text| frontmatter_value(&text, "pushed_at"))
+                    })
+                    .unwrap_or_default()
+            } else {
+                meta.pushed_at.clone()
+            };
+            let stale = if pushed_at.is_empty() {
                 false
             } else {
-                chrono::DateTime::parse_from_rfc3339(&meta.pushed_at)
+                chrono::DateTime::parse_from_rfc3339(&pushed_at)
                     .map(|dt| dt.timestamp() < cutoff)
                     .unwrap_or(false)
             };
@@ -134,12 +164,6 @@ impl ProjectsTracker {
             } else {
                 ACTIVE_DIR
             };
-            let name = meta
-                .full_name
-                .rsplit('/')
-                .next()
-                .unwrap_or(&meta.full_name)
-                .to_owned();
             let entry = ProjectEntry {
                 rel_dir: format!("{}/{group}/{name}", self.config.projects_dir),
                 note_rel: "github-account".into(),
@@ -303,6 +327,23 @@ fn find_repo_note(
             continue;
         };
         return Some((format!("{projects_dir}/{group}/{name}/{file_name}"), repo));
+    }
+    None
+}
+
+/// 从 frontmatter 提取任意字段值（容忍引号）。
+fn frontmatter_value(text: &str, key: &str) -> Option<String> {
+    let body = text.strip_prefix("---")?;
+    let end = body.find("\n---")?;
+    let prefix = format!("{key}:");
+    for line in body[..end].lines() {
+        let line = line.trim();
+        if let Some(value) = line.strip_prefix(&prefix) {
+            let value = value.trim().trim_matches('"').trim_matches('\'');
+            if !value.is_empty() {
+                return Some(value.to_owned());
+            }
+        }
     }
     None
 }
