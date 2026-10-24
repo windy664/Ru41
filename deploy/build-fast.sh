@@ -23,7 +23,7 @@ if [[ "${RU41_BUILD_FROM:-head}" == "worktree" ]]; then
   BUILD_DIR="$PWD"
   echo "[build-fast] WARNING: building from WORKING TREE (uncommitted state included)"
 else
-  if [ ! -d "$BUILD_DIR/.git" ]; then
+  if [ ! -e "$BUILD_DIR/.git" ]; then
     git worktree add --detach "$BUILD_DIR" "$COMMIT"
   else
     git -C "$BUILD_DIR" checkout -q --detach "$COMMIT" 2>/dev/null || true
