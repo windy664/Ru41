@@ -3,9 +3,8 @@ use clap::Parser;
 use ru41::bootstrap::agents::{AgentOverrides, registry};
 use ru41::bootstrap::assembly::{
     chaoxing_tracker, chaoxing_work_tracker, default_notify_route, jwxt_tracker,
-    notifier_for_route, notify_channels, qq_api, qq_command_handlers, qq_image_consumers,
-    scheduled_jobs,
-    todo_notify_route, tracker_job,
+    knowledge_service, notifier_for_route, notify_channels, qq_api, qq_command_handlers,
+    qq_image_consumers, scheduled_jobs, todo_notify_route, tracker_job,
 };
 use ru41::bootstrap::store::{open_store, resolve as resolve_store};
 use ru41::{
@@ -112,6 +111,7 @@ async fn main() -> Result<()> {
                 store: open_store(&store_config)?,
                 backends: Arc::new(backends),
                 sanitizer,
+                knowledge: knowledge_service(&config)?,
                 config: WorkerConfig {
                     worker_id: format!("worker-{}", std::process::id()),
                     runs_dir: runs_dir

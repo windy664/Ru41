@@ -183,6 +183,7 @@ async fn agent_sees_masked_prompt_and_store_keeps_restored_result() {
         store: store.clone() as Arc<dyn TaskStore>,
         backends: Arc::new(backends),
         sanitizer: Arc::new(RandomSanitizer::default()),
+        knowledge: None,
         config: WorkerConfig {
             worker_id: "test".into(),
             runs_dir: dir.path().join("runs"),

@@ -17,6 +17,11 @@ const CHUNK_HARD_MAX: usize = 800;
 const CHUNK_OVERLAP: usize = 80;
 /// 检索返回的上下文片段长度。
 const SNIPPET_CHARS: usize = 200;
+/// 自动注入的命中条数与相关度下限（实测有效命中多在 0.55 以上）。
+pub const RETRIEVAL_TOP_K: usize = 3;
+pub const RETRIEVAL_MIN_SCORE: f32 = 0.45;
+/// 超过该长度的 prompt 视为机器生成（digest 等批量任务），跳过自动检索注入。
+pub const RETRIEVAL_MAX_QUERY_CHARS: usize = 1200;
 
 pub struct KnowledgeService {
     embedder: Arc<dyn Embedder>,
@@ -157,8 +162,7 @@ impl KnowledgeService {
             .into_iter()
             .next()
             .context("embedder returned no vector")?;
-        let mut stmt =
-            conn.prepare("SELECT path, heading, text, embedding FROM chunks")?;
+        let mut stmt = conn.prepare("SELECT path, heading, text, embedding FROM chunks")?;
         let rows = stmt.query_map([], |row| {
             Ok((
                 row.get::<_, String>(0)?,
@@ -186,6 +190,41 @@ impl KnowledgeService {
         hits.truncate(limit);
         Ok(hits)
     }
+
+    /// 面向 worker 的自动上下文注入：用户消息进 agent 前先做语义检索，
+    /// 命中达阈值时渲染参考块前置到 prompt，让模型直接看到知识库内容，
+    /// 而不是指望它主动调 vault-search skill。检索失败由调用方降级，不阻断任务。
+    pub fn retrieval_context(&self, query: &str) -> Result<Option<String>> {
+        let query = query.trim();
+        if query.is_empty() || query.chars().count() > RETRIEVAL_MAX_QUERY_CHARS {
+            return Ok(None);
+        }
+        let hits = self.search(query, RETRIEVAL_TOP_K)?;
+        Ok(format_retrieval(&hits))
+    }
+}
+
+/// 达阈值的命中渲染成注入块；全部低于阈值返回 None。
+fn format_retrieval(hits: &[KnowledgeHit]) -> Option<String> {
+    let hits: Vec<_> = hits
+        .iter()
+        .filter(|hit| hit.score >= RETRIEVAL_MIN_SCORE)
+        .collect();
+    if hits.is_empty() {
+        return None;
+    }
+    let mut out = String::from(
+        "## 知识库自动检索结果（与用户消息可能相关）\n\
+         以下来自用户的个人知识库（Obsidian）。若与问题相关，回答时优先参考并注明来源路径；\
+         若不相关请忽略，正常回答。\n",
+    );
+    for hit in hits {
+        out.push_str(&format!(
+            "\n### {} · {}（相关度 {:.2}）\n{}\n",
+            hit.path, hit.heading, hit.score, hit.snippet
+        ));
+    }
+    Some(out)
 }
 
 /// 收集 vault 内全部 markdown；跳过 Obsidian 内部目录与模板。
@@ -330,7 +369,11 @@ mod tests {
         let content = "# 竞赛\n\nCISCN 是信息安全竞赛。\n\n## 报名时间\n\n每年四月。";
         let chunks = chunk_markdown(content);
         assert!(chunks.len() >= 2);
-        assert!(chunks.iter().any(|(h, t)| h.contains("报名时间") && t.contains("四月")));
+        assert!(
+            chunks
+                .iter()
+                .any(|(h, t)| h.contains("报名时间") && t.contains("四月"))
+        );
     }
 
     #[test]
@@ -340,6 +383,21 @@ mod tests {
         assert_eq!(chunks.len(), 2);
         assert_eq!(chunks[1].0, "B");
         assert!(chunks[1].1.contains('短'));
+    }
+
+    #[test]
+    fn retrieval_block_filters_low_scores() {
+        use super::{KnowledgeHit, format_retrieval};
+        let hit = |score: f32| KnowledgeHit {
+            path: "p.md".into(),
+            heading: "h".into(),
+            score,
+            snippet: "片段".into(),
+        };
+        assert!(format_retrieval(&[hit(0.3)]).is_none());
+        let block = format_retrieval(&[hit(0.3), hit(0.66)]).unwrap();
+        assert!(block.contains("0.66"));
+        assert!(!block.contains("0.30"));
     }
 
     #[test]
