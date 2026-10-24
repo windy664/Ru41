@@ -22,14 +22,14 @@ use crate::{
             ChaoxingClient, ChaoxingQrSigner, ChaoxingSection, ChaoxingTracker,
             ChaoxingWorkTracker,
         },
-        ecard::{EcardClient, EcardQqCommand, EcardSection, EcardTracker},
+        ecard::{EcardClient, EcardTracker},
         homework::HomeworkQqCommand,
         jwxt::{JwxtClient, JwxtQqCommand, JwxtSection, JwxtTracker},
         obsidian::ObsidianQqCommand,
-        papers::{ArxivClient, ArxivSection, PaperTracker, PapersQqCommand},
+        papers::{ArxivClient, PaperTracker},
         planner::TodoQqCommand,
         projects::ProjectsTracker,
-        rss::{RssSection, RssTracker},
+        rss::RssTracker,
         zhihuishu::{ZhihuishuQqCommand, ZhihuishuSection, ZhihuishuTracker},
     },
     ports::{
@@ -61,13 +61,13 @@ pub fn notify_channels(
 }
 
 /// 注册各业务模块提供的 QQ 扩展命令；这是唯一同时认识 QQ 与业务模块的位置。
-pub fn qq_command_handlers(config: &Config, backend: &str) -> Result<Vec<Arc<dyn CommandHandler>>> {    let mut handlers: Vec<Arc<dyn CommandHandler>> = vec![
-        Arc::new(PapersQqCommand::new(
-            ArxivClient::new(),
-            config.sources.arxiv.interests.clone().unwrap_or_default(),
-            backend.to_owned(),
-        )),
-        Arc::new(EcardQqCommand::new(backend.to_owned())),
+pub fn qq_command_handlers(config: &Config, backend: &str) -> Result<Vec<Arc<dyn CommandHandler>>> {    // 注册表模块的 QQ 命令先行收集（数据驱动）。
+    let mut handlers: Vec<Arc<dyn CommandHandler>> = Vec::new();
+    for def in crate::modules::MODULES {
+        handlers.extend((def.qq_handlers)(config, backend)?);
+    }
+    // 未迁移模块的手写注册（逐个迁移后清空）。
+    handlers.extend(vec![
         Arc::new(JwxtQqCommand::new(
             config
                 .sources
@@ -76,7 +76,7 @@ pub fn qq_command_handlers(config: &Config, backend: &str) -> Result<Vec<Arc<dyn
                 .as_deref()
                 .and_then(|raw| chrono::NaiveDate::parse_from_str(raw.trim(), "%Y-%m-%d").ok()),
             config.sources.jwxt.section_clock().ok().flatten(),
-        )),
+        )) as Arc<dyn CommandHandler>,
         Arc::new(TodoQqCommand::new(config.todo.options()?)),
         // 跨平台聚合的 /作业 必须先于 ZhihuishuQqCommand 注册（first-match-wins）
         Arc::new(HomeworkQqCommand::new(
@@ -93,7 +93,7 @@ pub fn qq_command_handlers(config: &Config, backend: &str) -> Result<Vec<Arc<dyn
                 .resolved(String::new())?
                 .report_path,
         )),
-    ];
+    ]);
     // Obsidian 未配置 vault_path 时不注册 /记一下，避免半配置状态下写空气。
     if config.obsidian.is_ready() {
         let resolved = config.obsidian.resolved(None)?;
@@ -167,7 +167,7 @@ pub fn default_notify_route(config: &Config) -> Result<Option<NotifyRoute>> {
 }
 
 /// 来源通知开关的统一语义：默认开启，显式 notify = false 时只入队不推送。
-fn source_notify(config: &Config, enabled: Option<bool>) -> Result<Option<NotifyRoute>> {
+pub fn source_notify(config: &Config, enabled: Option<bool>) -> Result<Option<NotifyRoute>> {
     if enabled.unwrap_or(true) {
         default_notify_route(config)
     } else {
@@ -176,7 +176,7 @@ fn source_notify(config: &Config, enabled: Option<bool>) -> Result<Option<Notify
 }
 
 /// 追踪器装配共用的通知对：开启时解析具体通知器与目标，关闭时为 (None, 空目标)。
-fn notify_pair(
+pub fn notify_pair(
     config: &Config,
     enabled: Option<bool>,
 ) -> Result<(Option<Arc<dyn NotifyChannel>>, String)> {
@@ -190,7 +190,7 @@ fn notify_pair(
 }
 
 /// Obsidian Vault 句柄：开关打开且 [obsidian] 已配置时才接线，否则不同步。
-fn vault_if_ready(config: &Config, enabled: bool) -> Result<Option<Arc<dyn Vault>>> {
+pub fn vault_if_ready(config: &Config, enabled: bool) -> Result<Option<Arc<dyn Vault>>> {
     if enabled && config.obsidian.is_ready() {
         Ok(Some(vault_client(&config.obsidian.resolved(None)?)))
     } else {
@@ -472,54 +472,15 @@ fn job(
 }
 
 /// 定时任务注册表：汇总各模块登记的轮询任务、间隔与启停状态。
-/// 这是唯一同时认识全部模块与调度核心入口的位置；新附属在此追加条目。
+/// 已迁移模块经 modules::MODULES 注册表自动并入；未迁移模块在下方手写注册。
 pub fn scheduled_jobs(config: &Config) -> Vec<ScheduledJob> {
     let sources = &config.sources;
-    let arxiv = &sources.arxiv;
-    let rss = &sources.rss;
-    let ecard = &sources.ecard;
     let todo_route_ready = default_notify_route(config).ok().flatten().is_some();
-    vec![
-        job(
-            "papers",
-            "papers",
-            arxiv
-                .interval_secs
-                .unwrap_or(ArxivSection::DEFAULT_INTERVAL_SECS),
-            arxiv.categories.as_ref().is_some_and(|c| !c.is_empty()),
-            (!arxiv.categories.as_ref().is_some_and(|c| !c.is_empty()))
-                .then(|| "配置 sources.arxiv.categories 后启用".into()),
-        ),
-        job(
-            "rss",
-            "rss",
-            rss.interval_secs
-                .unwrap_or(RssSection::DEFAULT_INTERVAL_SECS),
-            rss.feeds.as_ref().is_some_and(|f| !f.is_empty()),
-            (!rss.feeds.as_ref().is_some_and(|f| !f.is_empty()))
-                .then(|| "配置 sources.rss.feeds 后启用".into()),
-        ),
-        job(
-            "projects",
-            "projects",
-            sources
-                .projects
-                .interval_secs
-                .unwrap_or(crate::modules::projects::ProjectsSection::DEFAULT_INTERVAL_SECS),
-            config.obsidian.is_ready(),
-            (!config.obsidian.is_ready())
-                .then(|| "需 [obsidian] vault 已配置（项目库写在 vault 里）".into()),
-        ),
-        job(
-            "ecard",
-            "ecard",
-            ecard
-                .interval_secs
-                .unwrap_or(EcardSection::DEFAULT_INTERVAL_SECS),
-            ecard.is_ready(),
-            (!ecard.is_ready())
-                .then(|| "需 sources.ecard 房间信息及 token（或 RU41_ECARD_TOKEN）".into()),
-        ),
+    let mut jobs: Vec<ScheduledJob> = crate::modules::MODULES
+        .iter()
+        .flat_map(|def| (def.schedule)(config).into_iter().map(move |js| js.to_scheduled_job(def.name)))
+        .collect();
+    jobs.extend(vec![
         job(
             "chaoxing",
             "chaoxing",
@@ -634,7 +595,8 @@ pub fn scheduled_jobs(config: &Config) -> Vec<ScheduledJob> {
                 },
             )
         },
-    ]
+    ]);
+    jobs
 }
 
 /// 按任务名构造对应追踪器（papers/rss/ecard/zhihuishu）；未登记的名字返回 Ok(None)。
@@ -644,11 +606,13 @@ pub fn tracker_job(
     store: Arc<dyn TaskStore>,
     name: &str,
 ) -> Result<Option<Box<dyn PollJob>>> {
+    // 注册表优先：已迁移模块数据驱动装配；未命中再走老的手写注册。
+    for def in crate::modules::MODULES {
+        if let Some(job) = (def.tracker)(config, store.clone(), name)? {
+            return Ok(Some(job));
+        }
+    }
     Ok(Some(match name {
-        "papers" => Box::new(paper_tracker(config, store)?),
-        "projects" => Box::new(projects_tracker(config, store.clone())?),
-        "rss" => Box::new(rss_tracker(config, store)?),
-        "ecard" => Box::new(ecard_tracker(config, store)?),
         "chaoxing" => Box::new(chaoxing_tracker(config, store)?),
         "chaoxing-work" => Box::new(chaoxing_work_tracker(config, store)?),
         "jwxt" => Box::new(jwxt_tracker(config, store)?),

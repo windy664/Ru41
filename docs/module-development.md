@@ -1,6 +1,8 @@
 # 附属模块开发指南
 
-Ru41 的附属模块采用**垂直业务目录 + 编译期静态装配**。模块自己持有配置、外部来源、业务逻辑和可选渠道命令；核心不反向 import 模块。当前不是动态插件系统，新增模块仍需在组合根显式注册。
+Ru41 的附属模块采用**垂直业务目录 + 编译期静态装配**。模块自己持有配置、外部来源、业务逻辑和可选渠道命令；核心不反向 import 模块。
+
+**注册表接入（推荐）**：新模块在 `mod.rs` 里定义 `pub const DEF: super::ModuleDef`（声明调度清单、tracker 构造、QQ 命令），再到 `src/modules/mod.rs` 的 `MODULES` 表加一行——调度清单（schedule list）、`tracker_job` 装配、QQ 命令注册全自动，不再碰 main.rs/assembly.rs。参考 papers/rss/ecard/projects 四个已迁移模块。未迁移的老模块暂时保留在 assembly.rs 的手写注册里。
 
 ## 目录约定
 
@@ -28,7 +30,7 @@ src/modules/<name>/
 - `ingress/schedule.rs`：`run_periodic` 定时循环与 `PollJob` trait
 - `ports/`：核心公开接口
 
-现有范例：自包含附属 `modules/papers`、`modules/rss`、`modules/ecard`、`modules/projects`（GitHub 项目库同步）；薄门面附属 `modules/planner`（QQ 待办/日程入口，持久化由核心 `app/todo.rs` 与 `app/schedule.rs` 提供）、`modules/obsidian`（QQ 记一下 + 归档技能，Vault 读写由核心 `app/obsidian.rs` 提供）。
+现有范例：自包含附属 `modules/papers`、`modules/rss`、`modules/ecard`；薄门面附属 `modules/planner`（QQ 待办/日程入口，持久化由核心 `app/todo.rs` 与 `app/schedule.rs` 提供）、`modules/obsidian`（QQ 记一下 + 归档技能，Vault 读写由核心 `app/obsidian.rs` 提供）。
 
 ## 两种附属形态与升级路径
 

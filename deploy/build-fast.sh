@@ -2,30 +2,47 @@
 # 快速镜像构建：容器内净室编译（保证 glibc 与运行时镜像兼容），
 # 再用 Dockerfile.patch 只替换二进制与 modules，跳过全量镜像构建。
 #
-# 背景：宿主直接 cargo build 出的二进制链接了宿主 glibc（如 Ubuntu 2.43），
-# 而运行时镜像是 debian trixie（glibc 2.41），直接 COPY 进去会
-# 报 `GLIBC_2.39 not found` 启动失败。必须在 rust:1.98-trixie
-# 里编译（Dockerfile 的 builder 阶段同款环境）。
+# 构建纪律（治理）：只从 HEAD 构建，不吃工作区。
+# 在专用 git worktree（默认 ~/Project/Ru41-build）里 reset --hard 到 HEAD，
+# 未提交的半成品永远进不了部署；target/ 缓存保留在 worktree 里保持增量速度。
 #
 # 用法：./deploy/build-fast.sh        # 构建 ru41:local
 #       PUSH=1 ./deploy/build-fast.sh # 构建并推送镜像
 set -euo pipefail
 cd "$(dirname "$0")/.."
 
+BUILD_DIR="${RU41_BUILD_DIR:-$HOME/Project/Ru41-build}"
+COMMIT="$(git rev-parse HEAD)"
 BUILDER=ru41-builder-$$
 
 cleanup() { docker rm -f "$BUILDER" >/dev/null 2>&1 || true; }
 trap cleanup EXIT
 
+if [[ "${RU41_BUILD_FROM:-head}" == "worktree" ]]; then
+  # 逃生舱：从当前工作区构建（调试用，不代表可部署状态）。
+  BUILD_DIR="$PWD"
+  echo "[build-fast] WARNING: building from WORKING TREE (uncommitted state included)"
+else
+  if [ ! -d "$BUILD_DIR/.git" ]; then
+    git worktree add --detach "$BUILD_DIR" "$COMMIT"
+  else
+    git -C "$BUILD_DIR" checkout -q --detach "$COMMIT" 2>/dev/null || true
+    git -C "$BUILD_DIR" reset -q --hard "$COMMIT"
+    # 清掉工作区残留（未跟踪文件），但保留 target/ 增量缓存。
+    git -C "$BUILD_DIR" clean -q -fd -e target
+  fi
+  echo "[build-fast] building HEAD=$COMMIT in $BUILD_DIR"
+fi
+
 docker run --name "$BUILDER" \
-  -v "$PWD":/build \
+  -v "$BUILD_DIR":/build \
   -v "$HOME/.cargo/registry:/usr/local/cargo/registry" \
   -w /build rust:1.98-trixie \
   cargo build --locked --release --bin ru41
 
-docker build -f deploy/Dockerfile.patch -t ru41:local .
+docker build -f "$BUILD_DIR/deploy/Dockerfile.patch" -t ru41:local "$BUILD_DIR"
 
 if [[ "${PUSH:-0}" == "1" ]]; then
   python3 /tmp/ru41-push-image.py
 fi
-echo "ru41:local ready"
+echo "ru41:local ready ($COMMIT)"
