@@ -5,3 +5,20 @@
 pub mod qq_command;
 
 pub use qq_command::HomeworkQqCommand;
+
+/// 注册表定义：跨平台 /作业 聚合命令。注意 MODULES 里的注册顺序——
+/// 本模块必须在 zhihuishu 之前（first-match-wins，/作业 先于平台专属命令命中）。
+pub const DEF: super::ModuleDef = super::ModuleDef {
+    name: "homework",
+    schedule: |_| Vec::new(),
+    tracker: |_, _, _| Ok(None),
+    qq_handlers: |config, _| {
+        Ok(vec![std::sync::Arc::new(HomeworkQqCommand::new(
+            config
+                .sources
+                .zhihuishu
+                .resolved(String::new())?
+                .report_path,
+        ))])
+    },
+};

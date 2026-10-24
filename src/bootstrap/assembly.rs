@@ -3,9 +3,7 @@
 //! 业务模块只拿到解析好的路由与追踪器；新增附属时在此登记装配函数。
 
 use crate::{
-    adapters::sources::feed::FeedClient,
     adapters::vault::GitVault,
-    app::obsidian::ObsidianService,
     bootstrap::config::Config,
     channels::{
         feishu::{self, FeishuWebhookNotifier},
@@ -17,26 +15,10 @@ use crate::{
         schedule::{PollJob, ScheduledJob},
     },
     modules::{
-        blog::{BlogPublishTracker, BlogSection},
-        chaoxing::{
-            ChaoxingClient, ChaoxingQrSigner, ChaoxingSection, ChaoxingTracker, ChaoxingWorkTracker,
-        },
-        ecard::{EcardClient, EcardTracker},
-        homework::HomeworkQqCommand,
-        jwxt::{JwxtClient, JwxtQqCommand, JwxtSection, JwxtTracker},
-        obsidian::ObsidianQqCommand,
-        papers::{ArxivClient, PaperTracker},
-        planner::TodoQqCommand,
-        projects::ProjectsTracker,
-        rss::RssTracker,
-        teachermate::{
-            TeachermateClient, TeachermateQqCommand, TeachermateSection, TeachermateTracker,
-            TeachermateWorkTracker,
-        },
-        youtube::qq_command::YoutubeQqCommand,
+        chaoxing::{ChaoxingClient, ChaoxingQrSigner, ChaoxingTracker, ChaoxingWorkTracker},
+        jwxt::{JwxtClient, JwxtTracker},
+        teachermate::{TeachermateClient, TeachermateTracker, TeachermateWorkTracker},
         youtube::source::YtDlpClient,
-        youtube::{YoutubeSection, YoutubeTracker},
-        zhihuishu::{ZhihuishuQqCommand, ZhihuishuSection, ZhihuishuTracker},
     },
     ports::{
         channel::NotifyChannel,
@@ -72,62 +54,6 @@ pub fn qq_command_handlers(config: &Config, backend: &str) -> Result<Vec<Arc<dyn
     let mut handlers: Vec<Arc<dyn CommandHandler>> = Vec::new();
     for def in crate::modules::MODULES {
         handlers.extend((def.qq_handlers)(config, backend)?);
-    }
-    // 未迁移模块的手写注册（逐个迁移后清空）。
-    handlers.extend(vec![
-        Arc::new(JwxtQqCommand::new(
-            config
-                .sources
-                .jwxt
-                .semester_start
-                .as_deref()
-                .and_then(|raw| chrono::NaiveDate::parse_from_str(raw.trim(), "%Y-%m-%d").ok()),
-            config.sources.jwxt.section_clock().ok().flatten(),
-        )) as Arc<dyn CommandHandler>,
-        Arc::new(TodoQqCommand::new(config.todo.options()?)),
-        Arc::new(YoutubeQqCommand::new(
-            youtube_client(config),
-            config.sources.youtube.interests.clone().unwrap_or_default(),
-            config
-                .sources
-                .youtube
-                .level
-                .clone()
-                .unwrap_or_else(|| YoutubeSection::DEFAULT_LEVEL.into()),
-            config
-                .sources
-                .youtube
-                .max_transcript_chars
-                .unwrap_or(YoutubeSection::DEFAULT_MAX_TRANSCRIPT_CHARS),
-            backend.to_owned(),
-        )),
-        // 跨平台聚合的 /作业 必须先于 ZhihuishuQqCommand 注册（first-match-wins）
-        Arc::new(HomeworkQqCommand::new(
-            config
-                .sources
-                .zhihuishu
-                .resolved(String::new())?
-                .report_path,
-        )),
-        Arc::new(TeachermateQqCommand::new(
-            config.sources.teachermate.openid_path_or_default(),
-        )),
-        Arc::new(ZhihuishuQqCommand::new(
-            config
-                .sources
-                .zhihuishu
-                .resolved(String::new())?
-                .report_path,
-        )),
-    ]);
-    // Obsidian 未配置 vault_path 时不注册 /记一下，避免半配置状态下写空气。
-    if config.obsidian.is_ready() {
-        let resolved = config.obsidian.resolved(None)?;
-        handlers.push(Arc::new(ObsidianQqCommand::new(
-            vault_client(&resolved),
-            resolved.inbox_dir.clone(),
-            config.todo.options()?.offset_seconds,
-        )));
     }
     Ok(handlers)
 }
@@ -224,40 +150,6 @@ pub fn vault_if_ready(config: &Config, enabled: bool) -> Result<Option<Arc<dyn V
     }
 }
 
-/// 由 [sources.arxiv] 配置组装追踪器；通知路由来自全局 [notify] 出口。
-pub fn paper_tracker(config: &Config, store: Arc<dyn TaskStore>) -> Result<PaperTracker> {
-    let arxiv = &config.sources.arxiv;
-    Ok(PaperTracker::new(
-        store,
-        ArxivClient::new(),
-        arxiv.resolved(source_notify(config, arxiv.notify)?)?,
-    ))
-}
-
-/// 由 [sources.rss] 配置组装追踪器；通知路由同样来自全局 [notify] 出口。
-pub fn rss_tracker(config: &Config, store: Arc<dyn TaskStore>) -> Result<RssTracker> {
-    let rss = &config.sources.rss;
-    let mut tracker = RssTracker::new(
-        store,
-        FeedClient::new(),
-        rss.resolved(source_notify(config, rss.notify)?)?,
-    );
-    // 挂 Vault：digest 精选完成后归档进 05-Opportunities（机会雷达闭环）。
-    if let Some(vault) = vault_if_ready(config, true)? {
-        tracker = tracker.with_vault(vault);
-    }
-    Ok(tracker)
-}
-
-/// 由 [sources.youtube] 配置组装追踪器；yt-dlp 路径与代理由配置段携带。
-pub fn youtube_tracker(config: &Config, store: Arc<dyn TaskStore>) -> Result<YoutubeTracker> {
-    let youtube = &config.sources.youtube;
-    Ok(YoutubeTracker::new(
-        store,
-        youtube.resolved(source_notify(config, youtube.notify)?)?,
-    ))
-}
-
 /// yt-dlp 客户端工厂：tracker、QQ 命令与 CLI prep 共用同一份配置来源。
 pub fn youtube_client(config: &Config) -> YtDlpClient {
     let youtube = &config.sources.youtube;
@@ -273,7 +165,7 @@ pub fn youtube_prep_route(config: &Config) -> Result<Option<crate::domain::Notif
 }
 
 /// 按 [notify] 渠道构造具体通知器；渠道知识只存在于装配层。
-fn default_notifier(config: &Config, channel: &str) -> Result<Arc<dyn NotifyChannel>> {
+pub fn default_notifier(config: &Config, channel: &str) -> Result<Arc<dyn NotifyChannel>> {
     match channel {
         "feishu" => Ok(Arc::new(FeishuWebhookNotifier::new(
             feishu_webhook_url(config).context(
@@ -293,35 +185,6 @@ fn default_notifier(config: &Config, channel: &str) -> Result<Arc<dyn NotifyChan
         ))),
         other => anyhow::bail!("unknown notify channel: {other}"),
     }
-}
-
-/// 项目库管理：扫 02-Projects 项目笔记，GitHub 项目每日同步 README+元数据。
-/// 依赖 [obsidian] 的 vault（读写都走它的 git 闭环）。
-pub fn projects_tracker(config: &Config, store: Arc<dyn TaskStore>) -> Result<ProjectsTracker> {
-    let _ = store;
-    let vault = vault_if_ready(config, true)?
-        .context("projects 需要 [obsidian] vault 已配置（项目库写在 vault 里）")?;
-    let vault_root = config.obsidian.resolved(None)?.vault_path;
-    Ok(ProjectsTracker::new(
-        config.sources.projects.resolved(vault_root)?,
-        vault,
-    ))
-}
-
-/// 由 [sources.ecard] 配置组装水电监控；提醒渠道同样来自全局 [notify] 出口。
-pub fn ecard_tracker(config: &Config, store: Arc<dyn TaskStore>) -> Result<EcardTracker> {
-    let ecard = &config.sources.ecard;
-    let base_url = ecard
-        .base_url
-        .clone()
-        .context("sources.ecard.base_url required")?;
-    let (notifier, notify_target) = notify_pair(config, ecard.notify)?;
-    Ok(EcardTracker::new(
-        store,
-        EcardClient::new(base_url),
-        notifier,
-        ecard.resolved(notify_target)?,
-    ))
 }
 
 /// 由 [sources.chaoxing] 配置组装学习通签到监控；协议端直连，无 sidecar。
@@ -389,45 +252,6 @@ pub fn jwxt_tracker(config: &Config, store: Arc<dyn TaskStore>) -> Result<JwxtTr
     Ok(JwxtTracker::new(store, client, notifier, resolved))
 }
 
-/// 由 [sources.jwxt] 配置组装课程提醒；依赖 jwxt 凭证（确认同步已开启）与全局通知出口。
-pub fn class_remind_tracker(
-    config: &Config,
-    store: Arc<dyn TaskStore>,
-) -> Result<crate::app::schedule::ClassRemindTracker> {
-    let jwxt = &config.sources.jwxt;
-    // 凭证校验：确保 jwxt 已配置（课表同步的前提是凭证可用）
-    jwxt.is_ready().then_some(()).context(
-        "class-remind requires sources.jwxt credentials (RU41_JWXT_USERNAME/RU41_JWXT_PASSWORD)",
-    )?;
-    let route = default_notify_route(config)?
-        .context("class-remind requires a default notify route ([notify] or --target)")?;
-    let notifier = default_notifier(config, &route.channel)?;
-    Ok(crate::app::schedule::ClassRemindTracker::new(
-        store,
-        notifier,
-        route,
-        config.todo.options()?,
-    ))
-}
-
-/// 由 [sources.zhihuishu] 配置组装智慧树作业提醒；报告文件由 zhihuishu-sidecar 产出。
-pub fn zhihuishu_tracker(config: &Config, store: Arc<dyn TaskStore>) -> Result<ZhihuishuTracker> {
-    let zhihuishu = &config.sources.zhihuishu;
-    let (notifier, notify_target) = notify_pair(config, zhihuishu.notify)?;
-    // Obsidian 课程同步：[obsidian] 配好 Vault 才启用；经核心 Vault 端口读写
-    let vault = vault_if_ready(
-        config,
-        zhihuishu.resolved(notify_target.clone())?.vault_sync,
-    )?;
-    Ok(ZhihuishuTracker::new(
-        store,
-        notifier,
-        zhihuishu.resolved(notify_target)?,
-        config.todo.options()?,
-        vault,
-    ))
-}
-
 /// 学习通作业监控：复用 [sources.chaoxing] 凭证与 cookie 会话；低频独立调度。
 /// Obsidian 同步按 work_vault_sync 开关走 [obsidian] 的 Vault；待办走全局 TodoService。
 pub fn chaoxing_work_tracker(
@@ -471,25 +295,8 @@ pub fn knowledge_service(
     )))
 }
 
-/// 由 [obsidian] 配置组装 Vault 核心服务；整理完成通知来自全局 [notify] 出口。
-/// 配置了 [knowledge] 时挂载向量索引器，vault 变更后自动重建索引。
-pub fn obsidian_service(config: &Config, store: Arc<dyn TaskStore>) -> Result<ObsidianService> {
-    let obsidian = &config.obsidian;
-    let route = source_notify(config, obsidian.notify)?;
-    let notifier = match &route {
-        Some(route) => Some(default_notifier(config, &route.channel)?),
-        None => None,
-    };
-    let resolved = obsidian.resolved(route)?;
-    let service = ObsidianService::new(store, vault_client(&resolved), notifier, resolved);
-    Ok(match knowledge_service(config)? {
-        Some(knowledge) => service.with_knowledge(knowledge),
-        None => service,
-    })
-}
-
 /// Vault git 客户端：渠道无关的写通道，QQ 命令与核心服务共用同一实现配置。
-fn vault_client(
+pub fn vault_client(
     config: &crate::app::obsidian::ObsidianConfig,
 ) -> Arc<dyn crate::ports::vault::Vault> {
     Arc::new(GitVault::new(
@@ -499,218 +306,17 @@ fn vault_client(
     ))
 }
 
-/// 由 [sources.blog] 组装博客发布管线；Vault 句柄复用核心 [obsidian] 的连接配置。
-pub fn blog_tracker(config: &Config, store: Arc<dyn TaskStore>) -> Result<BlogPublishTracker> {
-    let blog = &config.sources.blog;
-    anyhow::ensure!(
-        config.obsidian.is_ready(),
-        "sources.blog requires obsidian.vault_path (posts live in the vault repo)"
-    );
-    let vault_cfg = config.obsidian.resolved(None)?;
-    let route = source_notify(config, blog.notify)?;
-    let notifier = match &route {
-        Some(route) => Some(default_notifier(config, &route.channel)?),
-        None => None,
-    };
-    let resolved = blog.resolved(route)?;
-    Ok(BlogPublishTracker::new(
-        store,
-        vault_client(&vault_cfg),
-        Arc::new(GitVault::new(
-            resolved.repo_path.clone(),
-            resolved.remote.clone(),
-            resolved.branch.clone(),
-        )),
-        notifier,
-        resolved,
-    ))
-}
-
-/// 定时任务条目的构造器：poll/run 命令按 `{name} poll|run` 约定生成；
-/// 命令不合约定的条目用结构体更新语法覆盖（chaoxing-work/todo-remind/class-remind）。
-fn job(
-    module: &str,
-    name: &str,
-    interval_secs: u64,
-    enabled: bool,
-    notes: Option<String>,
-) -> ScheduledJob {
-    ScheduledJob {
-        module: module.into(),
-        name: name.into(),
-        interval_secs: Some(interval_secs),
-        poll_command: format!("{name} poll"),
-        run_command: format!("{name} run"),
-        enabled,
-        notes,
-    }
-}
-
-/// 定时任务注册表：汇总各模块登记的轮询任务、间隔与启停状态。
-/// 已迁移模块经 modules::MODULES 注册表自动并入；未迁移模块在下方手写注册。
+/// 定时任务注册表：全部来自 modules::MODULES 注册表的数据驱动汇总；
+/// 新附属在模块内声明 DEF 即自动出现在 schedule list，无需改这里。
 pub fn scheduled_jobs(config: &Config) -> Vec<ScheduledJob> {
-    let sources = &config.sources;
-    let youtube = &sources.youtube;
-    let todo_route_ready = default_notify_route(config).ok().flatten().is_some();
-    let mut jobs: Vec<ScheduledJob> = crate::modules::MODULES
+    crate::modules::MODULES
         .iter()
-        .flat_map(|def| (def.schedule)(config).into_iter().map(move |js| js.to_scheduled_job(def.name)))
-        .collect();
-    jobs.extend(vec![
-        job(
-            "youtube",
-            "youtube",
-            youtube
-                .interval_secs
-                .unwrap_or(YoutubeSection::DEFAULT_INTERVAL_SECS),
-            youtube.channels.as_ref().is_some_and(|c| !c.is_empty()),
-            (!youtube.channels.as_ref().is_some_and(|c| !c.is_empty()))
-                .then(|| "配置 sources.youtube.channels 后启用".into()),
-        ),
-        job(
-            "chaoxing",
-            "chaoxing",
-            sources
-                .chaoxing
-                .interval_secs
-                .unwrap_or(ChaoxingSection::DEFAULT_INTERVAL_SECS),
-            sources.chaoxing.is_ready(),
-            (!sources.chaoxing.is_ready()).then(|| {
-                "需 sources.chaoxing 手机号与密码（或 RU41_XXT_PHONE/RU41_XXT_PASSWORD）".into()
-            }),
-        ),
-        ScheduledJob {
-            poll_command: "chaoxing work".into(),
-            run_command: "schedule run chaoxing-work".into(),
-            ..job(
-                "chaoxing",
-                "chaoxing-work",
-                sources
-                    .chaoxing
-                    .work_poll_secs
-                    .unwrap_or(ChaoxingSection::DEFAULT_WORK_POLL_SECS),
-                sources.chaoxing.is_ready(),
-                (!sources.chaoxing.is_ready()).then(|| {
-                    "随 sources.chaoxing 凭证启用；作业轮询独立低频（默认 30 分钟）".into()
-                }),
-            )
-        },
-        job(
-            "jwxt",
-            "jwxt",
-            sources
-                .jwxt
-                .interval_secs
-                .unwrap_or(JwxtSection::DEFAULT_INTERVAL_SECS),
-            sources.jwxt.is_ready(),
-            if !sources.jwxt.is_ready() {
-                Some(
-                    "需 sources.jwxt 用户名与密码（或 RU41_JWXT_USERNAME/RU41_JWXT_PASSWORD）"
-                        .into(),
-                )
-            } else if sources.jwxt.semester_start.is_none() {
-                Some("已启用；配置 semester_start（学期第一周周一）后才有明日课表提醒".into())
-            } else {
-                None
-            },
-        ),
-        job(
-            "teachermate",
-            "teachermate",
-            sources
-                .teachermate
-                .interval_secs
-                .unwrap_or(TeachermateSection::DEFAULT_INTERVAL_SECS),
-            sources.teachermate.is_ready(),
-            (!sources.teachermate.is_ready()).then(|| {
-                "需微助教 openid：`teachermate bind <链接>` 落盘（或 RU41_WZJ_OPENID）".into()
-            }),
-        ),
-        ScheduledJob {
-            poll_command: "teachermate work".into(),
-            run_command: "schedule run teachermate-work".into(),
-            ..job(
-                "teachermate",
-                "teachermate-work",
-                sources
-                    .teachermate
-                    .work_poll_secs
-                    .unwrap_or(TeachermateSection::DEFAULT_WORK_POLL_SECS),
-                sources.teachermate.is_ready(),
-                (!sources.teachermate.is_ready()).then(|| {
-                    "随 sources.teachermate openid 启用；作业轮询独立低频（默认 30 分钟）".into()
-                }),
-            )
-        },
-        job(
-            "zhihuishu",
-            "zhihuishu",
-            sources
-                .zhihuishu
-                .interval_secs
-                .unwrap_or(ZhihuishuSection::DEFAULT_INTERVAL_SECS),
-            true,
-            None,
-        ),
-        job(
-            "blog",
-            "blog",
-            sources
-                .blog
-                .interval_secs
-                .unwrap_or(BlogSection::DEFAULT_INTERVAL_SECS),
-            sources.blog.is_ready() && config.obsidian.is_ready(),
-            (!sources.blog.is_ready())
-                .then(|| "配置 sources.blog.repo_path 后启用".into())
-                .or_else(|| {
-                    (!config.obsidian.is_ready())
-                        .then(|| "依赖 obsidian.vault_path（待发布文件在 Vault 仓库）".into())
-                }),
-        ),
-        job(
-            "obsidian",
-            "obsidian",
-            config
-                .obsidian
-                .interval_secs
-                .unwrap_or(crate::bootstrap::config::ObsidianSection::DEFAULT_INTERVAL_SECS),
-            config.obsidian.is_ready(),
-            (!config.obsidian.is_ready()).then(|| "配置 obsidian.vault_path 后启用".into()),
-        ),
-        ScheduledJob {
-            poll_command: "todo remind --once".into(),
-            run_command: "todo remind".into(),
-            ..job(
-                "planner",
-                "todo-remind",
-                60,
-                todo_route_ready,
-                if todo_route_ready {
-                    Some("间隔可用 --interval-secs 覆盖".into())
-                } else {
-                    Some("需 [notify] 默认出口，或 schedule run --target 显式指定".into())
-                },
-            )
-        },
-        ScheduledJob {
-            poll_command: "class-remind poll".into(),
-            run_command: "schedule run class-remind".into(),
-            ..job(
-                "jwxt",
-                "class-remind",
-                60, // 兜底轮询；精准睡眠按 fire_at 计算
-                sources.jwxt.is_ready() && todo_route_ready,
-                if !sources.jwxt.is_ready() {
-                    Some("需 sources.jwxt 凭证（随 jwxt 启用）".into())
-                } else if !todo_route_ready {
-                    Some("需 [notify] 默认出口，或 schedule run --target 显式指定".into())
-                } else {
-                    Some("课前 20 分钟提醒；启动时补发停机期间错过的课".into())
-                },
-            )
-        },
-    ]);
-    jobs
+        .flat_map(|def| {
+            (def.schedule)(config)
+                .into_iter()
+                .map(move |js| js.to_scheduled_job(def.name))
+        })
+        .collect()
 }
 
 /// 按任务名构造对应追踪器（papers/rss/ecard/zhihuishu）；未登记的名字返回 Ok(None)。
@@ -726,19 +332,7 @@ pub fn tracker_job(
             return Ok(Some(job));
         }
     }
-    Ok(Some(match name {
-        "youtube" => Box::new(youtube_tracker(config, store)?),
-        "chaoxing" => Box::new(chaoxing_tracker(config, store)?),
-        "chaoxing-work" => Box::new(chaoxing_work_tracker(config, store)?),
-        "jwxt" => Box::new(jwxt_tracker(config, store)?),
-        "class-remind" => Box::new(class_remind_tracker(config, store)?),
-        "teachermate" => Box::new(teachermate_tracker(config, store)?),
-        "teachermate-work" => Box::new(teachermate_work_tracker(config, store)?),
-        "zhihuishu" => Box::new(zhihuishu_tracker(config, store)?),
-        "obsidian" => Box::new(obsidian_service(config, store)?),
-        "blog" => Box::new(blog_tracker(config, store)?),
-        _ => return Ok(None),
-    }))
+    Ok(None)
 }
 
 /// 待办提醒的通知出口解析：显式 target 优先，否则取 [notify] 默认出口。

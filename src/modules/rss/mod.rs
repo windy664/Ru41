@@ -10,14 +10,14 @@ pub const DEF: super::ModuleDef = super::ModuleDef {
     schedule: |config| {
         let rss = &config.sources.rss;
         let ready = rss.feeds.as_ref().is_some_and(|f| !f.is_empty());
-        vec![super::JobSchedule {
-            name: "rss",
-            interval_secs: rss
+        vec![super::JobSchedule::simple(
+            "rss",
+            rss
                 .interval_secs
                 .unwrap_or(config::RssSection::DEFAULT_INTERVAL_SECS),
-            enabled: ready,
-            disabled_reason: (!ready).then(|| "配置 sources.rss.feeds 后启用".into()),
-        }]
+            ready,
+            (!ready).then(|| "配置 sources.rss.feeds 后启用".into()),
+        )]
     },
     tracker: |config, store, name| {
         if name != "rss" {

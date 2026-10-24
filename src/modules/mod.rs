@@ -28,16 +28,42 @@ pub struct JobSchedule {
     pub interval_secs: u64,
     pub enabled: bool,
     pub disabled_reason: Option<String>,
+    /// 单轮入口覆盖（默认 `{name} poll`）；如 chaoxing-work 用 `chaoxing work`。
+    pub poll_command: Option<&'static str>,
+    /// 长驻入口覆盖（默认 `{name} run`）；如 class-remind 用 `schedule run class-remind`。
+    pub run_command: Option<&'static str>,
 }
 
 impl JobSchedule {
+    pub fn simple(
+        name: &'static str,
+        interval_secs: u64,
+        enabled: bool,
+        disabled_reason: Option<String>,
+    ) -> Self {
+        Self {
+            name,
+            interval_secs,
+            enabled,
+            disabled_reason,
+            poll_command: None,
+            run_command: None,
+        }
+    }
+
     pub fn to_scheduled_job(&self, module: &str) -> ScheduledJob {
         ScheduledJob {
             module: module.into(),
             name: self.name.into(),
             interval_secs: Some(self.interval_secs),
-            poll_command: format!("{} poll", self.name),
-            run_command: format!("{} run", self.name),
+            poll_command: self
+                .poll_command
+                .map(str::to_owned)
+                .unwrap_or_else(|| format!("{} poll", self.name)),
+            run_command: self
+                .run_command
+                .map(str::to_owned)
+                .unwrap_or_else(|| format!("{} run", self.name)),
             enabled: self.enabled,
             notes: self.disabled_reason.clone(),
         }
@@ -63,4 +89,14 @@ pub const MODULES: &[ModuleDef] = &[
     rss::DEF,
     ecard::DEF,
     projects::DEF,
+    youtube::DEF,
+    chaoxing::DEF,
+    teachermate::DEF,
+    jwxt::DEF,
+    // 跨平台聚合 /作业 必须先于 zhihuishu 注册（first-match-wins）。
+    homework::DEF,
+    zhihuishu::DEF,
+    obsidian::DEF,
+    blog::DEF,
+    planner::DEF,
 ];

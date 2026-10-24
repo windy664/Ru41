@@ -15,15 +15,15 @@ pub const DEF: super::ModuleDef = super::ModuleDef {
     name: "ecard",
     schedule: |config| {
         let ecard = &config.sources.ecard;
-        vec![super::JobSchedule {
-            name: "ecard",
-            interval_secs: ecard
+        vec![super::JobSchedule::simple(
+            "ecard",
+            ecard
                 .interval_secs
                 .unwrap_or(config::EcardSection::DEFAULT_INTERVAL_SECS),
-            enabled: ecard.is_ready(),
-            disabled_reason: (!ecard.is_ready())
+            ecard.is_ready(),
+            (!ecard.is_ready())
                 .then(|| "需 sources.ecard 房间信息及 token（或 RU41_ECARD_TOKEN）".into()),
-        }]
+        )]
     },
     tracker: |config, store, name| {
         if name != "ecard" {

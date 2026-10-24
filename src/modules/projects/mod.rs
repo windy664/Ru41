@@ -11,17 +11,17 @@ pub const DEF: super::ModuleDef = super::ModuleDef {
     name: "projects",
     schedule: |config| {
         let ready = config.obsidian.is_ready();
-        vec![super::JobSchedule {
-            name: "projects",
-            interval_secs: config
+        vec![super::JobSchedule::simple(
+            "projects",
+            config
                 .sources
                 .projects
                 .interval_secs
                 .unwrap_or(config::ProjectsSection::DEFAULT_INTERVAL_SECS),
-            enabled: ready,
-            disabled_reason: (!ready)
+            ready,
+            (!ready)
                 .then(|| "需 [obsidian] vault 已配置（项目库写在 vault 里）".into()),
-        }]
+        )]
     },
     tracker: |config, store, name| {
         if name != "projects" {
