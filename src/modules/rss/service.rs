@@ -268,7 +268,12 @@ impl RssTracker {
             ("evening", Some(self.config.evening_hour)),
         ] {
             let Some(slot_hour) = slot_hour else { continue };
+            // 早报只在晚报时刻之前出（hour >= 8 是一整天，不卡上界会导致
+            // 晚上 21 点先出一份"早报"再出晚报）；晚报只卡下界。
             if hour < slot_hour || pool.is_empty() {
+                continue;
+            }
+            if slot == "morning" && hour >= self.config.evening_hour {
                 continue;
             }
             let key = format!("rss:digest:{slot}:{date}");
