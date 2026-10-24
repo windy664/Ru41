@@ -4,11 +4,12 @@ use std::path::PathBuf;
 #[derive(Parser)]
 #[command(version, about = "Ru41: Rust + Codex 个人自动化底座")]
 pub struct Cli {
-    /// 配置文件路径；缺省依次尝试 ./ru41.toml、~/.config/ru41/config.toml。
-    #[arg(long, global = true)]
+    /// 配置文件路径；缺省依次尝试 ./ru41.toml、~/.config/ru41/config.toml、/etc/ru41/ru41.toml，
+    /// 或环境变量 RU41_CONFIG（容器部署由 compose 注入，agent 免带 --config）。
+    #[arg(long, global = true, env = "RU41_CONFIG")]
     pub config: Option<PathBuf>,
-    /// 本地运行数据路径；不要把数据库放在 Vault 里。
-    #[arg(long, global = true)]
+    /// 本地运行数据路径；不要把数据库放在 Vault 里。容器由 RU41_DB 注入。
+    #[arg(long, global = true, env = "RU41_DB")]
     pub db: Option<PathBuf>,
     /// 存储后端：sqlite 或 postgres。
     #[arg(long, global = true, value_parser = ["sqlite", "postgres"])]
@@ -135,6 +136,29 @@ pub enum Command {
     Schedule {
         #[command(subcommand)]
         command: ScheduleCommand,
+    },
+    /// 知识库向量检索：索引 Obsidian vault，语义搜索笔记内容。
+    Knowledge {
+        #[command(subcommand)]
+        command: KnowledgeCommand,
+    },
+}
+
+#[derive(Subcommand)]
+pub enum KnowledgeCommand {
+    /// 全量重建向量索引（索引是衍生数据，可随时重建）。
+    Index {
+        /// vault 路径；缺省取 [obsidian].vault_path。
+        #[arg(long)]
+        vault: Option<PathBuf>,
+    },
+    /// 语义检索：返回最相关的若干笔记块（路径 + 标题 + 片段）。
+    Search {
+        /// 查询文本，自然语言即可。
+        query: String,
+        /// 返回条数，默认 5。
+        #[arg(long, default_value = "5")]
+        limit: usize,
     },
 }
 

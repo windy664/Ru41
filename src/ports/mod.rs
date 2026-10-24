@@ -3,6 +3,7 @@ pub mod approval;
 pub mod channel;
 pub mod commands;
 pub mod consumers;
+pub mod embedding;
 pub mod events;
 pub mod interaction;
 pub mod storage;

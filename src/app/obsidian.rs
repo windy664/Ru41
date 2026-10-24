@@ -70,6 +70,8 @@ pub struct ObsidianService {
     notifier: Option<Arc<dyn NotifyChannel>>,
     notify_target: String,
     config: ObsidianConfig,
+    /// 可选的知识库索引器：vault 内容变更后后台重建向量索引（RAG）。
+    knowledge: Option<Arc<crate::app::knowledge::KnowledgeService>>,
 }
 
 impl ObsidianService {
@@ -90,7 +92,14 @@ impl ObsidianService {
             notifier,
             notify_target,
             config,
+            knowledge: None,
         }
+    }
+
+    /// 挂载知识库索引器；不挂则同步只管 git 闭环，不建向量索引。
+    pub fn with_knowledge(mut self, knowledge: Arc<crate::app::knowledge::KnowledgeService>) -> Self {
+        self.knowledge = Some(knowledge);
+        self
     }
 
     pub fn vault(&self) -> &Arc<dyn Vault> {
@@ -128,6 +137,7 @@ impl ObsidianService {
         })
         .await??;
         let mut state = self.load_state()?;
+        let head_before = state.processed_sha.clone();
         let mut report = ObsidianPollReport {
             action: "idle",
             remote_head: target.clone(),
@@ -147,7 +157,33 @@ impl ObsidianService {
             report.changed_files = state.pending.as_ref().map(|p| p.files.len()).unwrap_or(0);
         }
         self.save_state(&state)?;
+        self.maybe_reindex(&state, &head_before, &target, report.committed);
         Ok(report)
+    }
+
+    /// vault 内容变更后后台重建知识库索引（衍生数据，全量重灌）。
+    /// 整理任务进行中跳过：agent 正在搬文件，等整理提交后的下一轮再索引。
+    fn maybe_reindex(
+        &self,
+        state: &ObsidianState,
+        head_before: &str,
+        target: &str,
+        committed: bool,
+    ) {
+        let Some(knowledge) = &self.knowledge else { return };
+        let changed = committed || head_before != target;
+        if !changed || state.pending.is_some() {
+            return;
+        }
+        let knowledge = knowledge.clone();
+        let vault_path = self.config.vault_path.clone();
+        tokio::task::spawn_blocking(move || match knowledge.index_vault(&vault_path) {
+            Ok(report) => eprintln!(
+                "[knowledge] reindexed: {} files, {} chunks, {}ms",
+                report.files, report.chunks, report.elapsed_ms
+            ),
+            Err(error) => eprintln!("[knowledge] reindex failed: {error:#}"),
+        });
     }
 
     /// 有进行中的整理任务：按任务状态推进（成功→提交推送，失败→下轮重试）。

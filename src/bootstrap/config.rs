@@ -10,6 +10,7 @@ pub struct Config {
     pub worker: WorkerSection,
     pub todo: TodoSection,
     pub obsidian: ObsidianSection,
+    pub knowledge: KnowledgeSection,
     pub agent: AgentSection,
     pub channel: ChannelSection,
     pub api: ApiSection,
@@ -44,6 +45,32 @@ pub struct WorkerSection {
     pub timeout_secs: Option<u64>,
     pub runs_dir: Option<PathBuf>,
     pub sanitize: Option<bool>,
+}
+
+/// 知识库向量检索（RAG）配置；索引库与模型缓存都是可重建的衍生数据。
+#[derive(Debug, Default, Deserialize)]
+#[serde(default, deny_unknown_fields)]
+pub struct KnowledgeSection {
+    /// 向量库文件路径；默认与 state.db 同目录的 knowledge.db。
+    pub db_path: Option<PathBuf>,
+    /// embedding 模型缓存目录；默认与 state.db 同目录的 fastembed/。
+    pub cache_dir: Option<PathBuf>,
+}
+
+impl KnowledgeSection {
+    /// 解析最终路径：显式配置优先，否则落在 state.db 旁边（容器内即 /data）。
+    pub fn resolved(&self, state_db: &Path) -> (PathBuf, PathBuf) {
+        let dir = state_db
+            .parent()
+            .map(Path::to_path_buf)
+            .unwrap_or_else(|| PathBuf::from("."));
+        let db = self.db_path.clone().unwrap_or_else(|| dir.join("knowledge.db"));
+        let cache = self
+            .cache_dir
+            .clone()
+            .unwrap_or_else(|| dir.join("fastembed"));
+        (db, cache)
+    }
 }
 
 /// 私人待办视图的本地日期与窗口配置。
@@ -227,6 +254,8 @@ fn candidates(explicit: Option<&Path>, cwd: &Path, home: Option<&Path>) -> Vec<P
             if let Some(home) = home {
                 candidates.push(home.join(".config/ru41/config.toml"));
             }
+            // 容器部署的标准位置（compose 把配置挂在这里）。
+            candidates.push(PathBuf::from("/etc/ru41/ru41.toml"));
             candidates
         }
     }

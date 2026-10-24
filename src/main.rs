@@ -15,8 +15,8 @@ use ru41::{
     domain::schedule::{EventInput, EventSource, parse_event_when},
     domain::todo::{TodoInput, parse_due},
     ingress::cli::{
-        ChaoxingCommand, Cli, Command, EventCommand, JwxtCommand, QqCommand, ScheduleCommand,
-        TaskCommand, TodoCommand, TrackerCommand,
+        ChaoxingCommand, Cli, Command, EventCommand, JwxtCommand, KnowledgeCommand, QqCommand,
+        ScheduleCommand, TaskCommand, TodoCommand, TrackerCommand,
     },
     ingress::cli_ops,
     privacy::{NoopSanitizer, RandomSanitizer, Sanitizer},
@@ -467,9 +467,38 @@ async fn main() -> Result<()> {
                 return Ok(());
             }
         },
+        Command::Knowledge { command } => {
+            let knowledge = build_knowledge(&config, &store_config.1)?;
+            match command {
+                KnowledgeCommand::Index { vault } => {
+                    let vault = vault
+                        .or_else(|| config.obsidian.vault_path.as_ref().map(PathBuf::from))
+                        .context("vault path required: --vault 或 [obsidian].vault_path")?;
+                    serde_json::to_value(
+                        tokio::task::spawn_blocking(move || knowledge.index_vault(&vault))
+                            .await??,
+                    )?
+                }
+                KnowledgeCommand::Search { query, limit } => serde_json::to_value(
+                    tokio::task::spawn_blocking(move || knowledge.search(&query, limit)).await??,
+                )?,
+            }
+        }
     };
     println!("{}", serde_json::to_string_pretty(&output)?);
     Ok(())
+}
+
+/// 知识库服务：embedding 模型缓存与向量库都落在 state.db 旁边的衍生文件。
+fn build_knowledge(
+    config: &Config,
+    state_db: &std::path::Path,
+) -> Result<ru41::app::knowledge::KnowledgeService> {
+    let (db, cache) = config.knowledge.resolved(state_db);
+    let embedder = Arc::new(
+        ru41::adapters::embedding::fastembed::FastembedEmbedder::new(cache)?,
+    );
+    ru41::app::knowledge::KnowledgeService::new(embedder, db)
 }
 
 async fn run_tracker_periodic(

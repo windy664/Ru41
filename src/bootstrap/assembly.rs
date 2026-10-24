@@ -350,7 +350,30 @@ pub fn chaoxing_work_tracker(
     ))
 }
 
+/// 知识库索引器：显式配置 [knowledge].db_path 才接线。
+/// 索引是衍生数据，路径必须落到共享数据卷（obsidian 写、worker 读）。
+pub fn knowledge_service(
+    config: &Config,
+) -> Result<Option<Arc<crate::app::knowledge::KnowledgeService>>> {
+    let Some(db) = &config.knowledge.db_path else {
+        return Ok(None);
+    };
+    let cache = config.knowledge.cache_dir.clone().unwrap_or_else(|| {
+        db.parent()
+            .map(|d| d.join("fastembed"))
+            .unwrap_or_else(|| "fastembed".into())
+    });
+    let embedder = Arc::new(
+        crate::adapters::embedding::fastembed::FastembedEmbedder::new(cache)?,
+    );
+    Ok(Some(Arc::new(crate::app::knowledge::KnowledgeService::new(
+        embedder,
+        db.clone(),
+    )?)))
+}
+
 /// 由 [obsidian] 配置组装 Vault 核心服务；整理完成通知来自全局 [notify] 出口。
+/// 配置了 [knowledge] 时挂载向量索引器，vault 变更后自动重建索引。
 pub fn obsidian_service(config: &Config, store: Arc<dyn TaskStore>) -> Result<ObsidianService> {
     let obsidian = &config.obsidian;
     let route = source_notify(config, obsidian.notify)?;
@@ -359,12 +382,16 @@ pub fn obsidian_service(config: &Config, store: Arc<dyn TaskStore>) -> Result<Ob
         None => None,
     };
     let resolved = obsidian.resolved(route)?;
-    Ok(ObsidianService::new(
+    let service = ObsidianService::new(
         store,
         vault_client(&resolved),
         notifier,
         resolved,
-    ))
+    );
+    Ok(match knowledge_service(config)? {
+        Some(knowledge) => service.with_knowledge(knowledge),
+        None => service,
+    })
 }
 
 /// Vault git 客户端：渠道无关的写通道，QQ 命令与核心服务共用同一实现配置。
