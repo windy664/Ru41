@@ -35,6 +35,7 @@ Rust 编写的个人自动化宿主，接入 Codex / Pi，串联消息、信息�
 | **接收处理结果** | 飞书群 webhook 推送，或通过 QQ 回复原会话 | [飞书通知](docs/channels-feishu.md) |
 | **追踪研究进展** | arXiv 分类订阅、关键词筛选、摘要与单篇精读 | [论文追踪](docs/sources-arxiv.md) |
 | **整理订阅信息** | RSS / Atom 采集、去重与个人兴趣摘要 | [信息流](docs/sources-rss.md) |
+| **用 YouTube 学英语** | 频道新视频字幕转写、重点词句预习单、带链接推送 | [YouTube 预习](docs/sources-youtube.md) |
 | **关注宿舍水电** | 校园卡平台余额查询、历史读数、低余额提醒 | [水电监控](docs/ecard-waterfee.md) |
 | **盯紧课程表** | 教务系统拉课表、调课停课提醒、明日课表推送、QQ 查课 | [课表监控](docs/sources-jwxt.md) |
 | **管理私人待办** | 今日、近期、长期、逾期视图，QQ 单聊命令与 CLI | [使用说明](docs/usage.md#私人待办) |

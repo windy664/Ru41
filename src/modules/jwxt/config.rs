@@ -2,7 +2,7 @@ use anyhow::{Context, Result};
 use chrono::NaiveDate;
 use serde::Deserialize;
 
-use super::service::JwxtConfig;
+use super::service::{JwxtConfig, SectionClock};
 
 /// 教务课表监控配置；jwxt poll/run/login 使用。协议见 docs/jwxt-recon.md。
 #[derive(Debug, Default, Deserialize)]
@@ -22,7 +22,7 @@ pub struct JwxtSection {
     pub jwxt_base: Option<String>,
     /// 会话持久化路径（TGT + cookie）；默认 .ru41/jwxt/session.json。
     pub session_path: Option<String>,
-    /// 学期第一周周一（如 2026-10-05）；周次推算与明日课表依赖它。
+    /// 学期第一周周一（如 2026-09-07）；周次推算与明日课表依赖它。
     pub semester_start: Option<String>,
     /// 学年起始年（如 2026）；默认按日期自动推断。
     pub xnm: Option<String>,
@@ -34,6 +34,14 @@ pub struct JwxtSection {
     pub daily_remind: Option<bool>,
     /// 明日课表推送的本地时间下限（小时），默认 21。
     pub remind_hour: Option<u8>,
+    /// 是否把课表同步进日程系统（event records，课前 20 分钟提醒、`/日程` 可见）。
+    /// 开启需同时配置 section_times。默认 false。
+    pub sync_schedule: Option<bool>,
+    /// 节次上课时刻表（第 1..=16 节的 "HH:MM"，索引=节次-1）；教务接口不暴露
+    /// 作息时间，需按学校实际填写。同步日程依赖它。
+    pub section_times: Option<Vec<String>>,
+    /// 单节课时长（分钟），默认 45。
+    pub class_duration_mins: Option<u64>,
     /// 检测到课表变更/登录失效是否经默认通知出口提醒；默认 true。
     pub notify: Option<bool>,
 }
@@ -43,6 +51,8 @@ impl JwxtSection {
     pub const DEFAULT_INTERVAL_SECS: u64 = 3_600;
     /// 明日课表推送时刻默认值（本地小时）。
     pub const DEFAULT_REMIND_HOUR: u8 = 21;
+    /// 单节课时长默认值（分钟）。
+    pub const DEFAULT_CLASS_DURATION_MINS: u64 = 45;
     /// CAS 基址默认值。
     pub const DEFAULT_CAS_BASE: &str = "https://cas.gzus.edu.cn/lyuapServer";
     /// 教务基址默认值。
@@ -103,8 +113,38 @@ impl JwxtSection {
             interval_secs: self.interval_secs.unwrap_or(Self::DEFAULT_INTERVAL_SECS),
             daily_remind: self.daily_remind.unwrap_or(true),
             remind_hour: self.remind_hour.unwrap_or(Self::DEFAULT_REMIND_HOUR),
+            sync_schedule: self.sync_schedule.unwrap_or(false),
+            clock: self.section_clock()?,
             notify_target,
         })
+    }
+
+    /// 节次时刻表（不需要凭证即可解析，QQ 命令装配与 `resolved` 共用）。
+    /// 未配置 section_times 返回 None，消息回退到节次文本。
+    pub fn section_clock(&self) -> Result<Option<SectionClock>> {
+        let Some(raw_list) = &self.section_times else {
+            return Ok(None);
+        };
+        raw_list
+            .iter()
+            .enumerate()
+            .map(|(i, raw)| {
+                chrono::NaiveTime::parse_from_str(raw.trim(), "%H:%M").with_context(|| {
+                    format!(
+                        "sources.jwxt.section_times[{}] 格式应为 HH:MM: {raw}",
+                        i + 1
+                    )
+                })
+            })
+            .collect::<Result<Vec<_>>>()
+            .map(|times| {
+                Some(SectionClock {
+                    times,
+                    duration_mins: self
+                        .class_duration_mins
+                        .unwrap_or(Self::DEFAULT_CLASS_DURATION_MINS),
+                })
+            })
     }
 
     /// 配置是否已齐（schedule list 的 enabled 判定与装配共用同一套检查）。

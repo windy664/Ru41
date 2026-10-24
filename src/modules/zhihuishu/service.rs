@@ -719,9 +719,12 @@ mod tests {
 
     #[test]
     fn written_work_and_attachment_are_substantive() {
-        assert!(is_substantive(&task(Some(
-            "基础：用「一切社会关系的总和」分析一件你身边的真实事 —— 不少于 300 字。要求写具体的事，不写概念复述。"
-        ), 0)));
+        assert!(is_substantive(&task(
+            Some(
+                "基础：用「一切社会关系的总和」分析一件你身边的真实事 —— 不少于 300 字。要求写具体的事，不写概念复述。"
+            ),
+            0
+        )));
         assert!(is_substantive(&task(None, 1)));
     }
 

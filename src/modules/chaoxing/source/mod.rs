@@ -7,6 +7,6 @@ mod parse;
 
 pub use client::ChaoxingClient;
 pub use model::{
-    ChaoxingActivity, ChaoxingCourse, ChaoxingWork, ChaoxingSignKind, CourseEncs, SignMethod,
+    ChaoxingActivity, ChaoxingCourse, ChaoxingSignKind, ChaoxingWork, CourseEncs, SignMethod,
     fallback_photo_bytes,
 };

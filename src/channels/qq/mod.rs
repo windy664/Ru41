@@ -471,11 +471,7 @@ pub struct IngestReceipt {
 impl IngestReceipt {
     /// 发生打断时的即时提示；正常入队返回 None（不回执）。
     pub fn interrupt_text(&self) -> Option<String> {
-        (self.interrupted > 0).then(|| {
-            format!(
-                "⏹ 已打断上一条未完成的任务（{} 个）",
-                self.interrupted
-            )
-        })
+        (self.interrupted > 0)
+            .then(|| format!("⏹ 已打断上一条未完成的任务（{} 个）", self.interrupted))
     }
 }

@@ -65,15 +65,21 @@ app_secret = ""
 # notify = true
 
 # RSS 信息流追踪（ru41 rss poll/run），模式与论文追踪一致。
-# digest_mode = "daily" 时攒候选池按点出日报（少量 GLM 调用换高信噪比），
-# realtime 为有候选即精选。归档的精选会落 vault 05-Opportunities/雷达-日报/。
 # [sources.rss]
 # feeds = ["https://www.jiqizhixin.com/rss"]
 # keywords = ["agent", "llm", "安全"]
 # interests = "AI 安全方向本科生"
-# digest_mode = "daily"      # realtime | daily（默认 realtime）
-# evening_hour = 21          # daily 晚报时刻（本地时）
-# morning_hour = 8           # daily 早报时刻（缺省不出早报）
+
+# YouTube 英语预习（ru41 youtube poll/run），见 docs/sources-youtube.md。
+# 需要本机安装 yt-dlp；proxy_url 传给 yt-dlp 子进程（RSS 端点对本网络不可用，采集全走 yt-dlp）。
+# [sources.youtube]
+# channels = ["@Fireship"]           # @handle 或频道 URL
+# interests = "计算机 / AI / 安全"
+# level = "CET-6 / B2"               # 注入预习单 prompt
+# max_per_poll = 2                   # 单轮最多入队几个预习任务（控制 Agent 额度）
+# max_age_days = 14                  # 只追窗口内的新视频；频道首见只登记基线不预习
+# proxy_url = "http://127.0.0.1:7890"
+# QQ 点播：/预习 <YouTube链接>；CLI 点播：ru41 youtube prep <url>
 
 # 项目库管理（ru41 projects poll/run）：扫 02-Projects 项目笔记，
 # frontmatter 带 repo: https://github.com/... 的项目每日同步 README+元数据到 Repo-GitHub.md。
@@ -102,7 +108,6 @@ app_secret = ""
 # deadline_days = 3        # 截止前 N 天进入每日提醒
 # interval_secs = 21600
 # notify = true
-# vault_task_dirs = "substantive"  # 任务目录策略：all=每个任务建目录；substantive=只有有正文要求/附件的作业才建
 
 # 学习通签到监控：协议端直连，检测待签活动并提醒（见 docs/sources-chaoxing.md）。
 # 凭证建议用环境变量 RU41_XXT_PHONE / RU41_XXT_PASSWORD 注入。
@@ -117,12 +122,29 @@ app_secret = ""
 # work_todo_sync = true    # 未交作业自动进待办、已交自动回勾
 # work_vault_sync = true   # 作业清单进 Obsidian（需 [obsidian]）；与智慧树同窗目录即聚合
 # vault_course_dir = "01-Courses-课程/2026-Fall-大一上"   # 缺省与 zhihuishu 一致
-# work_vault_task_dirs = "substantive"  # 任务目录策略：all=全部；substantive=只为未交作业建目录（学习通说明无正文）
 # vault_courses = { "大学英语新视野" = "大学英语" }         # 跨平台同名课程映射到同一目录
 # default_lat = 30.000000  # 宿舍纬度：位置/二维码签到的坐标缺省
 # default_lon = 114.000000 # 宿舍经度
 # default_addr = "宿舍"    # 地址文本（位置签到的 address 参数，教师端可见）
 # photo_path = "~/sign.jpg" # 拍照签到默认照片；缺省用内置兜底照片
+
+# 微助教签到+作业监控（ru41 teachermate poll/run/work/bind/sign，见 docs/sources-teachermate.md）。
+# 凭证是微信服务号网页 openid（人工投喂）：微信里点服务号任意菜单，复制链接后
+# `ru41 teachermate bind <链接>` 提取落盘并验证；失效告警每日一次。
+# [sources.teachermate]
+# openid = ""                # 或环境变量 RU41_WZJ_OPENID；建议直接用 bind 命令落盘
+# openid_path = ".ru41/teachermate/openid"
+# interval_secs = 60         # 签到窗口常为 1-2 分钟，太疏会漏
+# notify = true              # 待签活动/作业经 [notify] 默认出口推送
+# auto_sign = false          # true = 发现待签当场自动签（普通/GPS；二维码无法代签）
+# default_lat = 30.000000    # GPS 签到缺省纬度（宿舍/教学楼）
+# default_lon = 114.000000   # GPS 签到缺省经度
+# work_poll_secs = 1800      # 作业轮询间隔（独立低频）
+# work_due_days = 3          # 截止前 N 天开始临期提醒
+# work_todo_sync = false     # 未交作业自动进待办、平台已交自动回勾
+# work_vault_sync = false    # 作业清单同步进 Obsidian 课程目录
+# vault_course_dir = "学期/2026秋"   # work_vault_sync 开启时必配
+# vault_courses = { "大学英语" = "大学英语" }  # 课程名 → Vault 目录名映射
 
 # 教务课表监控（ru41 jwxt poll/run/login，见 docs/sources-jwxt.md）。
 # 统一认证账号经 CAS 单点登录拉课表；首次登录需人工输一次图形验证码。
@@ -132,8 +154,9 @@ app_secret = ""
 # interval_secs = 3600          # jwxt run 轮询间隔
 # remind_hour = 21              # 每日到点后推明日课表（同日去重）
 # daily_remind = true
-# sync_schedule = true          # 课表同步到日程（课前15分钟提醒、/日程 可见）；需配 section_times
-# section_times = ["08:30","09:25","10:25","11:20","13:30","14:25","15:25","16:20","17:10","18:05","19:00","19:55","20:45","21:35","22:20","23:10"]  # 第1..=16节上课时刻
+# sync_schedule = true          # 课表同步到日程（课前20分钟提醒、/日程 可见）；需配 section_times
+# class_duration_mins = 40      # 单节时长（该校 80 分钟一大节 = 2 小节）
+# section_times = ["09:00","09:40","10:40","11:20","12:30","13:10","14:00","14:40","15:30","16:10","17:00","17:40","19:00","19:40","20:30","21:10"]  # 第1..=16节上课时刻
 # notify = true
 
 # Obsidian Vault 闭环（ru41 obsidian poll/run，核心能力）：Git 轮询发现 Inbox 新提交，

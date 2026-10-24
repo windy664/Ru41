@@ -270,6 +270,35 @@ impl JwxtTracker {
         Ok(true)
     }
 
+    /// 记录登录状态并在"失败→恢复"翻转时通知一次（`login_status` 存上一轮状态）。
+    /// 故障期间静默重试不刷屏；恢复那一刻告诉你系统已自愈。
+    async fn mark_login_state(&self, failed: bool) -> Result<()> {
+        let doc = self.store.document("jwxt_alert", "login_status")?;
+        let was_failed = doc
+            .as_ref()
+            .map(|d| d.value["failed"].as_bool().unwrap_or(false))
+            .unwrap_or(false);
+        self.store.put_document(
+            "jwxt_alert",
+            "login_status",
+            doc.as_ref().map(|d| d.revision),
+            &serde_json::json!({ "failed": failed, "ts": crate::util::now() }),
+        )?;
+        if failed || !was_failed {
+            return Ok(());
+        }
+        if let Some(notifier) = &self.notifier {
+            notifier
+                .send(
+                    &self.config.notify_target,
+                    None,
+                    "✅ 教务登录已恢复：停机期间的课程提醒会自动补发",
+                )
+                .await?;
+        }
+        Ok(())
+    }
+
     /// 课表快照 diff：返回变更行（新增/取消），并写回新快照。
     async fn diff_and_store(
         &self,
@@ -603,6 +632,7 @@ impl JwxtTracker {
 
         if let Err(err) = self.client.ensure_session().await {
             let alerted = self.alert_login_failure(&err).await?;
+            self.mark_login_state(true).await?;
             return Ok(JwxtPollReport {
                 login_ok: false,
                 xnm,
@@ -624,6 +654,7 @@ impl JwxtTracker {
             Ok(meetings) => meetings,
             Err(err) => {
                 let alerted = self.alert_login_failure(&err).await?;
+                self.mark_login_state(true).await?;
                 return Ok(JwxtPollReport {
                     login_ok: false,
                     xnm,
@@ -643,6 +674,7 @@ impl JwxtTracker {
         };
 
         let changes = self.diff_and_store(&xnm, &xqm, &meetings).await?;
+        self.mark_login_state(false).await?;
         if !changes.is_empty()
             && let Some(notifier) = &self.notifier
         {

@@ -2,9 +2,10 @@ use anyhow::{Context, Result};
 use clap::Parser;
 use ru41::bootstrap::agents::{AgentOverrides, registry};
 use ru41::bootstrap::assembly::{
-    chaoxing_tracker, chaoxing_work_tracker, default_notify_route, jwxt_tracker,
-    knowledge_service, notifier_for_route, notify_channels, qq_api, qq_command_handlers,
-    qq_image_consumers, scheduled_jobs, todo_notify_route, tracker_job,
+    chaoxing_tracker, chaoxing_work_tracker, default_notify_route, jwxt_tracker, knowledge_service,
+    notifier_for_route, notify_channels, qq_api, qq_command_handlers, qq_image_consumers,
+    scheduled_jobs, teachermate_tracker, teachermate_work_tracker, todo_notify_route, tracker_job,
+    youtube_client, youtube_prep_route,
 };
 use ru41::bootstrap::store::{open_store, resolve as resolve_store};
 use ru41::{
@@ -15,9 +16,11 @@ use ru41::{
     domain::todo::{TodoInput, parse_due},
     ingress::cli::{
         ChaoxingCommand, Cli, Command, EventCommand, JwxtCommand, KnowledgeCommand, QqCommand,
-        ScheduleCommand, TaskCommand, TodoCommand, TrackerCommand,
+        ScheduleCommand, TaskCommand, TeachermateCommand, TodoCommand, TrackerCommand,
+        YoutubeCommand,
     },
     ingress::cli_ops,
+    modules::youtube::{YoutubeSection, qq_command::parse_video_id, service::prep_video_task},
     privacy::{NoopSanitizer, RandomSanitizer, Sanitizer},
     runtime::dispatcher::NotifyDispatcher,
     runtime::worker::{Worker, WorkerConfig},
@@ -218,6 +221,40 @@ async fn main() -> Result<()> {
         Command::Projects { command } => {
             tracker_or_exit(tracker_cli("projects", command, &config, &store_config).await?)?
         }
+        Command::Youtube { command } => match command {
+            YoutubeCommand::Prep { url } => {
+                let Some(video_id) = parse_video_id(&url) else {
+                    anyhow::bail!(
+                        "无法从「{url}」解析视频 ID（支持 watch / youtu.be / shorts 链接或 11 位 ID）"
+                    );
+                };
+                let youtube = &config.sources.youtube;
+                let message = prep_video_task(
+                    &open_store(&store_config)?,
+                    &youtube_client(&config),
+                    &video_id,
+                    youtube.interests.as_deref().unwrap_or(""),
+                    youtube
+                        .level
+                        .as_deref()
+                        .unwrap_or(YoutubeSection::DEFAULT_LEVEL),
+                    youtube
+                        .max_transcript_chars
+                        .unwrap_or(YoutubeSection::DEFAULT_MAX_TRANSCRIPT_CHARS),
+                    youtube.backend.as_deref().unwrap_or("codex"),
+                    youtube_prep_route(&config)?.as_ref(),
+                )
+                .await?;
+                serde_json::json!({ "video_id": video_id, "message": message })
+            }
+            YoutubeCommand::Poll => tracker_or_exit(
+                tracker_cli("youtube", TrackerCommand::Poll, &config, &store_config).await?,
+            )?,
+            YoutubeCommand::Run => {
+                tracker_cli("youtube", TrackerCommand::Run, &config, &store_config).await?;
+                return Ok(());
+            }
+        },
         Command::Ecard { command } => {
             tracker_or_exit(tracker_cli("ecard", command, &config, &store_config).await?)?
         }
@@ -257,6 +294,27 @@ async fn main() -> Result<()> {
                         )
                         .await?,
                 )?
+            }
+        },
+        Command::Teachermate { command } => match command {
+            TeachermateCommand::Poll => tracker_or_exit(
+                tracker_cli("teachermate", TrackerCommand::Poll, &config, &store_config).await?,
+            )?,
+            TeachermateCommand::Run => {
+                tracker_cli("teachermate", TrackerCommand::Run, &config, &store_config).await?;
+                return Ok(());
+            }
+            TeachermateCommand::Work => {
+                let tracker = teachermate_work_tracker(&config, open_store(&store_config)?)?;
+                serde_json::to_value(tracker.poll_once().await?)?
+            }
+            TeachermateCommand::Bind { link } => {
+                let openid_path = config.sources.teachermate.openid_path_or_default();
+                ru41::modules::teachermate::cli::bind_json(&link, &openid_path).await?
+            }
+            TeachermateCommand::Sign { sign_id, lat, lon } => {
+                let tracker = teachermate_tracker(&config, open_store(&store_config)?)?;
+                serde_json::to_value(tracker.sign_manual(sign_id, lat, lon).await?)?
             }
         },
         Command::Jwxt { command } => match command {
@@ -502,9 +560,7 @@ fn build_knowledge(
     state_db: &std::path::Path,
 ) -> Result<ru41::app::knowledge::KnowledgeService> {
     let (db, cache) = config.knowledge.resolved(state_db);
-    let embedder = Arc::new(
-        ru41::adapters::embedding::fastembed::FastembedEmbedder::new(cache)?,
-    );
+    let embedder = Arc::new(ru41::adapters::embedding::fastembed::FastembedEmbedder::new(cache)?);
     ru41::app::knowledge::KnowledgeService::new(embedder, db)
 }
 

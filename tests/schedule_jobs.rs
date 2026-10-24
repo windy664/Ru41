@@ -19,7 +19,14 @@ fn job<'a>(
 #[test]
 fn registers_all_module_jobs() {
     let jobs = scheduled_jobs(&load(""));
-    for name in ["papers", "rss", "ecard", "zhihuishu", "todo-remind"] {
+    for name in [
+        "papers",
+        "rss",
+        "youtube",
+        "ecard",
+        "zhihuishu",
+        "todo-remind",
+    ] {
         assert!(jobs.iter().any(|j| j.name == name), "{name} missing");
     }
 }
@@ -29,6 +36,7 @@ fn reports_disabled_without_config() {
     let jobs = scheduled_jobs(&load(""));
     assert!(!job(&jobs, "papers").enabled);
     assert!(!job(&jobs, "rss").enabled);
+    assert!(!job(&jobs, "youtube").enabled);
     assert!(!job(&jobs, "ecard").enabled);
     // 智慧树报告路径有默认值，登记即可启动。
     assert!(job(&jobs, "zhihuishu").enabled);
@@ -41,6 +49,7 @@ fn flips_enabled_when_configured() {
     let config = load(
         "[sources.arxiv]\ncategories = [\"cs.CR\"]\ninterval_secs = 3600\n\
          [sources.rss]\nfeeds = [\"https://example.com/f.xml\"]\n\
+         [sources.youtube]\nchannels = [\"@test\"]\n\
          [sources.ecard]\nbase_url = \"https://ecard.example.edu.cn\"\ntoken = \"t\"\n\
          impl_type = \"I\"\nschool_area_no = \"1\"\nbuilding_no = \"2\"\nroom_num = \"3\"\n\
          [notify]\nchannel = \"qq\"\n[channel.qq]\ndefault_notify_target = \"user:U1\"\n",
@@ -48,6 +57,7 @@ fn flips_enabled_when_configured() {
     let jobs = scheduled_jobs(&config);
     assert!(job(&jobs, "papers").enabled);
     assert!(job(&jobs, "rss").enabled);
+    assert!(job(&jobs, "youtube").enabled);
     assert!(job(&jobs, "ecard").enabled);
     assert!(job(&jobs, "todo-remind").enabled);
     assert_eq!(job(&jobs, "papers").interval_secs, Some(3600));

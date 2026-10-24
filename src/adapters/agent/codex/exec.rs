@@ -76,9 +76,7 @@ fn cli_caps(executable: &Path) -> CliCaps {
         _ => CliCaps::default(),
     };
     let mut guard = CACHE.lock().unwrap_or_else(|e| e.into_inner());
-    guard
-        .get_or_insert_with(Default::default)
-        .insert(key, caps);
+    guard.get_or_insert_with(Default::default).insert(key, caps);
     caps
 }
 

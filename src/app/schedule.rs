@@ -28,6 +28,14 @@ impl ScheduleService {
         Self { store, options }
     }
 
+    pub fn store(&self) -> &Arc<dyn TaskStore> {
+        &self.store
+    }
+
+    pub fn options(&self) -> TodoOptions {
+        self.options
+    }
+
     pub fn add(&self, input: EventInput, now: i64) -> Result<EventItem> {
         let item = EventItem {
             id: new_event_id(now),
@@ -128,7 +136,7 @@ impl ScheduleService {
     pub fn due_event_reminders(
         &self,
         now: i64,
-        lead: i64,
+        _lead: i64,
         limit: usize,
     ) -> Result<Vec<EventOccurrence>> {
         let mut due = Vec::new();
@@ -136,6 +144,9 @@ impl ScheduleService {
             if item.status != EventStatus::Active {
                 continue;
             }
+            // 提前量按来源决定：课表 20 分钟（REMIND_LEAD_SECS 的课程专用放宽），
+            // todo 等其它事件保持默认。用最宽的提前量铺开窗口，再逐条按各自 lead 判定。
+            let lead = crate::domain::schedule::remind_lead_secs(&item);
             for occurrence in
                 item.occurrences_between(now - 86400, now + lead, self.options.offset_seconds)
             {
@@ -150,6 +161,67 @@ impl ScheduleService {
         due.sort_by_key(|o| o.starts_at);
         due.truncate(limit);
         Ok(due)
+    }
+
+    /// 启动补发：已过期但尚未提醒的课（fire_at 已过，进程停机期间错过）。
+    /// 只看课表来源的事件；todo 提醒按自己的到点语义另行处理。
+    pub fn missed_class_reminders(&self, now: i64) -> Result<Vec<EventOccurrence>> {
+        let mut missed = Vec::new();
+        for (_, item) in self.entries()? {
+            if item.status != EventStatus::Active {
+                continue;
+            }
+            if item
+                .source
+                .as_ref()
+                .is_none_or(|s| s.channel != crate::domain::schedule::CLASS_EVENT_CHANNEL)
+            {
+                continue;
+            }
+            let lead = crate::domain::schedule::remind_lead_secs(&item);
+            // 展开过去一段窗口内的发生：只看"fire_at 已过"的，不再触发"未来还没到点"的。
+            for occurrence in
+                item.occurrences_between(now - 30 * 86400, now, self.options.offset_seconds)
+            {
+                let fire_at = occurrence.starts_at - lead;
+                if fire_at <= now
+                    && occurrence.ends_at > now - 86400
+                    && !item.reminded(occurrence.starts_at)
+                {
+                    missed.push(occurrence);
+                }
+            }
+        }
+        missed.sort_by_key(|o| o.starts_at);
+        Ok(missed)
+    }
+
+    /// 下一次需要醒来的时间点：最近的"fire_at 在未来"的课。
+    /// 只关心课表来源的事件（todo 有自己的到点语义）；无课返回 None。
+    pub fn next_class_fire_at(&self, now: i64) -> Result<Option<i64>> {
+        let mut next: Option<i64> = None;
+        for (_, item) in self.entries()? {
+            if item.status != EventStatus::Active {
+                continue;
+            }
+            if item
+                .source
+                .as_ref()
+                .is_none_or(|s| s.channel != crate::domain::schedule::CLASS_EVENT_CHANNEL)
+            {
+                continue;
+            }
+            let lead = crate::domain::schedule::remind_lead_secs(&item);
+            for occurrence in
+                item.occurrences_between(now, now + 14 * 86400, self.options.offset_seconds)
+            {
+                let fire_at = occurrence.starts_at - lead;
+                if fire_at > now {
+                    next = Some(next.map_or(fire_at, |n| n.min(fire_at)));
+                }
+            }
+        }
+        Ok(next)
     }
 
     /// 通知成功后记录已提醒；乐观并发，更新失败留给下一轮重试（可能重发一条）。
@@ -215,6 +287,50 @@ pub fn format_event_reminder(items: &[EventOccurrence], options: TodoOptions) ->
     lines.join("\n")
 }
 
+/// 启动后补发错过的课程提醒：合并成一条消息发出，逐条标记。
+/// 返回 (发出条数, 是否成功发送)。无错过项时不发送任何消息。
+pub async fn send_missed_class_reminders(
+    service: &ScheduleService,
+    notifier: &dyn NotifyChannel,
+    route: &NotifyRoute,
+    options: TodoOptions,
+) -> Result<(usize, bool)> {
+    let now = crate::util::now();
+    let missed = service.missed_class_reminders(now)?;
+    if missed.is_empty() {
+        return Ok((0, false));
+    }
+    notifier
+        .send(
+            &route.target,
+            None,
+            &format_missed_reminder(&missed, options),
+        )
+        .await?;
+    for occurrence in &missed {
+        service.mark_reminded(occurrence, now)?;
+    }
+    Ok((missed.len(), true))
+}
+
+/// 补发消息的文案：与到点提醒同一风格，但标题注明是补发。
+fn format_missed_reminder(items: &[EventOccurrence], options: TodoOptions) -> String {
+    let mut lines = vec![format!("## ⚠️ 错过的课程提醒（{}）", items.len())];
+    lines.push("（进程停机期间未发出的提醒，现补发）\n".to_owned());
+    for item in items {
+        let mut line = format!(
+            "- **{}** — {}",
+            item.title,
+            event_time_label(item.starts_at, item.recurring, options.offset_seconds)
+        );
+        if let Some(location) = &item.location {
+            line.push_str(&format!(" @ {location}"));
+        }
+        lines.push(line);
+    }
+    lines.join("\n")
+}
+
 /// 发送到点行程提醒；发送成功才记录，失败留给下一轮重试。
 pub async fn send_event_reminders(
     service: &ScheduleService,
@@ -238,6 +354,57 @@ pub async fn send_event_reminders(
 
 fn new_event_id(now: i64) -> String {
     format!("evt_{now:010}_{:016x}", rand::random::<u64>())
+}
+
+/// 课程提醒的 PollJob 实现：按 fire_at 精准触发，启动时补发错过的提醒。
+///
+/// 与其它 tracker 不同，它不是固定间隔轮询，而是"睡到下一个该提醒的课"。
+/// 固定低频轮询作为兜底，防止精准睡眠因事件增删而失效。
+pub struct ClassRemindTracker {
+    service: ScheduleService,
+    notifier: Arc<dyn NotifyChannel>,
+    route: NotifyRoute,
+    /// 兜底轮询间隔（秒）；精准睡眠之外的安全网。
+    fallback_interval_secs: u64,
+}
+
+impl ClassRemindTracker {
+    pub fn new(
+        store: Arc<dyn TaskStore>,
+        notifier: Arc<dyn NotifyChannel>,
+        route: NotifyRoute,
+        options: TodoOptions,
+    ) -> Self {
+        Self {
+            service: ScheduleService::new(store, options),
+            notifier,
+            route,
+            fallback_interval_secs: 60,
+        }
+    }
+}
+
+impl crate::ingress::schedule::PollJob for ClassRemindTracker {
+    fn job_interval(&self) -> std::time::Duration {
+        std::time::Duration::from_secs(self.fallback_interval_secs)
+    }
+
+    fn poll_json(
+        &self,
+    ) -> std::pin::Pin<
+        Box<dyn std::future::Future<Output = anyhow::Result<serde_json::Value>> + Send + '_>,
+    > {
+        Box::pin(async move {
+            let report = send_event_reminders(
+                &self.service,
+                self.notifier.as_ref(),
+                &self.route,
+                self.service.options(),
+            )
+            .await?;
+            Ok(report)
+        })
+    }
 }
 
 #[cfg(test)]

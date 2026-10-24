@@ -65,7 +65,11 @@ impl NotifyDispatcher {
             let revision = current.as_ref().map(|d| d.revision + 1).unwrap_or(1);
             let result = tokio::time::timeout(
                 Duration::from_secs(30),
-                channel.send(&route.target, effective_msg_id(&task, now), &notify_text(&task)),
+                channel.send(
+                    &route.target,
+                    effective_msg_id(&task, now),
+                    &notify_text(&task),
+                ),
             )
             .await;
             match result {
@@ -134,7 +138,11 @@ impl NotifyDispatcher {
             let text = progress_text(&doc, &task);
             let result = tokio::time::timeout(
                 Duration::from_secs(30),
-                channel.send(&route.target, effective_msg_id(&task, crate::runtime::worker::now()), &text),
+                channel.send(
+                    &route.target,
+                    effective_msg_id(&task, crate::runtime::worker::now()),
+                    &text,
+                ),
             )
             .await;
             match result {
@@ -199,7 +207,11 @@ impl NotifyDispatcher {
             let text = lines.join("\n");
             let result = tokio::time::timeout(
                 Duration::from_secs(30),
-                channel.send(&route.target, effective_msg_id(&task, crate::runtime::worker::now()), &text),
+                channel.send(
+                    &route.target,
+                    effective_msg_id(&task, crate::runtime::worker::now()),
+                    &text,
+                ),
             )
             .await;
             match result {
@@ -280,14 +292,12 @@ const PASSIVE_WINDOW_SECS: i64 = 240;
 fn effective_msg_id<'a>(task: &'a Task, now: i64) -> Option<&'a str> {
     let route = task.notify.as_ref()?;
     let msg_id = route.msg_id.as_deref()?;
-    let created = match chrono::NaiveDateTime::parse_from_str(
-        &task.created_at,
-        "%Y-%m-%dT%H:%M:%S%.fZ",
-    ) {
-        Ok(parsed) => parsed.and_utc().timestamp(),
-        // 时间解析不出时不改变既有行为。
-        Err(_) => return Some(msg_id),
-    };
+    let created =
+        match chrono::NaiveDateTime::parse_from_str(&task.created_at, "%Y-%m-%dT%H:%M:%S%.fZ") {
+            Ok(parsed) => parsed.and_utc().timestamp(),
+            // 时间解析不出时不改变既有行为。
+            Err(_) => return Some(msg_id),
+        };
     if now - created > PASSIVE_WINDOW_SECS {
         None
     } else {
@@ -330,15 +340,16 @@ mod tests {
     fn passive_msg_id_kept_within_window_and_dropped_after() {
         // created_at 是 ISO-UTC；窗口内保留被动锚点，超窗转主动。
         let task = task("2026-01-01T00:00:00.000Z");
-        let created = chrono::NaiveDateTime::parse_from_str(
-            &task.created_at,
-            "%Y-%m-%dT%H:%M:%S%.fZ",
-        )
-        .unwrap()
-        .and_utc()
-        .timestamp();
+        let created =
+            chrono::NaiveDateTime::parse_from_str(&task.created_at, "%Y-%m-%dT%H:%M:%S%.fZ")
+                .unwrap()
+                .and_utc()
+                .timestamp();
         assert_eq!(effective_msg_id(&task, created + 60), Some("m1"));
-        assert_eq!(effective_msg_id(&task, created + PASSIVE_WINDOW_SECS + 1), None);
+        assert_eq!(
+            effective_msg_id(&task, created + PASSIVE_WINDOW_SECS + 1),
+            None
+        );
     }
 
     #[test]

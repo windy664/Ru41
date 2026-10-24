@@ -19,8 +19,7 @@ use crate::{
     modules::{
         blog::{BlogPublishTracker, BlogSection},
         chaoxing::{
-            ChaoxingClient, ChaoxingQrSigner, ChaoxingSection, ChaoxingTracker,
-            ChaoxingWorkTracker,
+            ChaoxingClient, ChaoxingQrSigner, ChaoxingSection, ChaoxingTracker, ChaoxingWorkTracker,
         },
         ecard::{EcardClient, EcardTracker},
         homework::HomeworkQqCommand,
@@ -30,6 +29,13 @@ use crate::{
         planner::TodoQqCommand,
         projects::ProjectsTracker,
         rss::RssTracker,
+        teachermate::{
+            TeachermateClient, TeachermateQqCommand, TeachermateSection, TeachermateTracker,
+            TeachermateWorkTracker,
+        },
+        youtube::qq_command::YoutubeQqCommand,
+        youtube::source::YtDlpClient,
+        youtube::{YoutubeSection, YoutubeTracker},
         zhihuishu::{ZhihuishuQqCommand, ZhihuishuSection, ZhihuishuTracker},
     },
     ports::{
@@ -61,7 +67,8 @@ pub fn notify_channels(
 }
 
 /// 注册各业务模块提供的 QQ 扩展命令；这是唯一同时认识 QQ 与业务模块的位置。
-pub fn qq_command_handlers(config: &Config, backend: &str) -> Result<Vec<Arc<dyn CommandHandler>>> {    // 注册表模块的 QQ 命令先行收集（数据驱动）。
+pub fn qq_command_handlers(config: &Config, backend: &str) -> Result<Vec<Arc<dyn CommandHandler>>> {
+    // 注册表模块的 QQ 命令先行收集（数据驱动）。
     let mut handlers: Vec<Arc<dyn CommandHandler>> = Vec::new();
     for def in crate::modules::MODULES {
         handlers.extend((def.qq_handlers)(config, backend)?);
@@ -78,6 +85,22 @@ pub fn qq_command_handlers(config: &Config, backend: &str) -> Result<Vec<Arc<dyn
             config.sources.jwxt.section_clock().ok().flatten(),
         )) as Arc<dyn CommandHandler>,
         Arc::new(TodoQqCommand::new(config.todo.options()?)),
+        Arc::new(YoutubeQqCommand::new(
+            youtube_client(config),
+            config.sources.youtube.interests.clone().unwrap_or_default(),
+            config
+                .sources
+                .youtube
+                .level
+                .clone()
+                .unwrap_or_else(|| YoutubeSection::DEFAULT_LEVEL.into()),
+            config
+                .sources
+                .youtube
+                .max_transcript_chars
+                .unwrap_or(YoutubeSection::DEFAULT_MAX_TRANSCRIPT_CHARS),
+            backend.to_owned(),
+        )),
         // 跨平台聚合的 /作业 必须先于 ZhihuishuQqCommand 注册（first-match-wins）
         Arc::new(HomeworkQqCommand::new(
             config
@@ -85,6 +108,9 @@ pub fn qq_command_handlers(config: &Config, backend: &str) -> Result<Vec<Arc<dyn
                 .zhihuishu
                 .resolved(String::new())?
                 .report_path,
+        )),
+        Arc::new(TeachermateQqCommand::new(
+            config.sources.teachermate.openid_path_or_default(),
         )),
         Arc::new(ZhihuishuQqCommand::new(
             config
@@ -223,6 +249,29 @@ pub fn rss_tracker(config: &Config, store: Arc<dyn TaskStore>) -> Result<RssTrac
     Ok(tracker)
 }
 
+/// 由 [sources.youtube] 配置组装追踪器；yt-dlp 路径与代理由配置段携带。
+pub fn youtube_tracker(config: &Config, store: Arc<dyn TaskStore>) -> Result<YoutubeTracker> {
+    let youtube = &config.sources.youtube;
+    Ok(YoutubeTracker::new(
+        store,
+        youtube.resolved(source_notify(config, youtube.notify)?)?,
+    ))
+}
+
+/// yt-dlp 客户端工厂：tracker、QQ 命令与 CLI prep 共用同一份配置来源。
+pub fn youtube_client(config: &Config) -> YtDlpClient {
+    let youtube = &config.sources.youtube;
+    YtDlpClient::new(
+        youtube.ytdlp_bin.clone().unwrap_or_else(|| "yt-dlp".into()),
+        youtube.proxy_url.clone(),
+    )
+}
+
+/// [sources.youtube] 语义的通知出口（CLI youtube prep 使用；与 poll 装配一致）。
+pub fn youtube_prep_route(config: &Config) -> Result<Option<crate::domain::NotifyRoute>> {
+    source_notify(config, config.sources.youtube.notify)
+}
+
 /// 按 [notify] 渠道构造具体通知器；渠道知识只存在于装配层。
 fn default_notifier(config: &Config, channel: &str) -> Result<Arc<dyn NotifyChannel>> {
     match channel {
@@ -286,6 +335,40 @@ pub fn chaoxing_tracker(config: &Config, store: Arc<dyn TaskStore>) -> Result<Ch
         resolved.cookie_path.clone(),
     );
     Ok(ChaoxingTracker::new(store, client, notifier, resolved))
+}
+
+/// 由 [sources.teachermate] 配置组装微助教签到监控；openid 直连，无 sidecar。
+pub fn teachermate_tracker(
+    config: &Config,
+    store: Arc<dyn TaskStore>,
+) -> Result<TeachermateTracker> {
+    let teachermate = &config.sources.teachermate;
+    let (notifier, notify_target) = notify_pair(config, teachermate.notify)?;
+    let resolved = teachermate.resolved(notify_target)?;
+    let client = TeachermateClient::new(resolved.openid.clone())
+        .with_openid_file(resolved.openid_path.clone());
+    Ok(TeachermateTracker::new(store, client, notifier, resolved))
+}
+
+/// 微助教作业监控：复用 [sources.teachermate] 的 openid；低频独立调度。
+/// Obsidian 同步按 work_vault_sync 开关走 [obsidian] 的 Vault；待办走全局 TodoService。
+pub fn teachermate_work_tracker(
+    config: &Config,
+    store: Arc<dyn TaskStore>,
+) -> Result<TeachermateWorkTracker> {
+    let teachermate = &config.sources.teachermate;
+    let (notifier, notify_target) = notify_pair(config, teachermate.notify)?;
+    let resolved = teachermate.resolved(notify_target.clone())?;
+    let vault = vault_if_ready(config, resolved.work_vault_sync)?;
+    Ok(TeachermateWorkTracker::new(
+        store,
+        TeachermateClient::new(resolved.openid.clone())
+            .with_openid_file(resolved.openid_path.clone()),
+        notifier,
+        resolved,
+        config.todo.options()?,
+        vault,
+    ))
 }
 
 /// 由 [sources.jwxt] 配置组装教务课表监控；CAS 单点登录，TGT 持久化。
@@ -382,13 +465,10 @@ pub fn knowledge_service(
             .map(|d| d.join("fastembed"))
             .unwrap_or_else(|| "fastembed".into())
     });
-    let embedder = Arc::new(
-        crate::adapters::embedding::fastembed::FastembedEmbedder::new(cache)?,
-    );
-    Ok(Some(Arc::new(crate::app::knowledge::KnowledgeService::new(
-        embedder,
-        db.clone(),
-    )?)))
+    let embedder = Arc::new(crate::adapters::embedding::fastembed::FastembedEmbedder::new(cache)?);
+    Ok(Some(Arc::new(
+        crate::app::knowledge::KnowledgeService::new(embedder, db.clone())?,
+    )))
 }
 
 /// 由 [obsidian] 配置组装 Vault 核心服务；整理完成通知来自全局 [notify] 出口。
@@ -401,12 +481,7 @@ pub fn obsidian_service(config: &Config, store: Arc<dyn TaskStore>) -> Result<Ob
         None => None,
     };
     let resolved = obsidian.resolved(route)?;
-    let service = ObsidianService::new(
-        store,
-        vault_client(&resolved),
-        notifier,
-        resolved,
-    );
+    let service = ObsidianService::new(store, vault_client(&resolved), notifier, resolved);
     Ok(match knowledge_service(config)? {
         Some(knowledge) => service.with_knowledge(knowledge),
         None => service,
@@ -475,12 +550,23 @@ fn job(
 /// 已迁移模块经 modules::MODULES 注册表自动并入；未迁移模块在下方手写注册。
 pub fn scheduled_jobs(config: &Config) -> Vec<ScheduledJob> {
     let sources = &config.sources;
+    let youtube = &sources.youtube;
     let todo_route_ready = default_notify_route(config).ok().flatten().is_some();
     let mut jobs: Vec<ScheduledJob> = crate::modules::MODULES
         .iter()
         .flat_map(|def| (def.schedule)(config).into_iter().map(move |js| js.to_scheduled_job(def.name)))
         .collect();
     jobs.extend(vec![
+        job(
+            "youtube",
+            "youtube",
+            youtube
+                .interval_secs
+                .unwrap_or(YoutubeSection::DEFAULT_INTERVAL_SECS),
+            youtube.channels.as_ref().is_some_and(|c| !c.is_empty()),
+            (!youtube.channels.as_ref().is_some_and(|c| !c.is_empty()))
+                .then(|| "配置 sources.youtube.channels 后启用".into()),
+        ),
         job(
             "chaoxing",
             "chaoxing",
@@ -528,6 +614,34 @@ pub fn scheduled_jobs(config: &Config) -> Vec<ScheduledJob> {
                 None
             },
         ),
+        job(
+            "teachermate",
+            "teachermate",
+            sources
+                .teachermate
+                .interval_secs
+                .unwrap_or(TeachermateSection::DEFAULT_INTERVAL_SECS),
+            sources.teachermate.is_ready(),
+            (!sources.teachermate.is_ready()).then(|| {
+                "需微助教 openid：`teachermate bind <链接>` 落盘（或 RU41_WZJ_OPENID）".into()
+            }),
+        ),
+        ScheduledJob {
+            poll_command: "teachermate work".into(),
+            run_command: "schedule run teachermate-work".into(),
+            ..job(
+                "teachermate",
+                "teachermate-work",
+                sources
+                    .teachermate
+                    .work_poll_secs
+                    .unwrap_or(TeachermateSection::DEFAULT_WORK_POLL_SECS),
+                sources.teachermate.is_ready(),
+                (!sources.teachermate.is_ready()).then(|| {
+                    "随 sources.teachermate openid 启用；作业轮询独立低频（默认 30 分钟）".into()
+                }),
+            )
+        },
         job(
             "zhihuishu",
             "zhihuishu",
@@ -613,10 +727,13 @@ pub fn tracker_job(
         }
     }
     Ok(Some(match name {
+        "youtube" => Box::new(youtube_tracker(config, store)?),
         "chaoxing" => Box::new(chaoxing_tracker(config, store)?),
         "chaoxing-work" => Box::new(chaoxing_work_tracker(config, store)?),
         "jwxt" => Box::new(jwxt_tracker(config, store)?),
         "class-remind" => Box::new(class_remind_tracker(config, store)?),
+        "teachermate" => Box::new(teachermate_tracker(config, store)?),
+        "teachermate-work" => Box::new(teachermate_work_tracker(config, store)?),
         "zhihuishu" => Box::new(zhihuishu_tracker(config, store)?),
         "obsidian" => Box::new(obsidian_service(config, store)?),
         "blog" => Box::new(blog_tracker(config, store)?),
