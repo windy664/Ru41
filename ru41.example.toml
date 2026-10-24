@@ -70,6 +70,13 @@ app_secret = ""
 # keywords = ["agent", "llm", "安全"]
 # interests = "AI 安全方向本科生"
 
+# 项目库管理（ru41 projects poll/run）：扫 02-Projects 项目笔记，
+# frontmatter 带 repo: https://github.com/... 的项目每日同步 README+元数据到 Repo-GitHub.md。
+# 项目立场与进度以人写的笔记为准；需要 [obsidian] vault 已配置。
+# [sources.projects]
+# projects_dir = "02-Projects-项目"
+# interval_secs = 86400
+
 # 校园卡水电监控（ru41 ecard poll/run），协议见 docs/ecard-waterfee.md。
 # base_url 与 token 只存本地；token 建议用环境变量 RU41_ECARD_TOKEN。
 # [sources.ecard]

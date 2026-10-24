@@ -1,9 +1,13 @@
 pub mod blog;
 pub mod chaoxing;
 pub mod ecard;
+pub mod homework;
 pub mod jwxt;
 pub mod obsidian;
 pub mod papers;
+pub mod projects;
 pub mod planner;
 pub mod rss;
+pub mod teachermate;
+pub mod youtube;
 pub mod zhihuishu;

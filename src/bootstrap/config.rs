@@ -233,6 +233,7 @@ pub struct NotifySection {
 pub struct SourcesSection {
     pub arxiv: crate::modules::papers::ArxivSection,
     pub rss: crate::modules::rss::RssSection,
+    pub projects: crate::modules::projects::ProjectsSection,
     pub ecard: crate::modules::ecard::EcardSection,
     pub chaoxing: crate::modules::chaoxing::ChaoxingSection,
     pub jwxt: crate::modules::jwxt::JwxtSection,

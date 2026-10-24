@@ -28,6 +28,7 @@ use crate::{
         obsidian::ObsidianQqCommand,
         papers::{ArxivClient, ArxivSection, PaperTracker, PapersQqCommand},
         planner::TodoQqCommand,
+        projects::ProjectsTracker,
         rss::{RssSection, RssTracker},
         zhihuishu::{ZhihuishuQqCommand, ZhihuishuSection, ZhihuishuTracker},
     },
@@ -238,6 +239,19 @@ fn default_notifier(config: &Config, channel: &str) -> Result<Arc<dyn NotifyChan
         ))),
         other => anyhow::bail!("unknown notify channel: {other}"),
     }
+}
+
+/// 项目库管理：扫 02-Projects 项目笔记，GitHub 项目每日同步 README+元数据。
+/// 依赖 [obsidian] 的 vault（读写都走它的 git 闭环）。
+pub fn projects_tracker(config: &Config, store: Arc<dyn TaskStore>) -> Result<ProjectsTracker> {
+    let _ = store;
+    let vault = vault_if_ready(config, true)?
+        .context("projects 需要 [obsidian] vault 已配置（项目库写在 vault 里）")?;
+    let vault_root = config.obsidian.resolved(None)?.vault_path;
+    Ok(ProjectsTracker::new(
+        config.sources.projects.resolved(vault_root)?,
+        vault,
+    ))
 }
 
 /// 由 [sources.ecard] 配置组装水电监控；提醒渠道同样来自全局 [notify] 出口。
@@ -481,6 +495,17 @@ pub fn scheduled_jobs(config: &Config) -> Vec<ScheduledJob> {
                 .then(|| "配置 sources.rss.feeds 后启用".into()),
         ),
         job(
+            "projects",
+            "projects",
+            sources
+                .projects
+                .interval_secs
+                .unwrap_or(crate::modules::projects::ProjectsSection::DEFAULT_INTERVAL_SECS),
+            config.obsidian.is_ready(),
+            (!config.obsidian.is_ready())
+                .then(|| "需 [obsidian] vault 已配置（项目库写在 vault 里）".into()),
+        ),
+        job(
             "ecard",
             "ecard",
             ecard
@@ -616,6 +641,7 @@ pub fn tracker_job(
 ) -> Result<Option<Box<dyn PollJob>>> {
     Ok(Some(match name {
         "papers" => Box::new(paper_tracker(config, store)?),
+        "projects" => Box::new(projects_tracker(config, store.clone())?),
         "rss" => Box::new(rss_tracker(config, store)?),
         "ecard" => Box::new(ecard_tracker(config, store)?),
         "chaoxing" => Box::new(chaoxing_tracker(config, store)?),
