@@ -8,8 +8,7 @@ use serde::Serialize;
 use std::{collections::BTreeMap, path::PathBuf, sync::Arc};
 
 use super::source::{
-    ZhihuishuAttachment, ZhihuishuCourse, ZhihuishuReport, ZhihuishuTask, load_report,
-    parse_platform_time,
+    ZhihuishuCourse, ZhihuishuReport, ZhihuishuTask, load_report, parse_platform_time,
 };
 
 /// 智慧树作业提醒配置（对应配置文件的 [sources.zhihuishu]）。
@@ -553,12 +552,16 @@ fn task_line_item(
     }
 }
 
-/// 实质作业：有正文要求或平台附件——值得在 vault 留档、让 agent 协助产出；
-/// 课前测等纯在线客观题内容在平台内，任务目录纯属噪音。
+/// 实质作业的最小正文长度（字符）：课前测类模板话约 25-30 字，
+/// 真正要动笔的作业要求通常 100 字以上，取 50 作为干净的分界线。
+const SUBSTANTIVE_MIN_CONTENT_CHARS: usize = 50;
+
+/// 实质作业：正文要求达到最小长度或有平台附件——值得在 vault 留档、
+/// 让 agent 协助产出；课前测等纯在线客观题只有模板话，任务目录纯属噪音。
 fn is_substantive(task: &ZhihuishuTask) -> bool {
     task.content
         .as_deref()
-        .is_some_and(|c| !c.trim().is_empty())
+        .is_some_and(|c| c.trim().chars().count() >= SUBSTANTIVE_MIN_CONTENT_CHARS)
         || task.attachments.as_ref().is_some_and(|a| !a.is_empty())
 }
 
@@ -716,8 +719,19 @@ mod tests {
 
     #[test]
     fn written_work_and_attachment_are_substantive() {
-        assert!(is_substantive(&task(Some("写不少于300字"), 0)));
+        assert!(is_substantive(&task(Some(
+            "基础：用「一切社会关系的总和」分析一件你身边的真实事 —— 不少于 300 字。要求写具体的事，不写概念复述。"
+        ), 0)));
         assert!(is_substantive(&task(None, 1)));
+    }
+
+    #[test]
+    fn quiz_boilerplate_is_not_substantive() {
+        // 课前测模板话约 25-30 字，低于最小正文长度。
+        assert!(!is_substantive(&task(
+            Some("设置三个习题，用于回顾第三节的知识点，请认真完成。"),
+            0
+        )));
     }
 
     #[test]
