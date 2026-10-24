@@ -2,7 +2,7 @@
 
 Ru41 的附属模块采用**垂直业务目录 + 编译期静态装配**。模块自己持有配置、外部来源、业务逻辑和可选渠道命令；核心不反向 import 模块。
 
-**注册表接入（推荐）**：新模块在 `mod.rs` 里定义 `pub const DEF: super::ModuleDef`（声明调度清单、tracker 构造、QQ 命令），再到 `src/modules/mod.rs` 的 `MODULES` 表加一行——调度清单（schedule list）、`tracker_job` 装配、QQ 命令注册全自动，不再碰 main.rs/assembly.rs。参考 papers/rss/ecard/projects 四个已迁移模块。未迁移的老模块暂时保留在 assembly.rs 的手写注册里。
+**注册表接入（推荐）**：新模块在 `mod.rs` 里定义 `pub const DEF: super::ModuleDef`（声明调度清单、tracker 构造、QQ 命令），再到 `src/modules/mod.rs` 的 `MODULES` 表加一行——调度清单（schedule list）、`tracker_job` 装配、QQ 命令注册全自动，不再碰 main.rs/assembly.rs。全部 12 个模块均已迁移，assembly.rs 不再持有任何模块注册代码。
 
 ## 目录约定
 
@@ -79,7 +79,7 @@ src/modules/<name>/
 - `poll`：执行一轮并输出 JSON 报告，适合系统 cron 和调试
 - `run`：调用 `ingress/schedule.rs::run_periodic`，适合常驻进程
 
-同时在 `bootstrap/assembly.rs::scheduled_jobs` 用 `job()` 构造器登记一个条目（模块、任务名、间隔、启用条件）；poll/run 命令按 `{name} poll|run` 约定自动生成，不合约定的用结构体更新语法覆盖。登记后任务自动出现在 `ru41 schedule list`，并可被 `ru41 schedule run <name>` 统一启动；这是注册表唯一需要改动的位置。
+调度清单在模块 DEF 的 `schedule` 闭包里声明（任务名、间隔、启用条件、禁用原因）；poll/run 命令按 `{name} poll|run` 约定自动生成，不合约定的用 `JobSchedule` 的 `poll_command`/`run_command` 字段覆盖（如 chaoxing-work 用 `chaoxing work`）。声明后任务自动出现在 `ru41 schedule list`，并可被 `ru41 schedule run <name>` 统一启动。
 
 如果模块提供轮询 tracker，还需两步：
 
