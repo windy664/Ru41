@@ -11,7 +11,13 @@ use std::{
     sync::Arc,
 };
 
-const SAMPLE_RSS: &str = r#"<?xml version="1.0" encoding="UTF-8"?>
+/// pubDate 用当前时间生成：轮询路径有时效闸（默认丢弃 2 天前的条目），
+/// 固定旧日期的夹具会被正确拦掉，导致测试随时间腐烂。
+fn sample_rss() -> String {
+    let now = chrono::DateTime::from_timestamp(ru41::util::now(), 0).unwrap();
+    let pub_date = now.format("%a, %d %b %Y %H:%M:%S GMT");
+    format!(
+        r#"<?xml version="1.0" encoding="UTF-8"?>
 <rss version="2.0">
   <channel>
     <title>示例安全资讯</title>
@@ -19,21 +25,23 @@ const SAMPLE_RSS: &str = r#"<?xml version="1.0" encoding="UTF-8"?>
       <title>某大模型 Agent 框架曝工具调用漏洞</title>
       <link>https://example.com/news/1</link>
       <guid>https://example.com/news/1</guid>
-      <pubDate>Mon, 13 Oct 2026 08:00:00 GMT</pubDate>
+      <pubDate>{pub_date}</pubDate>
       <description><![CDATA[<p>研究人员披露了 <b>tool-use</b> 安全问题 &amp; 修复建议</p>]]></description>
     </item>
     <item>
       <title>某手机品牌发布新配色</title>
       <link>https://example.com/news/2</link>
-      <pubDate>Mon, 13 Oct 2026 09:00:00 GMT</pubDate>
+      <pubDate>{pub_date}</pubDate>
       <description>营销内容</description>
     </item>
   </channel>
-</rss>"#;
+</rss>"#
+    )
+}
 
 #[test]
 fn parses_rss_feed_items() {
-    let items = parse_rss(SAMPLE_RSS).unwrap();
+    let items = parse_rss(&sample_rss()).unwrap();
     assert_eq!(items.len(), 2);
     let first = &items[0];
     assert_eq!(first.id, "https://example.com/news/1");
@@ -49,7 +57,11 @@ fn rejects_unknown_feed_formats() {
     assert!(parse_rss("<html><body>not a feed</body></html>").is_err());
 }
 
-const SAMPLE_ATOM: &str = r#"<?xml version="1.0" encoding="UTF-8"?>
+fn sample_atom() -> String {
+    let now = chrono::DateTime::from_timestamp(ru41::util::now(), 0).unwrap();
+    let stamp = now.format("%Y-%m-%dT%H:%M:%SZ");
+    format!(
+        r#"<?xml version="1.0" encoding="UTF-8"?>
 <feed xmlns="http://www.w3.org/2005/Atom">
   <title>示例 Atom 源</title>
   <entry>
@@ -57,29 +69,31 @@ const SAMPLE_ATOM: &str = r#"<?xml version="1.0" encoding="UTF-8"?>
     <title>LLM Agent 安全研究综述发布</title>
     <link rel="alternate" href="https://example.com/posts/1"/>
     <link rel="enclosure" href="https://example.com/posts/1.pdf"/>
-    <published>2026-10-13T08:00:00Z</published>
-    <updated>2026-10-14T09:00:00Z</updated>
+    <published>{stamp}</published>
+    <updated>{stamp}</updated>
     <summary>覆盖 prompt injection 与 tool-use 安全。</summary>
   </entry>
   <entry>
     <id>urn:example:post-2</id>
     <title>某品牌手机评测</title>
     <link href="https://example.com/posts/2"/>
-    <updated>2026-10-13T10:00:00Z</updated>
+    <updated>{stamp}</updated>
     <content type="html">&lt;p&gt;营销内容&lt;/p&gt;</content>
   </entry>
-</feed>"#;
+</feed>"#
+    )
+}
 
 #[test]
 fn parses_atom_feed_entries() {
-    let items = parse_feed(SAMPLE_ATOM).unwrap();
+    let items = parse_feed(&sample_atom()).unwrap();
     assert_eq!(items.len(), 2);
     let first = &items[0];
     assert_eq!(first.id, "urn:example:post-1");
     assert_eq!(first.title, "LLM Agent 安全研究综述发布");
     // rel=alternate 才是正文链接，enclosure 不覆盖。
     assert_eq!(first.link, "https://example.com/posts/1");
-    assert_eq!(first.published, "2026-10-13T08:00:00Z");
+    assert!(first.published.ends_with('Z'));
     assert!(first.summary.contains("prompt injection"));
     // content 兜底摘要，HTML 实体已还原并去标签。
     let second = &items[1];
@@ -89,7 +103,7 @@ fn parses_atom_feed_entries() {
 
 #[tokio::test]
 async fn poll_works_with_atom_feed() {
-    let base = mock_rss_server(SAMPLE_ATOM);
+    let base = mock_rss_server(&sample_atom());
     let dir = tempfile::tempdir().unwrap();
     let store: Arc<dyn TaskStore> =
         Arc::new(SqliteTaskStore::open(&dir.path().join("state.db")).unwrap());
@@ -104,7 +118,8 @@ async fn poll_works_with_atom_feed() {
 }
 
 /// 本地 mock：任何 GET 都返回样本 feed。
-fn mock_rss_server(payload: &'static str) -> String {
+fn mock_rss_server(payload: &str) -> String {
+    let payload = payload.to_owned();
     let listener = TcpListener::bind("127.0.0.1:0").unwrap();
     let base = format!("http://{}", listener.local_addr().unwrap());
     std::thread::spawn(move || {
@@ -163,13 +178,14 @@ fn make_tracker(
             digest_mode: ru41::modules::rss::service::DigestMode::Realtime,
             evening_hour: 21,
             morning_hour: None,
+            max_age_days: 2,
         },
     )
 }
 
 #[tokio::test]
 async fn poll_enqueues_digest_and_dedups() {
-    let base = mock_rss_server(SAMPLE_RSS);
+    let base = mock_rss_server(&sample_rss());
     let dir = tempfile::tempdir().unwrap();
     let store: Arc<dyn TaskStore> =
         Arc::new(SqliteTaskStore::open(&dir.path().join("state.db")).unwrap());
@@ -194,7 +210,7 @@ async fn poll_enqueues_digest_and_dedups() {
 
 #[tokio::test]
 async fn keyword_filter_and_feed_failure_isolation() {
-    let good = mock_rss_server(SAMPLE_RSS);
+    let good = mock_rss_server(&sample_rss());
     let bad = {
         // 绑定后立即丢弃监听，连接会被拒绝。
         let listener = TcpListener::bind("127.0.0.1:0").unwrap();
