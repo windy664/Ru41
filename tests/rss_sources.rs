@@ -180,7 +180,10 @@ fn make_tracker(
             morning_hour: None,
             max_age_days: 2,
             pool_keyword_filter: true,
+            instant_feeds: Vec::new(),
         },
+        None,
+        String::new(),
     )
 }
 
