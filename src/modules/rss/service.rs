@@ -89,10 +89,17 @@ impl RssTracker {
         let mut errors = Vec::new();
         let mut items = Vec::new();
         for url in &self.config.feeds {
-            // `wqai+<url>` 前缀走湾区赛事页解析器，其余走 RSS/Atom。
-            let fetched_items = if let Some(page) = url.strip_prefix(crate::adapters::sources::wqai::URL_PREFIX) {
+            // 伪 feed 前缀路由：wqai+ 走湾区赛事页解析，devpost+ 走黑客松 API，其余 RSS/Atom。
+            let fetched_items = if let Some(page) =
+                url.strip_prefix(crate::adapters::sources::wqai::URL_PREFIX)
+            {
                 let client = crate::adapters::sources::wqai::WqaiClient::new();
                 client.fetch_race_items(page).await
+            } else if let Some(api) =
+                url.strip_prefix(crate::adapters::sources::devpost::URL_PREFIX)
+            {
+                let client = crate::adapters::sources::devpost::DevpostClient::new();
+                client.fetch_hackathons(api).await
             } else {
                 self.client.fetch(url).await
             };
