@@ -83,6 +83,12 @@ impl Fx {
                 blog_path.to_str().unwrap(),
             ],
         );
+        // clone 出来的工作副本也要配身份：tracker 的提交发生在副本里，
+        // CI  runner 没有全局 git identity，不配会提交失败（本地靠用户全局配置兜住）。
+        for repo in [&vault_path, &blog_path] {
+            git(repo, &["config", "user.name", "windy"]);
+            git(repo, &["config", "user.email", "w@test"]);
+        }
         let store: Arc<dyn ru41::ports::storage::TaskStore> = Arc::new(
             ru41::adapters::database::sqlite::SqliteTaskStore::open(&dir.path().join("state.db"))
                 .unwrap(),
