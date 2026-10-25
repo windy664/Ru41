@@ -2,9 +2,9 @@ use anyhow::{Context, Result};
 use clap::Parser;
 use ru41::bootstrap::agents::{AgentOverrides, registry};
 use ru41::bootstrap::assembly::{
-    chaoxing_tracker, chaoxing_work_tracker, default_notify_route, jwxt_tracker, knowledge_service,
+    default_notify_route, knowledge_service,
     notifier_for_route, notify_channels, qq_api, qq_command_handlers, qq_image_consumers,
-    scheduled_jobs, teachermate_tracker, teachermate_work_tracker, todo_notify_route, tracker_job,
+    scheduled_jobs, todo_notify_route, tracker_job,
     youtube_client, youtube_prep_route,
 };
 use ru41::bootstrap::store::{open_store, resolve as resolve_store};
@@ -268,7 +268,7 @@ async fn main() -> Result<()> {
                 tracker_cli("chaoxing", TrackerCommand::Poll, &config, &store_config).await?,
             )?,
             ChaoxingCommand::Work => {
-                let tracker = chaoxing_work_tracker(&config, open_store(&store_config)?)?;
+                let tracker = ru41::modules::chaoxing::build_work_tracker(&config, open_store(&store_config)?)?;
                 serde_json::to_value(tracker.poll_once().await?)?
             }
             ChaoxingCommand::Run => {
@@ -283,7 +283,7 @@ async fn main() -> Result<()> {
                 enc,
                 photo,
             } => {
-                let tracker = chaoxing_tracker(&config, open_store(&store_config)?)?;
+                let tracker = ru41::modules::chaoxing::build_tracker(&config, open_store(&store_config)?)?;
                 serde_json::to_value(
                     tracker
                         .sign_manual(
@@ -307,7 +307,7 @@ async fn main() -> Result<()> {
                 return Ok(());
             }
             TeachermateCommand::Work => {
-                let tracker = teachermate_work_tracker(&config, open_store(&store_config)?)?;
+                let tracker = ru41::modules::teachermate::build_work_tracker(&config, open_store(&store_config)?)?;
                 serde_json::to_value(tracker.poll_once().await?)?
             }
             TeachermateCommand::Bind { link } => {
@@ -315,7 +315,7 @@ async fn main() -> Result<()> {
                 ru41::modules::teachermate::cli::bind_json(&link, &openid_path).await?
             }
             TeachermateCommand::Sign { sign_id, lat, lon } => {
-                let tracker = teachermate_tracker(&config, open_store(&store_config)?)?;
+                let tracker = ru41::modules::teachermate::build_tracker(&config, open_store(&store_config)?)?;
                 serde_json::to_value(tracker.sign_manual(sign_id, lat, lon).await?)?
             }
         },
@@ -328,7 +328,7 @@ async fn main() -> Result<()> {
                 return Ok(());
             }
             JwxtCommand::Login { captcha } => {
-                let tracker = jwxt_tracker(&config, open_store(&store_config)?)?;
+                let tracker = ru41::modules::jwxt::build_tracker(&config, open_store(&store_config)?)?;
                 ru41::modules::jwxt::cli::login_json(&tracker, captcha.as_deref()).await?
             }
             JwxtCommand::Classes { when } => ru41::modules::jwxt::cli::classes_json(

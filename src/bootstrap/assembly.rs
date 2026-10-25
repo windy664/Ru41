@@ -15,9 +15,7 @@ use crate::{
         schedule::{PollJob, ScheduledJob},
     },
     modules::{
-        chaoxing::{ChaoxingClient, ChaoxingQrSigner, ChaoxingTracker, ChaoxingWorkTracker},
-        jwxt::{JwxtClient, JwxtTracker},
-        teachermate::{TeachermateClient, TeachermateTracker, TeachermateWorkTracker},
+        chaoxing::{ChaoxingClient, ChaoxingQrSigner},
         youtube::source::YtDlpClient,
     },
     ports::{
@@ -187,94 +185,12 @@ pub fn default_notifier(config: &Config, channel: &str) -> Result<Arc<dyn Notify
     }
 }
 
-/// 由 [sources.chaoxing] 配置组装学习通签到监控；协议端直连，无 sidecar。
-pub fn chaoxing_tracker(config: &Config, store: Arc<dyn TaskStore>) -> Result<ChaoxingTracker> {
-    let chaoxing = &config.sources.chaoxing;
-    let (notifier, notify_target) = notify_pair(config, chaoxing.notify)?;
-    let resolved = chaoxing.resolved(notify_target)?;
-    let client = ChaoxingClient::new(
-        resolved.phone.clone(),
-        resolved.password.clone(),
-        resolved.cookie_path.clone(),
-    );
-    Ok(ChaoxingTracker::new(store, client, notifier, resolved))
-}
 
-/// 由 [sources.teachermate] 配置组装微助教签到监控；openid 直连，无 sidecar。
-pub fn teachermate_tracker(
-    config: &Config,
-    store: Arc<dyn TaskStore>,
-) -> Result<TeachermateTracker> {
-    let teachermate = &config.sources.teachermate;
-    let (notifier, notify_target) = notify_pair(config, teachermate.notify)?;
-    let resolved = teachermate.resolved(notify_target)?;
-    let client = TeachermateClient::new(resolved.openid.clone())
-        .with_openid_file(resolved.openid_path.clone());
-    Ok(TeachermateTracker::new(store, client, notifier, resolved))
-}
 
 /// 微助教作业监控：复用 [sources.teachermate] 的 openid；低频独立调度。
-/// Obsidian 同步按 work_vault_sync 开关走 [obsidian] 的 Vault；待办走全局 TodoService。
-pub fn teachermate_work_tracker(
-    config: &Config,
-    store: Arc<dyn TaskStore>,
-) -> Result<TeachermateWorkTracker> {
-    let teachermate = &config.sources.teachermate;
-    let (notifier, notify_target) = notify_pair(config, teachermate.notify)?;
-    let resolved = teachermate.resolved(notify_target.clone())?;
-    let vault = vault_if_ready(config, resolved.work_vault_sync)?;
-    Ok(TeachermateWorkTracker::new(
-        store,
-        TeachermateClient::new(resolved.openid.clone())
-            .with_openid_file(resolved.openid_path.clone()),
-        notifier,
-        resolved,
-        config.todo.options()?,
-        vault,
-    ))
-}
 
-/// 由 [sources.jwxt] 配置组装教务课表监控；CAS 单点登录，TGT 持久化。
-pub fn jwxt_tracker(config: &Config, store: Arc<dyn TaskStore>) -> Result<JwxtTracker> {
-    let jwxt = &config.sources.jwxt;
-    let (notifier, notify_target) = notify_pair(config, jwxt.notify)?;
-    let resolved = jwxt.resolved(notify_target)?;
-    let client = JwxtClient::new(
-        resolved.username.clone(),
-        resolved.password.clone(),
-        resolved.cas_base.clone(),
-        resolved.cas_modulus.clone(),
-        resolved.cas_exponent.clone(),
-        resolved.jwxt_base.clone(),
-        resolved.session_path.clone(),
-    )
-    .with_browser_ua();
-    Ok(JwxtTracker::new(store, client, notifier, resolved))
-}
 
 /// 学习通作业监控：复用 [sources.chaoxing] 凭证与 cookie 会话；低频独立调度。
-/// Obsidian 同步按 work_vault_sync 开关走 [obsidian] 的 Vault；待办走全局 TodoService。
-pub fn chaoxing_work_tracker(
-    config: &Config,
-    store: Arc<dyn TaskStore>,
-) -> Result<ChaoxingWorkTracker> {
-    let chaoxing = &config.sources.chaoxing;
-    let (notifier, notify_target) = notify_pair(config, chaoxing.notify)?;
-    let resolved = chaoxing.resolved(notify_target.clone())?;
-    let vault = vault_if_ready(config, resolved.work_vault_sync)?;
-    Ok(ChaoxingWorkTracker::new(
-        store,
-        ChaoxingClient::new(
-            resolved.phone.clone(),
-            resolved.password.clone(),
-            resolved.cookie_path.clone(),
-        ),
-        notifier,
-        resolved,
-        config.todo.options()?,
-        vault,
-    ))
-}
 
 /// 知识库索引器：显式配置 [knowledge].db_path 才接线。
 /// 索引是衍生数据，路径必须落到共享数据卷（obsidian 写、worker 读）。

@@ -15,6 +15,41 @@ pub use source::{
     TeachermateClient, homework_status_label, homework_status_open, sign_response_ok,
 };
 
+use crate::bootstrap::config::Config;
+use crate::ports::storage::TaskStore;
+use anyhow::Result;
+use std::sync::Arc;
+
+/// 签到 tracker 的具体类型构造：DEF 注册表与 main.rs 的 bind 分支共用。
+pub fn build_tracker(config: &Config, store: Arc<dyn TaskStore>) -> Result<TeachermateTracker> {
+    let tm = &config.sources.teachermate;
+    let (notifier, notify_target) = crate::bootstrap::assembly::notify_pair(config, tm.notify)?;
+    let resolved = tm.resolved(notify_target)?;
+    let client =
+        TeachermateClient::new(resolved.openid.clone()).with_openid_file(resolved.openid_path.clone());
+    Ok(TeachermateTracker::new(store, client, notifier, resolved))
+}
+
+/// 作业 tracker 的具体类型构造：DEF 注册表与 main.rs 的 work 分支共用。
+pub fn build_work_tracker(
+    config: &Config,
+    store: Arc<dyn TaskStore>,
+) -> Result<TeachermateWorkTracker> {
+    let tm = &config.sources.teachermate;
+    let (notifier, notify_target) = crate::bootstrap::assembly::notify_pair(config, tm.notify)?;
+    let resolved = tm.resolved(notify_target.clone())?;
+    let vault = crate::bootstrap::assembly::vault_if_ready(config, resolved.work_vault_sync)?;
+    Ok(TeachermateWorkTracker::new(
+        store,
+        TeachermateClient::new(resolved.openid.clone())
+            .with_openid_file(resolved.openid_path.clone()),
+        notifier,
+        resolved,
+        config.todo.options()?,
+        vault,
+    ))
+}
+
 /// 注册表定义：teachermate 的调度清单、两个 tracker（签到/作业）、QQ 命令闭环。
 pub const DEF: super::ModuleDef = super::ModuleDef {
     name: "teachermate",
@@ -46,39 +81,10 @@ pub const DEF: super::ModuleDef = super::ModuleDef {
             },
         ]
     },
-    tracker: |config, store, name| {
-        let tm = &config.sources.teachermate;
-        match name {
-            "teachermate" => {
-                let (notifier, notify_target) =
-                    crate::bootstrap::assembly::notify_pair(config, tm.notify)?;
-                let resolved = tm.resolved(notify_target)?;
-                let client = TeachermateClient::new(resolved.openid.clone())
-                    .with_openid_file(resolved.openid_path.clone());
-                Ok(Some(Box::new(TeachermateTracker::new(
-                    store, client, notifier, resolved,
-                ))))
-            }
-            "teachermate-work" => {
-                let (notifier, notify_target) =
-                    crate::bootstrap::assembly::notify_pair(config, tm.notify)?;
-                let resolved = tm.resolved(notify_target.clone())?;
-                let vault = crate::bootstrap::assembly::vault_if_ready(
-                    config,
-                    resolved.work_vault_sync,
-                )?;
-                Ok(Some(Box::new(TeachermateWorkTracker::new(
-                    store,
-                    TeachermateClient::new(resolved.openid.clone())
-                        .with_openid_file(resolved.openid_path.clone()),
-                    notifier,
-                    resolved,
-                    config.todo.options()?,
-                    vault,
-                ))))
-            }
-            _ => Ok(None),
-        }
+    tracker: |config, store, name| match name {
+        "teachermate" => Ok(Some(Box::new(build_tracker(config, store)?))),
+        "teachermate-work" => Ok(Some(Box::new(build_work_tracker(config, store)?))),
+        _ => Ok(None),
     },
     qq_handlers: |config, _| {
         Ok(vec![std::sync::Arc::new(

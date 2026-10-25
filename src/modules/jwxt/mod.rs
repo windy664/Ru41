@@ -15,6 +15,30 @@ pub use service::{
 pub use source::{CourseMeeting, JwxtClient, JwxtError};
 
 use anyhow::Context as _;
+use anyhow::Result;
+use std::sync::Arc;
+
+/// 课表 tracker 的具体类型构造：DEF 注册表与 main.rs 的 login 分支共用。
+pub fn build_tracker(
+    config: &crate::bootstrap::config::Config,
+    store: Arc<dyn crate::ports::storage::TaskStore>,
+) -> Result<JwxtTracker> {
+    let jwxt = &config.sources.jwxt;
+    let (notifier, notify_target) =
+        crate::bootstrap::assembly::notify_pair(config, jwxt.notify)?;
+    let resolved = jwxt.resolved(notify_target)?;
+    let client = JwxtClient::new(
+        resolved.username.clone(),
+        resolved.password.clone(),
+        resolved.cas_base.clone(),
+        resolved.cas_modulus.clone(),
+        resolved.cas_exponent.clone(),
+        resolved.jwxt_base.clone(),
+        resolved.session_path.clone(),
+    )
+    .with_browser_ua();
+    Ok(JwxtTracker::new(store, client, notifier, resolved))
+}
 
 /// 注册表定义：jwxt 的调度清单、课表/课前提醒两个 tracker、QQ 命令闭环。
 pub const DEF: super::ModuleDef = super::ModuleDef {
@@ -62,24 +86,7 @@ pub const DEF: super::ModuleDef = super::ModuleDef {
     tracker: |config, store, name| {
         let jwxt = &config.sources.jwxt;
         match name {
-            "jwxt" => {
-                let (notifier, notify_target) =
-                    crate::bootstrap::assembly::notify_pair(config, jwxt.notify)?;
-                let resolved = jwxt.resolved(notify_target)?;
-                let client = JwxtClient::new(
-                    resolved.username.clone(),
-                    resolved.password.clone(),
-                    resolved.cas_base.clone(),
-                    resolved.cas_modulus.clone(),
-                    resolved.cas_exponent.clone(),
-                    resolved.jwxt_base.clone(),
-                    resolved.session_path.clone(),
-                )
-                .with_browser_ua();
-                Ok(Some(Box::new(JwxtTracker::new(
-                    store, client, notifier, resolved,
-                ))))
-            }
+            "jwxt" => Ok(Some(Box::new(build_tracker(config, store)?))),
             "class-remind" => {
                 jwxt.is_ready().then_some(()).context(
                     "class-remind requires sources.jwxt credentials (RU41_JWXT_USERNAME/RU41_JWXT_PASSWORD)",
