@@ -42,6 +42,10 @@ pub trait Vault: Send + Sync {
     fn commit_all(&self, message: &str) -> Result<bool>;
     /// 推送到远端分支。
     fn push(&self) -> Result<()>;
+    /// 本地与远端对齐：`pull --rebase` 把本地未推提交重放到远端之上，
+    /// 再把仍领先的提交推上去；返回是否有提交被推送。
+    /// rebase 冲突时中止并返回错误（工作区恢复原状），由调用方决定告警。
+    fn sync(&self) -> Result<bool>;
     /// 读取 Vault 内文件；不存在返回 None。只读不入锁。
     fn read_file(&self, relative: &str) -> Result<Option<String>>;
     /// 写入 Vault 内文件（自动创建父目录）；不写锁外目录，提交推送由调用方负责。
