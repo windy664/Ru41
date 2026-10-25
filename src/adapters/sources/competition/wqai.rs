@@ -4,7 +4,7 @@
 //! 覆盖活动+赛事，UID 天然去重，含城市/场馆/票务等富描述。
 //! 在 rss 模块里以 `wqai+<url>` 前缀接入，产出与 RSS 条目同构的 FeedItem 进候选池。
 
-use super::feed::{FeedItem, fetch_text, strip_tags};
+use super::super::feed::{FeedItem, fetch_text, strip_tags};
 use anyhow::Result;
 
 /// rss feed 列表里的接入前缀：
@@ -13,7 +13,7 @@ use anyhow::Result;
 pub const URL_PREFIX: &str = "wqai+";
 
 /// 注册表条目：`wqai+<url>` 路由到本源的赛事表格 / ICS 解析。
-pub const DEF: super::SourceDef = super::SourceDef {
+pub const DEF: super::super::SourceDef = super::super::SourceDef {
     prefix: URL_PREFIX,
     fetch: |url| Box::pin(async move { WqaiClient::new().fetch(&url).await }),
 };
