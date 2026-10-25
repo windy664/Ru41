@@ -21,7 +21,11 @@ services:
     volumes:
       - ../ru41.toml:/etc/ru41/ru41.toml:ro
       - ../.ru41:/data
-      - ${RU41_CODEX_HOME:-../.ru41/codex}:/home/node/.codex
+      - ${RU41_CODEX_HOME:-../.ru41/codex-home}:/home/node/.codex
+    # CODEX_HOME 默认在镜像里指向 /data/codex（.ru41/codex 由容器以 root 创建，
+    # 部署用户的 uid 写不进去）；改挂部署用户持有的 codex-home（config.toml + auth.json）。
+    environment:
+      CODEX_HOME: /home/node/.codex
     command:
       - --config
       - /etc/ru41/ru41.toml
