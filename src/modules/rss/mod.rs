@@ -24,13 +24,23 @@ pub const DEF: super::ModuleDef = super::ModuleDef {
             return Ok(None);
         }
         let rss = &config.sources.rss;
+        let route = crate::bootstrap::assembly::source_notify(config, rss.notify)?;
+        let (notifier, notify_target) = match &route {
+            Some(route) => (
+                Some(crate::bootstrap::assembly::default_notifier(
+                    config,
+                    &route.channel,
+                )?),
+                route.target.clone(),
+            ),
+            None => (None, String::new()),
+        };
         let tracker = RssTracker::new(
             store,
             crate::adapters::sources::feed::FeedClient::new(),
-            rss.resolved(crate::bootstrap::assembly::source_notify(
-                config,
-                rss.notify,
-            )?)?,
+            rss.resolved(route)?,
+            notifier,
+            notify_target,
         );
         Ok(Some(Box::new(tracker)))
     },
