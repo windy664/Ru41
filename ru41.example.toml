@@ -112,7 +112,7 @@ app_secret = ""
 # 学习通签到监控：协议端直连，检测待签活动并提醒（见 docs/sources-chaoxing.md）。
 # 凭证建议用环境变量 RU41_XXT_PHONE / RU41_XXT_PASSWORD 注入。
 # [sources.chaoxing]
-# phone = "13800000000"
+# phone = "10000000000"
 # password = ""
 # interval_secs = 60       # 签到窗口常为 1-2 分钟，默认 60s
 # notify = true

@@ -298,7 +298,7 @@ fn make_tracker_full(
     auto_sign: bool,
 ) -> ChaoxingTracker {
     let client = ChaoxingClient::with_base_urls(
-        "13800000000",
+        "10000000000",
         "pw",
         cookie_path.clone(),
         base.to_owned(),
@@ -312,7 +312,7 @@ fn make_tracker_full(
         client,
         notifier,
         ChaoxingConfig {
-            phone: "13800000000".into(),
+            phone: "10000000000".into(),
             password: "pw".into(),
             cookie_path,
             interval_secs: 60,
@@ -968,7 +968,7 @@ fn make_work_tracker(
     vault: Option<Arc<dyn ru41::ports::vault::Vault>>,
 ) -> ru41::modules::chaoxing::ChaoxingWorkTracker {
     let client = ChaoxingClient::with_base_urls(
-        "13800000000",
+        "10000000000",
         "pw",
         cookie_path.clone(),
         base.to_owned(),
@@ -982,7 +982,7 @@ fn make_work_tracker(
         client,
         notifier,
         ChaoxingConfig {
-            phone: "13800000000".into(),
+            phone: "10000000000".into(),
             password: "pw".into(),
             cookie_path,
             interval_secs: 60,
@@ -1223,7 +1223,7 @@ fn section_parses_minimal_toml_and_rejects_unknown() {
     assert!(!section.is_ready());
 
     let section: ChaoxingSection =
-        toml::from_str("phone = \"13800000000\"\npassword = \"pw\"\nnotify = false").unwrap();
+        toml::from_str("phone = \"10000000000\"\npassword = \"pw\"\nnotify = false").unwrap();
     assert!(section.is_ready());
     let config = section.resolved("target".into()).unwrap();
     assert_eq!(config.notify_target, "target");
