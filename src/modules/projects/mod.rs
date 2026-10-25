@@ -19,8 +19,7 @@ pub const DEF: super::ModuleDef = super::ModuleDef {
                 .interval_secs
                 .unwrap_or(config::ProjectsSection::DEFAULT_INTERVAL_SECS),
             ready,
-            (!ready)
-                .then(|| "需 [obsidian] vault 已配置（项目库写在 vault 里）".into()),
+            (!ready).then(|| "需 [obsidian] vault 已配置（项目库写在 vault 里）".into()),
         )]
     },
     tracker: |config, store, name| {

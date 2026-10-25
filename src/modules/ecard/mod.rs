@@ -44,6 +44,8 @@ pub const DEF: super::ModuleDef = super::ModuleDef {
         ))))
     },
     qq_handlers: |_, backend| {
-        Ok(vec![std::sync::Arc::new(EcardQqCommand::new(backend.to_owned()))])
+        Ok(vec![std::sync::Arc::new(EcardQqCommand::new(
+            backend.to_owned(),
+        ))])
     },
 };

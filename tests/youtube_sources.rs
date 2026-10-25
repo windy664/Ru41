@@ -426,9 +426,7 @@ mod review_loop {
         }
     }
 
-    fn review_job(
-        store: Arc<dyn TaskStore>,
-    ) -> (YoutubeReviewJob, FakeNotifier) {
+    fn review_job(store: Arc<dyn TaskStore>) -> (YoutubeReviewJob, FakeNotifier) {
         let config = ru41::modules::youtube::YoutubeConfig {
             channels: vec![],
             keywords: vec![],
@@ -459,11 +457,7 @@ mod review_loop {
     fn seed_succeeded_sheet(store: &Arc<dyn TaskStore>, video: &str) {
         let mut service = TaskService::new(store.clone());
         let enqueue = service
-            .enqueue_for(
-                &format!("youtube:prep:{video}"),
-                "prompt",
-                "codex",
-            )
+            .enqueue_for(&format!("youtube:prep:{video}"), "prompt", "codex")
             .unwrap();
         let claim = store
             .claim_for(
@@ -491,10 +485,7 @@ mod review_loop {
 
     fn vocab(store: &Arc<dyn TaskStore>, video: &str, index: usize) -> serde_json::Value {
         store
-            .document(
-                "youtube_vocab",
-                &format!("{video}#{index}"),
-            )
+            .document("youtube_vocab", &format!("{video}#{index}"))
             .unwrap()
             .unwrap()
             .value
@@ -509,7 +500,9 @@ mod review_loop {
         let (job, fake) = review_job(store.clone());
 
         // 第一轮：提取 3 个词块；全部明天才到期，不该推送。
-        let report = ru41::ingress::schedule::PollJob::poll_json(&job).await.unwrap();
+        let report = ru41::ingress::schedule::PollJob::poll_json(&job)
+            .await
+            .unwrap();
         assert_eq!(report["extracted_videos"], 1);
         assert_eq!(report["review_pushed"], 0);
         assert_eq!(report["posttests_enqueued"], 0);
@@ -531,14 +524,19 @@ mod review_loop {
             .unwrap();
 
         // 第二轮：只推到期的 1 个，且登记今日批次。
-        let report = ru41::ingress::schedule::PollJob::poll_json(&job).await.unwrap();
+        let report = ru41::ingress::schedule::PollJob::poll_json(&job)
+            .await
+            .unwrap();
         assert_eq!(report["review_pushed"], 1);
         {
             let sent = fake.0.lock().unwrap();
             assert_eq!(sent.len(), 1);
             assert!(sent[0].contains("词块复习"));
             assert!(sent[0].contains("（懂）助手卡住不回应"));
-            assert!(!sent[0].contains("Silent stalls sounds like"), "线索泄漏英文原句");
+            assert!(
+                !sent[0].contains("Silent stalls sounds like"),
+                "线索泄漏英文原句"
+            );
             assert!(!sent[0].contains("带人逐步看懂"), "未到期的不该出现在批里");
         }
         let today = chrono::Local::now().format("%Y-%m-%d").to_string();
@@ -554,7 +552,9 @@ mod review_loop {
         assert_eq!(vocab(&store, "vidq", 0)["stage"], 1);
 
         // 同日再跑：批次已存在，不重推。
-        let report = ru41::ingress::schedule::PollJob::poll_json(&job).await.unwrap();
+        let report = ru41::ingress::schedule::PollJob::poll_json(&job)
+            .await
+            .unwrap();
         assert_eq!(report["review_pushed"], 0);
         assert_eq!(fake.0.lock().unwrap().len(), 1);
 
@@ -586,7 +586,9 @@ mod review_loop {
         seed_succeeded_sheet(&store, "vidq");
         seed_succeeded_sheet(&store, "vidr");
         let (job, _fake) = review_job(store.clone());
-        ru41::ingress::schedule::PollJob::poll_json(&job).await.unwrap();
+        ru41::ingress::schedule::PollJob::poll_json(&job)
+            .await
+            .unwrap();
 
         // 两个视频全部 6 个词块都到期；单视频上限 2 → 批里最多 4 条。
         for video in ["vidq", "vidr"] {
@@ -598,11 +600,18 @@ mod review_loop {
                 let mut value = doc.value.clone();
                 value["due_at"] = (ru41::util::now() - 60).into();
                 store
-                    .put_document("youtube_vocab", &format!("{video}#{index}"), Some(doc.revision), &value)
+                    .put_document(
+                        "youtube_vocab",
+                        &format!("{video}#{index}"),
+                        Some(doc.revision),
+                        &value,
+                    )
                     .unwrap();
             }
         }
-        ru41::ingress::schedule::PollJob::poll_json(&job).await.unwrap();
+        ru41::ingress::schedule::PollJob::poll_json(&job)
+            .await
+            .unwrap();
         let today = chrono::Local::now().format("%Y-%m-%d").to_string();
         let batch = store
             .document("youtube_review_batch", &today)
@@ -610,7 +619,10 @@ mod review_loop {
             .unwrap();
         let items = batch.value["items"].as_array().unwrap();
         assert_eq!(items.len(), 4, "2 视频 × 单视频上限 2");
-        let q_count = items.iter().filter(|v| v.as_str().unwrap().starts_with("vidq")).count();
+        let q_count = items
+            .iter()
+            .filter(|v| v.as_str().unwrap().starts_with("vidq"))
+            .count();
         assert_eq!(q_count, 2, "单视频不超过 MAX_PER_VIDEO");
     }
 

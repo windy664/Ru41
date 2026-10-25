@@ -12,7 +12,6 @@
 use crate::{
     app::task::TaskService,
     bootstrap::assembly,
-    domain::NotifyRoute,
     ingress::schedule::PollJob,
     ports::{channel::NotifyChannel, storage::TaskStore},
 };
@@ -159,7 +158,7 @@ impl YoutubeReviewJob {
     /// 看后测试：今天送达预习单的视频，入队一道后测任务（2 内容理解 + 1 语言运用）。
     /// 后测由 Agent 出题，走任务通知出口推送；幂等键 `youtube_posttest#<video>`。
     async fn enqueue_posttests(&self, today: String) -> Result<usize> {
-        let Some(route) = self.config.notify.clone() else {
+        let Some(_route) = self.config.notify.clone() else {
             return Ok(0);
         };
         let mut count = 0;
@@ -190,10 +189,17 @@ impl YoutubeReviewJob {
             let mut service = TaskService::new(self.store.clone());
             let key = format!("youtube:quiz:{video}");
             let enqueue = match &self.config.notify {
-                Some(route) => {
-                    service.enqueue_with_notify(&key, &quiz_prompt(&result.summary), &self.config.backend, route)?
-                }
-                None => service.enqueue_for(&key, &quiz_prompt(&result.summary), &self.config.backend)?,
+                Some(route) => service.enqueue_with_notify(
+                    &key,
+                    &quiz_prompt(&result.summary),
+                    &self.config.backend,
+                    route,
+                )?,
+                None => service.enqueue_for(
+                    &key,
+                    &quiz_prompt(&result.summary),
+                    &self.config.backend,
+                )?,
             };
             self.store.put_document(
                 QUIZ_KIND,
@@ -253,7 +259,10 @@ impl YoutubeReviewJob {
             .filter(|doc| {
                 !doc.id.ends_with("#meta")
                     && doc.value["known"].as_bool() != Some(true)
-                    && doc.value["due_at"].as_i64().map(|d| d <= now).unwrap_or(false)
+                    && doc.value["due_at"]
+                        .as_i64()
+                        .map(|d| d <= now)
+                        .unwrap_or(false)
             })
             .collect();
         due.sort_by_key(|doc| doc.value["due_at"].as_i64().unwrap_or(i64::MAX));
@@ -262,7 +271,10 @@ impl YoutubeReviewJob {
         let mut picked: Vec<crate::domain::records::Document> = Vec::new();
         let mut per_video: std::collections::HashMap<String, usize> = Default::default();
         for doc in due {
-            let video = doc.value["video_id"].as_str().unwrap_or_default().to_owned();
+            let video = doc.value["video_id"]
+                .as_str()
+                .unwrap_or_default()
+                .to_owned();
             let count = per_video.entry(video).or_insert(0);
             if *count >= MAX_PER_VIDEO {
                 continue;
@@ -352,8 +364,7 @@ pub fn apply_feedback(store: &Arc<dyn TaskStore>, arg: &str) -> Result<String> {
     let Some(batch) = latest_open_batch(store)? else {
         return Ok("最近 3 天没有待反馈的复习批次。".into());
     };
-    let items: Vec<&str> = batch
-        .value["items"]
+    let items: Vec<&str> = batch.value["items"]
         .as_array()
         .map(|a| a.iter().filter_map(|v| v.as_str()).collect())
         .unwrap_or_default();
@@ -384,7 +395,9 @@ pub fn apply_feedback(store: &Arc<dyn TaskStore>, arg: &str) -> Result<String> {
     if failed.is_empty() {
         Ok(format!("已记录：{known_count} 个都会，从复习名单毕业 🎉"))
     } else {
-        Ok(format!("已记录：会 {known_count} 个，不会 {failed:?}——明天重推。"))
+        Ok(format!(
+            "已记录：会 {known_count} 个，不会 {failed:?}——明天重推。"
+        ))
     }
 }
 
@@ -422,7 +435,9 @@ fn parse_numbers(arg: &str, max: usize) -> Result<Vec<usize>, String> {
     let mut numbers = Vec::new();
     for token in arg.split([',', '，', ' ']).filter(|t| !t.is_empty()) {
         let Ok(number) = token.parse::<usize>() else {
-            return Err(format!("看不懂「{token}」，用法：/复习 <不会的编号>，如 /复习 2 4"));
+            return Err(format!(
+                "看不懂「{token}」，用法：/复习 <不会的编号>，如 /复习 2 4"
+            ));
         };
         if number == 0 || number > max {
             return Err(format!("编号 {number} 超出范围（1-{max}）。"));
@@ -465,13 +480,17 @@ pub fn extract_vocab(summary: &str) -> Vec<VocabItem> {
             _ => None,
         };
         let Some(after_open) = body else { continue };
-        let Some(close) = after_open.find("**") else { continue };
+        let Some(close) = after_open.find("**") else {
+            continue;
+        };
         let mut chunk = after_open[..close].to_owned();
         let mut cue = after_open[close + 2..].trim().to_owned();
         if section == "carry" {
             chunk = chunk.trim_matches('"').to_owned();
             if let Some(index) = cue.find("→ 你可以说") {
-                cue = cue[..index].trim_end_matches(['；', ';', '—', '-']).to_owned();
+                cue = cue[..index]
+                    .trim_end_matches(['；', ';', '—', '-'])
+                    .to_owned();
             }
         }
         // 剥掉行尾英文原句：`；"..." [m:ss]`——提示里出现英文就泄题了。
@@ -514,8 +533,9 @@ impl PollJob for YoutubeReviewJob {
 
     fn poll_json(
         &self,
-    ) -> std::pin::Pin<Box<dyn std::future::Future<Output = anyhow::Result<serde_json::Value>> + Send + '_>>
-    {
+    ) -> std::pin::Pin<
+        Box<dyn std::future::Future<Output = anyhow::Result<serde_json::Value>> + Send + '_>,
+    > {
         Box::pin(async move { self.review_pass().await })
     }
 }
@@ -558,7 +578,11 @@ mod tests {
         assert_eq!(items.len(), 4);
         assert_eq!(items[0].chunk, "silent stalls");
         assert!(items[0].cue.contains("卡住"));
-        assert!(!items[0].cue.contains("Silent stalls sounds like"), "原句泄漏: {}", items[0].cue);
+        assert!(
+            !items[0].cue.contains("Silent stalls sounds like"),
+            "原句泄漏: {}",
+            items[0].cue
+        );
         assert_eq!(items[0].kind, "equip");
         assert_eq!(items[2].chunk, "walk through … with you");
         assert_eq!(items[2].kind, "carry");

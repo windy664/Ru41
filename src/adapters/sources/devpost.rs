@@ -78,10 +78,10 @@ impl DevpostClient {
                 if let Some(period) = &h.submission_period_dates {
                     summary_parts.push(format!("提交窗口 {period}"));
                 }
-                if let Some(left) = &h.time_left_to_submission {
-                    if !left.is_empty() {
-                        summary_parts.push(left.clone());
-                    }
+                if let Some(left) = &h.time_left_to_submission
+                    && !left.is_empty()
+                {
+                    summary_parts.push(left.clone());
                 }
                 summary_parts.push(format!("奖金 {prize}"));
                 if let Some(count) = h.registrations_count {
@@ -130,6 +130,9 @@ mod tests {
             .collect();
         assert_eq!(items.len(), 1, "finished 被过滤");
         assert_eq!(items[0].id, "devpost-31389");
-        assert_eq!(strip_tags("£<span data-currency-value>1000</span>"), "£1000");
+        assert_eq!(
+            strip_tags("£<span data-currency-value>1000</span>"),
+            "£1000"
+        );
     }
 }

@@ -2,9 +2,8 @@ use anyhow::{Context, Result};
 use clap::Parser;
 use ru41::bootstrap::agents::{AgentOverrides, registry};
 use ru41::bootstrap::assembly::{
-    default_notify_route, knowledge_service,
-    notifier_for_route, notify_channels, qq_api, qq_command_handlers, qq_image_consumers,
-    scheduled_jobs, todo_notify_route, tracker_job,
+    default_notify_route, knowledge_service, notifier_for_route, notify_channels, qq_api,
+    qq_command_handlers, qq_image_consumers, scheduled_jobs, todo_notify_route, tracker_job,
     youtube_client, youtube_prep_route,
 };
 use ru41::bootstrap::store::{open_store, resolve as resolve_store};
@@ -51,7 +50,8 @@ async fn main() -> Result<()> {
     // 纯 tracker 子命令（papers/rss/projects/ecard/zhihuishu/obsidian/blog）
     // 分支体完全一致，查表统一分发，不进下面的大 match。
     if let Some((name, tracker_command)) = cli.command.as_tracker() {
-        let output = tracker_or_exit(tracker_cli(name, tracker_command, &config, &store_config).await?)?;
+        let output =
+            tracker_or_exit(tracker_cli(name, tracker_command, &config, &store_config).await?)?;
         println!("{}", serde_json::to_string_pretty(&output)?);
         return Ok(());
     }
@@ -268,7 +268,10 @@ async fn main() -> Result<()> {
                 tracker_cli("chaoxing", TrackerCommand::Poll, &config, &store_config).await?,
             )?,
             ChaoxingCommand::Work => {
-                let tracker = ru41::modules::chaoxing::build_work_tracker(&config, open_store(&store_config)?)?;
+                let tracker = ru41::modules::chaoxing::build_work_tracker(
+                    &config,
+                    open_store(&store_config)?,
+                )?;
                 serde_json::to_value(tracker.poll_once().await?)?
             }
             ChaoxingCommand::Run => {
@@ -283,7 +286,8 @@ async fn main() -> Result<()> {
                 enc,
                 photo,
             } => {
-                let tracker = ru41::modules::chaoxing::build_tracker(&config, open_store(&store_config)?)?;
+                let tracker =
+                    ru41::modules::chaoxing::build_tracker(&config, open_store(&store_config)?)?;
                 serde_json::to_value(
                     tracker
                         .sign_manual(
@@ -307,7 +311,10 @@ async fn main() -> Result<()> {
                 return Ok(());
             }
             TeachermateCommand::Work => {
-                let tracker = ru41::modules::teachermate::build_work_tracker(&config, open_store(&store_config)?)?;
+                let tracker = ru41::modules::teachermate::build_work_tracker(
+                    &config,
+                    open_store(&store_config)?,
+                )?;
                 serde_json::to_value(tracker.poll_once().await?)?
             }
             TeachermateCommand::Bind { link } => {
@@ -315,7 +322,8 @@ async fn main() -> Result<()> {
                 ru41::modules::teachermate::cli::bind_json(&link, &openid_path).await?
             }
             TeachermateCommand::Sign { sign_id, lat, lon } => {
-                let tracker = ru41::modules::teachermate::build_tracker(&config, open_store(&store_config)?)?;
+                let tracker =
+                    ru41::modules::teachermate::build_tracker(&config, open_store(&store_config)?)?;
                 serde_json::to_value(tracker.sign_manual(sign_id, lat, lon).await?)?
             }
         },
@@ -328,7 +336,8 @@ async fn main() -> Result<()> {
                 return Ok(());
             }
             JwxtCommand::Login { captcha } => {
-                let tracker = ru41::modules::jwxt::build_tracker(&config, open_store(&store_config)?)?;
+                let tracker =
+                    ru41::modules::jwxt::build_tracker(&config, open_store(&store_config)?)?;
                 ru41::modules::jwxt::cli::login_json(&tracker, captcha.as_deref()).await?
             }
             JwxtCommand::Classes { when } => ru41::modules::jwxt::cli::classes_json(

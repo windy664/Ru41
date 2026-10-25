@@ -289,7 +289,7 @@ fn notify_text(task: &Task) -> String {
 const PASSIVE_WINDOW_SECS: i64 = 240;
 
 /// 超窗的会话把 msg_id 丢掉转主动发送；无 msg_id 或无法解析时间时按原样。
-fn effective_msg_id<'a>(task: &'a Task, now: i64) -> Option<&'a str> {
+fn effective_msg_id(task: &Task, now: i64) -> Option<&str> {
     let route = task.notify.as_ref()?;
     let msg_id = route.msg_id.as_deref()?;
     let created =

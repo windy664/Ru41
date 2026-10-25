@@ -327,8 +327,8 @@ fn cosine(query: &[f32], blob: &[u8]) -> f32 {
     let mut dot = 0_f32;
     let mut norm_q = 0_f32;
     let mut norm_d = 0_f32;
-    for (q, bytes) in query.iter().zip(blob.chunks_exact(4)) {
-        let d = f32::from_le_bytes([bytes[0], bytes[1], bytes[2], bytes[3]]);
+    for (q, bytes) in query.iter().zip(blob.as_chunks::<4>().0) {
+        let d = f32::from_le_bytes(*bytes);
         dot += q * d;
         norm_q += q * q;
         norm_d += d * d;

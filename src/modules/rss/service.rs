@@ -53,7 +53,6 @@ impl Default for RssConfig {
     }
 }
 
-
 /// digest 产出节奏：有候选即精选 vs 攒一天到点出日报。
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum DigestMode {
@@ -333,12 +332,16 @@ impl RssTracker {
         let value = || serde_json::json!({ "items": items });
         let doc = self.store.document("rss_pool", pool_id)?;
         let expected = doc.as_ref().map(|d| d.revision);
-        if self.store.put_document("rss_pool", pool_id, expected, &value())? {
+        if self
+            .store
+            .put_document("rss_pool", pool_id, expected, &value())?
+        {
             return Ok(());
         }
         let doc = self.store.document("rss_pool", pool_id)?;
         let expected = doc.as_ref().map(|d| d.revision);
-        self.store.put_document("rss_pool", pool_id, expected, &value())?;
+        self.store
+            .put_document("rss_pool", pool_id, expected, &value())?;
         Ok(())
     }
 }

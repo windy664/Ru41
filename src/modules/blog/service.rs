@@ -37,7 +37,6 @@ impl Default for BlogConfig {
     }
 }
 
-
 /// 一轮轮询的结果报告。
 #[derive(Debug, Serialize)]
 pub struct BlogPollReport {

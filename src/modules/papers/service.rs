@@ -35,7 +35,6 @@ impl Default for PapersConfig {
     }
 }
 
-
 /// 一次轮询的结果报告。
 #[derive(Debug, Serialize)]
 pub struct PollReport {

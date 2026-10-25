@@ -24,8 +24,7 @@ pub fn build_tracker(
     store: Arc<dyn crate::ports::storage::TaskStore>,
 ) -> Result<JwxtTracker> {
     let jwxt = &config.sources.jwxt;
-    let (notifier, notify_target) =
-        crate::bootstrap::assembly::notify_pair(config, jwxt.notify)?;
+    let (notifier, notify_target) = crate::bootstrap::assembly::notify_pair(config, jwxt.notify)?;
     let resolved = jwxt.resolved(notify_target)?;
     let client = JwxtClient::new(
         resolved.username.clone(),
@@ -91,16 +90,19 @@ pub const DEF: super::ModuleDef = super::ModuleDef {
                 jwxt.is_ready().then_some(()).context(
                     "class-remind requires sources.jwxt credentials (RU41_JWXT_USERNAME/RU41_JWXT_PASSWORD)",
                 )?;
-                let route = crate::bootstrap::assembly::default_notify_route(config)?
-                    .context("class-remind requires a default notify route ([notify] or --target)")?;
+                let route = crate::bootstrap::assembly::default_notify_route(config)?.context(
+                    "class-remind requires a default notify route ([notify] or --target)",
+                )?;
                 let notifier =
                     crate::bootstrap::assembly::default_notifier(config, &route.channel)?;
-                Ok(Some(Box::new(crate::app::schedule::ClassRemindTracker::new(
-                    store,
-                    notifier,
-                    route,
-                    config.todo.options()?,
-                ))))
+                Ok(Some(Box::new(
+                    crate::app::schedule::ClassRemindTracker::new(
+                        store,
+                        notifier,
+                        route,
+                        config.todo.options()?,
+                    ),
+                )))
             }
             _ => Ok(None),
         }

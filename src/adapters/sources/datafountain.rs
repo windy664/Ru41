@@ -54,7 +54,10 @@ fn parse_item_block(block: &str) -> Option<FeedItem> {
     let link_path = capture(block, r#"href="(/competitions/\d+)"#)?;
     let id_num = link_path.rsplit('/').next()?;
     let title = capture(block, r#"compt__title[^"]*"[^>]*>\s*(.*?)\s*</a>"#)?;
-    let sponsor = capture(block, r#"organizer[：:]</span>\s*<span>\s*([^<]+?)\s*</span>"#);
+    let sponsor = capture(
+        block,
+        r#"organizer[：:]</span>\s*<span>\s*([^<]+?)\s*</span>"#,
+    );
     let dates = capture(
         block,
         r#"competition date[：:]</span>\s*<span>([^<]+)</span>\s*<span>-</span>\s*<span>([^<]+)</span>"#,

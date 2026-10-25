@@ -61,7 +61,6 @@ impl Default for JwxtConfig {
     }
 }
 
-
 /// 按日期推断当前学期：9-12 月 → (当年, 3)；1 月 → (去年, 3)；2-8 月 → (去年, 12)。
 /// 短学期（xqm=16）不参与自动推断，需要时配置里显式指定。
 pub fn infer_term(today: NaiveDate) -> (String, String) {

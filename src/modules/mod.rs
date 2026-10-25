@@ -76,12 +76,17 @@ impl JobSchedule {
 pub struct ModuleDef {
     pub name: &'static str,
     /// 调度清单（schedule list 展示用，不构造 tracker）。
-    pub schedule: fn(&Config) -> Vec<JobSchedule>,
+    pub schedule: ScheduleFn,
     /// 按 job 名构造 tracker；名字不属于本模块返回 Ok(None)。
-    pub tracker: fn(&Config, Arc<dyn TaskStore>, &str) -> Result<Option<Box<dyn PollJob>>>,
+    pub tracker: TrackerFn,
     /// QQ 扩展命令；无命令返回空 Vec。
-    pub qq_handlers: fn(&Config, &str) -> Result<Vec<Arc<dyn CommandHandler>>>,
+    pub qq_handlers: QqHandlersFn,
 }
+
+/// ModuleDef 的三个装配入口签名（抽类型别名压平复杂度）。
+pub type ScheduleFn = fn(&Config) -> Vec<JobSchedule>;
+pub type TrackerFn = fn(&Config, Arc<dyn TaskStore>, &str) -> Result<Option<Box<dyn PollJob>>>;
+pub type QqHandlersFn = fn(&Config, &str) -> Result<Vec<Arc<dyn CommandHandler>>>;
 
 /// 注册表：装配层遍历它构建 jobs/handlers；老模块暂时保留在
 /// assembly 的手写注册里，逐个迁移过来后删除。

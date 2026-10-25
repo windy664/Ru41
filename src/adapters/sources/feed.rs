@@ -45,7 +45,8 @@ pub struct FeedItem {
 }
 
 /// 通用订阅源客户端（RSS 2.0 / Atom 自动识别）；每个源的抓取间隔由调用方控制。
-pub struct FeedClient {    http: reqwest::Client,
+pub struct FeedClient {
+    http: reqwest::Client,
 }
 
 impl Default for FeedClient {
@@ -60,7 +61,9 @@ impl FeedClient {
             // 部分源（linux.do 等 Cloudflare 站点）按 UA 拦机器人，
             // 订阅抓取用浏览器 UA，不动全局 http_client 的 ru41 标识。
             http: reqwest::Client::builder()
-                .user_agent("Mozilla/5.0 (X11; Linux x86_64; rv:128.0) Gecko/20100101 Firefox/128.0")
+                .user_agent(
+                    "Mozilla/5.0 (X11; Linux x86_64; rv:128.0) Gecko/20100101 Firefox/128.0",
+                )
                 .timeout(std::time::Duration::from_secs(30))
                 .build()
                 .expect("feed client build"),

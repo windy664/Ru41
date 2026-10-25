@@ -15,12 +15,12 @@ pub const DEF: super::ModuleDef = super::ModuleDef {
             ..super::JobSchedule::simple(
                 "todo-remind",
                 60,
-            todo_route_ready,
-            if todo_route_ready {
-                Some("间隔可用 --interval-secs 覆盖".into())
-            } else {
-                Some("需 [notify] 默认出口，或 schedule run --target 显式指定".into())
-            },
+                todo_route_ready,
+                if todo_route_ready {
+                    Some("间隔可用 --interval-secs 覆盖".into())
+                } else {
+                    Some("需 [notify] 默认出口，或 schedule run --target 显式指定".into())
+                },
             )
         }]
     },

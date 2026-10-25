@@ -68,21 +68,23 @@ pub const DEF: super::ModuleDef = super::ModuleDef {
         }
     },
     qq_handlers: |config, backend| {
-        Ok(vec![std::sync::Arc::new(qq_command::YoutubeQqCommand::new(
-            ytdlp_client(config),
-            config.sources.youtube.interests.clone().unwrap_or_default(),
-            config
-                .sources
-                .youtube
-                .level
-                .clone()
-                .unwrap_or_else(|| config::YoutubeSection::DEFAULT_LEVEL.into()),
-            config
-                .sources
-                .youtube
-                .max_transcript_chars
-                .unwrap_or(config::YoutubeSection::DEFAULT_MAX_TRANSCRIPT_CHARS),
-            backend.to_owned(),
-        ))])
+        Ok(vec![std::sync::Arc::new(
+            qq_command::YoutubeQqCommand::new(
+                ytdlp_client(config),
+                config.sources.youtube.interests.clone().unwrap_or_default(),
+                config
+                    .sources
+                    .youtube
+                    .level
+                    .clone()
+                    .unwrap_or_else(|| config::YoutubeSection::DEFAULT_LEVEL.into()),
+                config
+                    .sources
+                    .youtube
+                    .max_transcript_chars
+                    .unwrap_or(config::YoutubeSection::DEFAULT_MAX_TRANSCRIPT_CHARS),
+                backend.to_owned(),
+            ),
+        )])
     },
 };

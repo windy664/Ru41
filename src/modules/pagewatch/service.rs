@@ -217,7 +217,10 @@ mod tests {
                 &serde_json::json!({"fingerprint": "aaa"}),
             )
             .unwrap();
-        let doc = store.document("pagewatch_page", "https://x").unwrap().unwrap();
+        let doc = store
+            .document("pagewatch_page", "https://x")
+            .unwrap()
+            .unwrap();
         assert_eq!(doc.value["fingerprint"].as_str(), Some("aaa"));
         // 指纹不同 → 需要 revision 乐观更新
         let updated = store
@@ -230,7 +233,11 @@ mod tests {
             .unwrap();
         assert!(updated);
         assert_eq!(
-            store.document("pagewatch_page", "https://x").unwrap().unwrap().value["fingerprint"],
+            store
+                .document("pagewatch_page", "https://x")
+                .unwrap()
+                .unwrap()
+                .value["fingerprint"],
             "bbb"
         );
     }

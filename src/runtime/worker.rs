@@ -351,18 +351,18 @@ impl Worker {
         let _ = tokio::time::timeout(Duration::from_secs(6), stream_handle).await;
         // 自愈：本次是续接旧会话且执行失败，说明供应商侧会话可能已失效
         // （换 provider、会话过期等），清掉会话让下一条消息从头开始。
-        if outcome.is_err() && resumed {
-            if let Some(id) = &conversation_id
-                && let Ok(Some(doc)) = self.store.document("conversation", id)
+        if outcome.is_err()
+            && resumed
+            && let Some(id) = &conversation_id
+            && let Ok(Some(doc)) = self.store.document("conversation", id)
+        {
+            let mut value = doc.value.clone();
+            value["session_id"] = serde_json::Value::Null;
+            if let Err(error) =
+                self.store
+                    .put_document("conversation", id, Some(doc.revision), &value)
             {
-                let mut value = doc.value.clone();
-                value["session_id"] = serde_json::Value::Null;
-                if let Err(error) =
-                    self.store
-                        .put_document("conversation", id, Some(doc.revision), &value)
-                {
-                    eprintln!("[worker] conversation self-heal failed: {error:#}");
-                }
+                eprintln!("[worker] conversation self-heal failed: {error:#}");
             }
         }
         let session_id = outcome?;

@@ -185,13 +185,6 @@ pub fn default_notifier(config: &Config, channel: &str) -> Result<Arc<dyn Notify
     }
 }
 
-
-
-/// 微助教作业监控：复用 [sources.teachermate] 的 openid；低频独立调度。
-
-
-/// 学习通作业监控：复用 [sources.chaoxing] 凭证与 cookie 会话；低频独立调度。
-
 /// 知识库索引器：显式配置 [knowledge].db_path 才接线。
 /// 索引是衍生数据，路径必须落到共享数据卷（obsidian 写、worker 读）。
 pub fn knowledge_service(

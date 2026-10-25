@@ -107,7 +107,7 @@ impl AgentBackend for EventfulAgent {
 async fn agent_events_are_streamed_to_activity_chunks() {
     let dir = tempfile::tempdir().unwrap();
     let mut w = worker_with(dir.path(), EventfulAgent);
-    let enqueued = w.store.enqueue("event", "hello").unwrap();
+    let _enqueued = w.store.enqueue("event", "hello").unwrap();
     let (_sender, receiver) = watch::channel(false);
     let report = w.run_once(receiver).await.unwrap().unwrap();
     assert_eq!(report.status, TaskStatus::Succeeded);
