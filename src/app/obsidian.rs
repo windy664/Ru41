@@ -72,6 +72,8 @@ pub struct ObsidianService {
     config: ObsidianConfig,
     /// 可选的知识库索引器：vault 内容变更后后台重建向量索引（RAG）。
     knowledge: Option<Arc<crate::app::knowledge::KnowledgeService>>,
+    /// 可选的待办视图投影：todo 数据库 → `07-Todo-待办/当前待办.md`（机器文件）。
+    todo_options: Option<crate::domain::todo::TodoOptions>,
 }
 
 impl ObsidianService {
@@ -93,6 +95,7 @@ impl ObsidianService {
             notify_target,
             config,
             knowledge: None,
+            todo_options: None,
         }
     }
 
@@ -102,6 +105,13 @@ impl ObsidianService {
         knowledge: Arc<crate::app::knowledge::KnowledgeService>,
     ) -> Self {
         self.knowledge = Some(knowledge);
+        self
+    }
+
+    /// 挂载待办视图投影：每轮把 todo 数据库概况渲染进
+    /// `07-Todo-待办/当前待办.md`（内容没变不写；变更自提交）。
+    pub fn with_todo_view(mut self, options: crate::domain::todo::TodoOptions) -> Self {
+        self.todo_options = Some(options);
         self
     }
 
@@ -161,7 +171,36 @@ impl ObsidianService {
         }
         self.save_state(&state)?;
         self.maybe_reindex(&state, &head_before, &target, report.committed);
+        if let Err(error) = self.render_todo_view().await {
+            // 视图渲染失败不影响 git 闭环本体，下轮自然重试。
+            eprintln!("[obsidian] todo view render failed: {error:#}");
+        }
         Ok(report)
+    }
+
+    /// 待办视图：todo 数据库 → vault 单向投影，写在 `07-Todo-待办/当前待办.md`。
+    /// 内容没变不写文件；变了就 [ru41] 前缀自提交推送（下一轮游标自认，不会触发整理）。
+    async fn render_todo_view(&self) -> Result<()> {
+        let Some(options) = self.todo_options else {
+            return Ok(());
+        };
+        let service = crate::app::todo::TodoService::new(self.store.clone(), options);
+        let now = crate::util::now();
+        let overview = service.overview(now, 50)?;
+        let content = render_todo_markdown(&overview, now, options);
+        let vault = self.vault.clone();
+        tokio::task::spawn_blocking(move || -> Result<()> {
+            if vault.read_file(TODO_VIEW_PATH)?.as_deref() == Some(content.as_str()) {
+                return Ok(());
+            }
+            vault.write_file(TODO_VIEW_PATH, &content)?;
+            if vault.commit_all("[ru41] todo 视图同步")? {
+                vault.push()?;
+            }
+            Ok(())
+        })
+        .await??;
+        Ok(())
     }
 
     /// vault 内容变更后后台重建知识库索引（衍生数据，全量重灌）。
@@ -450,6 +489,80 @@ impl crate::ingress::schedule::PollJob for ObsidianService {
 }
 
 /// 整理任务 prompt：只描述事实与边界，归档规则由 obsidian-organize skill 提供。
+/// 待办视图在 vault 里的位置（机器维护，手改会被覆盖）。
+const TODO_VIEW_PATH: &str = "07-Todo-待办/当前待办.md";
+
+/// 待办概况渲染成 vault 笔记：按 逾期/今天/近期/长期/未排期 分节。
+fn render_todo_markdown(
+    overview: &crate::domain::todo::TodoOverview,
+    now: i64,
+    options: crate::domain::todo::TodoOptions,
+) -> String {
+    use crate::domain::todo::due_label;
+    let mut out = String::from(
+        "# 当前待办\n\n\
+         > Ru41 自动生成（todo 数据库 → 本文件单向投影），手改会被覆盖。\n\
+         > 管理入口：QQ `/待办`，或 CLI `ru41 todo`。\n",
+    );
+    let sections: [(&str, &Vec<crate::domain::todo::TodoItem>, bool); 5] = [
+        ("已过期", &overview.overdue, true),
+        ("今天", &overview.today, false),
+        ("近期", &overview.recent, false),
+        ("长期", &overview.long_term, false),
+        ("未排期", &overview.inbox, false),
+    ];
+    for (title, items, overdue) in sections {
+        if items.is_empty() {
+            continue;
+        }
+        out.push_str(&format!("\n## {title}\n"));
+        for item in items {
+            let due = due_label(item.due_at, now, options, overdue);
+            out.push_str(&format!("- [ ] {}（{}）`#{}`\n", item.title, due, item.id));
+        }
+    }
+    if overview.active_count() == 0 {
+        out.push_str("\n（空）\n");
+    }
+    out
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn todo_view_renders_sections_and_empty() {
+        let options = crate::domain::todo::TodoOptions {
+            offset_seconds: 8 * 3600,
+            recent_days: 7,
+            long_term_days: 30,
+        };
+        let empty = crate::domain::todo::TodoOverview::default();
+        assert!(render_todo_markdown(&empty, 0, options).contains("（空）"));
+
+        let mut overview = crate::domain::todo::TodoOverview::default();
+        overview.today.push(crate::domain::todo::TodoItem {
+            id: "abc".into(),
+            title: "交实验报告".into(),
+            status: crate::domain::todo::TodoStatus::Active,
+            priority: crate::domain::todo::TodoPriority::Normal,
+            labels: vec![],
+            due_at: None,
+            remind_at: None,
+            last_reminded_at: None,
+            completed_at: None,
+            source: None,
+            created_at: 0,
+            updated_at: 0,
+        });
+        let md = render_todo_markdown(&overview, 0, options);
+        assert!(md.contains("## 今天"));
+        assert!(md.contains("交实验报告"));
+        assert!(!md.contains("## 已过期"), "空分节不出现");
+    }
+}
+
 fn organize_prompt(vault_path: &std::path::Path, inbox_dir: &str, files: &[String]) -> String {
     let list = files
         .iter()

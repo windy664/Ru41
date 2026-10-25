@@ -44,6 +44,11 @@ pub const DEF: super::ModuleDef = super::ModuleDef {
             Some(knowledge) => service.with_knowledge(knowledge),
             None => service,
         };
+        // 待办视图投影：todo 配置缺失/非法时跳过视图，不影响 git 闭环本体。
+        let service = match config.todo.options() {
+            Ok(options) => service.with_todo_view(options),
+            Err(_) => service,
+        };
         Ok(Some(Box::new(service)))
     },
     qq_handlers: |config, _| {
