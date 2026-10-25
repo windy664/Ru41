@@ -72,7 +72,7 @@ fn parse_ics(raw: &str) -> Result<Vec<FeedItem>> {
     let mut items = Vec::new();
     let mut in_event = false;
     let mut fields: Vec<&str> = Vec::new();
-    let mut flush = |fields: &[&str], items: &mut Vec<FeedItem>| {
+    let flush = |fields: &[&str], items: &mut Vec<FeedItem>| {
         if let Some(item) = vevent_to_item(fields, today) {
             items.push(item);
         }
@@ -297,3 +297,4 @@ mod tests {
         assert_eq!(ics_date_str("20261016T133000"), Some("2026-10-16".into()));
     }
 }
+
