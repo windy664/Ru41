@@ -12,6 +12,49 @@ pub use source::{
     fallback_photo_bytes,
 };
 
+use crate::bootstrap::config::Config;
+use crate::ports::storage::TaskStore;
+use anyhow::Result;
+use std::sync::Arc;
+
+/// 签到 tracker 的具体类型构造：DEF 注册表与 main.rs 的 sign/login 分支共用。
+pub fn build_tracker(config: &Config, store: Arc<dyn TaskStore>) -> Result<ChaoxingTracker> {
+    let chaoxing = &config.sources.chaoxing;
+    let (notifier, notify_target) =
+        crate::bootstrap::assembly::notify_pair(config, chaoxing.notify)?;
+    let resolved = chaoxing.resolved(notify_target)?;
+    let client = ChaoxingClient::new(
+        resolved.phone.clone(),
+        resolved.password.clone(),
+        resolved.cookie_path.clone(),
+    );
+    Ok(ChaoxingTracker::new(store, client, notifier, resolved))
+}
+
+/// 作业 tracker 的具体类型构造：DEF 注册表与 main.rs 的 work 分支共用。
+pub fn build_work_tracker(
+    config: &Config,
+    store: Arc<dyn TaskStore>,
+) -> Result<ChaoxingWorkTracker> {
+    let chaoxing = &config.sources.chaoxing;
+    let (notifier, notify_target) =
+        crate::bootstrap::assembly::notify_pair(config, chaoxing.notify)?;
+    let resolved = chaoxing.resolved(notify_target.clone())?;
+    let vault = crate::bootstrap::assembly::vault_if_ready(config, resolved.work_vault_sync)?;
+    Ok(ChaoxingWorkTracker::new(
+        store,
+        ChaoxingClient::new(
+            resolved.phone.clone(),
+            resolved.password.clone(),
+            resolved.cookie_path.clone(),
+        ),
+        notifier,
+        resolved,
+        config.todo.options()?,
+        vault,
+    ))
+}
+
 /// 注册表定义：chaoxing 的调度清单、两个 tracker（签到/作业）都在本模块内闭环。
 pub const DEF: super::ModuleDef = super::ModuleDef {
     name: "chaoxing",
@@ -44,45 +87,10 @@ pub const DEF: super::ModuleDef = super::ModuleDef {
             },
         ]
     },
-    tracker: |config, store, name| {
-        let chaoxing = &config.sources.chaoxing;
-        match name {
-            "chaoxing" => {
-                let (notifier, notify_target) =
-                    crate::bootstrap::assembly::notify_pair(config, chaoxing.notify)?;
-                let resolved = chaoxing.resolved(notify_target)?;
-                let client = ChaoxingClient::new(
-                    resolved.phone.clone(),
-                    resolved.password.clone(),
-                    resolved.cookie_path.clone(),
-                );
-                Ok(Some(Box::new(ChaoxingTracker::new(
-                    store, client, notifier, resolved,
-                ))))
-            }
-            "chaoxing-work" => {
-                let (notifier, notify_target) =
-                    crate::bootstrap::assembly::notify_pair(config, chaoxing.notify)?;
-                let resolved = chaoxing.resolved(notify_target.clone())?;
-                let vault = crate::bootstrap::assembly::vault_if_ready(
-                    config,
-                    resolved.work_vault_sync,
-                )?;
-                Ok(Some(Box::new(ChaoxingWorkTracker::new(
-                    store,
-                    ChaoxingClient::new(
-                        resolved.phone.clone(),
-                        resolved.password.clone(),
-                        resolved.cookie_path.clone(),
-                    ),
-                    notifier,
-                    resolved,
-                    config.todo.options()?,
-                    vault,
-                ))))
-            }
-            _ => Ok(None),
-        }
+    tracker: |config, store, name| match name {
+        "chaoxing" => Ok(Some(Box::new(build_tracker(config, store)?))),
+        "chaoxing-work" => Ok(Some(Box::new(build_work_tracker(config, store)?))),
+        _ => Ok(None),
     },
     qq_handlers: |_, _| Ok(Vec::new()),
 };
