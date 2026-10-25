@@ -22,7 +22,7 @@ use crate::{
     ports::{channel::NotifyChannel, storage::TaskStore},
 };
 use anyhow::Result;
-use chrono::Local;
+use chrono::{Local, Timelike};
 use std::sync::Arc;
 
 use super::service::YoutubeConfig;
@@ -32,11 +32,14 @@ const VOCAB_KIND: &str = "youtube_vocab";
 /// 每日复习批次 kind；id 为本地日期。
 const BATCH_KIND: &str = "youtube_review_batch";
 /// 后测幂等标记 kind；id 为 video_id。
-const QUIZ_KIND: &str = "youtube_posttest";
 /// 听力锚点记录 kind；id 形如 `<video>#a<n>`。
 const ANCHOR_KIND: &str = "youtube_anchor";
 /// 发音专题「当日已推」标记 kind；id 固定 `latest`。
 const TOPIC_KIND: &str = "youtube_anchor_topic";
+/// 每日日报「当日已发」标记 kind；id 为本地日期。
+const DIGEST_KIND: &str = "youtube_digest";
+/// 日报窗口宽度（分钟）：job 15 分钟一跳，保证窗口内必有一次触发。
+const DIGEST_WINDOW_MINS: i64 = 15;
 /// 定级测试状态 kind；id 固定 `latest`。
 const PLACEMENT_KIND: &str = "youtube_placement";
 /// 定级结果 kind；id 固定 `latest`。
@@ -48,6 +51,16 @@ pub const INTERVAL_DAYS: [i64; 5] = [1, 3, 7, 14, 30];
 const MAX_PER_PUSH: usize = 8;
 /// 单批内同一个视频最多占几条——批里优先混入不同视频的词块。
 const MAX_PER_VIDEO: usize = 2;
+/// 单期日报最多带的预习单数（控制消息长度）。
+const MAX_SHEETS_PER_DIGEST: usize = 2;
+
+/// 解析 "HH:MM" 为 (时, 分)；非法输入返回 None（走默认值）。
+fn parse_hhmm(s: &str) -> Option<(i64, i64)> {
+    let (h, m) = s.split_once(':')?;
+    let h = h.trim().parse::<i64>().ok()?;
+    let m = m.trim().parse::<i64>().ok()?;
+    (h < 24 && m < 60).then_some((h, m))
+}
 /// 批次未反馈多少小时后自动按「会」处理（避免无限重推）。
 const BATCH_STALE_HOURS: i64 = 72;
 /// 单轮扫描的任务数上限（约可覆盖半年的预习任务）。
@@ -92,6 +105,8 @@ pub struct YoutubeReviewJob {
     store: Arc<dyn TaskStore>,
     config: YoutubeConfig,
     notifier: Option<Arc<dyn NotifyChannel>>,
+    /// 时钟注入点（测试固定时刻）；生产用本地时钟。
+    now_fn: Arc<dyn Fn() -> chrono::DateTime<chrono::Local> + Send + Sync>,
 }
 
 impl YoutubeReviewJob {
@@ -100,57 +115,224 @@ impl YoutubeReviewJob {
         config: YoutubeConfig,
         notifier: Option<Arc<dyn NotifyChannel>>,
     ) -> Self {
+        Self::with_clock(store, config, notifier, Arc::new(chrono::Local::now))
+    }
+
+    pub fn with_clock(
+        store: Arc<dyn TaskStore>,
+        config: YoutubeConfig,
+        notifier: Option<Arc<dyn NotifyChannel>>,
+        now_fn: Arc<dyn Fn() -> chrono::DateTime<chrono::Local> + Send + Sync>,
+    ) -> Self {
         Self {
             store,
             config,
             notifier,
+            now_fn,
         }
     }
 
     async fn review_pass(&self) -> Result<serde_json::Value> {
-        let today = Local::now().format("%Y-%m-%d").to_string();
+        let now = (self.now_fn)();
+        let today = now.format("%Y-%m-%d").to_string();
         let mut extracted = 0;
-        let mut quizzes = 0;
         let mut retired = 0;
-        let mut pushed = 0;
+        let mut digest_pushed = 0;
 
         self.extract_new_vocab(&mut extracted)?;
         if self.config.notify.is_some() {
-            quizzes = self.enqueue_posttests(today.clone()).await?;
             retired = self.retire_stale_batches()?;
-            pushed = self.push_due_reviews(&today).await?;
-            // 词块复习当天没推过消息时，才考虑发音专题——一天最多打扰一次。
-            if pushed == 0 {
-                pushed = self.push_anchor_topic(&today).await?;
-            }
             self.pickup_level()?;
+            // 日报窗口内且当天未发过：新预习单 + 到期词块 + 发音专题，一条打包。
+            if self.in_digest_window(&now) && self.store.document(DIGEST_KIND, &today)?.is_none() {
+                digest_pushed = self.push_daily_digest(&today).await?;
+            }
         }
 
         Ok(serde_json::json!({
             "date": today,
             "extracted_videos": extracted,
-            "posttests_enqueued": quizzes,
             "stale_batches_retired": retired,
-            "review_pushed": pushed,
+            "digest_pushed": digest_pushed,
         }))
     }
 
-    /// 发音专题：同一现象的新锚点攒够 TOPIC_MIN_ANCHORS 条就推一期专题课，
-    /// 例句全部来自你看过的视频；推完标记 topic_pushed，不再重复。
-    /// 每个日历日最多推一期（youtube_anchor_topic#latest 记录当日已推）。
-    async fn push_anchor_topic(&self, today: &str) -> Result<usize> {
+    /// 当前时刻是否落在日报窗口 [digest_at, digest_at + DIGEST_WINDOW_MINS) 内。
+    fn in_digest_window(&self, now: &chrono::DateTime<chrono::Local>) -> bool {
+        let Some((hour, minute)) = parse_hhmm(&self.config.digest_at) else {
+            return false;
+        };
+        let start = hour * 60 + minute;
+        let now_mins = now.hour() as i64 * 60 + now.minute() as i64;
+        now_mins >= start && now_mins < start + DIGEST_WINDOW_MINS
+    }
+
+    /// 每日日报：所有待推送内容合成一条消息；发送成功后才落各自的副作用记录。
+    async fn push_daily_digest(&self, today: &str) -> Result<usize> {
         let Some(notifier) = &self.notifier else {
             return Ok(0);
         };
         let Some(route) = self.config.notify.clone() else {
             return Ok(0);
         };
-        // 每个日历日最多一期。
+        let mmdd = &today[5..];
+        let mut text = format!("📚 英语日报 {mmdd}\n");
+        let mut has_content = false;
+
+        // 新预习单（自动轮询发现的视频；手动 /预习 早已即时推送，不重复）。
+        let sheet_ids = self.pending_sheet_ids()?;
+        let sheets: Vec<_> = sheet_ids
+            .iter()
+            .filter_map(|id| self.store.get(*id).ok().flatten())
+            .collect();
+        for task in sheets.iter() {
+            if let Some(result) = &task.result {
+                text.push_str(&format!("\n───\n{}\n", result.summary.trim()));
+                has_content = true;
+            }
+        }
+
+        // 到期词块复习。
+        let mut batch_ids = None;
+        if let Some((section, ids)) = self.review_section()? {
+            text.push_str(&section);
+            batch_ids = Some(ids);
+            has_content = true;
+        }
+
+        // 发音专题（每类攒够 TOPIC_MIN_ANCHORS 条，日历日至多一期）。
+        let mut topic_docs = None;
         if let Some(doc) = self.store.document(TOPIC_KIND, "latest")?
             && doc.value["date"].as_str() == Some(today)
         {
+            // 今天已推过专题，不再附第二期。
+        } else if let Ok(Some((section, docs))) = self.topic_section() {
+            text.push_str(&section);
+            topic_docs = Some(docs);
+            has_content = true;
+        }
+
+        if !has_content {
             return Ok(0);
         }
+        notifier.send(&route.target, None, &text).await?;
+
+        // 副作用：日报标记、批次登记与宽限、专题标记。
+        self.store.put_document(
+            DIGEST_KIND,
+            today,
+            None,
+            &serde_json::json!({ "task_ids": sheet_ids, "pushed_at": crate::util::now() }),
+        )?;
+        if let Some(ids) = batch_ids {
+            self.apply_batch_effects(&ids)?;
+        }
+        if let Some(docs) = topic_docs {
+            self.apply_topic_effects(today, docs)?;
+        }
+        Ok(1)
+    }
+
+    /// 待进日报的预习单任务 id：自动轮询（无通知路由）且从未上过日报。
+    fn pending_sheet_ids(&self) -> Result<Vec<i64>> {
+        let mut digested: std::collections::HashSet<i64> = Default::default();
+        for doc in self.store.documents(DIGEST_KIND, 60)? {
+            if let Some(ids) = doc.value["task_ids"].as_array() {
+                digested.extend(ids.iter().filter_map(|v| v.as_i64()));
+            }
+        }
+        Ok(self
+            .store
+            .list(SCAN_LIMIT)?
+            .into_iter()
+            .filter(|task| {
+                task.request_key.starts_with("youtube:prep:")
+                    && task.status == crate::domain::TaskStatus::Succeeded
+                    && task.notify.is_none()
+                    && task.result.as_ref().is_some_and(|r| !r.summary.is_empty())
+                    && !digested.contains(&task.id)
+            })
+            .take(MAX_SHEETS_PER_DIGEST)
+            .map(|task| task.id)
+            .collect())
+    }
+
+    /// 到期词块复习段：只负责挑词与排版；副作用由 push_daily_digest 统一落。
+    fn review_section(&self) -> Result<Option<(String, Vec<String>)>> {
+        let now = crate::util::now();
+        let mut due: Vec<_> = self
+            .store
+            .documents(VOCAB_KIND, 2_000)?
+            .into_iter()
+            .filter(|doc| {
+                !doc.id.ends_with("#meta")
+                    && doc.value["known"].as_bool() != Some(true)
+                    && doc.value["due_at"]
+                        .as_i64()
+                        .map(|d| d <= now)
+                        .unwrap_or(false)
+            })
+            .collect();
+        due.sort_by_key(|doc| doc.value["due_at"].as_i64().unwrap_or(i64::MAX));
+        // 单批最多 MAX_PER_PUSH 条，且单个视频最多 MAX_PER_VIDEO 条——
+        // 防止某一天只学了一个视频时，复习批被同一视频刷满。
+        let mut picked: Vec<crate::domain::records::Document> = Vec::new();
+        let mut per_video: std::collections::HashMap<String, usize> = Default::default();
+        for doc in due {
+            let video = doc.value["video_id"]
+                .as_str()
+                .unwrap_or_default()
+                .to_owned();
+            let count = per_video.entry(video).or_insert(0);
+            if *count >= MAX_PER_VIDEO {
+                continue;
+            }
+            *count += 1;
+            picked.push(doc);
+            if picked.len() >= MAX_PER_PUSH {
+                break;
+            }
+        }
+        if picked.is_empty() {
+            return Ok(None);
+        }
+        let mut section = format!(
+            "\n🔁 词块复习 {} 条（先回忆再往下滑；回复 /复习 <不会的编号>，如 /复习 2 4；全部都会回 /复习 all）\n",
+            picked.len()
+        );
+        for (index, doc) in picked.iter().enumerate() {
+            let cue = doc.value["cue"].as_str().unwrap_or("").trim();
+            let kind = doc.value["kind"].as_str().unwrap_or("装备");
+            let tag = if kind == "carry" { "说" } else { "懂" };
+            section.push_str(&format!("{}.（{tag}）{cue}\n", index + 1));
+        }
+        let ids = picked.iter().map(|doc| doc.id.clone()).collect();
+        Ok(Some((section, ids)))
+    }
+
+    /// 批次登记 + 2 天宽限：等反馈或过期结转，避免同一词块连日重推。
+    fn apply_batch_effects(&self, ids: &[String]) -> Result<()> {
+        let today = (self.now_fn)().format("%Y-%m-%d").to_string();
+        self.store.put_document(
+            BATCH_KIND,
+            &today,
+            None,
+            &serde_json::json!({ "items": ids, "pushed_at": crate::util::now(), "resolved": false }),
+        )?;
+        for id in ids {
+            if let Some(doc) = self.store.document(VOCAB_KIND, id)? {
+                let mut value = doc.value.clone();
+                value["due_at"] = (crate::util::now() + 2 * 86_400).into();
+                let _ = self
+                    .store
+                    .put_document(VOCAB_KIND, id, Some(doc.revision), &value);
+            }
+        }
+        Ok(())
+    }
+
+    /// 发音专题段：同一现象的新锚点攒够 TOPIC_MIN_ANCHORS 条，取最新几条做例句。
+    fn topic_section(&self) -> Result<Option<(String, Vec<crate::domain::records::Document>)>> {
         let mut by_category: std::collections::HashMap<
             String,
             Vec<crate::domain::records::Document>,
@@ -167,21 +349,32 @@ impl YoutubeReviewJob {
             .filter(|(_, docs)| docs.len() >= TOPIC_MIN_ANCHORS)
             .max_by_key(|(_, docs)| docs.len())
         else {
-            return Ok(0);
+            return Ok(None);
         };
         docs.sort_by_key(|doc| doc.value["created_at"].as_i64().unwrap_or(0));
         let examples: Vec<_> = docs.iter().rev().take(TOPIC_MAX_EXAMPLES).collect();
-        let mut text = format!(
-            "🔊 发音专题｜{category}（{} 例，均来自你看过的视频；先回看对应时刻，再跟读一遍）\n",
+        let mut section = format!(
+            "\n🔊 发音专题｜{category}（{} 例，均来自你看过的视频；先回看对应时刻，再跟读一遍）\n",
             examples.len()
         );
         for (index, doc) in examples.iter().enumerate() {
             let ts = doc.value["ts"].as_str().unwrap_or("");
             let quote = doc.value["quote"].as_str().unwrap_or("");
             let note = doc.value["note"].as_str().unwrap_or("");
-            text.push_str(&format!("{}. [{ts}] \"{quote}\" — {note}\n", index + 1));
+            section.push_str(&format!("{}. [{ts}] \"{quote}\" — {note}\n", index + 1));
         }
-        notifier.send(&route.target, None, &text).await?;
+        Ok(Some((section, docs)))
+    }
+
+    /// 专题副作用：标记 topic_pushed + 记录当日已推。
+    fn apply_topic_effects(
+        &self,
+        today: &str,
+        docs: Vec<crate::domain::records::Document>,
+    ) -> Result<()> {
+        let category = docs
+            .first()
+            .map(|doc| doc.value["category"].as_str().unwrap_or("其他").to_owned());
         for doc in &docs {
             let mut value = doc.value.clone();
             value["topic_pushed"] = true.into();
@@ -194,7 +387,7 @@ impl YoutubeReviewJob {
             TOPIC_KIND,
             &serde_json::json!({ "date": today, "category": category }),
         )?;
-        Ok(1)
+        Ok(())
     }
 
     /// 定级结果回收：最新的已完成评测任务里解析 `定级：<CEFR>`，写入 youtube_level。
@@ -316,63 +509,6 @@ impl YoutubeReviewJob {
         Ok(())
     }
 
-    /// 看后测试：今天送达预习单的视频，入队一道后测任务（2 内容理解 + 1 语言运用）。
-    /// 后测由 Agent 出题，走任务通知出口推送；幂等键 `youtube_posttest#<video>`。
-    async fn enqueue_posttests(&self, today: String) -> Result<usize> {
-        let Some(_route) = self.config.notify.clone() else {
-            return Ok(0);
-        };
-        let mut count = 0;
-        for task in self.store.list(SCAN_LIMIT)? {
-            if !task.request_key.starts_with("youtube:prep:")
-                || task.status != crate::domain::TaskStatus::Succeeded
-            {
-                continue;
-            }
-            let video = task
-                .request_key
-                .strip_prefix("youtube:prep:")
-                .expect("prefix checked")
-                .to_owned();
-            if self.store.document(QUIZ_KIND, &video)?.is_some() {
-                continue;
-            }
-            let Some(notified) = &task.notified_at else {
-                continue;
-            };
-            let Ok(at) = chrono::DateTime::parse_from_rfc3339(notified) else {
-                continue;
-            };
-            if at.with_timezone(&Local).format("%Y-%m-%d").to_string() != today {
-                continue;
-            }
-            let Some(result) = &task.result else { continue };
-            let mut service = TaskService::new(self.store.clone());
-            let key = format!("youtube:quiz:{video}");
-            let enqueue = match &self.config.notify {
-                Some(route) => service.enqueue_with_notify(
-                    &key,
-                    &quiz_prompt(&result.summary),
-                    &self.config.backend,
-                    route,
-                )?,
-                None => service.enqueue_for(
-                    &key,
-                    &quiz_prompt(&result.summary),
-                    &self.config.backend,
-                )?,
-            };
-            self.store.put_document(
-                QUIZ_KIND,
-                &video,
-                None,
-                &serde_json::json!({ "task_id": enqueue.task.id, "date": today }),
-            )?;
-            count += 1;
-        }
-        Ok(count)
-    }
-
     /// 超过 72 小时未反馈的批次按「会」结转：进一档或毕业为 known。
     fn retire_stale_batches(&self) -> Result<usize> {
         let mut retired = 0;
@@ -399,84 +535,6 @@ impl YoutubeReviewJob {
             retired += 1;
         }
         Ok(retired)
-    }
-
-    /// 到期词块合成一条复习推送（含批次登记）；没有到期词块则不打扰。
-    async fn push_due_reviews(&self, today: &str) -> Result<usize> {
-        let Some(notifier) = &self.notifier else {
-            return Ok(0);
-        };
-        let Some(route) = self.config.notify.clone() else {
-            return Ok(0);
-        };
-        if self.store.document(BATCH_KIND, today)?.is_some() {
-            return Ok(0);
-        }
-        let now = crate::util::now();
-        let mut due: Vec<_> = self
-            .store
-            .documents(VOCAB_KIND, 2_000)?
-            .into_iter()
-            .filter(|doc| {
-                !doc.id.ends_with("#meta")
-                    && doc.value["known"].as_bool() != Some(true)
-                    && doc.value["due_at"]
-                        .as_i64()
-                        .map(|d| d <= now)
-                        .unwrap_or(false)
-            })
-            .collect();
-        due.sort_by_key(|doc| doc.value["due_at"].as_i64().unwrap_or(i64::MAX));
-        // 单批最多 MAX_PER_PUSH 条，且单个视频最多 MAX_PER_VIDEO 条——
-        // 防止某一天只学了一个视频时，复习批被同一视频刷满。
-        let mut picked: Vec<crate::domain::records::Document> = Vec::new();
-        let mut per_video: std::collections::HashMap<String, usize> = Default::default();
-        for doc in due {
-            let video = doc.value["video_id"]
-                .as_str()
-                .unwrap_or_default()
-                .to_owned();
-            let count = per_video.entry(video).or_insert(0);
-            if *count >= MAX_PER_VIDEO {
-                continue;
-            }
-            *count += 1;
-            picked.push(doc);
-            if picked.len() >= MAX_PER_PUSH {
-                break;
-            }
-        }
-        let due = picked;
-        if due.is_empty() {
-            return Ok(0);
-        }
-
-        let mut text = format!(
-            "🔁 词块复习 {today}（先回忆再往下滑，答案在你之前的预习单里）\n回复 /复习 <不会的编号>（如 /复习 2 4）；全部都会回 /复习 all\n"
-        );
-        for (index, doc) in due.iter().enumerate() {
-            let cue = doc.value["cue"].as_str().unwrap_or("").trim();
-            let kind = doc.value["kind"].as_str().unwrap_or("装备");
-            let tag = if kind == "carry" { "说" } else { "懂" };
-            text.push_str(&format!("{}.（{tag}）{cue}\n", index + 1));
-        }
-        notifier.send(&route.target, None, &text).await?;
-        let ids: Vec<&str> = due.iter().map(|doc| doc.id.as_str()).collect();
-        self.store.put_document(
-            BATCH_KIND,
-            today,
-            None,
-            &serde_json::json!({ "items": ids, "pushed_at": now, "resolved": false }),
-        )?;
-        // 推送后给 2 天宽限，等反馈或过期结转，避免同一词块连日重推。
-        for doc in &due {
-            let mut value = doc.value.clone();
-            value["due_at"] = (now + 2 * 86_400).into();
-            let _ = self
-                .store
-                .put_document(VOCAB_KIND, &doc.id, Some(doc.revision), &value);
-        }
-        Ok(1)
     }
 }
 
@@ -890,23 +948,10 @@ fn eval_prompt(questions: &str, translations: &str) -> String {
     )
 }
 
-/// 后测任务 prompt：基于预习单出题，Agent 只见单子不见视频——考的是「看懂了没」。
-fn quiz_prompt(sheet: &str) -> String {
-    format!(
-        "你在为中国大学生（英语学习者）出一份「看视频后测」。下面是他看视频前读的预习单。\n\
-         出 3 道题：2 道内容理解（这期视频讲了什么，预习单的路线图和词块是线索）、1 道语言运用（用预习单的词块造境选择或填空）。\n\
-         输出格式（这就是最终推送的消息，不要输出格式以外的任何内容）：\n\
-         ✅ 后测｜{{视频主题一句话}}\n\
-         1. {{题}}\n2. {{题}}\n3. {{题}}\n\
-         —— 参考答案 ——\n1. {{答案}}\n2. {{答案}}\n3. {{答案}}\n\
-         要求：题目不让没看视频的人能答对；答案区与题目区之间空一行；全文 400 字以内。\n\n\
-         == 预习单 ==\n{sheet}"
-    )
-}
-
 impl PollJob for YoutubeReviewJob {
+    /// 15 分钟一跳；日报窗口 15 分钟宽，保证每天必有一次落在窗口内。
     fn job_interval(&self) -> std::time::Duration {
-        std::time::Duration::from_secs(6 * 3600)
+        std::time::Duration::from_secs(15 * 60)
     }
 
     fn poll_json(

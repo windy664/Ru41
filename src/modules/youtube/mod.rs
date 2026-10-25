@@ -37,10 +37,10 @@ pub const DEF: super::ModuleDef = super::ModuleDef {
                 ready,
                 (!ready).then(|| "配置 sources.youtube.channels 后启用".into()),
             ),
-            // 复习闭环：词块落库 + 间隔复习推送 + 看后测试（内部按日历日幂等）。
+            // 复习闭环：词块落库 + 15 分钟一跳的每日日报（预习单/复习/专题打包一条）。
             super::JobSchedule::simple(
                 "youtube-review",
-                6 * 3600,
+                15 * 60,
                 ready,
                 (!ready).then(|| "配置 sources.youtube.channels 后启用".into()),
             ),

@@ -32,6 +32,8 @@ pub struct YoutubeConfig {
     pub interval_secs: u64,
     pub backend: String,
     pub notify: Option<NotifyRoute>,
+    /// 每日日报推送时刻（本地 HH:MM）。
+    pub digest_at: String,
     pub ytdlp_bin: String,
     pub proxy_url: Option<String>,
 }
@@ -332,12 +334,9 @@ impl YoutubeTracker {
         );
         let key = format!("youtube:prep:{}", video.id);
         let mut service = TaskService::new(self.store.clone());
-        let result = match &self.config.notify {
-            Some(route) => {
-                service.enqueue_with_notify(&key, &prompt, &self.config.backend, route)?
-            }
-            None => service.enqueue_for(&key, &prompt, &self.config.backend)?,
-        };
+        // 自动轮询的预习单不带即时通知——统一进每日 12:10 日报（review job 汇总）。
+        // 手动 /预习 仍走即时推送（prep_video_task 带 route）。
+        let result = service.enqueue_for(&key, &prompt, &self.config.backend)?;
         Ok(result.task.id)
     }
 }

@@ -41,6 +41,7 @@ max_per_poll = 2                    # 单轮最多入队任务数（控制 Agent
 max_age_days = 14                   # 新鲜度窗口：超窗老视频只登记不预习；0 关闭窗口
 max_transcript_chars = 24000        # 注入 prompt 的转写上限（长视频截断）
 interval_secs = 21600               # youtube run 轮询间隔，默认 6 小时
+digest_at = "12:10"                 # 每日日报推送时刻（本地 HH:MM），默认 12:10
 notify = true
 ytdlp_bin = "yt-dlp"                # 可执行文件路径
 proxy_url = "http://127.0.0.1:7890" # 传给 yt-dlp 子进程；缺省继承 ru41 进程环境
@@ -64,18 +65,20 @@ ru41 schedule list                        # 确认 youtube 任务已登记
 
 Agent 任务需要底座网络可用：部署环境若需代理，ru41 进程本身也要带代理环境变量（`proxy_url` 只覆盖 yt-dlp 子进程）。
 
-## 复习闭环（youtube-review job）
+## 日报闭环（youtube-review job）
 
-预习单只解决「看懂」；记忆靠看之后的三个机制，全部由 `youtube-review`（6 小时一跑，内部按日历日幂等）驱动：
+预习单只解决「看懂」；学习发生在看之后。**所有推送打包成每天一条「英语日报」**（`digest_at`，默认 12:10），其余时间零打扰。一条日报可能包含：
 
-1. **词块落库**：扫描已完成预习单，解析 📖 现场装备与 🔁 带走就用 两节（`extract_vocab` 纯解析，线索里剥掉一切英文原句防泄题），存 `youtube_vocab` records。
-2. **间隔复习**：到期词块（1/3/7/14/30 天阶梯）合成一条复习推送——只给中文线索，回忆英文块。回复 `/复习 2 4` 标记不会的（次日重推），其余进一档；3 天不反馈自动按会结转；走完阶梯毕业为 known。
-3. **看后测试**：当天送达预习单的视频自动入队一道后测任务（2 内容理解 + 1 语言运用，附参考答案），Agent 只见预习单、不见视频，走任务通知出口推送。
-4. **学习者模型**：known 词块自动注入预习 prompt 的排除名单——「教已会的」问题随使用收敛。
-5. **发音专题**：听力锚点按语音现象（连读/弱读/闪音/失爆/同化/缩读/重音）落库归类；同一现象攒够 3 条就推一期专题课（例句全来自看过的视频），每个日历日最多一期。
-6. **`/定级`**：出 3 道英译中题（取材最近一期视频）→ 回复 `/定级 <三句翻译>` → Agent 评测并判 CEFR 级别 → 结果写入 `youtube_level`，预习挑词难度随之调整（配置里的 level 仅作兜底）。
+1. **新预习单**：自动轮询发现的新视频（最多 2 期/日，余量顺延）；手动 `/预习` 不等日报、即时推送。
+2. **词块复习**：到期词块（1/3/7/14/30 天间隔阶梯，每视频单日最多 2 条、单批最多 8 条）——中文线索回忆英文块；回复 `/复习 <编号>` 标记不会（次日再推），3 天不反馈自动按会结转，走完阶梯毕业为 known。
+3. **发音专题**：听力锚点按语音现象（连读/弱读/闪音/失爆/同化/缩读/重音）落库归类，同现象攒够 3 条推一期专题课，例句全是看过的视频原句；每个日历日至多一期。
 
-records 数据模型：`youtube_vocab#<video>#<n>`（词块）、`youtube_review_batch#<日期>`（当日批次，幂等键）、`youtube_posttest#<video>`（后测已入队标记）、`youtube_anchor#<video>#a<n>`（听力锚点）、`youtube_anchor_topic/latest`（专题当日已推标记）、`youtube_placement/latest` 与 `youtube_level/latest`（定级状态与结果）。生产以 compose `youtube` / `youtube-review` 服务（profile `youtube`）常驻。
+学习机制：
+
+- **学习者模型**：known 词块注入预习 prompt 排除名单；`/定级`（3 道英译中 → Agent 评测 CEFR 级别）写入 `youtube_level`，预习挑词难度随之调整，配置里的 `level` 仅作兜底。
+- job 15 分钟一跳，仅在日报窗口内触发一次；提取、定级回收随时进行。
+
+records 数据模型：`youtube_vocab#<video>#<n>`（词块）、`youtube_review_batch#<日期>`（当日复习批，`/复习` 反馈键）、`youtube_anchor#<video>#a<n>`（听力锚点）、`youtube_anchor_topic/latest`（专题当日已推标记）、`youtube_digest#<日期>`（日报已发标记与所含预习单）、`youtube_placement/latest` 与 `youtube_level/latest`（定级状态与结果）。生产以 compose `youtube` / `youtube-review` 服务（profile `youtube`）常驻。
 
 ## 边界
 

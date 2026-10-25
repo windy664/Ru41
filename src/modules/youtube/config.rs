@@ -32,6 +32,8 @@ pub struct YoutubeSection {
     pub backend: Option<String>,
     /// 终态后是否经默认通知出口推送（[notify] channel）；默认 true。
     pub notify: Option<bool>,
+    /// 每日日报推送时刻（本地时间 HH:MM）：新预习单 + 到期复习 + 发音专题打包一条，默认 "12:10"。
+    pub digest_at: Option<String>,
     /// yt-dlp 可执行文件路径，默认 PATH 上的 "yt-dlp"。
     pub ytdlp_bin: Option<String>,
     /// 传给 yt-dlp 子进程的代理（HTTPS_PROXY/HTTP_PROXY）；缺省继承 ru41 进程环境。
@@ -44,6 +46,8 @@ impl YoutubeSection {
 
     /// 学习者水平默认描述（QQ 命令与 CLI 共用）。
     pub const DEFAULT_LEVEL: &str = "CET-6 / B2";
+    /// 每日日报默认推送时刻。
+    pub const DEFAULT_DIGEST_AT: &str = "12:10";
     /// 注入 prompt 的转写默认上限。
     pub const DEFAULT_MAX_TRANSCRIPT_CHARS: usize = 24_000;
     /// 新鲜度窗口默认天数；自动追踪只追新，存量内容走手动 /预习。
@@ -76,6 +80,10 @@ impl YoutubeSection {
             interval_secs: self.interval_secs.unwrap_or(Self::DEFAULT_INTERVAL_SECS),
             backend: self.backend.clone().unwrap_or_else(|| "codex".into()),
             notify,
+            digest_at: self
+                .digest_at
+                .clone()
+                .unwrap_or_else(|| Self::DEFAULT_DIGEST_AT.into()),
             ytdlp_bin: self.ytdlp_bin.clone().unwrap_or_else(|| "yt-dlp".into()),
             proxy_url: self.proxy_url.clone(),
         })
