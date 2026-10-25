@@ -2,12 +2,11 @@
 //! 「伪 feed」接入——各源模块自描述 `DEF`（前缀 + 抓取入口），
 //! rss 模块查表分发，接新源不再改 rss 内部。
 
-pub mod datafountain;
-pub mod devpost;
+pub mod competition;
 pub mod feed;
 pub mod github;
-pub mod lablab;
-pub mod wqai;
+
+pub use competition::{datafountain, devpost, lablab, wqai};
 
 use anyhow::Result;
 use feed::FeedItem;

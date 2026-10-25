@@ -3,14 +3,14 @@
 //! 内含标题/链接/主办方/赛期/奖金/组队人数。在 rss 模块里以
 //! `datafountain+<page-url>` 前缀接入。只收当前可报名（can-join）的条目。
 
-use super::feed::{FeedItem, fetch_text};
+use super::super::feed::{FeedItem, fetch_text};
 use anyhow::Result;
 
 /// rss feed 列表里的接入前缀：`datafountain+https://www.datafountain.cn/competitions`。
 pub const URL_PREFIX: &str = "datafountain+";
 
 /// 注册表条目：`datafountain+<page-url>` 路由到本源。
-pub const DEF: super::SourceDef = super::SourceDef {
+pub const DEF: super::super::SourceDef = super::super::SourceDef {
     prefix: URL_PREFIX,
     fetch: |url| Box::pin(async move { DataFountainClient::new().fetch_competitions(&url).await }),
 };

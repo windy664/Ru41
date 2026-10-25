@@ -1,7 +1,7 @@
 //! Devpost 黑客松平台：官方搜索 API（/api/hackathons）返回结构化 JSON，
 //! 在 rss 模块里以 `devpost+<api-url>` 前缀接入，与 RSS 条目同构进候选池。
 
-use super::feed::{FeedItem, fetch_text, strip_tags};
+use super::super::feed::{FeedItem, fetch_text, strip_tags};
 use anyhow::{Context, Result};
 
 /// rss feed 列表里的接入前缀：
@@ -9,7 +9,7 @@ use anyhow::{Context, Result};
 pub const URL_PREFIX: &str = "devpost+";
 
 /// 注册表条目：`devpost+<api-url>` 路由到本源。
-pub const DEF: super::SourceDef = super::SourceDef {
+pub const DEF: super::super::SourceDef = super::super::SourceDef {
     prefix: URL_PREFIX,
     fetch: |url| Box::pin(async move { DevpostClient::new().fetch_hackathons(&url).await }),
 };
