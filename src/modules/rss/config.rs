@@ -34,9 +34,6 @@ pub struct RssSection {
     /// daily 模式入池前是否跑关键词粗筛；默认 true。
     /// false 时近时效新条目全量入池（封顶 80），相关性判断完全交给 digest。
     pub pool_keyword_filter: Option<bool>,
-    /// 即时推送源：命中这些 feed 的新条目不等日报，直接 QQ 推送且不入池
-    /// （防重复播报）。用于时效敏感的源，如大湾区活动日历（周末出行决策）。
-    pub instant_feeds: Option<Vec<String>>,
 }
 
 impl RssSection {
@@ -63,7 +60,6 @@ impl RssSection {
             morning_hour: self.morning_hour,
             max_age_days: self.max_age_days.unwrap_or(2),
             pool_keyword_filter: self.pool_keyword_filter.unwrap_or(true),
-            instant_feeds: self.instant_feeds.clone().unwrap_or_default(),
         })
     }
 }
