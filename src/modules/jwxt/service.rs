@@ -488,8 +488,9 @@ impl JwxtTracker {
         if now_local.hour() < self.config.remind_hour as u32 {
             return Ok(false);
         }
-        let today_utc = crate::util::today_utc(crate::util::now());
-        let key = format!("daily:{today_utc}");
+        // key 用本地日期：UTC 日期在本地 0–8 点期间落后一天，会导致
+        // 本地同日跨 UTC 零点（即早上 8 点）后重复推一遍。
+        let key = format!("daily:{today}");
         if self.store.document("jwxt_alert", &key)?.is_some() {
             return Ok(false);
         }
