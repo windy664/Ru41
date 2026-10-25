@@ -273,15 +273,11 @@ fn field(value: &serde_json::Value, key: &str) -> String {
 
 /// 平台时间串（北京时间）→ 时间戳；兼容带/不带秒两种格式。
 fn parse_beijing(raw: &str) -> Option<i64> {
-    use chrono::TimeZone;
-    let raw = raw.trim();
-    let naive = chrono::NaiveDateTime::parse_from_str(raw, "%Y-%m-%d %H:%M:%S")
-        .or_else(|_| chrono::NaiveDateTime::parse_from_str(raw, "%Y-%m-%d %H:%M"))
-        .ok()?;
-    chrono::FixedOffset::east_opt(BEIJING_OFFSET)?
-        .from_local_datetime(&naive)
-        .single()
-        .map(|dt| dt.timestamp())
+    super::work_common::platform_ts(
+        raw,
+        BEIJING_OFFSET,
+        &["%Y-%m-%d %H:%M:%S", "%Y-%m-%d %H:%M"],
+    )
 }
 
 /// 时间戳 → "MM-DD HH:MM"（北京时间）。

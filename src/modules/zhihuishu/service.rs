@@ -1,6 +1,7 @@
 use crate::{
     app::todo::TodoService,
     domain::todo::{TodoInput, TodoItem, TodoOptions, TodoPriority, TodoSource},
+    modules::homework::work_common,
     ports::{channel::NotifyChannel, storage::TaskStore, vault::Vault},
 };
 use anyhow::Result;
@@ -421,17 +422,7 @@ impl ZhihuishuTracker {
             let Ok(data) = std::fs::read(&source) else {
                 continue;
             };
-            let name: String = att
-                .name
-                .chars()
-                .map(|c| {
-                    if matches!(c, '/' | '\\' | ':' | '*' | '?' | '"' | '<' | '>' | '|') {
-                        '－'
-                    } else {
-                        c
-                    }
-                })
-                .collect();
+            let name = work_common::sanitize_title(&att.name);
             vault.write_bytes(&format!("{dest_base}/{name}"), &data)?;
             copied += 1;
         }
@@ -504,7 +495,7 @@ fn render_course_note(
     open.sort_by(|a, b| a.end_at.cmp(&b.end_at));
     done.sort_by(|a, b| b.end_at.cmp(&a.end_at));
 
-    let stamp = local_stamp(now, offset_seconds);
+    let stamp = work_common::local_stamp(now, offset_seconds);
     let mut out = String::new();
     out.push_str("---\n");
     out.push_str(&format!("course: {}\n", course.title));
@@ -573,27 +564,11 @@ fn is_substantive(task: &ZhihuishuTask) -> bool {
 /// 任务文件夹名：`YYYY.MM.DD_作业名`（日期取布置日，缺省用截止日，都没有则只留作业名）。
 /// 同时替换文件系统不友好字符。
 fn task_folder_name(task: &ZhihuishuTask) -> String {
-    let date = task
-        .start_at
-        .as_deref()
-        .or(task.end_at.as_deref())
-        .and_then(|s| s.get(..10))
-        .map(|d| d.replace('-', "."));
-    let title: String = task
-        .title
-        .chars()
-        .map(|c| {
-            if matches!(c, '/' | '\\' | ':' | '*' | '?' | '"' | '<' | '>' | '|') {
-                '－'
-            } else {
-                c
-            }
-        })
-        .collect();
-    match date {
-        Some(d) => format!("{d}_{title}"),
-        None => title,
-    }
+    work_common::work_folder_name(
+        &task.title,
+        task.start_at.as_deref().or(task.end_at.as_deref()),
+        None,
+    )
 }
 
 /// 渲染单个作业的「作业说明.md」：元信息 + 平台描述文本。
@@ -629,7 +604,10 @@ fn render_task_note(
         "status: {}\n",
         if completed { "done" } else { "open" }
     ));
-    out.push_str(&format!("updated: {}\n", local_stamp(now, offset_seconds)));
+    out.push_str(&format!(
+        "updated: {}\n",
+        work_common::local_stamp(now, offset_seconds)
+    ));
     out.push_str("tags:\n  - 课程\n  - 智慧树\n  - 作业\n---\n\n");
     out.push_str(&format!("# {}\n\n", task.title));
     out.push_str(&format!("- 课程：{}\n", course.title));
@@ -755,15 +733,6 @@ mod tests {
         );
         assert!(VaultTaskDirs::parse(Some("bogus")).is_err());
     }
-}
-
-/// 用户时区（固定偏移，容器安全）的 `%Y-%m-%d %H:%M` 时间戳。
-fn local_stamp(now: i64, offset_seconds: i32) -> String {
-    use chrono::TimeZone;
-    chrono::FixedOffset::east_opt(offset_seconds)
-        .and_then(|tz| tz.timestamp_opt(now, 0).single())
-        .map(|dt| dt.format("%Y-%m-%d %H:%M").to_string())
-        .unwrap_or_default()
 }
 
 impl crate::ingress::schedule::PollJob for ZhihuishuTracker {
