@@ -242,10 +242,38 @@ impl JwxtTracker {
         &self.client
     }
 
-    /// 登录失效提醒：同日去重（jwxt_alert key = login:{date}）。
-    async fn alert_login_failure(&self, err: &JwxtError) -> Result<bool> {
+    /// 登录失效提醒：课表是学期级快照、每日刷新即可，单日故障不值得打扰——
+    /// 只有「当前学期完全没有课表缓存」（从未成功过）或「连续失败 ≥3 天」
+    /// （数据开始变陈）才提醒，且同日去重（jwxt_alert key = login:{date}）。
+    /// 其余故障静默重试，恢复时由 mark_login_state 报一次自愈。
+    async fn alert_login_failure(&self, err: &JwxtError, term_key: &str) -> Result<bool> {
+        const ALERT_AFTER_DAYS: i64 = 3;
         let now = crate::util::now();
         let today = crate::util::today_utc(now);
+        // 连续失败天数按天累计（同日多次轮询只算一次）。
+        let streak_doc = self.store.document("jwxt_alert", "login_streak")?;
+        let (mut days, last_date) = streak_doc
+            .as_ref()
+            .map(|d| {
+                (
+                    d.value["days"].as_i64().unwrap_or(0),
+                    d.value["last_date"].as_str().unwrap_or("").to_owned(),
+                )
+            })
+            .unwrap_or((0, String::new()));
+        if last_date != today {
+            days += 1;
+        }
+        self.store.put_document(
+            "jwxt_alert",
+            "login_streak",
+            streak_doc.as_ref().map(|d| d.revision),
+            &serde_json::json!({ "days": days, "last_date": today }),
+        )?;
+        let has_cache = self.store.document("jwxt_timetable", term_key)?.is_some();
+        if has_cache && days < ALERT_AFTER_DAYS {
+            return Ok(false);
+        }
         let key = format!("login:{today}");
         if self.store.document("jwxt_alert", &key)?.is_some() {
             return Ok(false);
@@ -257,12 +285,17 @@ impl JwxtTracker {
             &serde_json::json!({ "ts": now, "error": err.to_string() }),
         )?;
         if let Some(notifier) = &self.notifier {
+            let reason = if !has_cache {
+                "当前学期还没有课表缓存".to_owned()
+            } else {
+                format!("已连续失败 {days} 天，课表快照在变陈")
+            };
             notifier
                 .send(
                     &self.config.notify_target,
                     None,
                     &format!(
-                        "⚠️ 教务登录失败：{err}\n若是密码/账号问题请检查配置；若验证码识别失效，可手动 `ru41 jwxt login --captcha <答案>` 兜底"
+                        "⚠️ 教务登录失败（{reason}）：{err}\n若是密码/账号问题请检查配置；若验证码识别失效，可手动 `ru41 jwxt login --captcha <答案>` 兜底"
                     ),
                 )
                 .await?;
@@ -271,8 +304,16 @@ impl JwxtTracker {
     }
 
     /// 记录登录状态并在"失败→恢复"翻转时通知一次（`login_status` 存上一轮状态）。
-    /// 故障期间静默重试不刷屏；恢复那一刻告诉你系统已自愈。
+    /// 故障期间静默重试不刷屏；恢复那一刻告诉你系统已自愈。成功时清零连续失败计数。
     async fn mark_login_state(&self, failed: bool) -> Result<()> {
+        if !failed {
+            self.store.put_document(
+                "jwxt_alert",
+                "login_streak",
+                None,
+                &serde_json::json!({ "days": 0, "last_date": "" }),
+            )?;
+        }
         let doc = self.store.document("jwxt_alert", "login_status")?;
         let was_failed = doc
             .as_ref()
@@ -630,8 +671,9 @@ impl JwxtTracker {
             today,
         );
 
+        let term_key = format!("{xnm}#{xqm}");
         if let Err(err) = self.client.ensure_session().await {
-            let alerted = self.alert_login_failure(&err).await?;
+            let alerted = self.alert_login_failure(&err, &term_key).await?;
             self.mark_login_state(true).await?;
             return Ok(JwxtPollReport {
                 login_ok: false,
@@ -653,7 +695,7 @@ impl JwxtTracker {
         let meetings = match self.client.timetable(&xnm, &xqm).await {
             Ok(meetings) => meetings,
             Err(err) => {
-                let alerted = self.alert_login_failure(&err).await?;
+                let alerted = self.alert_login_failure(&err, &term_key).await?;
                 self.mark_login_state(true).await?;
                 return Ok(JwxtPollReport {
                     login_ok: false,

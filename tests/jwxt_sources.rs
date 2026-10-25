@@ -64,6 +64,9 @@ struct FixtureState {
     last_login_form: Mutex<Vec<(String, String)>>,
     /// 课表接口返回的 JSON（外部可改写以模拟调课）。
     timetable: Mutex<String>,
+    /// 服务端会话是否有效（false 时 index_initMenu 重定向回登录页，
+    /// 模拟已建立的 JSESSIONID 被服务端作废）。
+    session_ok: Mutex<bool>,
 }
 
 impl FixtureState {
@@ -72,6 +75,7 @@ impl FixtureState {
         *state.timetable.lock().unwrap() = timetable;
         *state.login_ok.lock().unwrap() = true;
         *state.tgt_ok.lock().unwrap() = true;
+        *state.session_ok.lock().unwrap() = true;
         state
     }
 }
@@ -148,7 +152,13 @@ async fn spawn_fixture(state: Arc<FixtureState>) -> SocketAddr {
         )
         .route(
             "/jwglxt/xtgl/index_initMenu.html",
-            get(|| async { "menu" }),
+            get(|State(state): State<Arc<FixtureState>>| async move {
+                if *state.session_ok.lock().unwrap() {
+                    "menu".into_response()
+                } else {
+                    Redirect::to("/jwglxt/xtgl/login_slogin.html").into_response()
+                }
+            }),
         )
         .route(
             "/jwglxt/xtgl/login_slogin.html",
@@ -171,10 +181,11 @@ async fn spawn_fixture(state: Arc<FixtureState>) -> SocketAddr {
             "/jwglxt/kbcx/xskbcx_cxXsgrkb.html",
             post(
                 |State(state): State<Arc<FixtureState>>, headers: axum::http::HeaderMap| async move {
-                    let has_session = headers
-                        .get("cookie")
-                        .and_then(|v| v.to_str().ok())
-                        .is_some_and(|c| c.contains("JSESSIONID=fixture-session"));
+                    let has_session = *state.session_ok.lock().unwrap()
+                        && headers
+                            .get("cookie")
+                            .and_then(|v| v.to_str().ok())
+                            .is_some_and(|c| c.contains("JSESSIONID=fixture-session"));
                     if !has_session {
                         return Redirect::to("/jwglxt/xtgl/login_slogin.html").into_response();
                     }
@@ -698,6 +709,42 @@ async fn cas_hard_failure_alerts_once_per_day() {
     assert!(!report.login_ok);
     assert!(!report.notified);
     assert_eq!(channel.sent.lock().unwrap().len(), 1);
+}
+
+#[tokio::test]
+async fn cas_failure_silent_while_timetable_cache_fresh() {
+    // 先成功一轮建立学期课表缓存
+    let state = Arc::new(FixtureState::new(timetable_json("A101")));
+    let addr = spawn_fixture(state.clone()).await;
+    let dir = tempfile::tempdir().unwrap();
+    let store = Arc::new(SqliteTaskStore::open(&dir.path().join("state.db")).unwrap());
+    let channel = mock_channel();
+    let today = chrono::Local::now().date_naive();
+    let monday = today - chrono::Duration::days(today.weekday().num_days_from_monday() as i64);
+    let tracker = make_tracker(
+        store,
+        &format!("http://{addr}"),
+        dir.path().join("session.json"),
+        Some(channel.clone()),
+        monday,
+        false,
+    );
+    let report = tracker.poll_once().await.unwrap();
+    assert!(report.login_ok);
+    let baseline = channel.sent.lock().unwrap().len();
+
+    // 服务端会话作废 + CAS 开始拒绝一切（验证码识别失效/密码错误等瞬时故障）：
+    // 有缓存且未满 3 天，静默重试不打扰。
+    *state.session_ok.lock().unwrap() = false;
+    *state.tgt_ok.lock().unwrap() = false;
+    *state.login_ok.lock().unwrap() = false;
+    let report = tracker.poll_once().await.unwrap();
+    assert!(!report.login_ok);
+    assert!(!report.notified, "有课表缓存时单日故障不应提醒");
+    assert_eq!(channel.sent.lock().unwrap().len(), baseline);
+    let report = tracker.poll_once().await.unwrap();
+    assert!(!report.notified);
+    assert_eq!(channel.sent.lock().unwrap().len(), baseline);
 }
 
 #[test]
