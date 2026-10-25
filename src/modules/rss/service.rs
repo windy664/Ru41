@@ -33,6 +33,27 @@ pub struct RssConfig {
     pub pool_keyword_filter: bool,
 }
 
+impl Default for RssConfig {
+    /// 语义默认值与 RssSection::resolved 对齐；测试构造只需写关心的字段。
+    fn default() -> Self {
+        Self {
+            feeds: Vec::new(),
+            keywords: Vec::new(),
+            interests: String::new(),
+            max_items_per_feed: 50,
+            interval_secs: 21_600,
+            backend: "codex".into(),
+            notify: None,
+            digest_mode: DigestMode::default(),
+            evening_hour: 21,
+            morning_hour: None,
+            max_age_days: 2,
+            pool_keyword_filter: true,
+        }
+    }
+}
+
+
 /// digest 产出节奏：有候选即精选 vs 攒一天到点出日报。
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum DigestMode {
@@ -449,15 +470,9 @@ mod tests {
                 feeds: vec!["https://feed".into()],
                 keywords: vec!["AI".into()],
                 interests: "测试关注方向".into(),
-                max_items_per_feed: 50,
-                interval_secs: 1800,
-                backend: "codex".into(),
-                notify: None,
                 digest_mode: DigestMode::Daily,
                 evening_hour,
-                morning_hour: None,
-                max_age_days: 2,
-                pool_keyword_filter: true,
+                ..Default::default()
             },
         )
     }

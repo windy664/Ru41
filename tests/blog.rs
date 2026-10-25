@@ -105,17 +105,13 @@ impl Fx {
             None,
             BlogConfig {
                 repo_path: self.blog_path.clone(),
-                remote: "origin".into(),
-                branch: "master".into(),
-                published_dir: "06-Blog-博客/Published-已发布".into(),
-                posts_dir: "source/_posts".into(),
                 site_url: "https://example.com".into(),
-                interval_secs: 300,
                 notify: Some(ru41::domain::NotifyRoute {
                     channel: "test".into(),
                     target: "test".into(),
                     msg_id: None,
                 }),
+                ..Default::default()
             },
         )
     }

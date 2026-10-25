@@ -21,6 +21,23 @@ pub struct BlogConfig {
     pub notify: Option<crate::domain::NotifyRoute>,
 }
 
+impl Default for BlogConfig {
+    /// 语义默认值与 BlogSection::resolved 对齐；测试构造只需写关心的字段。
+    fn default() -> Self {
+        Self {
+            repo_path: std::path::PathBuf::new(),
+            remote: "origin".into(),
+            branch: "master".into(),
+            published_dir: "06-Blog-博客/Published-已发布".into(),
+            posts_dir: "source/_posts".into(),
+            site_url: String::new(),
+            interval_secs: 300,
+            notify: None,
+        }
+    }
+}
+
+
 /// 一轮轮询的结果报告。
 #[derive(Debug, Serialize)]
 pub struct BlogPollReport {

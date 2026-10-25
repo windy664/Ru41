@@ -2,7 +2,7 @@ use anyhow::{Context, Result, bail};
 use serde::Deserialize;
 
 /// 宿舍房间定位参数（来自 ecard 平台，值存本地配置不入库）。
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Default)]
 pub struct EcardRoom {
     pub impl_type: String,
     pub school_area_no: String,

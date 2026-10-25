@@ -37,6 +37,31 @@ pub struct JwxtConfig {
     pub notify_target: String,
 }
 
+impl Default for JwxtConfig {
+    /// 语义默认值与 JwxtSection::resolved 对齐；测试构造只需写关心的字段。
+    fn default() -> Self {
+        Self {
+            username: String::new(),
+            password: String::new(),
+            cas_base: String::new(),
+            cas_modulus: String::new(),
+            cas_exponent: String::new(),
+            jwxt_base: String::new(),
+            session_path: std::path::PathBuf::new(),
+            semester_start: None,
+            xnm: None,
+            xqm: None,
+            interval_secs: 3_600,
+            daily_remind: true,
+            remind_hour: 21,
+            sync_schedule: false,
+            clock: None,
+            notify_target: String::new(),
+        }
+    }
+}
+
+
 /// 按日期推断当前学期：9-12 月 → (当年, 3)；1 月 → (去年, 3)；2-8 月 → (去年, 12)。
 /// 短学期（xqm=16）不参与自动推断，需要时配置里显式指定。
 pub fn infer_term(today: NaiveDate) -> (String, String) {
@@ -864,22 +889,11 @@ mod tests {
             client,
             None,
             JwxtConfig {
-                username: "u".into(),
-                password: "p".into(),
                 cas_base: "http://127.0.0.1:1".into(),
-                cas_modulus: "m".into(),
-                cas_exponent: "e".into(),
                 jwxt_base: "http://127.0.0.1:1".into(),
                 session_path: dir.join("session.json"),
-                semester_start: None,
-                xnm: None,
-                xqm: None,
-                interval_secs: 60,
                 daily_remind: false,
-                remind_hour: 21,
-                sync_schedule: false,
-                clock: None,
-                notify_target: String::new(),
+                ..Default::default()
             },
         )
     }

@@ -254,17 +254,12 @@ fn make_tracker_full(
         client,
         notifier,
         JwxtConfig {
-            username: "2640000001".into(),
-            password: "test-pass".into(),
             cas_base: base.to_owned(),
             cas_modulus: JwxtSection::DEFAULT_CAS_MODULUS.to_owned(),
             cas_exponent: JwxtSection::DEFAULT_CAS_EXPONENT.to_owned(),
             jwxt_base: base.to_owned(),
             session_path,
             semester_start: Some(semester_start),
-            xnm: None,
-            xqm: None,
-            interval_secs: 60,
             daily_remind,
             remind_hour: 0, // 任意时刻都到点，测试可复现
             sync_schedule,
@@ -272,7 +267,7 @@ fn make_tracker_full(
                 times,
                 duration_mins: 45,
             }),
-            notify_target: "user:mock".into(),
+            ..Default::default()
         },
     )
 }

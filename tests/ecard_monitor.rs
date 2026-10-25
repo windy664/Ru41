@@ -102,9 +102,8 @@ fn make_tracker(
             },
             token: "test-token".into(),
             power_threshold,
-            water_threshold: 1.0,
-            interval_secs: 86_400,
             notify_target: "default".into(),
+            ..Default::default()
         },
     )
 }
