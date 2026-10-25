@@ -318,11 +318,13 @@ impl YoutubeTracker {
         segments: &[TranscriptSegment],
     ) -> Result<i64> {
         let transcript = render_transcript(segments, self.config.max_transcript_chars);
-        // 学习者模型：已毕业词块不再进预习单（known_chunks 由复习反馈积累）。
+        // 学习者模型：已毕业词块不再进预习单（known_chunks 由复习反馈积累）；
+        // 级别用 /定级 的评测结果，配置里的静态 level 只做兜底。
         let known = super::review::known_chunks(&self.store, 80);
+        let level = super::review::current_level(&self.store, &self.config.level);
         let prompt = preview_prompt(
             &self.config.interests,
-            &self.config.level,
+            &level,
             channel,
             video,
             &transcript,
@@ -383,6 +385,8 @@ pub async fn prep_video_task(
         timestamp: meta.timestamp,
     };
     let transcript = render_transcript(&segments, max_transcript_chars);
+    // /预习 手动点播同样吃定级结果，保持与频道轮询同一学习者模型。
+    let level = &super::review::current_level(store, level);
     let prompt = preview_prompt(interests, level, "手动提交", &video, &transcript, &[]);
     let key = format!("youtube:prep:{video_id}");
     let mut service = TaskService::new(store.clone());
@@ -448,12 +452,13 @@ fn preview_prompt(
          🔁 带走就用（2-3 个可迁移口语块）：\n\
          - **\"句式或短语\"** {{什么场合能用}} → 你可以说：\"{{贴合大学生生活的英文例句}}\"；\"原句\" [m:ss]\n\n\
          👂 听力锚点（2-3 处，具体到时刻和音）：\n\
-         - [m:ss] \"{{原句}}\" → {{语音现象：哪个音连到哪个音/哪个词弱化成什么/吞掉什么音}}\n\n\
+         - [m:ss] \"{{原句}}\" → {{具体音变：哪个音连到哪个音/哪个词弱化成什么/吞掉什么音}}（现象：{{连读|弱读|闪音|失爆|同化|缩读|重音|其他}}）\n\n\
          ❓ 听前自测：{{一个带着去看视频的具体问题}}\n\n\
          硬性要求：\n\
          - 转写每行行首形如 [L12 2:14]；引用的时间戳必须逐字照抄自对应行标记，禁止自己换算。\n\
          - 引用的原句必须逐字出现在转写里，保留 5-12 个词的完整语流，禁止只引光杆单词。\n\
          - 禁止给词条标注音标；语音现象只写在听力锚点，且必须写明具体音变（哪个音→哪个音），禁止「注意连读」式空话。\n\
+         - 听力锚点行尾的现象标签必须从给定的 8 个里选一个，禁止自创。\n\
          - 现场装备按「不懂它就看不懂这期视频」挑选；带走就用按「他能马上用上」挑选，两者不要重复。\n\
          - PR、root cause、deploy、tracker、offload 这类工程师通用词默认视为已知，不占条目；仅当视频中的用法有特殊含义时收录，且必须点明特殊在哪。\n\
          - 全文 900 字以内。\n\n\
