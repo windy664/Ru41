@@ -131,7 +131,7 @@ impl PagewatchTracker {
         })
     }
 
-    /// 页面内容指纹：正文去空白后取稳定散列。
+    /// 页面内容指纹：剔除动态噪声后取稳定散列。
     /// 只比"内容是否变了"，不做语义 diff（语义判断交给人和 agent）。
     async fn fetch_fingerprint(&self, url: &str) -> Result<String> {
         let body = self
@@ -145,12 +145,30 @@ impl PagewatchTracker {
             .text()
             .await
             .context("page body read failed")?;
-        let normalized: String = body.split_whitespace().collect();
-        use std::hash::{Hash, Hasher};
-        let mut hasher = std::collections::hash_map::DefaultHasher::new();
-        normalized.hash(&mut hasher);
-        Ok(format!("{:016x}", hasher.finish()))
+        Ok(content_fingerprint(&body))
     }
+}
+
+/// 内容指纹：先剔除 script/style 块与 HTML 注释（里面常藏每请求都变的
+/// token、构建标识、RSC 载荷，如 Next.js 的随机 _rsc 参数），再去空白散列。
+/// 注意：纯 SPA 页面（正文只有"加载中"）剔除脚本后指纹恒定，
+/// 永远报不出变化——这类页面应改用其数据 API 配 RSS 伪 feed 监控。
+fn content_fingerprint(html: &str) -> String {
+    use regex::Regex;
+    use std::sync::OnceLock;
+    fn noise() -> &'static Regex {
+        static RE: OnceLock<Regex> = OnceLock::new();
+        RE.get_or_init(|| {
+            Regex::new(r"(?si)<script[^>]*>.*?</script>|<style[^>]*>.*?</style>|<!--.*?-->")
+                .expect("noise regex")
+        })
+    }
+    let stripped = noise().replace_all(html, " ");
+    let normalized: String = stripped.split_whitespace().collect();
+    use std::hash::{Hash, Hasher};
+    let mut hasher = std::collections::hash_map::DefaultHasher::new();
+    normalized.hash(&mut hasher);
+    format!("{:016x}", hasher.finish())
 }
 
 impl crate::ingress::schedule::PollJob for PagewatchTracker {
@@ -170,6 +188,17 @@ impl crate::ingress::schedule::PollJob for PagewatchTracker {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn fingerprint_ignores_script_noise_but_sees_body_change() {
+        // Next.js 类页面：script 里每请求都变的 _rsc/token 不应触发"变更"。
+        let page_a = r#"<html><body><h1>赛事一览</h1><script>self.__next_f.push(["c":["","contest?_rsc=aaaa"]])</script></body></html>"#;
+        let page_b = r#"<html><body><h1>赛事一览</h1><script>self.__next_f.push(["c":["","contest?_rsc=zz99"]])</script></body></html>"#;
+        assert_eq!(content_fingerprint(page_a), content_fingerprint(page_b));
+        // 正文真变了必须能检出。
+        let page_c = r#"<html><body><h1>赛事一览</h1><p>新赛事上线</p></body></html>"#;
+        assert_ne!(content_fingerprint(page_a), content_fingerprint(page_c));
+    }
 
     #[test]
     fn baseline_does_not_notify_and_change_does() {
