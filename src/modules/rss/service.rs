@@ -429,7 +429,9 @@ fn digest_prompt(interests: &str, candidates: &[FeedItem]) -> String {
          请筛选出真正有信息增量、与关注方向相关的条目（搬运、纯营销、无实质内容的直接舍弃），\n\
          对每条输出：标题 / 链接 / 发生了什么 / 为什么重要 / 与我有关之处 / 建议的下一步行动。\n\
          区分事实与推断，事实必须能在所给材料中找到依据。\n\
-         如果全部不值得关注，直接说明「本批次无值得关注的内容」。\n\n\
+         舍弃纪律：不要逐条罗列舍弃理由或展开分析被舍弃的条目；\n\
+         个别接近但不够格的条目至多一句话带过。\n\
+         如果全部不值得关注，只回复一行：📭 今日无值得关注的机会。不要附加任何解释。\n\n\
          == 候选条目（{} 条）==\n",
         candidates.len()
     );
@@ -558,5 +560,13 @@ mod tests {
         assert!(outcome.digest_task_id.is_none(), "未到点不出报");
         assert_eq!(pool, 1, "候选留在池中");
         assert_eq!(store.list(10).unwrap().len(), 0);
+    }
+
+    #[test]
+    fn digest_prompt_enforces_quiet_empty_report() {
+        let prompt = super::digest_prompt("关注免费额度", &[item("a").1]);
+        assert!(prompt.contains("📭 今日无值得关注的机会"));
+        assert!(prompt.contains("不要附加任何解释"));
+        assert!(prompt.contains("不要逐条罗列舍弃理由"));
     }
 }
