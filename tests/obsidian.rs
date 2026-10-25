@@ -47,6 +47,10 @@ impl RepoFixture {
                 vault_path.to_str().unwrap(),
             ],
         );
+        // tracker 的提交发生在这个副本里（走生产 GitVault，不经测试 helper），
+        // 必须配 repo 级身份——CI runner 没有全局 git identity。
+        git(&vault_path, &["config", "user.name", "windy"]);
+        git(&vault_path, &["config", "user.email", "windy@test"]);
         let store: Arc<dyn TaskStore> =
             Arc::new(SqliteTaskStore::open(&dir.path().join("state.db")).unwrap());
         Self {
