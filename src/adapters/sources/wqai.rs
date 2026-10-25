@@ -84,6 +84,10 @@ fn parse_row(row: &str, base: &str) -> Option<FeedItem> {
     if title.is_empty() {
         return None;
     }
+    // 只要开放中的条目：关闭/截止的带 st closed 等其他 class，直接跳过
+    if !row.contains("st open") {
+        return None;
+    }
     let deadline = cell_text(0);
     let venue = cell_text(2);
     let team = cell_text(3);
@@ -126,12 +130,13 @@ mod tests {
 <tr><td>10-28</td><td><a href="race-r009.html">2026 National AI+ Competition</a></td><td>Online</td><td>Individual or team</td><td>E-certificates</td><td><span class="st open">Closing in 3 days</span></td></tr>
 <tr><td>10-30</td><td><a href="race-r070.html">ClawHunt 72-Hour Hackathon</a></td><td>Shanghai</td><td>3-5</td><td>RMB 1.5M</td><td><span class="st open">Open</span></td></tr>
 <tr><td>--</td><td>无链接行</td><td>-</td><td>-</td><td>-</td><td>-</td></tr>
+<tr><td>10-01</td><td><a href="race-r001.html">已结束的比赛</a></td><td>-</td><td>-</td><td>-</td><td><span class="st closed">Closed</span></td></tr>
 </table>"#;
 
     #[test]
     fn parses_race_rows_with_stable_ids() {
         let items = parse_race_page(FIXTURE, "https://wqai.ltd/calendar/race/index.html").unwrap();
-        assert_eq!(items.len(), 2, "无链接行被跳过");
+        assert_eq!(items.len(), 2, "无链接行和已关闭条目被跳过");
         assert_eq!(items[0].id, "race-r009");
         assert_eq!(items[0].title, "2026 National AI+ Competition");
         assert_eq!(items[0].link, "https://wqai.ltd/calendar/race/race-r009.html");
