@@ -142,6 +142,11 @@ pub enum Command {
         #[command(subcommand)]
         command: TrackerCommand,
     },
+    /// 页面监控：盯没有 RSS 的网页（赛事官网/公告页），内容变更即通知。
+    Pagewatch {
+        #[command(subcommand)]
+        command: TrackerCommand,
+    },
     /// 博客发布管线：Vault 待发布目录 → 校验 → 博客仓库 _posts → 推送。
     Blog {
         #[command(subcommand)]
@@ -229,6 +234,7 @@ impl Command {
             Command::Zhihuishu { command } => Some(("zhihuishu", *command)),
             Command::Obsidian { command } => Some(("obsidian", *command)),
             Command::Blog { command } => Some(("blog", *command)),
+            Command::Pagewatch { command } => Some(("pagewatch", *command)),
             _ => None,
         }
     }

@@ -225,7 +225,8 @@ async fn main() -> Result<()> {
         | Command::Ecard { .. }
         | Command::Zhihuishu { .. }
         | Command::Obsidian { .. }
-        | Command::Blog { .. } => {
+        | Command::Blog { .. }
+        | Command::Pagewatch { .. } => {
             unreachable!("handled by tracker dispatch above")
         }
         Command::Youtube { command } => match command {
