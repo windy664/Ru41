@@ -31,8 +31,6 @@ pub struct RssConfig {
     /// daily 模式入池前是否跑关键词粗筛；false 时新条目全量入池，
     /// 相关性判断完全交给 digest（每天仅 1-2 次 GLM 调用，成本不变）。
     pub pool_keyword_filter: bool,
-    /// 即时推送源（完整 feed 地址）：新条目直接通知，不入池不等日报。
-    pub instant_feeds: Vec<String>,
 }
 
 /// digest 产出节奏：有候选即精选 vs 攒一天到点出日报。
@@ -66,9 +64,6 @@ pub struct RssPollReport {
     pub digest_task_id: Option<i64>,
     /// daily 模式候选池当前条数（realtime 恒为 0）。
     pub pool_size: usize,
-    /// 本轮即时推送的条数（instant_feeds 命中且已通知）。
-    #[serde(default)]
-    pub instant_notified: usize,
 }
 
 /// RSS 信息流追踪：逐源抓取 → 去重 → 关键词粗筛 → 合成精选 digest 任务。
@@ -78,25 +73,14 @@ pub struct RssTracker {
     store: Arc<dyn TaskStore>,
     client: FeedClient,
     config: RssConfig,
-    /// 即时推送出口与目标；None 时 instant_feeds 退化为普通入池。
-    notifier: Option<Arc<dyn crate::ports::channel::NotifyChannel>>,
-    notify_target: String,
 }
 
 impl RssTracker {
-    pub fn new(
-        store: Arc<dyn TaskStore>,
-        client: FeedClient,
-        config: RssConfig,
-        notifier: Option<Arc<dyn crate::ports::channel::NotifyChannel>>,
-        notify_target: String,
-    ) -> Self {
+    pub fn new(store: Arc<dyn TaskStore>, client: FeedClient, config: RssConfig) -> Self {
         Self {
             store,
             client,
             config,
-            notifier,
-            notify_target,
         }
     }
 
@@ -155,8 +139,7 @@ impl RssTracker {
         let keywords = self.config.keywords.clone();
         let interests = self.config.interests.clone();
         if self.config.digest_mode == DigestMode::Daily {
-            let (outcome, pool_size, instant) = self.poll_daily(items, &keywords, &interests)?;
-            let instant_notified = self.notify_instant(&instant).await?;
+            let (outcome, pool_size) = self.poll_daily(items, &keywords, &interests)?;
             return Ok(RssPollReport {
                 feeds: self.config.feeds.len(),
                 fetched,
@@ -165,7 +148,6 @@ impl RssTracker {
                 errors,
                 digest_task_id: outcome.digest_task_id,
                 pool_size,
-                instant_notified,
             });
         }
         let outcome = crate::app::digest::register_digest(
@@ -218,19 +200,17 @@ impl RssTracker {
             errors,
             digest_task_id: outcome.digest_task_id,
             pool_size: 0,
-            instant_notified: 0,
         })
     }
 
     /// daily 模式：去重 + 关键词筛后进候选池（records 按天分组），
     /// 到早/晚报时刻才合成一次 digest 任务。GLM 调用从每批一次降到每天 1-2 次。
-    /// 返回值第三个是即时推送条目（instant_feeds 命中的新条目，不入池）。
     fn poll_daily(
         &self,
         items: Vec<(String, FeedItem)>,
         keywords: &[String],
         interests: &str,
-    ) -> Result<(crate::app::digest::DigestOutcome, usize, Vec<FeedItem>)> {
+    ) -> Result<(crate::app::digest::DigestOutcome, usize)> {
         // 1. 去重（与 register_digest 同一套 rss_seen 语义）
         let mut fresh = Vec::new();
         for (url, item) in items {
@@ -248,19 +228,9 @@ impl RssTracker {
                     "first_seen": crate::util::now(),
                 }),
             )?;
-            fresh.push((url, item));
+            fresh.push(item);
         }
         let new_items = fresh.len();
-        // 即时推送源分流：命中的新条目直接通知、不进候选池（防日报重复播报）。
-        let (instant, pooled): (Vec<_>, Vec<_>) = if self.config.instant_feeds.is_empty() {
-            (Vec::new(), fresh)
-        } else {
-            fresh
-                .into_iter()
-                .partition(|(url, _)| self.config.instant_feeds.iter().any(|f| f == url))
-        };
-        let instant: Vec<FeedItem> = instant.into_iter().map(|(_, item)| item).collect();
-        let fresh: Vec<FeedItem> = pooled.into_iter().map(|(_, item)| item).collect();
         // pool_keyword_filter=false 时全量入池：关键词粗筛容易误杀标题不含
         // 关键词但实质相关的条目（尤其英文源摘要稀薄），交给 digest 判断更准。
         let candidates: Vec<FeedItem> = if self.config.pool_keyword_filter {
@@ -351,47 +321,7 @@ impl RssTracker {
                 digest_task_id,
             },
             pool.len(),
-            instant,
         ))
-    }
-
-    /// 即时推送：instant_feeds 的新条目合成一条批量通知发出去。
-    /// 无通知出口时静默跳过（条目已被 seen 标记，不会反复尝试）。
-    async fn notify_instant(&self, items: &[FeedItem]) -> Result<usize> {
-        if items.is_empty() {
-            return Ok(0);
-        }
-        let Some(notifier) = &self.notifier else {
-            return Ok(0);
-        };
-        let lines: Vec<String> = items
-            .iter()
-            .map(|item| {
-                let date = if item.published.is_empty() {
-                    String::new()
-                } else {
-                    format!("{}｜", &item.published)
-                };
-                let summary = if item.summary.is_empty() {
-                    String::new()
-                } else {
-                    format!("（{}）", item.summary)
-                };
-                format!("· {date}{}{summary}\n  {}", item.title, item.link)
-            })
-            .collect();
-        notifier
-            .send(
-                &self.notify_target,
-                None,
-                &format!(
-                    "🆕 新活动上架（{} 条）：\n{}\n详情与报名以官方页面为准。",
-                    items.len(),
-                    lines.join("\n")
-                ),
-            )
-            .await?;
-        Ok(items.len())
     }
 
     /// 池文档落盘：put_document(None) 是 INSERT ON CONFLICT DO NOTHING（仅新建），
@@ -547,10 +477,7 @@ mod tests {
                 morning_hour: None,
                 max_age_days: 2,
                 pool_keyword_filter: true,
-                instant_feeds: Vec::new(),
             },
-            None,
-            String::new(),
         )
     }
 
@@ -563,7 +490,7 @@ mod tests {
         );
         // evening_hour = 0 → 任何时刻都到点：入池即出报并清池。
         let tracker = daily_tracker(store.clone(), 0);
-        let (outcome, pool, _) = tracker
+        let (outcome, pool) = tracker
             .poll_daily(vec![item("a"), item("b")], &["AI".to_owned()], "i")
             .unwrap();
         assert_eq!(outcome.new_items, 2);
@@ -576,7 +503,7 @@ mod tests {
         assert_eq!(tasks[0].request_key, format!("rss:digest:evening:{date}"));
 
         // 重复轮询：条目已 seen，候选 0，不重复建任务。
-        let (outcome, _, _) = tracker
+        let (outcome, _) = tracker
             .poll_daily(vec![item("a"), item("b")], &["AI".to_owned()], "i")
             .unwrap();
         assert_eq!(outcome.new_items, 0);
@@ -595,7 +522,7 @@ mod tests {
             return; // 23 点后无更晚时刻可测，跳过
         }
         let tracker = daily_tracker(store.clone(), hour + 1);
-        let (outcome, pool, _) = tracker
+        let (outcome, pool) = tracker
             .poll_daily(vec![item("a")], &["AI".to_owned()], "i")
             .unwrap();
         assert_eq!(outcome.candidates, 1);
@@ -624,7 +551,7 @@ mod tests {
         // 标题不含关键词 "AI" 的条目也应入池。
         let mut unrelated = item("z");
         unrelated.1.title = "社区闲聊帖".into();
-        let (outcome, pool, _) = tracker
+        let (outcome, pool) = tracker
             .poll_daily(vec![unrelated], &["AI".to_owned()], "i")
             .unwrap();
         assert_eq!(outcome.candidates, 1, "关粗筛后全量入池");
@@ -661,84 +588,5 @@ mod tests {
         let items: Vec<FeedItem> = serde_json::from_value(doc.value["items"].clone()).unwrap();
         let ids: Vec<&str> = items.iter().map(|i| i.id.as_str()).collect();
         assert_eq!(ids, ["a", "b"], "两轮 poll 的条目都在池里");
-    }
-
-    struct MockNotifier(std::sync::Mutex<Vec<String>>);
-    impl crate::ports::channel::NotifyChannel for MockNotifier {
-        fn channel_id(&self) -> &str {
-            "mock"
-        }
-        fn send<'a>(
-            &'a self,
-            _target: &'a str,
-            _msg_id: Option<&'a str>,
-            text: &'a str,
-        ) -> std::pin::Pin<
-            Box<dyn std::future::Future<Output = anyhow::Result<()>> + Send + 'a>,
-        > {
-            self.0.lock().unwrap().push(text.to_owned());
-            Box::pin(async { Ok(()) })
-        }
-    }
-
-    #[tokio::test]
-    async fn instant_feeds_notify_immediately_and_skip_pool() {
-        let dir = tempfile::tempdir().unwrap();
-        let store: Arc<dyn TaskStore> = Arc::new(
-            crate::adapters::database::sqlite::SqliteTaskStore::open(&dir.path().join("s.db"))
-                .unwrap(),
-        );
-        let (_, hour) = local_date_hour(crate::util::now());
-        if hour == 23 {
-            return;
-        }
-        let sent = Arc::new(MockNotifier(std::sync::Mutex::new(Vec::new())));
-        let mut tracker = daily_tracker(store.clone(), hour + 1);
-        tracker.config.instant_feeds = vec!["https://gba.ics".into()];
-        tracker.notifier = Some(sent.clone());
-        tracker.notify_target = "me".into();
-
-        let instant_item = (
-            "https://gba.ics".to_owned(),
-            FeedItem {
-                id: "wqai-x1".into(),
-                title: "广州 AI 沙龙".into(),
-                link: "https://x/1".into(),
-                summary: "广州 · 技术沙龙".into(),
-                published: "2026-10-25".into(),
-            },
-        );
-        let (_, pool, instant) = tracker
-            .poll_daily(vec![instant_item, item("b")], &["AI".to_owned()], "i")
-            .unwrap();
-        assert_eq!(instant.len(), 1, "instant 源条目被分流");
-        assert_eq!(instant[0].id, "wqai-x1");
-        assert_eq!(pool, 1, "普通条目照常入池");
-        let notified = tracker.notify_instant(&instant).await.unwrap();
-        assert_eq!(notified, 1);
-        let messages = sent.0.lock().unwrap();
-        assert_eq!(messages.len(), 1);
-        assert!(messages[0].contains("广州 AI 沙龙"));
-        assert!(messages[0].contains("🆕"));
-        drop(messages);
-
-        // 再次轮询：已 seen，不重复推送
-        let (_, _, instant) = tracker
-            .poll_daily(
-                vec![(
-                    "https://gba.ics".to_owned(),
-                    FeedItem {
-                        id: "wqai-x1".into(),
-                        title: "广州 AI 沙龙".into(),
-                        link: "https://x/1".into(),
-                        summary: String::new(),
-                        published: String::new(),
-                    },
-                )],
-                &["AI".to_owned()],
-                "i",
-            )
-            .unwrap();
-        assert!(instant.is_empty(), "已 seen 不重复分流");
     }
 }
