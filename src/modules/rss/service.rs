@@ -251,9 +251,9 @@ impl RssTracker {
         // 2. 入池：当天的池文档追加（按条目 id 去重，封顶 80 条保最新）
         let (date, hour) = local_date_hour(crate::util::now());
         let pool_id = format!("pool:{date}");
-        let mut pool: Vec<FeedItem> = self
-            .store
-            .document("rss_pool", &pool_id)?
+        let pool_doc = self.store.document("rss_pool", &pool_id)?;
+        let mut pool: Vec<FeedItem> = pool_doc
+            .as_ref()
             .and_then(|doc| serde_json::from_value(doc.value["items"].clone()).ok())
             .unwrap_or_default();
         let mut pool_ids: std::collections::HashSet<String> =
@@ -266,12 +266,7 @@ impl RssTracker {
         if pool.len() > 80 {
             pool.drain(..pool.len() - 80);
         }
-        self.store.put_document(
-            "rss_pool",
-            &pool_id,
-            None,
-            &serde_json::json!({ "items": pool }),
-        )?;
+        self.save_pool(&pool_id, &pool)?;
 
         // 3. 到点出报：早报/晚报各自一天一份（request_key 天然幂等），出报即清池
         let mut digest_task_id = None;
@@ -311,12 +306,7 @@ impl RssTracker {
             if result.created {
                 digest_task_id = Some(result.task.id);
                 // 出报即清池：晚报只覆盖早报之后的新候选，早报覆盖隔夜积累。
-                self.store.put_document(
-                    "rss_pool",
-                    &pool_id,
-                    None,
-                    &serde_json::json!({ "items": [] }),
-                )?;
+                self.save_pool(&pool_id, &[])?;
                 pool.clear();
             } else {
                 // 今天这份已建过（重复轮询/重启），不重复建任务。
@@ -332,6 +322,22 @@ impl RssTracker {
             },
             pool.len(),
         ))
+    }
+
+    /// 池文档落盘：put_document(None) 是 INSERT ON CONFLICT DO NOTHING（仅新建），
+    /// 已存在的池必须带 revision 走 CAS 更新，否则写入被静默丢弃——池子会
+    /// 冻在当天第一次写入的状态（历史 bug）。CAS 冲突（并发轮询）重读重试一次。
+    fn save_pool(&self, pool_id: &str, items: &[FeedItem]) -> Result<()> {
+        let value = || serde_json::json!({ "items": items });
+        let doc = self.store.document("rss_pool", pool_id)?;
+        let expected = doc.as_ref().map(|d| d.revision);
+        if self.store.put_document("rss_pool", pool_id, expected, &value())? {
+            return Ok(());
+        }
+        let doc = self.store.document("rss_pool", pool_id)?;
+        let expected = doc.as_ref().map(|d| d.revision);
+        self.store.put_document("rss_pool", pool_id, expected, &value())?;
+        Ok(())
     }
 }
 
@@ -551,5 +557,36 @@ mod tests {
         assert_eq!(outcome.candidates, 1, "关粗筛后全量入池");
         assert_eq!(pool, 0, "evening_hour=0 到点出报清池");
         assert_eq!(store.list(10).unwrap().len(), 1);
+    }
+
+    #[test]
+    fn daily_pool_accumulates_across_polls() {
+        // 回归：put_document(None) 是仅新建（ON CONFLICT DO NOTHING），池文档
+        // 已存在时写入会被静默丢弃，池子冻在当天首轮状态。修复后第二轮
+        // poll 的条目必须真正落进库存的池文档。
+        let dir = tempfile::tempdir().unwrap();
+        let store: Arc<dyn TaskStore> = Arc::new(
+            crate::adapters::database::sqlite::SqliteTaskStore::open(&dir.path().join("s.db"))
+                .unwrap(),
+        );
+        let (_, hour) = local_date_hour(crate::util::now());
+        if hour == 23 {
+            return;
+        }
+        let tracker = daily_tracker(store.clone(), hour + 1);
+        tracker
+            .poll_daily(vec![item("a")], &["AI".to_owned()], "i")
+            .unwrap();
+        tracker
+            .poll_daily(vec![item("b")], &["AI".to_owned()], "i")
+            .unwrap();
+        let (date, _) = local_date_hour(crate::util::now());
+        let doc = store
+            .document("rss_pool", &format!("pool:{date}"))
+            .unwrap()
+            .expect("池文档存在");
+        let items: Vec<FeedItem> = serde_json::from_value(doc.value["items"].clone()).unwrap();
+        let ids: Vec<&str> = items.iter().map(|i| i.id.as_str()).collect();
+        assert_eq!(ids, ["a", "b"], "两轮 poll 的条目都在池里");
     }
 }
