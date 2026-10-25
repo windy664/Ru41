@@ -401,7 +401,10 @@ mod review_loop {
 2. **fall back** 首选不可用改用可用；\"Instead, it could just fall back\" [3:32]\n\n\
 🔁 带走就用（2-3 个可迁移口语块）：\n\
 - **\"walk through … with you\"** 带人逐步看懂 → 你可以说：\"I'll walk through the code with you.\"；\"I'm going to walk through that with you.\" [2:02]\n\n\
-👂 听力锚点：略。\n\n\
+👂 听力锚点（2-3 处，具体到时刻和音）：\n\
+- [2:02] \"I'm going to walk through that with you.\" → going to 快读缩成 /ɡənə/（现象：缩读）\n\
+- [3:12] \"better at improving\" → better 的 /t/ 变轻拍音（现象：闪音）\n\
+- [3:40] \"and I put out a PR\" → and 弱读成 /ən/（现象：弱读）\n\n\
 ❓ 听前自测：测试问题？\n";
 
     #[derive(Default, Clone)]
@@ -634,5 +637,134 @@ mod review_loop {
             assert!(!item.cue.contains("sounds like"));
             assert!(!item.cue.contains("你可以说"));
         }
+    }
+
+    #[tokio::test]
+    async fn anchor_topic_push_after_threshold() {
+        let dir = tempfile::tempdir().unwrap();
+        let store: Arc<dyn TaskStore> =
+            Arc::new(SqliteTaskStore::open(&dir.path().join("state.db")).unwrap());
+        // 3 张单子各贡献 1 条「缩读」锚点 → 达到专题阈值。
+        for video in ["vidq", "vidr", "vids"] {
+            seed_succeeded_sheet(&store, video);
+        }
+        let (job, fake) = review_job(store.clone());
+        let report = ru41::ingress::schedule::PollJob::poll_json(&job)
+            .await
+            .unwrap();
+        assert_eq!(report["review_pushed"], 1, "词块未到期，推的是发音专题");
+        {
+            let sent = fake.0.lock().unwrap();
+            assert_eq!(sent.len(), 1);
+            assert!(sent[0].contains("发音专题"), "推送缺专题头：{}", sent[0]);
+            assert!(
+                [
+                    "连读", "弱读", "闪音", "失爆", "同化", "缩读", "重音", "其他"
+                ]
+                .iter()
+                .any(|c| sent[0].contains(c)),
+                "专题应带现象类别：{}",
+                sent[0]
+            );
+            assert!(
+                ["[2:02]", "[3:12]", "[3:40]"]
+                    .iter()
+                    .any(|ts| sent[0].contains(ts)),
+                "例句应带时间戳：{}",
+                sent[0]
+            );
+            assert!(!sent[0].contains("（现象："), "推送里不该露出内部标签");
+        }
+        // 锚点已标记 topic_pushed → 同现象无新锚点不再推。
+        let report = ru41::ingress::schedule::PollJob::poll_json(&job)
+            .await
+            .unwrap();
+        assert_eq!(report["review_pushed"], 0);
+        assert_eq!(fake.0.lock().unwrap().len(), 1);
+    }
+
+    #[tokio::test]
+    async fn placement_flow_updates_level() {
+        let dir = tempfile::tempdir().unwrap();
+        let store: Arc<dyn TaskStore> =
+            Arc::new(SqliteTaskStore::open(&dir.path().join("state.db")).unwrap());
+        let now = ru41::util::now();
+
+        // 出题。
+        let reply = review::place_start(&store, "codex", None).await.unwrap();
+        assert!(reply.contains("稍后推送"), "{reply}");
+        let place = store
+            .list(10)
+            .unwrap()
+            .into_iter()
+            .find(|t| t.request_key.starts_with("youtube:place:"))
+            .expect("placement task enqueued");
+        let claim = store
+            .claim_for("w", "codex", None, RunContract::AnalysisV1, now, 600)
+            .unwrap()
+            .unwrap();
+        assert_eq!(claim.task.id, place.id);
+        store
+            .succeed(
+                &claim,
+                &AgentResult {
+                    summary: "📏 定级测试｜1. She is late. 2. The agent keeps building on it. 3. Had it not been for the scoring function, the loop would start over.".into(),
+                },
+                None,
+                now,
+            )
+            .unwrap();
+
+        // 交卷 → 评测任务入队。
+        let reply = review::place_submit(
+            &store,
+            "1. 她迟到了 2. 智能体继续改进 3. 如果没有评分函数",
+            "codex",
+            None,
+        )
+        .await
+        .unwrap();
+        assert!(reply.contains("评测"), "{reply}");
+        let eval = store
+            .list(10)
+            .unwrap()
+            .into_iter()
+            .find(|t| t.request_key.starts_with("youtube:place-eval:"))
+            .expect("eval task enqueued");
+        assert!(eval.prompt.contains("start over"), "评测 prompt 应带原题");
+        let claim = store
+            .claim_for("w", "codex", None, RunContract::AnalysisV1, now, 600)
+            .unwrap()
+            .unwrap();
+        assert_eq!(claim.task.id, eval.id);
+        store
+            .succeed(
+                &claim,
+                &AgentResult {
+                    summary: "🔊 定级：B2+\n\n1. 对。2. 偏差：building on 是在现有基础上改进。3. 虚拟语气没译出来；这个级别最该练长难句。".into(),
+                },
+                None,
+                now,
+            )
+            .unwrap();
+
+        // 复习 job 回收级别 → youtube_level.latest；预习级别随之更新。
+        let (job, _fake) = review_job(store.clone());
+        ru41::ingress::schedule::PollJob::poll_json(&job)
+            .await
+            .unwrap();
+        let level_doc = store
+            .document("youtube_level", "latest")
+            .unwrap()
+            .expect("level record");
+        assert_eq!(level_doc.value["level"], "B2+");
+        assert_eq!(level_doc.value["task_id"], eval.id);
+        assert_eq!(review::current_level(&store, "CET-6 / B2"), "B2+");
+
+        // 已交卷后再交 → 引导重新测试。
+        let reply = review::place_submit(&store, "再交一次", "codex", None)
+            .await
+            .unwrap();
+        assert!(reply.contains("/定级"), "{reply}");
     }
 }

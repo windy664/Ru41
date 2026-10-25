@@ -1,17 +1,23 @@
 //! 复习闭环：预习单词块落库 → 每日间隔复习推送 → 看后测试 → 已会词反哺预习挑词。
 //!
-//! 预习单只解决「看懂」，学习发生在看之后：本文件实现遗忘对抗的三个机制——
-//! 词块按 1/3/7/14/30 天间隔推 QQ 回忆题（SQ 阶梯）；看视频次日推 Agent 后测题；
-//! 「会」过的词进已知名单，预习挑词自动排除。
+//! 预习单只解决「看懂」，学习发生在看之后：本文件实现遗忘对抗的机制——
+//! 词块按 1/3/7/14/30 天间隔推 QQ 回忆题（间隔阶梯）；看视频次日推 Agent 后测题；
+//! 「会」过的词进已知名单，预习挑词自动排除；听力锚点按语音现象归类攒专题，
+//! 攒够即推发音专题课（例句全是看过的原句）；`/定级` 三句翻译测出 CEFR 级别，
+//! 反哺预习挑词难度。
 //!
 //! records 表数据模型：
 //! - `youtube_vocab`：`<video>#<n>` 一词一条（chunk/cue/stage/due_at/known），`<video>#meta` 标记提取完成；
 //! - `youtube_review_batch`：`YYYY-MM-DD` 一批到期词块，`/复习` 反馈或 3 天过期后 resolved；
-//! - `youtube_posttest`：`<video>` 后测任务已入队标记（幂等键）。
+//! - `youtube_posttest`：`<video>` 后测任务已入队标记（幂等键）；
+//! - `youtube_anchor`：`<video>#a<n>` 听力锚点（ts/quote/note/category/topic_pushed）；
+//! - `youtube_placement`：`latest` 定级测试状态（questions→answers）；
+//! - `youtube_level`：`latest` 定级结果（level/task_id），预习 prompt 的级别来源。
 
 use crate::{
     app::task::TaskService,
     bootstrap::assembly,
+    domain::NotifyRoute,
     ingress::schedule::PollJob,
     ports::{channel::NotifyChannel, storage::TaskStore},
 };
@@ -27,6 +33,14 @@ const VOCAB_KIND: &str = "youtube_vocab";
 const BATCH_KIND: &str = "youtube_review_batch";
 /// 后测幂等标记 kind；id 为 video_id。
 const QUIZ_KIND: &str = "youtube_posttest";
+/// 听力锚点记录 kind；id 形如 `<video>#a<n>`。
+const ANCHOR_KIND: &str = "youtube_anchor";
+/// 发音专题「当日已推」标记 kind；id 固定 `latest`。
+const TOPIC_KIND: &str = "youtube_anchor_topic";
+/// 定级测试状态 kind；id 固定 `latest`。
+const PLACEMENT_KIND: &str = "youtube_placement";
+/// 定级结果 kind；id 固定 `latest`。
+const LEVEL_KIND: &str = "youtube_level";
 
 /// 间隔阶梯（天）：每「会」进一档，走完最后一档毕业为 known。
 pub const INTERVAL_DAYS: [i64; 5] = [1, 3, 7, 14, 30];
@@ -49,6 +63,29 @@ pub struct VocabItem {
     /// equip=现场装备（理解关键）；carry=带走就用（可迁移口语块）。
     pub kind: &'static str,
 }
+
+/// 从预习单 summary 解析出的听力锚点。
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct AnchorItem {
+    /// 时间戳，如 "2:02"。
+    pub ts: String,
+    /// 英文原句（逐字来自转写）。
+    pub quote: String,
+    /// 具体音变描述。
+    pub note: String,
+    /// 语音现象分类（连读/弱读/闪音/失爆/同化/缩读/重音/其他）。
+    pub category: String,
+}
+
+/// 听力锚点的现象分类全集；预习 prompt 中的现象标签必须出自这里。
+pub const ANCHOR_CATEGORIES: [&str; 8] = [
+    "连读", "弱读", "闪音", "失爆", "同化", "缩读", "重音", "其他",
+];
+
+/// 发音专题推送需要的同现象新锚点数。
+const TOPIC_MIN_ANCHORS: usize = 3;
+/// 专题单次最多带几个例句。
+const TOPIC_MAX_EXAMPLES: usize = 4;
 
 /// 复习任务：每日一跑（内部按日历日幂等），四步——提取、后测、过期批次结转、到期推送。
 pub struct YoutubeReviewJob {
@@ -82,6 +119,11 @@ impl YoutubeReviewJob {
             quizzes = self.enqueue_posttests(today.clone()).await?;
             retired = self.retire_stale_batches()?;
             pushed = self.push_due_reviews(&today).await?;
+            // 词块复习当天没推过消息时，才考虑发音专题——一天最多打扰一次。
+            if pushed == 0 {
+                pushed = self.push_anchor_topic(&today).await?;
+            }
+            self.pickup_level()?;
         }
 
         Ok(serde_json::json!({
@@ -91,6 +133,108 @@ impl YoutubeReviewJob {
             "stale_batches_retired": retired,
             "review_pushed": pushed,
         }))
+    }
+
+    /// 发音专题：同一现象的新锚点攒够 TOPIC_MIN_ANCHORS 条就推一期专题课，
+    /// 例句全部来自你看过的视频；推完标记 topic_pushed，不再重复。
+    /// 每个日历日最多推一期（youtube_anchor_topic#latest 记录当日已推）。
+    async fn push_anchor_topic(&self, today: &str) -> Result<usize> {
+        let Some(notifier) = &self.notifier else {
+            return Ok(0);
+        };
+        let Some(route) = self.config.notify.clone() else {
+            return Ok(0);
+        };
+        // 每个日历日最多一期。
+        if let Some(doc) = self.store.document(TOPIC_KIND, "latest")?
+            && doc.value["date"].as_str() == Some(today)
+        {
+            return Ok(0);
+        }
+        let mut by_category: std::collections::HashMap<
+            String,
+            Vec<crate::domain::records::Document>,
+        > = Default::default();
+        for doc in self.store.documents(ANCHOR_KIND, 2_000)? {
+            if doc.value["topic_pushed"].as_bool() == Some(true) {
+                continue;
+            }
+            let category = doc.value["category"].as_str().unwrap_or("其他").to_owned();
+            by_category.entry(category).or_default().push(doc);
+        }
+        let Some((category, mut docs)) = by_category
+            .into_iter()
+            .filter(|(_, docs)| docs.len() >= TOPIC_MIN_ANCHORS)
+            .max_by_key(|(_, docs)| docs.len())
+        else {
+            return Ok(0);
+        };
+        docs.sort_by_key(|doc| doc.value["created_at"].as_i64().unwrap_or(0));
+        let examples: Vec<_> = docs.iter().rev().take(TOPIC_MAX_EXAMPLES).collect();
+        let mut text = format!(
+            "🔊 发音专题｜{category}（{} 例，均来自你看过的视频；先回看对应时刻，再跟读一遍）\n",
+            examples.len()
+        );
+        for (index, doc) in examples.iter().enumerate() {
+            let ts = doc.value["ts"].as_str().unwrap_or("");
+            let quote = doc.value["quote"].as_str().unwrap_or("");
+            let note = doc.value["note"].as_str().unwrap_or("");
+            text.push_str(&format!("{}. [{ts}] \"{quote}\" — {note}\n", index + 1));
+        }
+        notifier.send(&route.target, None, &text).await?;
+        for doc in &docs {
+            let mut value = doc.value.clone();
+            value["topic_pushed"] = true.into();
+            let _ = self
+                .store
+                .put_document(ANCHOR_KIND, &doc.id, Some(doc.revision), &value);
+        }
+        upsert_latest(
+            &self.store,
+            TOPIC_KIND,
+            &serde_json::json!({ "date": today, "category": category }),
+        )?;
+        Ok(1)
+    }
+
+    /// 定级结果回收：最新的已完成评测任务里解析 `定级：<CEFR>`，写入 youtube_level。
+    /// 预习挑词从此用它替代配置里的静态 level。
+    fn pickup_level(&self) -> Result<()> {
+        let Some(task) = self.store.list(SCAN_LIMIT)?.into_iter().find(|task| {
+            task.request_key.starts_with("youtube:place-eval:")
+                && task.status == crate::domain::TaskStatus::Succeeded
+                && task.result.as_ref().is_some_and(|r| !r.summary.is_empty())
+        }) else {
+            return Ok(());
+        };
+        if let Some(doc) = self.store.document(LEVEL_KIND, "latest")?
+            && doc.value["task_id"].as_i64() == Some(task.id)
+        {
+            return Ok(());
+        }
+        let Some(summary) = task.result.as_ref().map(|r| r.summary.clone()) else {
+            return Ok(());
+        };
+        let Some(level) = parse_level(&summary) else {
+            return Ok(());
+        };
+        let value = serde_json::json!({
+            "level": level,
+            "task_id": task.id,
+            "date": crate::util::now(),
+        });
+        match self.store.document(LEVEL_KIND, "latest")? {
+            Some(doc) => {
+                let _ = self
+                    .store
+                    .put_document(LEVEL_KIND, "latest", Some(doc.revision), &value);
+            }
+            None => {
+                self.store
+                    .put_document(LEVEL_KIND, "latest", None, &value)?;
+            }
+        }
+        Ok(())
     }
 
     /// 对尚未提取过词块的已完成预习单做解析落库；幂等键为 `<video>#meta`。
@@ -126,6 +270,7 @@ impl YoutubeReviewJob {
             let Some(task) = task else { continue };
             let Some(result) = &task.result else { continue };
             let items = extract_vocab(&result.summary);
+            let anchors = extract_anchors(&result.summary);
             let now = crate::util::now();
             for (index, item) in items.iter().enumerate() {
                 self.store.put_document(
@@ -144,11 +289,27 @@ impl YoutubeReviewJob {
                     }),
                 )?;
             }
+            for (index, anchor) in anchors.iter().enumerate() {
+                self.store.put_document(
+                    ANCHOR_KIND,
+                    &format!("{video}#a{index}"),
+                    None,
+                    &serde_json::json!({
+                        "video_id": video,
+                        "ts": anchor.ts,
+                        "quote": anchor.quote,
+                        "note": anchor.note,
+                        "category": anchor.category,
+                        "created_at": now,
+                        "topic_pushed": false,
+                    }),
+                )?;
+            }
             self.store.put_document(
                 VOCAB_KIND,
                 &format!("{video}#meta"),
                 None,
-                &serde_json::json!({ "extracted": true, "count": items.len() }),
+                &serde_json::json!({ "extracted": true, "count": items.len(), "anchors": anchors.len() }),
             )?;
             *counter += 1;
         }
@@ -510,6 +671,223 @@ pub fn extract_vocab(summary: &str) -> Vec<VocabItem> {
         });
     }
     items
+}
+
+/// 从预习单 summary 提取听力锚点（👂 节）：`- [m:ss] "原句" → 音变描述（现象：X）`。
+/// 现象标签缺失时归入「其他」。
+pub fn extract_anchors(summary: &str) -> Vec<AnchorItem> {
+    let mut items = Vec::new();
+    let mut in_section = false;
+    for line in summary.lines() {
+        let line = line.trim();
+        if line.starts_with("👂") {
+            in_section = true;
+            continue;
+        }
+        if line.starts_with("❓") {
+            in_section = false;
+            continue;
+        }
+        if !in_section || line.is_empty() {
+            continue;
+        }
+        let Some(body) = line.strip_prefix("- ") else {
+            continue;
+        };
+        // [m:ss] "quote" → note（现象：X）
+        let Some(ts_end) = body.find(']') else {
+            continue;
+        };
+        let ts = body[1..ts_end].trim().to_owned();
+        if !ts.contains(':') {
+            continue;
+        }
+        let rest = body[ts_end + 1..].trim_start();
+        let Some(after_open) = rest.strip_prefix('"') else {
+            continue;
+        };
+        let Some(close_rel) = after_open.find('"') else {
+            continue;
+        };
+        let quote = after_open[..close_rel].to_owned();
+        let after_quote = after_open[close_rel + 1..].trim_start();
+        let Some(after_arrow) = after_quote.strip_prefix("→") else {
+            continue;
+        };
+        let mut note = after_arrow.trim().to_owned();
+        let mut category = "其他".to_owned();
+        if let Some(start) = note.find("（现象：") {
+            let tail = &note[start + "（现象：".len()..];
+            if let Some(end) = tail.find('）') {
+                let tag = tail[..end].trim().to_owned();
+                if ANCHOR_CATEGORIES.contains(&tag.as_str()) {
+                    category = tag;
+                }
+                note = note[..start].trim_end().to_owned();
+            }
+        }
+        if quote.is_empty() || note.is_empty() {
+            continue;
+        }
+        items.push(AnchorItem {
+            ts,
+            quote,
+            note,
+            category,
+        });
+    }
+    items
+}
+
+/// 从评测任务输出首行解析定级（如 `🔊 定级：B2+`）。
+fn parse_level(summary: &str) -> Option<String> {
+    let first = summary.lines().next()?.trim();
+    let index = first.find("定级：")? + "定级：".len();
+    let level = first[index..].trim();
+    let valid = level.len() == 2 || level.len() == 3;
+    let bytes = level.as_bytes();
+    let ok = valid
+        && matches!(bytes[0], b'A' | b'B' | b'C')
+        && bytes[1].is_ascii_digit()
+        && (level.len() == 2 || bytes[2] == b'+');
+    ok.then(|| level.to_owned())
+}
+
+/// 预习挑词用的学习者级别：定级结果优先，配置兜底。
+pub fn current_level(store: &Arc<dyn TaskStore>, fallback: &str) -> String {
+    store
+        .document(LEVEL_KIND, "latest")
+        .ok()
+        .flatten()
+        .and_then(|doc| doc.value["level"].as_str().map(str::to_owned))
+        .unwrap_or_else(|| fallback.to_owned())
+}
+
+/// `/定级`：出 3 道英译中测试题（取材最近一期预习单的视频），走任务推送。
+pub async fn place_start(
+    store: &Arc<dyn TaskStore>,
+    backend: &str,
+    route: Option<&NotifyRoute>,
+) -> Result<String> {
+    let today = Local::now().format("%Y%m%d").to_string();
+    let key = format!("youtube:place:{today}");
+    let sheet = latest_prep_summary(store)?;
+    let prompt = placement_prompt(sheet.as_deref());
+    let mut service = TaskService::new(store.clone());
+    let enqueue = enqueue_with_route(&mut service, &key, &prompt, backend, route)?;
+    let value = serde_json::json!({
+        "stage": "questions",
+        "task_id": enqueue.task.id,
+        "date": today,
+    });
+    upsert_latest(store, PLACEMENT_KIND, &value)?;
+    Ok("定级测试已生成，稍后推送。收到 3 个句子后，把你的翻译发来：/定级 <三句翻译>".into())
+}
+
+/// `/定级 <翻译>`：把用户翻译与原题一起交给 Agent 评测，产出级别写入 youtube_level。
+pub async fn place_submit(
+    store: &Arc<dyn TaskStore>,
+    translations: &str,
+    backend: &str,
+    route: Option<&NotifyRoute>,
+) -> Result<String> {
+    let Some(doc) = store.document(PLACEMENT_KIND, "latest")? else {
+        return Ok("还没有定级测试。先发 /定级 获取 3 个句子。".into());
+    };
+    if doc.value["stage"].as_str() != Some("questions") {
+        return Ok("最近一次定级已经交卷了。再发一次 /定级 可重新测试。".into());
+    }
+    let Some(task_id) = doc.value["task_id"].as_i64() else {
+        return Ok("定级测试状态异常，请重新发 /定级。".into());
+    };
+    let Some(task) = store.get(task_id)? else {
+        return Ok("找不到定级测试题目，请重新发 /定级。".into());
+    };
+    let Some(questions) = task.result.as_ref().map(|r| r.summary.clone()) else {
+        return Ok("定级测试还没生成完，稍等片刻再回复翻译。".into());
+    };
+    let today = doc.value["date"].as_str().unwrap_or("na").to_owned();
+    let key = format!("youtube:place-eval:{today}");
+    let prompt = eval_prompt(&questions, translations);
+    let mut service = TaskService::new(store.clone());
+    let enqueue = enqueue_with_route(&mut service, &key, &prompt, backend, route)?;
+    let value = serde_json::json!({
+        "stage": "answers",
+        "task_id": enqueue.task.id,
+        "date": today,
+    });
+    upsert_latest(store, PLACEMENT_KIND, &value)?;
+    Ok("收到，评测中——结果稍后推送。".into())
+}
+
+/// 最新一期已完成预习单的 summary，给出题提供风格素材。
+fn latest_prep_summary(store: &Arc<dyn TaskStore>) -> Result<Option<String>> {
+    Ok(store
+        .list(SCAN_LIMIT)?
+        .into_iter()
+        .find(|task| {
+            task.request_key.starts_with("youtube:prep:")
+                && task.status == crate::domain::TaskStatus::Succeeded
+                && task.result.as_ref().is_some_and(|r| !r.summary.is_empty())
+        })
+        .and_then(|task| task.result.map(|r| r.summary)))
+}
+
+/// CAS 覆盖 `latest` 单例记录。
+fn upsert_latest(store: &Arc<dyn TaskStore>, kind: &str, value: &serde_json::Value) -> Result<()> {
+    match store.document(kind, "latest")? {
+        Some(doc) => {
+            store.put_document(kind, "latest", Some(doc.revision), value)?;
+        }
+        None => {
+            store.put_document(kind, "latest", None, value)?;
+        }
+    }
+    Ok(())
+}
+
+fn enqueue_with_route(
+    service: &mut TaskService,
+    key: &str,
+    prompt: &str,
+    backend: &str,
+    route: Option<&NotifyRoute>,
+) -> Result<crate::domain::EnqueueResult> {
+    match route {
+        Some(route) => service.enqueue_with_notify(key, prompt, backend, route),
+        None => service.enqueue_for(key, prompt, backend),
+    }
+}
+
+/// 定级出题 prompt：输出即推送文本。
+fn placement_prompt(sheet: Option<&str>) -> String {
+    let context = match sheet {
+        Some(sheet) => {
+            format!("参考素材（用户最近看的一期视频的预习单，句子风格尽量贴近它）：\n{sheet}\n\n")
+        }
+        None => String::new(),
+    };
+    format!(
+        "你在给一位中国大学生（英语学习者）出英语定级测试。{context}\
+         出 3 道英译中题：3 个英文句子，难度从易到难（大致对应 A2→B1→B2+），\
+         优先取材参考素材里的原句或其风格；禁止用太难的专业术语堆砌难度。\
+         输出就是最终推送的消息，格式：\n\
+         📏 定级测试｜把你的翻译发来：/定级 <三句翻译>（不认识的词可保留英文）\n\
+         1. {{句子1}}\n2. {{句子2}}\n3. {{句子3}}\n\
+         全文 250 字以内，不要输出其他内容。"
+    )
+}
+
+/// 定级评测 prompt：首行的 `🔊 定级：<级别>` 会被系统解析为学习者级别。
+fn eval_prompt(questions: &str, translations: &str) -> String {
+    format!(
+        "你是有经验的英语教师。下面是给学生的 3 道英译中定级题和他的翻译。{questions}\n\n\
+         == 学生翻译 ==\n{translations}\n\n\
+         评测要求：\n\
+         第一行必须是：🔊 定级：<级别>（从 A1/A2/B1/B2/C1/C2 及 + 档中判一个，如 B2+）\n\
+         然后逐句点评：对/偏差/错在哪，怎么改更好，各一句；最后一条建议：这个级别最该练什么。\n\
+         全文 300 字以内，语气直接，不说客套话。"
+    )
 }
 
 /// 后测任务 prompt：基于预习单出题，Agent 只见单子不见视频——考的是「看懂了没」。

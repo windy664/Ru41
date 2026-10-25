@@ -59,7 +59,8 @@ ru41 schedule list                        # 确认 youtube 任务已登记
 
 - `/预习 <YouTube链接>`：单视频点播，支持 watch / youtu.be / shorts 链接或 11 位裸 ID。拉字幕转写后入队预习任务，终态推送到当前会话；同一视频重复提交幂等返回既有任务。非视频链接不拦截（消息继续走 Agent 通道）。
 - `/复习 <不会的编号>`（如 `/复习 2 4`，其余记会；全部都会回 `/复习 all`）：对最近一次复习推送反馈。别名的 `/review` 同义。
-- `/预习` 别名 `/prep`；群聊可用（内容为公开视频，不走身份双闸）。
+- `/定级`：英语水平定级测试（3 句英译中，难度递增）；收到题目后回复 `/定级 <三句翻译>` 交卷，评测结果推送并自动调整后续预习难度。
+- `/预习` 别名 `/prep`、`/定级` 别名 `/level`；群聊可用（内容为公开视频，不走身份双闸）。
 
 Agent 任务需要底座网络可用：部署环境若需代理，ru41 进程本身也要带代理环境变量（`proxy_url` 只覆盖 yt-dlp 子进程）。
 
@@ -71,8 +72,10 @@ Agent 任务需要底座网络可用：部署环境若需代理，ru41 进程本
 2. **间隔复习**：到期词块（1/3/7/14/30 天阶梯）合成一条复习推送——只给中文线索，回忆英文块。回复 `/复习 2 4` 标记不会的（次日重推），其余进一档；3 天不反馈自动按会结转；走完阶梯毕业为 known。
 3. **看后测试**：当天送达预习单的视频自动入队一道后测任务（2 内容理解 + 1 语言运用，附参考答案），Agent 只见预习单、不见视频，走任务通知出口推送。
 4. **学习者模型**：known 词块自动注入预习 prompt 的排除名单——「教已会的」问题随使用收敛。
+5. **发音专题**：听力锚点按语音现象（连读/弱读/闪音/失爆/同化/缩读/重音）落库归类；同一现象攒够 3 条就推一期专题课（例句全来自看过的视频），每个日历日最多一期。
+6. **`/定级`**：出 3 道英译中题（取材最近一期视频）→ 回复 `/定级 <三句翻译>` → Agent 评测并判 CEFR 级别 → 结果写入 `youtube_level`，预习挑词难度随之调整（配置里的 level 仅作兜底）。
 
-records 数据模型：`youtube_vocab#<video>#<n>`（词块）、`youtube_review_batch#<日期>`（当日批次，幂等键）、`youtube_posttest#<video>`（后测已入队标记）。生产以 compose `youtube` / `youtube-review` 服务（profile `youtube`）常驻。
+records 数据模型：`youtube_vocab#<video>#<n>`（词块）、`youtube_review_batch#<日期>`（当日批次，幂等键）、`youtube_posttest#<video>`（后测已入队标记）、`youtube_anchor#<video>#a<n>`（听力锚点）、`youtube_anchor_topic/latest`（专题当日已推标记）、`youtube_placement/latest` 与 `youtube_level/latest`（定级状态与结果）。生产以 compose `youtube` / `youtube-review` 服务（profile `youtube`）常驻。
 
 ## 边界
 
