@@ -125,6 +125,7 @@ fn tracker_with(
             target: "user:U1".into(),
             msg_id: None,
         }),
+        digest_at: "12:10".into(),
         ytdlp_bin: write_fake_ytdlp(dir, marker, list_lines)
             .to_string_lossy()
             .to_string(),
@@ -193,7 +194,8 @@ async fn baseline_snapshot_then_prepares_only_new_video() {
             .contains("[L1 0:04] unveiled the Roadster and its ability to")
     );
     assert!(tasks[0].prompt.contains("farting cold gas"));
-    assert_eq!(tasks[0].notify.as_ref().unwrap().target, "user:U1");
+    // 自动轮询的预习单不带即时通知——统一进每日日报。
+    assert!(tasks[0].notify.is_none());
     assert_eq!(seen_status(&store, "vid-0"), "done");
     // 已登记的 vid-1 不受影响。
     assert_eq!(seen_status(&store, "vid-1"), "baseline");
@@ -430,6 +432,13 @@ mod review_loop {
     }
 
     fn review_job(store: Arc<dyn TaskStore>) -> (YoutubeReviewJob, FakeNotifier) {
+        review_job_at(store, chrono::Local::now())
+    }
+
+    fn review_job_at(
+        store: Arc<dyn TaskStore>,
+        at: chrono::DateTime<chrono::Local>,
+    ) -> (YoutubeReviewJob, FakeNotifier) {
         let config = ru41::modules::youtube::YoutubeConfig {
             channels: vec![],
             keywords: vec![],
@@ -447,14 +456,31 @@ mod review_loop {
                 target: "user:U1".into(),
                 msg_id: None,
             }),
+            digest_at: "12:10".into(),
             ytdlp_bin: "yt-dlp".into(),
             proxy_url: None,
         };
         let fake = FakeNotifier::default();
         (
-            YoutubeReviewJob::new(store, config, Some(Arc::new(fake.clone()))),
+            YoutubeReviewJob::with_clock(
+                store,
+                config,
+                Some(Arc::new(fake.clone())),
+                Arc::new(move || at),
+            ),
             fake,
         )
+    }
+
+    /// 今天/明天 12:15 的时钟时刻（与真实日历对齐，方便断言日期键）。
+    fn clock_at(days_ahead: i64) -> chrono::DateTime<chrono::Local> {
+        use chrono::{Duration, TimeZone};
+        let date = (chrono::Local::now() + Duration::days(days_ahead)).date_naive();
+        let naive = date.and_hms_opt(12, 15, 0).expect("valid time");
+        chrono::Local
+            .from_local_datetime(&naive)
+            .single()
+            .expect("local time")
     }
 
     fn seed_succeeded_sheet(store: &Arc<dyn TaskStore>, video: &str) {
@@ -500,15 +526,15 @@ mod review_loop {
         let store: Arc<dyn TaskStore> =
             Arc::new(SqliteTaskStore::open(&dir.path().join("state.db")).unwrap());
         seed_succeeded_sheet(&store, "vidq");
-        let (job, fake) = review_job(store.clone());
+        let day1 = clock_at(0);
+        let (job, fake) = review_job_at(store.clone(), day1);
 
-        // 第一轮：提取 3 个词块；全部明天才到期，不该推送。
+        // 第一天 12:15 日报：预习单进日报；词块全部明天才到期，无复习段。
         let report = ru41::ingress::schedule::PollJob::poll_json(&job)
             .await
             .unwrap();
         assert_eq!(report["extracted_videos"], 1);
-        assert_eq!(report["review_pushed"], 0);
-        assert_eq!(report["posttests_enqueued"], 0);
+        assert_eq!(report["digest_pushed"], 1);
         let meta = store
             .document("youtube_vocab", "vidq#meta")
             .unwrap()
@@ -516,9 +542,22 @@ mod review_loop {
         assert_eq!(meta.value["count"], 3);
         assert_eq!(vocab(&store, "vidq", 0)["chunk"], "silent stalls");
         assert_eq!(vocab(&store, "vidq", 2)["chunk"], "walk through … with you");
-        assert_eq!(fake.0.lock().unwrap().len(), 0, "未到期不推送");
+        {
+            let sent = fake.0.lock().unwrap();
+            assert_eq!(sent.len(), 1);
+            assert!(sent[0].contains("📚 英语日报"), "{}", sent[0]);
+            assert!(sent[0].contains("silent stalls"), "日报应含预习单全文");
+            assert!(!sent[0].contains("词块复习"), "未到期不该有复习段");
+        }
 
-        // 回拨第 0 个词块的到期时间，模拟「今天该复习了」。
+        // 同日再跑：日报已发，不重发。
+        let report = ru41::ingress::schedule::PollJob::poll_json(&job)
+            .await
+            .unwrap();
+        assert_eq!(report["digest_pushed"], 0);
+        assert_eq!(fake.0.lock().unwrap().len(), 1);
+
+        // 回拨第 0 个词块的到期时间，模拟「明天该复习了」。
         let doc = store.document("youtube_vocab", "vidq#0").unwrap().unwrap();
         let mut value = doc.value.clone();
         value["due_at"] = (ru41::util::now() - 60).into();
@@ -526,11 +565,13 @@ mod review_loop {
             .put_document("youtube_vocab", "vidq#0", Some(doc.revision), &value)
             .unwrap();
 
-        // 第二轮：只推到期的 1 个，且登记今日批次。
+        // 第二天 12:15 日报：复习段只有到期的 1 个，批次登记在明天名下。
+        let day2 = clock_at(1);
+        let (job, fake) = review_job_at(store.clone(), day2);
         let report = ru41::ingress::schedule::PollJob::poll_json(&job)
             .await
             .unwrap();
-        assert_eq!(report["review_pushed"], 1);
+        assert_eq!(report["digest_pushed"], 1);
         {
             let sent = fake.0.lock().unwrap();
             assert_eq!(sent.len(), 1);
@@ -542,37 +583,42 @@ mod review_loop {
             );
             assert!(!sent[0].contains("带人逐步看懂"), "未到期的不该出现在批里");
         }
-        let today = chrono::Local::now().format("%Y-%m-%d").to_string();
+        let day2_str = day2.format("%Y-%m-%d").to_string();
         let batch = store
-            .document("youtube_review_batch", &today)
+            .document("youtube_review_batch", &day2_str)
             .unwrap()
             .unwrap();
         assert_eq!(batch.value["items"].as_array().unwrap().len(), 1);
 
         // 反馈：/复习 all 记会，进一档。
         let reply = review::apply_feedback(&store, "all").unwrap();
-        assert!(reply.contains("都会"), "{reply}");
+        assert!(reply.contains("都会"), "{}", reply);
         assert_eq!(vocab(&store, "vidq", 0)["stage"], 1);
 
-        // 同日再跑：批次已存在，不重推。
+        // 同日再跑：日报已发，不重发。
         let report = ru41::ingress::schedule::PollJob::poll_json(&job)
             .await
             .unwrap();
-        assert_eq!(report["review_pushed"], 0);
+        assert_eq!(report["digest_pushed"], 0);
         assert_eq!(fake.0.lock().unwrap().len(), 1);
 
         // 连「会」到毕业：known 词块进入排除名单。
         for _ in 0..4 {
             // 批次已 resolved，先重开它模拟跨天新批次，再反馈推进阶梯。
             let doc = store
-                .document("youtube_review_batch", &today)
+                .document("youtube_review_batch", &day2_str)
                 .unwrap()
                 .unwrap();
             let mut value = doc.value.clone();
             value["resolved"] = false.into();
             value["pushed_at"] = ru41::util::now().into();
             store
-                .put_document("youtube_review_batch", &today, Some(doc.revision), &value)
+                .put_document(
+                    "youtube_review_batch",
+                    &day2_str,
+                    Some(doc.revision),
+                    &value,
+                )
                 .unwrap();
             review::apply_feedback(&store, "all").unwrap();
         }
@@ -582,18 +628,73 @@ mod review_loop {
     }
 
     #[tokio::test]
+    async fn anchor_topic_push_after_threshold() {
+        let dir = tempfile::tempdir().unwrap();
+        let store: Arc<dyn TaskStore> =
+            Arc::new(SqliteTaskStore::open(&dir.path().join("state.db")).unwrap());
+        // 3 张单子各贡献 1 条「缩读」锚点 → 达到专题阈值。
+        for video in ["vidq", "vidr", "vids"] {
+            seed_succeeded_sheet(&store, video);
+        }
+        let (job, fake) = review_job_at(store.clone(), clock_at(0));
+        let report = ru41::ingress::schedule::PollJob::poll_json(&job)
+            .await
+            .unwrap();
+        assert_eq!(report["digest_pushed"], 1, "日报打包：预习单 + 发音专题");
+        {
+            let sent = fake.0.lock().unwrap();
+            assert_eq!(sent.len(), 1, "一天只有一条日报");
+            assert!(sent[0].contains("📚 英语日报"), "{}", sent[0]);
+            assert!(sent[0].contains("发音专题"), "推送缺专题头：{}", sent[0]);
+            assert!(
+                [
+                    "连读", "弱读", "闪音", "失爆", "同化", "缩读", "重音", "其他"
+                ]
+                .iter()
+                .any(|c| sent[0].contains(c)),
+                "专题应带现象类别：{}",
+                sent[0]
+            );
+            assert!(
+                ["[2:02]", "[3:12]", "[3:40]"]
+                    .iter()
+                    .any(|ts| sent[0].contains(ts)),
+                "例句应带时间戳：{}",
+                sent[0]
+            );
+        }
+        // 锚点已标记 topic_pushed，日报当天已发 → 再跑不重发。
+        let report = ru41::ingress::schedule::PollJob::poll_json(&job)
+            .await
+            .unwrap();
+        assert_eq!(report["digest_pushed"], 0);
+        assert_eq!(fake.0.lock().unwrap().len(), 1);
+    }
+
+    #[test]
+    fn extracts_without_english_leak() {
+        let items = review::extract_vocab(SHEET);
+        assert_eq!(items.len(), 3);
+        for item in &items {
+            assert!(!item.cue.contains("sounds like"));
+            assert!(!item.cue.contains("你可以说"));
+        }
+    }
+
+    #[tokio::test]
     async fn review_batch_mixes_videos() {
         let dir = tempfile::tempdir().unwrap();
         let store: Arc<dyn TaskStore> =
             Arc::new(SqliteTaskStore::open(&dir.path().join("state.db")).unwrap());
         seed_succeeded_sheet(&store, "vidq");
         seed_succeeded_sheet(&store, "vidr");
-        let (job, _fake) = review_job(store.clone());
+        let (job, _fake) = review_job_at(store.clone(), clock_at(0));
+        // 第一天日报：带走两张预习单，复习段为空。
         ru41::ingress::schedule::PollJob::poll_json(&job)
             .await
             .unwrap();
 
-        // 两个视频全部 6 个词块都到期；单视频上限 2 → 批里最多 4 条。
+        // 两个视频全部 6 个词块都到期。
         for video in ["vidq", "vidr"] {
             for index in 0..3 {
                 let doc = store
@@ -612,12 +713,20 @@ mod review_loop {
                     .unwrap();
             }
         }
+        // 第二天日报：复习段 2 视频 × 单视频上限 2 = 4 条。
+        let (job, fake) = review_job_at(store.clone(), clock_at(1));
         ru41::ingress::schedule::PollJob::poll_json(&job)
             .await
             .unwrap();
-        let today = chrono::Local::now().format("%Y-%m-%d").to_string();
+        {
+            let sent = fake.0.lock().unwrap();
+            assert_eq!(sent.len(), 1);
+            assert!(sent[0].contains("词块复习 4 条"), "{}", sent[0]);
+            assert!(sent[0].contains("（懂）"), "{}", sent[0]);
+        }
+        let day2 = clock_at(1).format("%Y-%m-%d").to_string();
         let batch = store
-            .document("youtube_review_batch", &today)
+            .document("youtube_review_batch", &day2)
             .unwrap()
             .unwrap();
         let items = batch.value["items"].as_array().unwrap();
@@ -627,60 +736,6 @@ mod review_loop {
             .filter(|v| v.as_str().unwrap().starts_with("vidq"))
             .count();
         assert_eq!(q_count, 2, "单视频不超过 MAX_PER_VIDEO");
-    }
-
-    #[test]
-    fn extracts_without_english_leak() {
-        let items = review::extract_vocab(SHEET);
-        assert_eq!(items.len(), 3);
-        for item in &items {
-            assert!(!item.cue.contains("sounds like"));
-            assert!(!item.cue.contains("你可以说"));
-        }
-    }
-
-    #[tokio::test]
-    async fn anchor_topic_push_after_threshold() {
-        let dir = tempfile::tempdir().unwrap();
-        let store: Arc<dyn TaskStore> =
-            Arc::new(SqliteTaskStore::open(&dir.path().join("state.db")).unwrap());
-        // 3 张单子各贡献 1 条「缩读」锚点 → 达到专题阈值。
-        for video in ["vidq", "vidr", "vids"] {
-            seed_succeeded_sheet(&store, video);
-        }
-        let (job, fake) = review_job(store.clone());
-        let report = ru41::ingress::schedule::PollJob::poll_json(&job)
-            .await
-            .unwrap();
-        assert_eq!(report["review_pushed"], 1, "词块未到期，推的是发音专题");
-        {
-            let sent = fake.0.lock().unwrap();
-            assert_eq!(sent.len(), 1);
-            assert!(sent[0].contains("发音专题"), "推送缺专题头：{}", sent[0]);
-            assert!(
-                [
-                    "连读", "弱读", "闪音", "失爆", "同化", "缩读", "重音", "其他"
-                ]
-                .iter()
-                .any(|c| sent[0].contains(c)),
-                "专题应带现象类别：{}",
-                sent[0]
-            );
-            assert!(
-                ["[2:02]", "[3:12]", "[3:40]"]
-                    .iter()
-                    .any(|ts| sent[0].contains(ts)),
-                "例句应带时间戳：{}",
-                sent[0]
-            );
-            assert!(!sent[0].contains("（现象："), "推送里不该露出内部标签");
-        }
-        // 锚点已标记 topic_pushed → 同现象无新锚点不再推。
-        let report = ru41::ingress::schedule::PollJob::poll_json(&job)
-            .await
-            .unwrap();
-        assert_eq!(report["review_pushed"], 0);
-        assert_eq!(fake.0.lock().unwrap().len(), 1);
     }
 
     #[tokio::test]
