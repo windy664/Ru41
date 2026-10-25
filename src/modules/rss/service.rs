@@ -28,6 +28,9 @@ pub struct RssConfig {
     /// 条目最大年龄（天）：发布时间更早的视为旧闻直接丢弃，
     /// 防止聚合类源（CSDN 头条等）的考古帖刷屏日报。默认 2。
     pub max_age_days: u64,
+    /// daily 模式入池前是否跑关键词粗筛；false 时新条目全量入池，
+    /// 相关性判断完全交给 digest（每天仅 1-2 次 GLM 调用，成本不变）。
+    pub pool_keyword_filter: bool,
 }
 
 /// digest 产出节奏：有候选即精选 vs 攒一天到点出日报。
@@ -225,15 +228,21 @@ impl RssTracker {
             fresh.push(item);
         }
         let new_items = fresh.len();
-        let candidates: Vec<FeedItem> = fresh
-            .into_iter()
-            .filter(|item| {
-                crate::app::digest::keyword_match(
-                    keywords,
-                    &format!("{} {}", item.title, item.summary),
-                )
-            })
-            .collect();
+        // pool_keyword_filter=false 时全量入池：关键词粗筛容易误杀标题不含
+        // 关键词但实质相关的条目（尤其英文源摘要稀薄），交给 digest 判断更准。
+        let candidates: Vec<FeedItem> = if self.config.pool_keyword_filter {
+            fresh
+                .into_iter()
+                .filter(|item| {
+                    crate::app::digest::keyword_match(
+                        keywords,
+                        &format!("{} {}", item.title, item.summary),
+                    )
+                })
+                .collect()
+        } else {
+            fresh
+        };
         let candidate_count = candidates.len();
 
         // 2. 入池：当天的池文档追加（按条目 id 去重，封顶 80 条保最新）
@@ -508,6 +517,7 @@ mod tests {
                 evening_hour,
                 morning_hour: None,
                 max_age_days: 2,
+                pool_keyword_filter: true,
             },
         )
     }
@@ -568,5 +578,25 @@ mod tests {
         assert!(prompt.contains("📭 今日无值得关注的机会"));
         assert!(prompt.contains("不要附加任何解释"));
         assert!(prompt.contains("不要逐条罗列舍弃理由"));
+    }
+
+    #[test]
+    fn daily_pool_keyword_filter_off_pools_everything() {
+        let dir = tempfile::tempdir().unwrap();
+        let store: Arc<dyn TaskStore> = Arc::new(
+            crate::adapters::database::sqlite::SqliteTaskStore::open(&dir.path().join("s.db"))
+                .unwrap(),
+        );
+        let mut tracker = daily_tracker(store.clone(), 0);
+        tracker.config.pool_keyword_filter = false;
+        // 标题不含关键词 "AI" 的条目也应入池。
+        let mut unrelated = item("z");
+        unrelated.1.title = "社区闲聊帖".into();
+        let (outcome, pool) = tracker
+            .poll_daily(vec![unrelated], &["AI".to_owned()], "i")
+            .unwrap();
+        assert_eq!(outcome.candidates, 1, "关粗筛后全量入池");
+        assert_eq!(pool, 0, "evening_hour=0 到点出报清池");
+        assert_eq!(store.list(10).unwrap().len(), 1);
     }
 }

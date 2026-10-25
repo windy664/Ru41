@@ -179,6 +179,7 @@ fn make_tracker(
             evening_hour: 21,
             morning_hour: None,
             max_age_days: 2,
+            pool_keyword_filter: true,
         },
     )
 }

@@ -31,6 +31,9 @@ pub struct RssSection {
     pub morning_hour: Option<u32>,
     /// 条目最大年龄（天），更旧的直接丢弃；默认 2。
     pub max_age_days: Option<u64>,
+    /// daily 模式入池前是否跑关键词粗筛；默认 true。
+    /// false 时近时效新条目全量入池（封顶 80），相关性判断完全交给 digest。
+    pub pool_keyword_filter: Option<bool>,
 }
 
 impl RssSection {
@@ -56,6 +59,7 @@ impl RssSection {
             evening_hour: self.evening_hour.unwrap_or(21),
             morning_hour: self.morning_hour,
             max_age_days: self.max_age_days.unwrap_or(2),
+            pool_keyword_filter: self.pool_keyword_filter.unwrap_or(true),
         })
     }
 }
