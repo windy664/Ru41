@@ -48,6 +48,13 @@ async fn main() -> Result<()> {
     if let Some(path) = &config_path {
         eprintln!("[config] using {}", path.display());
     }
+    // 纯 tracker 子命令（papers/rss/projects/ecard/zhihuishu/obsidian/blog）
+    // 分支体完全一致，查表统一分发，不进下面的大 match。
+    if let Some((name, tracker_command)) = cli.command.as_tracker() {
+        let output = tracker_or_exit(tracker_cli(name, tracker_command, &config, &store_config).await?)?;
+        println!("{}", serde_json::to_string_pretty(&output)?);
+        return Ok(());
+    }
     let output = match cli.command {
         Command::Serve { listen } => {
             // 令牌优先级：环境变量 > 配置文件。
@@ -212,14 +219,14 @@ async fn main() -> Result<()> {
             dispatcher.run_loop(shutdown_channel()?).await?;
             return Ok(());
         }
-        Command::Papers { command } => {
-            tracker_or_exit(tracker_cli("papers", command, &config, &store_config).await?)?
-        }
-        Command::Rss { command } => {
-            tracker_or_exit(tracker_cli("rss", command, &config, &store_config).await?)?
-        }
-        Command::Projects { command } => {
-            tracker_or_exit(tracker_cli("projects", command, &config, &store_config).await?)?
+        Command::Papers { .. }
+        | Command::Rss { .. }
+        | Command::Projects { .. }
+        | Command::Ecard { .. }
+        | Command::Zhihuishu { .. }
+        | Command::Obsidian { .. }
+        | Command::Blog { .. } => {
+            unreachable!("handled by tracker dispatch above")
         }
         Command::Youtube { command } => match command {
             YoutubeCommand::Prep { url } => {
@@ -255,12 +262,6 @@ async fn main() -> Result<()> {
                 return Ok(());
             }
         },
-        Command::Ecard { command } => {
-            tracker_or_exit(tracker_cli("ecard", command, &config, &store_config).await?)?
-        }
-        Command::Zhihuishu { command } => {
-            tracker_or_exit(tracker_cli("zhihuishu", command, &config, &store_config).await?)?
-        }
         Command::Chaoxing { command } => match command {
             ChaoxingCommand::Poll => tracker_or_exit(
                 tracker_cli("chaoxing", TrackerCommand::Poll, &config, &store_config).await?,
@@ -335,12 +336,6 @@ async fn main() -> Result<()> {
                 &when,
             )?,
         },
-        Command::Obsidian { command } => {
-            tracker_or_exit(tracker_cli("obsidian", command, &config, &store_config).await?)?
-        }
-        Command::Blog { command } => {
-            tracker_or_exit(tracker_cli("blog", command, &config, &store_config).await?)?
-        }
         Command::Task { command } => {
             let mut service = TaskService::new(open_store(&store_config)?);
             match command {

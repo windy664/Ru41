@@ -207,12 +207,31 @@ pub enum ConfigCommand {
     Check,
 }
 
-#[derive(Subcommand)]
+#[derive(Subcommand, Clone, Copy)]
 pub enum TrackerCommand {
     /// 执行一轮轮询（适合系统 cron 定时调用）。
     Poll,
     /// 常驻运行，按该来源配置的 interval_secs 周期轮询。
     Run,
+}
+
+impl Command {
+    /// 纯 tracker 子命令（仅 Poll/Run 两态、分支体完全一致）的统一查表：
+    /// 返回 (tracker_job 登记名, 子命令)。登记名必须与 modules 注册表一致。
+    /// 有额外子命令的模块（youtube/chaoxing/teachermate/jwxt）不在此列，
+    /// 仍由 main 的专属分支处理。
+    pub fn as_tracker(&self) -> Option<(&'static str, TrackerCommand)> {
+        match self {
+            Command::Papers { command } => Some(("papers", *command)),
+            Command::Rss { command } => Some(("rss", *command)),
+            Command::Projects { command } => Some(("projects", *command)),
+            Command::Ecard { command } => Some(("ecard", *command)),
+            Command::Zhihuishu { command } => Some(("zhihuishu", *command)),
+            Command::Obsidian { command } => Some(("obsidian", *command)),
+            Command::Blog { command } => Some(("blog", *command)),
+            _ => None,
+        }
+    }
 }
 
 #[derive(Subcommand)]
