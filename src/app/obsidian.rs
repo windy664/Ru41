@@ -188,18 +188,45 @@ impl ObsidianService {
         Ok(report)
     }
 
-    /// 待办视图：todo 数据库 → vault 单向投影，写在 `07-Todo-待办/当前待办.md`。
-    /// 内容没变不写文件；变了就 [ru41] 前缀自提交推送（下一轮游标自认，不会触发整理）。
+    /// 待办视图：todo 数据库 ↔ `04-Life-生活/Todo-待办.md` 双向同步。
+    /// 数据库 → 文件：每轮重渲（内容没变不写）；文件 → 数据库：先读旧文件里的
+    /// 勾选状态写回（打勾=完成、取消勾=恢复），再按最新状态渲染。
+    /// 变更以 [ru41] 前缀自提交（下一轮游标自认，不会触发整理）。
     async fn render_todo_view(&self) -> Result<()> {
         let Some(options) = self.todo_options else {
             return Ok(());
         };
         let service = crate::app::todo::TodoService::new(self.store.clone(), options);
         let now = crate::util::now();
-        let overview = service.overview(now, 50)?;
-        let content = render_todo_markdown(&overview, now, options);
         let vault = self.vault.clone();
         tokio::task::spawn_blocking(move || -> Result<()> {
+            // 1. 勾选回写：旧文件里用户手动的 [x]/[ ] 变更写回数据库。
+            if let Some(existing) = vault.read_file(TODO_VIEW_PATH)? {
+                for (id, checked) in parse_checkbox_states(&existing) {
+                    let result = if checked {
+                        service.complete(&id, now).map(|_| ())
+                    } else {
+                        service.restore(&id, now).map(|_| ())
+                    };
+                    if let Err(error) = result {
+                        // 状态已一致或 id 已失效：忽略单项，不挡整轮。
+                        eprintln!("[obsidian] todo checkbox sync {id}: {error:#}");
+                    }
+                }
+            }
+            // 2. 按最新数据库状态渲染。
+            let overview = service.overview(now, 50)?;
+            let completed_recent: Vec<crate::domain::todo::TodoItem> = service
+                .list(crate::domain::todo::TodoView::All, now, 1000)?
+                .into_iter()
+                .filter(|item| {
+                    item.status == crate::domain::todo::TodoStatus::Completed
+                        && item
+                            .completed_at
+                            .is_some_and(|at| at >= now - 7 * 86_400)
+                })
+                .collect();
+            let content = render_todo_markdown(&overview, &completed_recent, now, options);
             if vault.read_file(TODO_VIEW_PATH)?.as_deref() == Some(content.as_str()) {
                 return Ok(());
             }
@@ -499,20 +526,49 @@ impl crate::ingress::schedule::PollJob for ObsidianService {
 }
 
 /// 整理任务 prompt：只描述事实与边界，归档规则由 obsidian-organize skill 提供。
-/// 待办视图在 vault 里的位置（机器维护，手改会被覆盖）。
-const TODO_VIEW_PATH: &str = "07-Todo-待办/当前待办.md";
+/// 待办视图在 vault 里的位置（与数据库双向同步：勾选状态会写回）。
+const TODO_VIEW_PATH: &str = "04-Life-生活/Todo-待办.md";
 
-/// 待办概况渲染成 vault 笔记：按 逾期/今天/近期/长期/未排期 分节。
+/// 从视图文件解析勾选状态：`- [ ]`/`- [x]` 行尾的 `` `#id` `` → (id, 是否勾选)。
+fn parse_checkbox_states(content: &str) -> Vec<(String, bool)> {
+    let mut states = Vec::new();
+    for line in content.lines() {
+        let line = line.trim_start();
+        // "- [ ]" 剥掉 "- [" 后剩 " ] ..."（前导空格）；"- [x]" 剩 "x] ..."。
+        let checked = match line.strip_prefix("- [") {
+            Some(rest) if rest.starts_with(" ] ") => false,
+            Some(rest) if rest.starts_with("x] ") || rest.starts_with("X] ") => true,
+            _ => continue,
+        };
+        // 行尾 `` `#id` `` 标记
+        let Some(start) = line.rfind("`#") else {
+            continue;
+        };
+        let id = &line[start + 2..];
+        let Some(end) = id.find('`') else {
+            continue;
+        };
+        let id = id[..end].trim();
+        if !id.is_empty() {
+            states.push((id.to_owned(), checked));
+        }
+    }
+    states
+}
+
+/// 待办概况渲染成 Obsidian 任务清单：严格 `- [ ]` 复选格式，行尾 `` `#id` `` 供回写。
+/// 分节：已过期/今天/近期/长期/未排期 + 近 7 天已完成。
 fn render_todo_markdown(
     overview: &crate::domain::todo::TodoOverview,
+    completed_recent: &[crate::domain::todo::TodoItem],
     now: i64,
     options: crate::domain::todo::TodoOptions,
 ) -> String {
     use crate::domain::todo::due_label;
     let mut out = String::from(
-        "# 当前待办\n\n\
-         > Ru41 自动生成（todo 数据库 → 本文件单向投影），手改会被覆盖。\n\
-         > 管理入口：QQ `/待办`，或 CLI `ru41 todo`。\n",
+        "# 待办清单\n\n\
+         > Ru41 与 Obsidian 双向同步：打勾 = 完成、取消勾 = 恢复（写回数据库）。\n\
+         > 新增/修改/删除走 QQ `/待办` 或 CLI `ru41 todo`；正文行会被覆盖，勾选状态保留。\n",
     );
     let sections: [(&str, &Vec<crate::domain::todo::TodoItem>, bool); 5] = [
         ("已过期", &overview.overdue, true),
@@ -531,7 +587,17 @@ fn render_todo_markdown(
             out.push_str(&format!("- [ ] {}（{}）`#{}`\n", item.title, due, item.id));
         }
     }
-    if overview.active_count() == 0 {
+    if !completed_recent.is_empty() {
+        out.push_str("\n## 已完成（近 7 天）\n");
+        for item in completed_recent {
+            let done = item
+                .completed_at
+                .map(|at| crate::domain::todo::local_date(at, options.offset_seconds))
+                .unwrap_or_default();
+            out.push_str(&format!("- [x] {}（完成于 {}）`#{}`\n", item.title, done, item.id));
+        }
+    }
+    if overview.active_count() == 0 && completed_recent.is_empty() {
         out.push_str("\n（空）\n");
     }
     out
@@ -549,7 +615,7 @@ mod tests {
             long_term_days: 30,
         };
         let empty = crate::domain::todo::TodoOverview::default();
-        assert!(render_todo_markdown(&empty, 0, options).contains("（空）"));
+        assert!(render_todo_markdown(&empty, &[], 0, options).contains("（空）"));
 
         let mut overview = crate::domain::todo::TodoOverview::default();
         overview.today.push(crate::domain::todo::TodoItem {
@@ -562,14 +628,32 @@ mod tests {
             remind_at: None,
             last_reminded_at: None,
             completed_at: None,
-            source: None,
             created_at: 0,
             updated_at: 0,
+            source: None,
         });
-        let md = render_todo_markdown(&overview, 0, options);
+        let md = render_todo_markdown(&overview, &[], 0, options);
         assert!(md.contains("## 今天"));
-        assert!(md.contains("交实验报告"));
+        assert!(md.contains("- [ ] 交实验报告"));
         assert!(!md.contains("## 已过期"), "空分节不出现");
+    }
+
+    #[test]
+    fn parses_checkbox_states_from_view() {
+        let content = "# 待办清单\n\n## 今天\n- [ ] 交报告（今天）`#todo_1_abc`\n\
+             - [x] 已做完的事（完成于 2026-10-25）`#todo_2_def`\n\
+             - [X] 大写也算 `#todo_3_ghi`\n\
+             - 普通列表不是任务 `#todo_4_jkl`\n\
+             - [ ] 没有 id 标记的行\n";
+        let states = parse_checkbox_states(content);
+        assert_eq!(
+            states,
+            vec![
+                ("todo_1_abc".to_owned(), false),
+                ("todo_2_def".to_owned(), true),
+                ("todo_3_ghi".to_owned(), true),
+            ]
+        );
     }
 }
 
