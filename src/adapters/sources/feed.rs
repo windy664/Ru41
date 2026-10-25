@@ -26,7 +26,13 @@ impl Default for FeedClient {
 impl FeedClient {
     pub fn new() -> Self {
         Self {
-            http: crate::util::http_client(),
+            // 部分源（linux.do 等 Cloudflare 站点）按 UA 拦机器人，
+            // 订阅抓取用浏览器 UA，不动全局 http_client 的 ru41 标识。
+            http: reqwest::Client::builder()
+                .user_agent("Mozilla/5.0 (X11; Linux x86_64; rv:128.0) Gecko/20100101 Firefox/128.0")
+                .timeout(std::time::Duration::from_secs(30))
+                .build()
+                .expect("feed client build"),
         }
     }
 
