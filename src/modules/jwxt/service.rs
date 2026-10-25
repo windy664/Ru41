@@ -307,10 +307,13 @@ impl JwxtTracker {
     /// 故障期间静默重试不刷屏；恢复那一刻告诉你系统已自愈。成功时清零连续失败计数。
     async fn mark_login_state(&self, failed: bool) -> Result<()> {
         if !failed {
+            // 清零必须带 revision 走 CAS：put_document(None) 是仅新建，
+            // 计数文档已存在时写入会被静默丢弃，days 只增不减。
+            let streak = self.store.document("jwxt_alert", "login_streak")?;
             self.store.put_document(
                 "jwxt_alert",
                 "login_streak",
-                None,
+                streak.as_ref().map(|d| d.revision),
                 &serde_json::json!({ "days": 0, "last_date": "" }),
             )?;
         }
@@ -837,5 +840,74 @@ impl crate::ingress::schedule::PollJob for JwxtTracker {
         Box<dyn std::future::Future<Output = anyhow::Result<serde_json::Value>> + Send + '_>,
     > {
         Box::pin(async move { Ok(serde_json::to_value(self.poll_once().await?)?) })
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::ports::storage::TaskStore;
+    use std::sync::Arc;
+
+    fn test_tracker(store: Arc<dyn TaskStore>, dir: &std::path::Path) -> JwxtTracker {
+        let client = crate::modules::jwxt::source::JwxtClient::new(
+            "u",
+            "p",
+            "http://127.0.0.1:1".into(),
+            "m".into(),
+            "e".into(),
+            "http://127.0.0.1:1".into(),
+            dir.join("session.json"),
+        );
+        JwxtTracker::new(
+            store,
+            client,
+            None,
+            JwxtConfig {
+                username: "u".into(),
+                password: "p".into(),
+                cas_base: "http://127.0.0.1:1".into(),
+                cas_modulus: "m".into(),
+                cas_exponent: "e".into(),
+                jwxt_base: "http://127.0.0.1:1".into(),
+                session_path: dir.join("session.json"),
+                semester_start: None,
+                xnm: None,
+                xqm: None,
+                interval_secs: 60,
+                daily_remind: false,
+                remind_hour: 21,
+                sync_schedule: false,
+                clock: None,
+                notify_target: String::new(),
+            },
+        )
+    }
+
+    #[tokio::test]
+    async fn login_streak_resets_after_recovery() {
+        // 回归：put_document(None) 是仅新建，计数文档已存在时清零写入会被
+        // 静默丢弃——恢复后 days 必须真的归零，否则恢复后再遇瞬时失败会立刻告警。
+        let dir = tempfile::tempdir().unwrap();
+        let store: Arc<dyn TaskStore> = Arc::new(
+            crate::adapters::database::sqlite::SqliteTaskStore::open(&dir.path().join("s.db"))
+                .unwrap(),
+        );
+        // 模拟已连续失败 2 天（CAS 建的文档，revision 存在）
+        store
+            .put_document(
+                "jwxt_alert",
+                "login_streak",
+                None,
+                &serde_json::json!({ "days": 2, "last_date": "2026-10-24" }),
+            )
+            .unwrap();
+        let tracker = test_tracker(store.clone(), dir.path());
+        tracker.mark_login_state(false).await.unwrap();
+        let doc = store
+            .document("jwxt_alert", "login_streak")
+            .unwrap()
+            .expect("streak 文档在");
+        assert_eq!(doc.value["days"].as_i64(), Some(0), "恢复后计数必须清零");
     }
 }
