@@ -5,6 +5,10 @@
 
 use super::super::feed::FeedItem;
 use anyhow::{Context, Result};
+use std::time::Duration;
+
+/// browser 渲染允许的整轮等待上限（含页面 networkidle2）。
+const RENDER_TIMEOUT: Duration = Duration::from_secs(75);
 
 /// rss feed 列表里的接入前缀：`xfyun+https://challenge.xfyun.cn/competition`。
 pub const URL_PREFIX: &str = "xfyun+";
@@ -29,8 +33,16 @@ impl Default for XfyunClient {
 
 impl XfyunClient {
     pub fn new() -> Self {
+        // ru41-browser 是 ru41-net 内的容器地址，不能走容器注入的出站代理
+        // （HTTP_PROXY 指向 mihomo，代理解析不了容器名，会回 502）——单独建
+        // 一个 no_proxy 客户端。
         Self {
-            http: crate::util::http_client(),
+            http: reqwest::Client::builder()
+                .user_agent(concat!("ru41/", env!("CARGO_PKG_VERSION")))
+                .timeout(RENDER_TIMEOUT)
+                .no_proxy()
+                .build()
+                .expect("xfyun render client build"),
             browser_url: std::env::var("RU41_BROWSER_URL")
                 .unwrap_or_else(|_| "http://ru41-browser:3000".into()),
         }
@@ -77,10 +89,10 @@ fn parse_card(block: &str, page_url: &str) -> Option<FeedItem> {
     let deadline = capture(block, r#"card_right_time_title">报名截至[：:]\s*([0-9-]+)"#);
     let status = capture(block, r#"card_right_time_status">.*?<span>([^<]+)</span>"#);
     // 已完赛/答辩结束的条目对雷达无意义
-    if let Some(s) = &status {
-        if s.contains("结束") || s.contains("完赛") {
-            return None;
-        }
+    if let Some(s) = &status
+        && (s.contains("结束") || s.contains("完赛"))
+    {
+        return None;
     }
     let mut summary_parts = vec![];
     if let Some(v) = sponsor {
