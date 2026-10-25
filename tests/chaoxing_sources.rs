@@ -902,6 +902,9 @@ impl ru41::ports::vault::Vault for WorkVault {
     fn push(&self) -> anyhow::Result<()> {
         Ok(())
     }
+    fn sync(&self) -> anyhow::Result<bool> {
+        Ok(false)
+    }
     fn read_file(&self, relative: &str) -> anyhow::Result<Option<String>> {
         Ok(self.files.lock().unwrap().get(relative).cloned())
     }

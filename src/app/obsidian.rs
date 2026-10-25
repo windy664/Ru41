@@ -151,6 +151,16 @@ impl ObsidianService {
         .await??;
         let mut state = self.load_state()?;
         let head_before = state.processed_sha.clone();
+        // 本地与远端对齐：todo 视图等自提交可能因远端先动而推失败，
+        // 每轮 rebase+push 兜底，分歧不再靠人肉修。整理任务进行中跳过
+        // （工作区有 agent 未提交的搬运，rebase 会拒）。
+        if state.pending.is_none() {
+            let vault = self.vault.clone();
+            match tokio::task::spawn_blocking(move || vault.sync()).await? {
+                Ok(_) => {}
+                Err(error) => eprintln!("[obsidian] vault sync failed: {error:#}"),
+            }
+        }
         let mut report = ObsidianPollReport {
             action: "idle",
             remote_head: target.clone(),

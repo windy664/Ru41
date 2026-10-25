@@ -121,6 +121,22 @@ impl Vault for GitVault {
         })
     }
 
+    fn sync(&self) -> Result<bool> {
+        self.locked(|vault| {
+            if let Err(error) = vault.git(&["pull", "--rebase", &vault.remote, &vault.branch]) {
+                // 冲突等失败一律中止 rebase，恢复原状等人来处理。
+                let _ = vault.git(&["rebase", "--abort"]);
+                return Err(error).context("vault sync rebase failed (aborted)");
+            }
+            let ahead = vault.git(&["rev-list", "--count", &format!("{}/{}..HEAD", vault.remote, vault.branch)])?;
+            if ahead.trim() == "0" {
+                return Ok(false);
+            }
+            vault.git(&["push", &vault.remote, &format!("HEAD:{}", vault.branch)])?;
+            Ok(true)
+        })
+    }
+
     fn read_file(&self, relative: &str) -> Result<Option<String>> {
         let path = self.path.join(relative);
         if !path.is_file() {
