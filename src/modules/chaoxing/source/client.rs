@@ -661,7 +661,7 @@ mod tests {
 
     #[test]
     fn encrypt_matches_reference_vectors() {
-        assert_eq!(cx_encrypt("15322883180"), "M6ccj1g5qPxp7tsBQ44/6g==");
+        assert_eq!(cx_encrypt("10000000000"), "oc39XnXWPbS2hxKxU/rZhw==");
         assert_eq!(cx_encrypt("test-password"), "xZ9dYlVASzFVINL+G69JXA==");
     }
 

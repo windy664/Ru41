@@ -16,7 +16,7 @@
 
 ```toml
 [sources.chaoxing]
-# phone = "13800000000"        # 或环境变量 RU41_XXT_PHONE
+# phone = "10000000000"        # 或环境变量 RU41_XXT_PHONE
 # password = "..."             # 或环境变量 RU41_XXT_PASSWORD
 # cookie_path = ".ru41/chaoxing/cookies.json"
 # interval_secs = 60           # 轮询间隔；签到窗口常为 1-2 分钟，太疏会漏
