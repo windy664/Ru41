@@ -313,10 +313,16 @@ impl YoutubeReviewJob {
     /// 批次登记 + 2 天宽限：等反馈或过期结转，避免同一词块连日重推。
     fn apply_batch_effects(&self, ids: &[String]) -> Result<()> {
         let today = (self.now_fn)().format("%Y-%m-%d").to_string();
+        // 当天可能已有批次记录（旧数据/重试），必须带 revision 覆盖，
+        // revision None 语义是"插入忽略"，静默丢批。
+        let revision = self
+            .store
+            .document(BATCH_KIND, &today)?
+            .map(|doc| doc.revision);
         self.store.put_document(
             BATCH_KIND,
             &today,
-            None,
+            revision,
             &serde_json::json!({ "items": ids, "pushed_at": crate::util::now(), "resolved": false }),
         )?;
         for id in ids {
