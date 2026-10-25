@@ -318,12 +318,15 @@ impl YoutubeTracker {
         segments: &[TranscriptSegment],
     ) -> Result<i64> {
         let transcript = render_transcript(segments, self.config.max_transcript_chars);
+        // 学习者模型：已毕业词块不再进预习单（known_chunks 由复习反馈积累）。
+        let known = super::review::known_chunks(&self.store, 80);
         let prompt = preview_prompt(
             &self.config.interests,
             &self.config.level,
             channel,
             video,
             &transcript,
+            &known,
         );
         let key = format!("youtube:prep:{}", video.id);
         let mut service = TaskService::new(self.store.clone());
@@ -380,7 +383,7 @@ pub async fn prep_video_task(
         timestamp: meta.timestamp,
     };
     let transcript = render_transcript(&segments, max_transcript_chars);
-    let prompt = preview_prompt(interests, level, "手动提交", &video, &transcript);
+    let prompt = preview_prompt(interests, level, "手动提交", &video, &transcript, &[]);
     let key = format!("youtube:prep:{video_id}");
     let mut service = TaskService::new(store.clone());
     let result = match route {
@@ -405,6 +408,7 @@ fn preview_prompt(
     channel: &str,
     video: &VideoEntry,
     transcript: &str,
+    known_chunks: &[String],
 ) -> String {
     let url = format!("https://www.youtube.com/watch?v={}", video.id);
     let duration = video
@@ -416,10 +420,19 @@ fn preview_prompt(
     } else {
         format!("个人关注方向：{interests}\n")
     };
+    let known = if known_chunks.is_empty() {
+        String::new()
+    } else {
+        format!(
+            "学习者已掌握以下词块，不要收录：{}\n",
+            known_chunks.join("、")
+        )
+    };
     format!(
         "你在为中国大学生（英语水平约 {level}）生成 YouTube 视频的「精听预习单」。\n\
          他先读预习单再去看视频；目的不是背单词，而是看懂这期视频、扫清听力障碍。频道：{channel}\n\
          {interests}\
+         {known}\
          视频标题：{title}\n\
          视频链接：{url}\n\
          视频时长：{duration}\n\n\
@@ -448,6 +461,7 @@ fn preview_prompt(
         level = level,
         channel = channel,
         interests = interests,
+        known = known,
         title = video.title,
         url = url,
         duration = duration,

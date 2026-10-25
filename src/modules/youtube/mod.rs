@@ -5,10 +5,12 @@
 
 pub mod config;
 pub mod qq_command;
+pub mod review;
 pub mod service;
 pub mod source;
 
 pub use config::YoutubeSection;
+pub use review::YoutubeReviewJob;
 pub use service::{YoutubeConfig, YoutubePollReport, YoutubeTracker};
 
 /// yt-dlp 客户端工厂：tracker、QQ 命令与 CLI prep 共用同一份配置来源。
@@ -26,27 +28,44 @@ pub const DEF: super::ModuleDef = super::ModuleDef {
     schedule: |config| {
         let youtube = &config.sources.youtube;
         let ready = youtube.channels.as_ref().is_some_and(|c| !c.is_empty());
-        vec![super::JobSchedule::simple(
-            "youtube",
-            youtube
-                .interval_secs
-                .unwrap_or(config::YoutubeSection::DEFAULT_INTERVAL_SECS),
-            ready,
-            (!ready).then(|| "配置 sources.youtube.channels 后启用".into()),
-        )]
+        vec![
+            super::JobSchedule::simple(
+                "youtube",
+                youtube
+                    .interval_secs
+                    .unwrap_or(config::YoutubeSection::DEFAULT_INTERVAL_SECS),
+                ready,
+                (!ready).then(|| "配置 sources.youtube.channels 后启用".into()),
+            ),
+            // 复习闭环：词块落库 + 间隔复习推送 + 看后测试（内部按日历日幂等）。
+            super::JobSchedule::simple(
+                "youtube-review",
+                6 * 3600,
+                ready,
+                (!ready).then(|| "配置 sources.youtube.channels 后启用".into()),
+            ),
+        ]
     },
     tracker: |config, store, name| {
-        if name != "youtube" {
-            return Ok(None);
-        }
         let youtube = &config.sources.youtube;
-        Ok(Some(Box::new(YoutubeTracker::new(
-            store,
-            youtube.resolved(crate::bootstrap::assembly::source_notify(
+        match name {
+            "youtube" => Ok(Some(Box::new(YoutubeTracker::new(
+                store,
+                youtube.resolved(crate::bootstrap::assembly::source_notify(
+                    config,
+                    youtube.notify,
+                )?)?,
+            )))),
+            "youtube-review" => Ok(Some(Box::new(review::review_job(
+                store,
                 config,
-                youtube.notify,
-            )?)?,
-        ))))
+                &youtube.resolved(crate::bootstrap::assembly::source_notify(
+                    config,
+                    youtube.notify,
+                )?)?,
+            )?))),
+            _ => Ok(None),
+        }
     },
     qq_handlers: |config, backend| {
         Ok(vec![std::sync::Arc::new(qq_command::YoutubeQqCommand::new(

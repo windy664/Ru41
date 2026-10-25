@@ -382,3 +382,192 @@ fn rejects_unknown_config_fields() {
     let result = ru41::bootstrap::config::Config::load_from(None, cwd.path(), None);
     assert!(result.is_err());
 }
+
+/// 复习闭环集成测试：真 Sqlite store + 假通知器。
+mod review_loop {
+    use ru41::{
+        adapters::database::sqlite::SqliteTaskStore,
+        app::task::TaskService,
+        domain::{AgentResult, RunContract},
+        modules::youtube::review::{self, YoutubeReviewJob},
+        ports::{channel::NotifyChannel, storage::TaskStore},
+    };
+    use std::{future::Future, pin::Pin, sync::Arc};
+
+    const SHEET: &str = "📺 测试视频主线\n\
+🔗 https://www.youtube.com/watch?v=vidq\n⏱ 5:00\n\n\
+📖 现场装备（4-6 个，宁少勿滥，只收理解这期视频的关键）：\n\
+1. **silent stalls** 助手卡住不回应；\"Okay. Silent stalls sounds like\" [2:44]\n\
+2. **fall back** 首选不可用改用可用；\"Instead, it could just fall back\" [3:32]\n\n\
+🔁 带走就用（2-3 个可迁移口语块）：\n\
+- **\"walk through … with you\"** 带人逐步看懂 → 你可以说：\"I'll walk through the code with you.\"；\"I'm going to walk through that with you.\" [2:02]\n\n\
+👂 听力锚点：略。\n\n\
+❓ 听前自测：测试问题？\n";
+
+    #[derive(Default, Clone)]
+    struct FakeNotifier(Arc<std::sync::Mutex<Vec<String>>>);
+
+    impl NotifyChannel for FakeNotifier {
+        fn channel_id(&self) -> &str {
+            "fake"
+        }
+        fn send<'a>(
+            &'a self,
+            _target: &'a str,
+            _msg_id: Option<&'a str>,
+            text: &'a str,
+        ) -> Pin<Box<dyn Future<Output = anyhow::Result<()>> + Send + 'a>> {
+            let sink = self.0.clone();
+            let text = text.to_owned();
+            Box::pin(async move {
+                sink.lock().unwrap().push(text);
+                Ok(())
+            })
+        }
+    }
+
+    fn review_job(
+        store: Arc<dyn TaskStore>,
+    ) -> (YoutubeReviewJob, FakeNotifier) {
+        let config = ru41::modules::youtube::YoutubeConfig {
+            channels: vec![],
+            keywords: vec![],
+            interests: String::new(),
+            level: "CET-6 / B2".into(),
+            min_duration_secs: 60,
+            max_per_channel: 15,
+            max_per_poll: 2,
+            max_age_days: 14,
+            max_transcript_chars: 24_000,
+            interval_secs: 21_600,
+            backend: "codex".into(),
+            notify: Some(ru41::domain::NotifyRoute {
+                channel: "qq".into(),
+                target: "user:U1".into(),
+                msg_id: None,
+            }),
+            ytdlp_bin: "yt-dlp".into(),
+            proxy_url: None,
+        };
+        let fake = FakeNotifier::default();
+        (
+            YoutubeReviewJob::new(store, config, Some(Arc::new(fake.clone()))),
+            fake,
+        )
+    }
+
+    fn seed_succeeded_sheet(store: &Arc<dyn TaskStore>, video: &str) {
+        let mut service = TaskService::new(store.clone());
+        let enqueue = service
+            .enqueue_for(
+                &format!("youtube:prep:{video}"),
+                "prompt",
+                "codex",
+            )
+            .unwrap();
+        let claim = store
+            .claim_for(
+                "test-worker",
+                "codex",
+                None,
+                RunContract::AnalysisV1,
+                ru41::util::now(),
+                600,
+            )
+            .unwrap()
+            .expect("task claimable");
+        assert_eq!(claim.task.id, enqueue.task.id);
+        store
+            .succeed(
+                &claim,
+                &AgentResult {
+                    summary: SHEET.replace("vidq", video),
+                },
+                None,
+                ru41::util::now(),
+            )
+            .unwrap();
+    }
+
+    fn vocab(store: &Arc<dyn TaskStore>, video: &str, index: usize) -> serde_json::Value {
+        store
+            .document(
+                "youtube_vocab",
+                &format!("{video}#{index}"),
+            )
+            .unwrap()
+            .unwrap()
+            .value
+    }
+
+    #[tokio::test]
+    async fn extract_push_feedback_roundtrip() {
+        let dir = tempfile::tempdir().unwrap();
+        let store: Arc<dyn TaskStore> =
+            Arc::new(SqliteTaskStore::open(&dir.path().join("state.db")).unwrap());
+        seed_succeeded_sheet(&store, "vidq");
+        let (job, fake) = review_job(store.clone());
+
+        // 第一轮：提取 3 个词块 + 推送今日复习批。
+        let report = ru41::ingress::schedule::PollJob::poll_json(&job).await.unwrap();
+        assert_eq!(report["extracted_videos"], 1);
+        assert_eq!(report["review_pushed"], 1);
+        assert_eq!(report["posttests_enqueued"], 0);
+        let meta = store
+            .document("youtube_vocab", "vidq#meta")
+            .unwrap()
+            .unwrap();
+        assert_eq!(meta.value["count"], 3);
+        assert_eq!(vocab(&store, "vidq", 0)["chunk"], "silent stalls");
+        assert_eq!(vocab(&store, "vidq", 2)["chunk"], "walk through … with you");
+        {
+            let sent = fake.0.lock().unwrap();
+            assert_eq!(sent.len(), 1);
+            assert!(sent[0].contains("词块复习"));
+            assert!(sent[0].contains("（懂）助手卡住不回应"));
+            assert!(!sent[0].contains("Silent stalls sounds like"), "线索泄漏英文原句");
+            assert!(sent[0].contains("（说）带人逐步看懂"));
+            assert!(!sent[0].contains("walk through the code"), "线索泄漏英文例句");
+        }
+        drop(sent);
+
+        // 反馈：第 2 个不会，其余毕业进一档。
+        let reply = review::apply_feedback(&store, "2").unwrap();
+        assert!(reply.contains("不会 [2]"), "{reply}");
+        assert_eq!(vocab(&store, "vidq", 1)["stage"], 0, "fall back 应降档");
+        assert_eq!(vocab(&store, "vidq", 0)["stage"], 1);
+        assert_eq!(vocab(&store, "vidq", 2)["stage"], 1);
+
+        // 同日再跑：批次已存在，不重推。
+        let report = ru41::ingress::schedule::PollJob::poll_json(&job).await.unwrap();
+        assert_eq!(report["review_pushed"], 0);
+        assert_eq!(fake.0.lock().unwrap().len(), 1);
+
+        // 连「会」到毕业：known 词块进入排除名单。
+        for _ in 0..4 {
+            // 批次已 resolved，先重开它模拟跨天新批次，再反馈推进阶梯。
+            let today = chrono::Local::now().format("%Y-%m-%d").to_string();
+            let doc = store.document("youtube_review_batch", &today).unwrap().unwrap();
+            let mut value = doc.value.clone();
+            value["resolved"] = false.into();
+            value["pushed_at"] = ru41::util::now().into();
+            store
+                .put_document("youtube_review_batch", &today, Some(doc.revision), &value)
+                .unwrap();
+            review::apply_feedback(&store, "all").unwrap();
+        }
+        assert_eq!(vocab(&store, "vidq", 0)["known"], true);
+        let known = review::known_chunks(&store, 10);
+        assert!(known.contains(&"silent stalls".to_string()));
+    }
+
+    #[test]
+    fn extracts_without_english_leak() {
+        let items = review::extract_vocab(SHEET);
+        assert_eq!(items.len(), 3);
+        for item in &items {
+            assert!(!item.cue.contains("sounds like"));
+            assert!(!item.cue.contains("你可以说"));
+        }
+    }
+}

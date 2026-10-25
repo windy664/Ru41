@@ -99,6 +99,20 @@ services:
       - "--target"
       - "${RU41_TODO_NOTIFY_TARGET:?set RU41_TODO_NOTIFY_TARGET, e.g. user:openid}"
 
+  # YouTube 英语学习闭环：频道轮询（出预习单）+ 复习闭环（词块间隔重复 + 后测）。
+  # 镜像需含 yt-dlp；两个 job 各自常驻（内部按间隔幂等轮询）。
+  youtube:
+    <<: *ru41-common
+    profiles: [youtube]
+    volumes: *ru41-volumes
+    command: ["--config", "/etc/ru41/ru41.toml", "--db", "/data/state.db", "schedule", "run", "youtube"]
+
+  youtube-review:
+    <<: *ru41-common
+    profiles: [youtube]
+    volumes: *ru41-volumes
+    command: ["--config", "/etc/ru41/ru41.toml", "--db", "/data/state.db", "schedule", "run", "youtube-review"]
+
   # 课程提醒（课前 20 分钟）：独立的 PollJob，启动时补发停机期间错过的课。
   # 与 todo-remind 分离：todo 只管 todo，课程提醒走自己的调度。
   class-remind:
