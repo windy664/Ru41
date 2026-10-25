@@ -89,30 +89,11 @@ impl RssTracker {
         let mut errors = Vec::new();
         let mut items = Vec::new();
         for url in &self.config.feeds {
-            // 伪 feed 前缀路由：wqai+ 走湾区赛事页解析，devpost+ / lablab+ /
-            // datafountain+ 走各赛事平台，其余按 RSS/Atom 处理。
-            let fetched_items = if let Some(page) =
-                url.strip_prefix(crate::adapters::sources::wqai::URL_PREFIX)
-            {
-                let client = crate::adapters::sources::wqai::WqaiClient::new();
-                client.fetch(page).await
-            } else if let Some(api) =
-                url.strip_prefix(crate::adapters::sources::devpost::URL_PREFIX)
-            {
-                let client = crate::adapters::sources::devpost::DevpostClient::new();
-                client.fetch_hackathons(api).await
-            } else if let Some(page) =
-                url.strip_prefix(crate::adapters::sources::lablab::URL_PREFIX)
-            {
-                let client = crate::adapters::sources::lablab::LablabClient::new();
-                client.fetch_hackathons(page).await
-            } else if let Some(page) =
-                url.strip_prefix(crate::adapters::sources::datafountain::URL_PREFIX)
-            {
-                let client = crate::adapters::sources::datafountain::DataFountainClient::new();
-                client.fetch_competitions(page).await
-            } else {
-                self.client.fetch(url).await
+            // 伪 feed 前缀查注册表（wqai+/devpost+/lablab+/datafountain+ 等），
+            // 未命中按 RSS/Atom 处理。接新源只需在 sources 注册表登记。
+            let fetched_items = match crate::adapters::sources::fetch_pseudo(url) {
+                Some(future) => future.await,
+                None => self.client.fetch(url).await,
             };
             let feed_items = match fetched_items {
                 Ok(feed_items) => feed_items,

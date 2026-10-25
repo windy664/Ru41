@@ -1,6 +1,38 @@
 use anyhow::{Context, Result};
 use quick_xml::{Reader, events::Event};
 
+/// 伪 feed 源的抓取样板：发送 → 状态检查 → 读文本，错误带源名上下文。
+/// 各源适配器（wqai/devpost/lablab/datafountain）共用，差异只在请求构造。
+pub async fn fetch_text(req: reqwest::RequestBuilder, source: &str) -> Result<String> {
+    req.send()
+        .await
+        .with_context(|| format!("{source} request failed"))?
+        .error_for_status()
+        .with_context(|| format!("{source} returned error status"))?
+        .text()
+        .await
+        .with_context(|| format!("{source} body read failed"))
+}
+
+/// 去 HTML 标签并还原常见实体；wqai/devpost 等页面解析共用。
+pub fn strip_tags(raw: &str) -> String {
+    let mut out = String::with_capacity(raw.len());
+    let mut in_tag = false;
+    for ch in raw.chars() {
+        match ch {
+            '<' => in_tag = true,
+            '>' => in_tag = false,
+            _ if !in_tag => out.push(ch),
+            _ => {}
+        }
+    }
+    out.replace("&quot;", "\"")
+        .replace("&amp;", "&")
+        .replace("&nbsp;", " ")
+        .trim()
+        .to_owned()
+}
+
 /// 一条订阅源资讯条目（RSS 2.0 或 Atom；摘要已去 HTML 标签并截断）。
 #[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize)]
 pub struct FeedItem {
@@ -13,8 +45,7 @@ pub struct FeedItem {
 }
 
 /// 通用订阅源客户端（RSS 2.0 / Atom 自动识别）；每个源的抓取间隔由调用方控制。
-pub struct FeedClient {
-    http: reqwest::Client,
+pub struct FeedClient {    http: reqwest::Client,
 }
 
 impl Default for FeedClient {

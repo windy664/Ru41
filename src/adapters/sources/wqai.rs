@@ -4,13 +4,19 @@
 //! 覆盖活动+赛事，UID 天然去重，含城市/场馆/票务等富描述。
 //! 在 rss 模块里以 `wqai+<url>` 前缀接入，产出与 RSS 条目同构的 FeedItem 进候选池。
 
-use super::feed::FeedItem;
-use anyhow::{Context, Result};
+use super::feed::{FeedItem, fetch_text, strip_tags};
+use anyhow::Result;
 
 /// rss feed 列表里的接入前缀：
 /// `wqai+https://wqai.ltd/calendar/race/index.html`（赛事表格）
 /// `wqai+https://wqai.ltd/calendar/calendar.ics`（大湾区活动日历 ICS）。
 pub const URL_PREFIX: &str = "wqai+";
+
+/// 注册表条目：`wqai+<url>` 路由到本源的赛事表格 / ICS 解析。
+pub const DEF: super::SourceDef = super::SourceDef {
+    prefix: URL_PREFIX,
+    fetch: |url| Box::pin(async move { WqaiClient::new().fetch(&url).await }),
+};
 
 pub struct WqaiClient {
     http: reqwest::Client,
@@ -31,17 +37,7 @@ impl WqaiClient {
 
     /// 按 URL 形态分发：.ics 走 iCalendar 解析，其余按赛事表格页处理。
     pub async fn fetch(&self, url: &str) -> Result<Vec<FeedItem>> {
-        let body = self
-            .http
-            .get(url)
-            .send()
-            .await
-            .context("wqai request failed")?
-            .error_for_status()
-            .context("wqai page returned error status")?
-            .text()
-            .await
-            .context("wqai body read failed")?;
+        let body = fetch_text(self.http.get(url), "wqai").await?;
         if url.ends_with(".ics") {
             parse_ics(&body)
         } else {
@@ -227,25 +223,6 @@ fn parse_row(row: &str, base: &str) -> Option<FeedItem> {
         summary: format!("截止 {deadline} · {venue} · {team} · 奖励：{rewards} · 状态：{status}"),
         published: String::new(),
     })
-}
-
-fn strip_tags(raw: &str) -> String {
-    let mut out = String::with_capacity(raw.len());
-    let mut in_tag = false;
-    for ch in raw.chars() {
-        match ch {
-            '<' => in_tag = true,
-            '>' => in_tag = false,
-            _ if !in_tag => out.push(ch),
-            _ => {}
-        }
-    }
-    // HTML 实体只处理常见的几个（&quot; &amp; 等）
-    out.replace("&quot;", "\"")
-        .replace("&amp;", "&")
-        .replace("&nbsp;", " ")
-        .trim()
-        .to_owned()
 }
 
 #[cfg(test)]

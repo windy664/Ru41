@@ -3,11 +3,17 @@
 //! 在 rss 模块里以 `lablab+<page-url>` 前缀接入。
 //! 列表无日期字段，靠 slug 去重：只报"新出现"的赛事，符合雷达口径。
 
-use super::feed::FeedItem;
+use super::feed::{FeedItem, fetch_text};
 use anyhow::{Context, Result};
 
 /// rss feed 列表里的接入前缀：`lablab+https://lablab.ai/ai-hackathons`。
 pub const URL_PREFIX: &str = "lablab+";
+
+/// 注册表条目：`lablab+<page-url>` 路由到本源。
+pub const DEF: super::SourceDef = super::SourceDef {
+    prefix: URL_PREFIX,
+    fetch: |url| Box::pin(async move { LablabClient::new().fetch_hackathons(&url).await }),
+};
 
 /// 列表共 100+ 条（含进行中与即将开始），只取最前面的一屏，
 /// 避免首次接入时往候选池灌入整站历史。
@@ -31,17 +37,7 @@ impl LablabClient {
     }
 
     pub async fn fetch_hackathons(&self, url: &str) -> Result<Vec<FeedItem>> {
-        let body = self
-            .http
-            .get(url)
-            .send()
-            .await
-            .context("lablab request failed")?
-            .error_for_status()
-            .context("lablab page returned error status")?
-            .text()
-            .await
-            .context("lablab body read failed")?;
+        let body = fetch_text(self.http.get(url), "lablab").await?;
         parse_item_list(&body)
     }
 }
