@@ -33,6 +33,8 @@ const QUIZ_KIND: &str = "youtube_posttest";
 pub const INTERVAL_DAYS: [i64; 5] = [1, 3, 7, 14, 30];
 /// 复习单最多带几个词块，控制消息长度与记忆负荷。
 const MAX_PER_PUSH: usize = 8;
+/// 单批内同一个视频最多占几条——批里优先混入不同视频的词块。
+const MAX_PER_VIDEO: usize = 2;
 /// 批次未反馈多少小时后自动按「会」处理（避免无限重推）。
 const BATCH_STALE_HOURS: i64 = 72;
 /// 单轮扫描的任务数上限（约可覆盖半年的预习任务）。
@@ -249,17 +251,29 @@ impl YoutubeReviewJob {
             .documents(VOCAB_KIND, 2_000)?
             .into_iter()
             .filter(|doc| {
-                doc.id.ends_with("#meta")
-                    || doc.value["known"].as_bool() == Some(true)
-                    || doc.value["due_at"].as_i64().map(|d| d > now).unwrap_or(true)
+                !doc.id.ends_with("#meta")
+                    && doc.value["known"].as_bool() != Some(true)
+                    && doc.value["due_at"].as_i64().map(|d| d <= now).unwrap_or(false)
             })
             .collect();
         due.sort_by_key(|doc| doc.value["due_at"].as_i64().unwrap_or(i64::MAX));
-        let due: Vec<_> = due
-            .into_iter()
-            .filter(|doc| !doc.id.ends_with("#meta"))
-            .take(MAX_PER_PUSH)
-            .collect();
+        // 单批最多 MAX_PER_PUSH 条，且单个视频最多 MAX_PER_VIDEO 条——
+        // 防止某一天只学了一个视频时，复习批被同一视频刷满。
+        let mut picked: Vec<crate::domain::records::Document> = Vec::new();
+        let mut per_video: std::collections::HashMap<String, usize> = Default::default();
+        for doc in due {
+            let video = doc.value["video_id"].as_str().unwrap_or_default().to_owned();
+            let count = per_video.entry(video).or_insert(0);
+            if *count >= MAX_PER_VIDEO {
+                continue;
+            }
+            *count += 1;
+            picked.push(doc);
+            if picked.len() >= MAX_PER_PUSH {
+                break;
+            }
+        }
+        let due = picked;
         if due.is_empty() {
             return Ok(0);
         }
