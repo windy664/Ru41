@@ -17,7 +17,7 @@ RUN apt-get update \
         python3 python3-pip curl jq \
         ripgrep zip unzip ffmpeg pandoc imagemagick \
     && rm -rf /var/lib/apt/lists/* \
-    && pip3 install --break-system-packages --no-cache-dir requests beautifulsoup4 lxml \
+    && pip3 install --break-system-packages --no-cache-dir requests beautifulsoup4 lxml yt-dlp \
     && npm install -g "@openai/codex@${CODEX_VERSION}" \
     && npm cache clean --force
 RUN mkdir -p /data/codex /etc/ru41 \

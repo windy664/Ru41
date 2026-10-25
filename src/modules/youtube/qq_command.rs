@@ -34,19 +34,26 @@ impl YoutubeQqCommand {
 
 impl CommandHandler for YoutubeQqCommand {
     fn matches(&self, verb: &str) -> bool {
-        matches!(verb, "预习" | "prep")
+        matches!(verb, "预习" | "prep" | "复习" | "review")
     }
 
     fn help(&self) -> &'static str {
-        "`/预习 <YouTube链接>`：生成该视频的英语重点词句预习单（如 `/预习 https://youtu.be/LoLYw--s-5w`）"
+        "`/预习 <YouTube链接>`：生成该视频的英语预习单；`/复习 <不会的编号>`（如 /复习 2 4，其余记会；全部都会回 /复习 all）"
     }
 
-    fn handle<'a>(
+    fn handle_command<'a>(
         &'a self,
+        verb: &'a str,
         arg: &'a str,
         ctx: &'a CommandContext<'a>,
     ) -> Pin<Box<dyn Future<Output = Result<Option<Reply>>> + Send + 'a>> {
         Box::pin(async move {
+            if matches!(verb, "复习" | "review") {
+                let feedback = if arg.trim().is_empty() { "all" } else { arg };
+                return Ok(Some(Reply::text(
+                    super::review::apply_feedback(ctx.store, feedback)?,
+                )));
+            }
             // 非视频链接不拦截，消息继续走 Agent 通道。
             let Some(video_id) = parse_video_id(arg) else {
                 return Ok(None);
@@ -66,6 +73,14 @@ impl CommandHandler for YoutubeQqCommand {
             .map(Reply::text)
             .map(Some)
         })
+    }
+
+    fn handle<'a>(
+        &'a self,
+        arg: &'a str,
+        ctx: &'a CommandContext<'a>,
+    ) -> Pin<Box<dyn Future<Output = Result<Option<Reply>>> + Send + 'a>> {
+        self.handle_command("预习", arg, ctx)
     }
 }
 
