@@ -95,7 +95,7 @@ impl RssTracker {
                 url.strip_prefix(crate::adapters::sources::wqai::URL_PREFIX)
             {
                 let client = crate::adapters::sources::wqai::WqaiClient::new();
-                client.fetch_race_items(page).await
+                client.fetch(page).await
             } else if let Some(api) =
                 url.strip_prefix(crate::adapters::sources::devpost::URL_PREFIX)
             {
