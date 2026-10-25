@@ -13,6 +13,15 @@ description: 查询机会雷达的历史日报与最新机会（免费 AI 额度
   2. `ru41 --config /etc/ru41/ru41.toml --db /data/state.db task show <id>` 读日报正文
 - 不要找 vault 里的日报文件——日报不落 Obsidian（05-Opportunities 只放真正值得行动的机会笔记）。
 
+## 雷达在盯哪些源
+
+- RSS 信息流：HackerNews、HuggingFace Blog、V2EX、ProductHunt、CSDN 极客头条、IT之家、极客公园、r/LocalLLaMA
+- 赛事平台（伪 feed 解析）：Devpost（海外黑客松）、lablab.ai（纯 AI 黑客松）、DataFountain（国内 CCF 系数据赛）、wqai 湾区 AI 日历
+- 页面监控（pagewatch）：腾讯安全众测 zc.tencent.com/hackathon
+- 明确不在覆盖内：Kaggle（缺 API key）、DoraHacks/天池（反爬拦脚本）、腾讯云黑客松（低质赛事多，用户主动放弃）、MLH（多为北美线下赛）
+
+用户问「雷达都盯哪些平台/能不能加某某源」时按这份清单回答；加源要改 `[sources.rss]` feeds 或写新适配器，说明需要改配置，不要假装当场能加。
+
 ## 怎么回答
 
 - 「最近有什么机会」：取最近 2-3 份日报，按主题归并（免费额度 / 竞赛 / 实习 / 行业动态），标注来自哪天的哪份报。
