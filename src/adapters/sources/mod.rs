@@ -24,7 +24,13 @@ pub struct SourceDef {
 }
 
 /// 伪 feed 源注册表：新源在自己的模块里加一个 DEF，这里登记一行。
-pub const SOURCES: &[SourceDef] = &[wqai::DEF, devpost::DEF, lablab::DEF, datafountain::DEF];
+pub const SOURCES: &[SourceDef] = &[
+    wqai::DEF,
+    devpost::DEF,
+    lablab::DEF,
+    datafountain::DEF,
+    xfyun::DEF,
+];
 
 /// 命中某个伪 feed 前缀则返回其抓取 future；未命中返回 None（按 RSS/Atom 处理）。
 pub fn fetch_pseudo(url: &str) -> Option<FetchFuture> {
@@ -46,6 +52,7 @@ mod tests {
                 "datafountain+https://www.datafountain.cn/competitions",
                 true,
             ),
+            ("xfyun+https://challenge.xfyun.cn/competition", true),
             ("https://news.ycombinator.com/rss", false),
         ] {
             assert_eq!(super::fetch_pseudo(url).is_some(), expect_hit, "{url}");
