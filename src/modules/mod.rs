@@ -4,6 +4,7 @@ pub mod ecard;
 pub mod homework;
 pub mod jwxt;
 pub mod obsidian;
+pub mod pagewatch;
 pub mod papers;
 pub mod planner;
 pub mod projects;
@@ -86,6 +87,7 @@ pub struct ModuleDef {
 /// assembly 的手写注册里，逐个迁移过来后删除。
 pub const MODULES: &[ModuleDef] = &[
     papers::DEF,
+    pagewatch::DEF,
     rss::DEF,
     ecard::DEF,
     projects::DEF,

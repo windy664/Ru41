@@ -244,6 +244,7 @@ pub struct SourcesSection {
     pub zhihuishu: crate::modules::zhihuishu::ZhihuishuSection,
     pub teachermate: crate::modules::teachermate::TeachermateSection,
     pub blog: crate::modules::blog::BlogSection,
+    pub pagewatch: crate::modules::pagewatch::PagewatchSection,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
