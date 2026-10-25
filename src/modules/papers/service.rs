@@ -20,6 +20,22 @@ pub struct PapersConfig {
     pub notify: Option<NotifyRoute>,
 }
 
+impl Default for PapersConfig {
+    /// 语义默认值与 PapersSection::resolved 对齐；测试构造只需写关心的字段。
+    fn default() -> Self {
+        Self {
+            categories: Vec::new(),
+            keywords: Vec::new(),
+            interests: String::new(),
+            max_results: 100,
+            interval_secs: 21_600,
+            backend: "codex".into(),
+            notify: None,
+        }
+    }
+}
+
+
 /// 一次轮询的结果报告。
 #[derive(Debug, Serialize)]
 pub struct PollReport {

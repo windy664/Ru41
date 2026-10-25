@@ -107,13 +107,12 @@ fn make_tracker(store: &Arc<dyn TaskStore>, base_url: &str, keywords: Vec<String
             keywords,
             interests: "AI 安全方向本科生".into(),
             max_results: 50,
-            interval_secs: 21_600,
-            backend: "codex".into(),
             notify: Some(NotifyRoute {
                 channel: "feishu".into(),
                 target: "default".into(),
                 msg_id: None,
             }),
+            ..Default::default()
         },
     )
 }

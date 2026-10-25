@@ -19,6 +19,21 @@ pub struct EcardConfig {
     pub notify_target: String,
 }
 
+impl Default for EcardConfig {
+    /// 语义默认值与 EcardSection::resolved 对齐；测试构造只需写关心的字段。
+    fn default() -> Self {
+        Self {
+            room: crate::modules::ecard::source::EcardRoom::default(),
+            token: String::new(),
+            power_threshold: 10.0,
+            water_threshold: 1.0,
+            interval_secs: 86_400,
+            notify_target: String::new(),
+        }
+    }
+}
+
+
 /// 一次轮询的报告。
 #[derive(Debug, Serialize)]
 pub struct EcardReport {
