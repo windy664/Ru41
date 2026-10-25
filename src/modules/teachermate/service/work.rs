@@ -4,13 +4,13 @@
 //! 红线：作业只做提醒/跟踪/归档，不做自动作答（自动答题=代写）。
 
 use crate::app::todo::TodoService;
+use crate::modules::homework::work_common::{self, WorkNoteItem};
 use crate::modules::teachermate::config::TeachermateConfig;
 use crate::modules::teachermate::source::{
     CourseHomework, Homework, TeachermateClient, homework_status_open,
 };
 use crate::ports::{channel::NotifyChannel, storage::TaskStore, vault::Vault};
 use anyhow::Result;
-use chrono::TimeZone;
 use serde::Serialize;
 use std::sync::Arc;
 
@@ -401,7 +401,7 @@ impl TeachermateWorkTracker {
     }
 
     /// 作业清单落 Vault：每课 `微助教作业.md` + 作业文件夹 `作业说明.md`。
-    /// 跨平台作业总表由学习通模块聚合（teachermate_work 快照字段已对齐）。
+    /// 跨平台作业总表由 homework 共享层聚合（teachermate_work 快照字段已对齐）。
     /// 内容无变化不提交。
     fn sync_vault(&self, course_notes: &CourseNotes, now: i64, offset: i32) -> Result<usize> {
         let Some(vault) = &self.vault else {
@@ -428,9 +428,25 @@ impl TeachermateWorkTracker {
                 .unwrap_or_else(|| course_title.clone());
             let course_base = format!("{base}/{dir}");
             let dirs = self.config.work_vault_task_dirs;
+            let rows: Vec<WorkNoteItem> = items
+                .iter()
+                .map(|(work, deadline)| WorkNoteItem {
+                    title: work.name.clone(),
+                    deadline: deadline.clone(),
+                    open: work.is_open(),
+                    id_fallback: Some(work.h_id),
+                })
+                .collect();
             vault.write_file(
                 &format!("{course_base}/微助教作业.md"),
-                &render_work_course_note(course_title, items, now, offset, dirs),
+                &work_common::render_work_course_note(
+                    course_title,
+                    "微助教",
+                    &rows,
+                    now,
+                    offset,
+                    dirs,
+                ),
             )?;
             written += 1;
             for (work, deadline) in items {
@@ -439,10 +455,25 @@ impl TeachermateWorkTracker {
                 if dirs == crate::ports::vault::VaultTaskDirs::Substantive && !work.is_open() {
                     continue;
                 }
-                let folder = work_folder_name(work.h_id, work.name.as_str(), deadline);
+                let folder = work_common::work_folder_name(
+                    work.name.as_str(),
+                    deadline.as_deref(),
+                    Some(work.h_id),
+                );
                 vault.write_file(
                     &format!("{course_base}/{folder}/作业说明.md"),
-                    &render_work_task_note(course_title, work, deadline, now, offset),
+                    &work_common::render_work_task_note(
+                        course_title,
+                        "微助教",
+                        &work.name,
+                        work.status_label(),
+                        work.is_open(),
+                        deadline.as_deref(),
+                        "https://www.teachermate.com.cn/pc-ssr/student/homework",
+                        "由 Ru41 自微助教作业列表自动生成与更新；正文与提交请在微信服务号完成。",
+                        now,
+                        offset,
+                    ),
                 )?;
                 written += 1;
             }
@@ -458,147 +489,27 @@ impl TeachermateWorkTracker {
 
 /// 微助教截止时间原文 → 本机固定偏移时间戳。格式未实测，宽容尝试常见形态。
 fn deadline_ts(raw: &str, offset_seconds: i32) -> Option<i64> {
-    let raw = raw.trim();
-    for fmt in [
-        "%Y-%m-%d %H:%M:%S",
-        "%Y-%m-%d %H:%M",
-        "%Y/%m/%d %H:%M",
-        "%Y-%m-%dT%H:%M:%S",
-        "%Y-%m-%dT%H:%M",
-    ] {
-        if let Ok(naive) = chrono::NaiveDateTime::parse_from_str(raw, fmt) {
-            return chrono::FixedOffset::east_opt(offset_seconds)?
-                .from_local_datetime(&naive)
-                .single()
-                .map(|dt| dt.timestamp());
-        }
-    }
-    // Unix 秒时间戳兜底（毫秒先除）
-    let ts = raw.parse::<i64>().ok()?;
-    Some(if ts > 1_000_000_000_000 {
-        ts / 1000
-    } else {
-        ts
-    })
-    .filter(|ts| *ts > 1_000_000_000)
-}
-
-/// 作业文件夹名：`YYYY.MM.DD_作业名`（日期取截止日，缺省用作业 id 前缀防重名）。
-fn work_folder_name(h_id: i64, name: &str, deadline: &Option<String>) -> String {
-    let date = deadline
-        .as_deref()
-        .and_then(|s| s.get(..10))
-        .map(|d| d.replace('-', "."));
-    let title: String = name
-        .chars()
-        .map(|c| {
-            if matches!(c, '/' | '\\' | ':' | '*' | '?' | '"' | '<' | '>' | '|') {
-                '－'
-            } else {
-                c
-            }
+    work_common::platform_ts(
+        raw,
+        offset_seconds,
+        &[
+            "%Y-%m-%d %H:%M:%S",
+            "%Y-%m-%d %H:%M",
+            "%Y/%m/%d %H:%M",
+            "%Y-%m-%dT%H:%M:%S",
+            "%Y-%m-%dT%H:%M",
+        ],
+    )
+    .or_else(|| {
+        // Unix 秒时间戳兜底（毫秒先除）
+        let ts = raw.trim().parse::<i64>().ok()?;
+        Some(if ts > 1_000_000_000_000 {
+            ts / 1000
+        } else {
+            ts
         })
-        .collect();
-    match date {
-        Some(d) => format!("{d}_{title}"),
-        None => format!("{h_id}_{title}"),
-    }
-}
-
-/// 作业索引行：建目录的作业双链到作业文件夹；substantive 策略下已交作业
-/// 没有目录，降级为纯文本行，避免 Obsidian 里挂着空链接。
-fn work_line_item(
-    work: &Homework,
-    deadline: &Option<String>,
-    dirs: crate::ports::vault::VaultTaskDirs,
-    done: bool,
-) -> String {
-    let checked = if done { "x" } else { " " };
-    let date = deadline.as_deref().unwrap_or("未知");
-    if dirs == crate::ports::vault::VaultTaskDirs::All || !done {
-        let folder = work_folder_name(work.h_id, work.name.as_str(), deadline);
-        format!(
-            "- [{checked}] [[{folder}/作业说明|{}]] 📅 {date}\n",
-            work.name
-        )
-    } else {
-        format!("- [{checked}] {} 📅 {date}\n", work.name)
-    }
-}
-
-/// 课程级索引：`微助教作业.md`（未完成/已完成清单，与学习通作业.md 同构）。
-fn render_work_course_note(
-    course: &str,
-    items: &[(Homework, Option<String>)],
-    now: i64,
-    offset_seconds: i32,
-    dirs: crate::ports::vault::VaultTaskDirs,
-) -> String {
-    let stamp = local_stamp(now, offset_seconds);
-    let mut out = String::new();
-    out.push_str("---\n");
-    out.push_str(&format!("course: {course}\n"));
-    out.push_str("platform: 微助教\n");
-    out.push_str(&format!("updated: {stamp}\n"));
-    out.push_str("tags:\n  - 课程\n  - 微助教\n---\n\n");
-    out.push_str(&format!("# {course} · 微助教作业\n\n"));
-    out.push_str("> 由 Ru41 每轮轮询自动覆写，请勿手改；截止时间为平台北京时间。\n\n");
-    let open: Vec<_> = items.iter().filter(|(w, _)| w.is_open()).collect();
-    let done: Vec<_> = items.iter().filter(|(w, _)| !w.is_open()).collect();
-    out.push_str(&format!("## 未完成（{}）\n\n", open.len()));
-    if open.is_empty() {
-        out.push_str("当前没有未完成作业 🎉\n");
-    }
-    for (work, deadline) in &open {
-        out.push_str(&work_line_item(work, deadline, dirs, false));
-    }
-    if !done.is_empty() {
-        out.push_str(&format!("\n## 已完成（{}）\n\n", done.len()));
-        for (work, deadline) in &done {
-            out.push_str(&work_line_item(work, deadline, dirs, true));
-        }
-    }
-    out
-}
-
-/// 作业说明页：元信息 frontmatter + 平台链接（正文 v1 不抓取）。
-fn render_work_task_note(
-    course: &str,
-    work: &Homework,
-    deadline: &Option<String>,
-    now: i64,
-    offset_seconds: i32,
-) -> String {
-    let stamp = local_stamp(now, offset_seconds);
-    let status = if work.is_open() { "open" } else { "done" };
-    let mut out = String::new();
-    out.push_str("---\n");
-    out.push_str(&format!("course: {course}\n"));
-    out.push_str(&format!("task: {}\n", work.name));
-    if let Some(end) = deadline {
-        out.push_str(&format!("due: \"{end}\"\n"));
-    }
-    out.push_str(&format!("status: {status}\n"));
-    out.push_str(&format!("updated: {stamp}\n"));
-    out.push_str("tags:\n  - 课程\n  - 微助教\n  - 作业\n---\n\n");
-    out.push_str(&format!("# {}\n\n", work.name));
-    out.push_str(&format!("- 课程：{course}\n"));
-    if let Some(end) = deadline {
-        out.push_str(&format!("- 截止：{end}（北京时间）\n"));
-    }
-    out.push_str(&format!("- 状态：{}\n", work.status_label()));
-    out.push_str(
-        "\n[平台作业页](https://www.teachermate.com.cn/pc-ssr/student/homework)\n\n> 由 Ru41 自微助教作业列表自动生成与更新；正文与提交请在微信服务号完成。\n",
-    );
-    out
-}
-
-/// 用户时区（固定偏移，容器安全）的 "%Y-%m-%d %H:%M" 时间戳。
-fn local_stamp(now: i64, offset_seconds: i32) -> String {
-    chrono::FixedOffset::east_opt(offset_seconds)
-        .and_then(|tz| tz.timestamp_opt(now, 0).single())
-        .map(|dt| dt.format("%Y-%m-%d %H:%M").to_string())
-        .unwrap_or_default()
+        .filter(|ts| *ts > 1_000_000_000)
+    })
 }
 
 impl crate::ingress::schedule::PollJob for TeachermateWorkTracker {
