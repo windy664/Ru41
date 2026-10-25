@@ -3,11 +3,17 @@
 //! 内含标题/链接/主办方/赛期/奖金/组队人数。在 rss 模块里以
 //! `datafountain+<page-url>` 前缀接入。只收当前可报名（can-join）的条目。
 
-use super::feed::FeedItem;
-use anyhow::{Context, Result};
+use super::feed::{FeedItem, fetch_text};
+use anyhow::Result;
 
 /// rss feed 列表里的接入前缀：`datafountain+https://www.datafountain.cn/competitions`。
 pub const URL_PREFIX: &str = "datafountain+";
+
+/// 注册表条目：`datafountain+<page-url>` 路由到本源。
+pub const DEF: super::SourceDef = super::SourceDef {
+    prefix: URL_PREFIX,
+    fetch: |url| Box::pin(async move { DataFountainClient::new().fetch_competitions(&url).await }),
+};
 
 pub struct DataFountainClient {
     http: reqwest::Client,
@@ -27,17 +33,7 @@ impl DataFountainClient {
     }
 
     pub async fn fetch_competitions(&self, url: &str) -> Result<Vec<FeedItem>> {
-        let body = self
-            .http
-            .get(url)
-            .send()
-            .await
-            .context("datafountain request failed")?
-            .error_for_status()
-            .context("datafountain page returned error status")?
-            .text()
-            .await
-            .context("datafountain body read failed")?;
+        let body = fetch_text(self.http.get(url), "datafountain").await?;
         Ok(parse_competition_page(&body))
     }
 }

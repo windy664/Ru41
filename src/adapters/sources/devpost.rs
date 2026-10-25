@@ -1,12 +1,18 @@
 //! Devpost 黑客松平台：官方搜索 API（/api/hackathons）返回结构化 JSON，
 //! 在 rss 模块里以 `devpost+<api-url>` 前缀接入，与 RSS 条目同构进候选池。
 
-use super::feed::FeedItem;
+use super::feed::{FeedItem, fetch_text, strip_tags};
 use anyhow::{Context, Result};
 
 /// rss feed 列表里的接入前缀：
 /// `devpost+https://devpost.com/api/hackathons?status%5B%5D=upcoming&status%5B%5D=open`
 pub const URL_PREFIX: &str = "devpost+";
+
+/// 注册表条目：`devpost+<api-url>` 路由到本源。
+pub const DEF: super::SourceDef = super::SourceDef {
+    prefix: URL_PREFIX,
+    fetch: |url| Box::pin(async move { DevpostClient::new().fetch_hackathons(&url).await }),
+};
 
 pub struct DevpostClient {
     http: reqwest::Client,
@@ -45,19 +51,14 @@ impl DevpostClient {
 
     /// 调搜索 API 拉赛事列表；只保留 open/upcoming 状态的条目。
     pub async fn fetch_hackathons(&self, url: &str) -> Result<Vec<FeedItem>> {
-        let body = self
-            .http
-            .get(url)
-            .header("Accept", "application/json")
-            .header("X-Requested-With", "XMLHttpRequest")
-            .send()
-            .await
-            .context("devpost request failed")?
-            .error_for_status()
-            .context("devpost api returned error status")?
-            .text()
-            .await
-            .context("devpost body read failed")?;
+        let body = fetch_text(
+            self.http
+                .get(url)
+                .header("Accept", "application/json")
+                .header("X-Requested-With", "XMLHttpRequest"),
+            "devpost",
+        )
+        .await?;
         let response: DevpostResponse =
             serde_json::from_str(&body).context("devpost json parse failed")?;
         Ok(response
@@ -96,20 +97,6 @@ impl DevpostClient {
             })
             .collect())
     }
-}
-
-fn strip_tags(raw: &str) -> String {
-    let mut out = String::with_capacity(raw.len());
-    let mut in_tag = false;
-    for ch in raw.chars() {
-        match ch {
-            '<' => in_tag = true,
-            '>' => in_tag = false,
-            _ if !in_tag => out.push(ch),
-            _ => {}
-        }
-    }
-    out.trim().to_owned()
 }
 
 #[cfg(test)]
