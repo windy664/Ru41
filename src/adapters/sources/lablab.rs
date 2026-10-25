@@ -75,8 +75,8 @@ fn parse_item_list(html: &str) -> Result<Vec<FeedItem>> {
             if node.get("@type").and_then(|t| t.as_str()) != Some("ItemList") {
                 continue;
             }
-            let list: ItemList = serde_json::from_value(node.clone())
-                .context("lablab ItemList parse failed")?;
+            let list: ItemList =
+                serde_json::from_value(node.clone()).context("lablab ItemList parse failed")?;
             return Ok(list
                 .item_list_element
                 .into_iter()

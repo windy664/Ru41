@@ -52,11 +52,11 @@ fn parse_ics(raw: &str) -> Result<Vec<FeedItem>> {
     // 折行展开：以空格/制表符开头的行是上一行的延续（RFC 5545）。
     let mut lines: Vec<String> = Vec::new();
     for line in raw.lines() {
-        if let Some(stripped) = line.strip_prefix(' ').or_else(|| line.strip_prefix('\t')) {
-            if let Some(last) = lines.last_mut() {
-                last.push_str(stripped);
-                continue;
-            }
+        if let Some(stripped) = line.strip_prefix(' ').or_else(|| line.strip_prefix('\t'))
+            && let Some(last) = lines.last_mut()
+        {
+            last.push_str(stripped);
+            continue;
         }
         lines.push(line.trim_end().to_owned());
     }
@@ -116,10 +116,10 @@ fn vevent_to_item(fields: &[&str], today: i64) -> Option<FeedItem> {
     if !location.is_empty() {
         summary_parts.push(location);
     }
-    if let Some(end) = get("DTEND") {
-        if let (Some(s), Some(e)) = (ics_date_str(&start), ics_date_str(&end)) {
-            summary_parts.push(if s == e { s } else { format!("{s} ~ {e}") });
-        }
+    if let Some(end) = get("DTEND")
+        && let (Some(s), Some(e)) = (ics_date_str(&start), ics_date_str(&end))
+    {
+        summary_parts.push(if s == e { s } else { format!("{s} ~ {e}") });
     }
     Some(FeedItem {
         id: format!("wqai-{}", uid.split('@').next().unwrap_or(&uid)),
@@ -149,7 +149,8 @@ fn ics_ts(raw: &str) -> Option<i64> {
     } else {
         return None;
     };
-    let naive = chrono::NaiveDateTime::parse_from_str(&format!("{date}{time}"), "%Y%m%d%H%M%S").ok()?;
+    let naive =
+        chrono::NaiveDateTime::parse_from_str(&format!("{date}{time}"), "%Y%m%d%H%M%S").ok()?;
     // 带 Z 的是 UTC，否则按东八区
     let offset = if raw.ends_with('Z') { 0 } else { 8 * 3600 };
     Some(naive.and_utc().timestamp() - offset)
@@ -161,7 +162,12 @@ fn ics_date_str(raw: &str) -> Option<String> {
     if digits.len() < 8 {
         return None;
     }
-    Some(format!("{}-{}-{}", &digits[0..4], &digits[4..6], &digits[6..8]))
+    Some(format!(
+        "{}-{}-{}",
+        &digits[0..4],
+        &digits[4..6],
+        &digits[6..8]
+    ))
 }
 
 /// 解析赛事页表格：<tr><td>截止</td><td><a href="race-rNNN.html">名称</a></td>
@@ -243,7 +249,10 @@ mod tests {
         assert_eq!(items.len(), 2, "无链接行和已关闭条目被跳过");
         assert_eq!(items[0].id, "race-r009");
         assert_eq!(items[0].title, "2026 National AI+ Competition");
-        assert_eq!(items[0].link, "https://wqai.ltd/calendar/race/race-r009.html");
+        assert_eq!(
+            items[0].link,
+            "https://wqai.ltd/calendar/race/race-r009.html"
+        );
         assert!(items[0].summary.contains("截止 10-28"));
         assert!(items[0].summary.contains("Closing in 3 days"));
         assert_eq!(items[1].id, "race-r070");
@@ -267,11 +276,7 @@ mod tests {
     fn ics_timestamps_handle_z_and_local() {
         assert_eq!(ics_ts("20261016"), ics_ts("20261016T000000"));
         // 带 Z 的 UTC 时间比东八区口径早 8 小时
-        assert_eq!(
-            ics_ts("20261016T080000Z"),
-            ics_ts("20261016T160000"),
-        );
+        assert_eq!(ics_ts("20261016T080000Z"), ics_ts("20261016T160000"),);
         assert_eq!(ics_date_str("20261016T133000"), Some("2026-10-16".into()));
     }
 }
-

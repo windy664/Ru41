@@ -12,8 +12,7 @@ pub const DEF: super::ModuleDef = super::ModuleDef {
         let ready = rss.feeds.as_ref().is_some_and(|f| !f.is_empty());
         vec![super::JobSchedule::simple(
             "rss",
-            rss
-                .interval_secs
+            rss.interval_secs
                 .unwrap_or(config::RssSection::DEFAULT_INTERVAL_SECS),
             ready,
             (!ready).then(|| "配置 sources.rss.feeds 后启用".into()),
@@ -28,8 +27,7 @@ pub const DEF: super::ModuleDef = super::ModuleDef {
             store,
             crate::adapters::sources::feed::FeedClient::new(),
             rss.resolved(crate::bootstrap::assembly::source_notify(
-                config,
-                rss.notify,
+                config, rss.notify,
             )?)?,
         );
         Ok(Some(Box::new(tracker)))

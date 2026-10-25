@@ -224,9 +224,9 @@ impl ObsidianService {
                     if known_titles.contains(&title) {
                         continue; // 同名活跃待办已存在，不重复建
                     }
-                    let due_at = due_text.as_deref().and_then(|text| {
-                        crate::domain::todo::parse_due(text, now, &options).ok()
-                    });
+                    let due_at = due_text
+                        .as_deref()
+                        .and_then(|text| crate::domain::todo::parse_due(text, now, &options).ok());
                     let input = crate::domain::todo::TodoInput {
                         title: title.clone(),
                         priority: crate::domain::todo::TodoPriority::Normal,
@@ -250,9 +250,7 @@ impl ObsidianService {
                 .into_iter()
                 .filter(|item| {
                     item.status == crate::domain::todo::TodoStatus::Completed
-                        && item
-                            .completed_at
-                            .is_some_and(|at| at >= now - 7 * 86_400)
+                        && item.completed_at.is_some_and(|at| at >= now - 7 * 86_400)
                 })
                 .collect();
             let content = render_todo_markdown(&overview, &completed_recent, now, options);
@@ -614,7 +612,6 @@ fn parse_new_task_lines(content: &str) -> Vec<(String, Option<String>)> {
     out
 }
 
-
 /// 分节：已过期/今天/近期/长期/未排期 + 近 7 天已完成。
 /// 待办概况渲染成 Obsidian 任务清单：严格 `- [ ]` 复选格式，行尾 `` `#id` `` 供回写。
 /// 分节：已过期/今天/近期/长期/未排期 + 近 7 天已完成。
@@ -655,13 +652,49 @@ fn render_todo_markdown(
                 .completed_at
                 .map(|at| crate::domain::todo::local_date(at, options.offset_seconds))
                 .unwrap_or_default();
-            out.push_str(&format!("- [x] {}（完成于 {}）`#{}`\n", item.title, done, item.id));
+            out.push_str(&format!(
+                "- [x] {}（完成于 {}）`#{}`\n",
+                item.title, done, item.id
+            ));
         }
     }
     if overview.active_count() == 0 && completed_recent.is_empty() {
         out.push_str("\n（空）\n");
     }
     out
+}
+
+fn organize_prompt(vault_path: &std::path::Path, inbox_dir: &str, files: &[String]) -> String {
+    let list = files
+        .iter()
+        .map(|f| format!("- {f}"))
+        .collect::<Vec<_>>()
+        .join("\n");
+    format!(
+        "整理 Obsidian Vault 的收件箱。Vault 根目录：{}。\n\
+         本次同步带来以下 {inbox_dir} 变更：\n{list}\n\n\
+         按 obsidian-organize 技能归档：阅读每条内容，移动到合适的目录并规范标题，\
+         修复受影响的双链，保留原始内容不删减。\n\
+         只读写 Vault 目录内的文件，不要执行任何 git 命令（提交推送由程序负责），\
+         完成后输出每个文件的处理结果摘要。",
+        vault_path.display()
+    )
+}
+
+/// QQ 快速记录：追加 Inbox 笔记并立即提交推送。
+pub fn append_quick_note(
+    vault: &dyn Vault,
+    inbox_dir: &str,
+    text: &str,
+    now: i64,
+    offset_seconds: i32,
+) -> Result<String> {
+    let relative = vault.append_inbox_note(inbox_dir, text, now, offset_seconds)?;
+    if !vault.commit_all("[ru41] quick note")? {
+        bail!("quick note produced no commit");
+    }
+    vault.push()?;
+    Ok(relative)
 }
 
 #[cfg(test)]
@@ -733,37 +766,4 @@ mod tests {
             ]
         );
     }
-}
-
-fn organize_prompt(vault_path: &std::path::Path, inbox_dir: &str, files: &[String]) -> String {
-    let list = files
-        .iter()
-        .map(|f| format!("- {f}"))
-        .collect::<Vec<_>>()
-        .join("\n");
-    format!(
-        "整理 Obsidian Vault 的收件箱。Vault 根目录：{}。\n\
-         本次同步带来以下 {inbox_dir} 变更：\n{list}\n\n\
-         按 obsidian-organize 技能归档：阅读每条内容，移动到合适的目录并规范标题，\
-         修复受影响的双链，保留原始内容不删减。\n\
-         只读写 Vault 目录内的文件，不要执行任何 git 命令（提交推送由程序负责），\
-         完成后输出每个文件的处理结果摘要。",
-        vault_path.display()
-    )
-}
-
-/// QQ 快速记录：追加 Inbox 笔记并立即提交推送。
-pub fn append_quick_note(
-    vault: &dyn Vault,
-    inbox_dir: &str,
-    text: &str,
-    now: i64,
-    offset_seconds: i32,
-) -> Result<String> {
-    let relative = vault.append_inbox_note(inbox_dir, text, now, offset_seconds)?;
-    if !vault.commit_all("[ru41] quick note")? {
-        bail!("quick note produced no commit");
-    }
-    vault.push()?;
-    Ok(relative)
 }

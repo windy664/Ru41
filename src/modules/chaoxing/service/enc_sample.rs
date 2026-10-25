@@ -45,10 +45,9 @@ impl EncSampleLogger {
             .create(true)
             .append(true)
             .open(&self.path)
+            && let Ok(line) = serde_json::to_string(sample)
         {
-            if let Ok(line) = serde_json::to_string(sample) {
-                let _ = writeln!(f, "{line}");
-            }
+            let _ = writeln!(f, "{line}");
         }
     }
 }

@@ -50,9 +50,9 @@ impl CommandHandler for YoutubeQqCommand {
         Box::pin(async move {
             if matches!(verb, "复习" | "review") {
                 let feedback = if arg.trim().is_empty() { "all" } else { arg };
-                return Ok(Some(Reply::text(
-                    super::review::apply_feedback(ctx.store, feedback)?,
-                )));
+                return Ok(Some(Reply::text(super::review::apply_feedback(
+                    ctx.store, feedback,
+                )?)));
             }
             // 非视频链接不拦截，消息继续走 Agent 通道。
             let Some(video_id) = parse_video_id(arg) else {

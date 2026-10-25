@@ -128,7 +128,11 @@ impl Vault for GitVault {
                 let _ = vault.git(&["rebase", "--abort"]);
                 return Err(error).context("vault sync rebase failed (aborted)");
             }
-            let ahead = vault.git(&["rev-list", "--count", &format!("{}/{}..HEAD", vault.remote, vault.branch)])?;
+            let ahead = vault.git(&[
+                "rev-list",
+                "--count",
+                &format!("{}/{}..HEAD", vault.remote, vault.branch),
+            ])?;
             if ahead.trim() == "0" {
                 return Ok(false);
             }

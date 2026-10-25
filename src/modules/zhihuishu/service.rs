@@ -226,8 +226,12 @@ impl ZhihuishuTracker {
                             // 文档必然已存在，必须带 revision 走 CAS——
                             // put_document(None) 是仅新建，写回会被静默丢弃，
                             // 导致作业总表永远显示未完成、每轮重复 complete。
-                            self.store
-                                .put_document("zhihuishu_task", &key, Some(revision), &snapshot)?;
+                            self.store.put_document(
+                                "zhihuishu_task",
+                                &key,
+                                Some(revision),
+                                &snapshot,
+                            )?;
                         }
                     }
                 }
@@ -663,6 +667,20 @@ fn task_line(task: &ZhihuishuTask, now: i64) -> String {
     line
 }
 
+impl crate::ingress::schedule::PollJob for ZhihuishuTracker {
+    fn job_interval(&self) -> std::time::Duration {
+        std::time::Duration::from_secs(self.config.interval_secs)
+    }
+
+    fn poll_json(
+        &self,
+    ) -> std::pin::Pin<
+        Box<dyn std::future::Future<Output = anyhow::Result<serde_json::Value>> + Send + '_>,
+    > {
+        Box::pin(async move { Ok(serde_json::to_value(self.poll_once().await?)?) })
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::{ZhihuishuTask, is_substantive};
@@ -732,19 +750,5 @@ mod tests {
             VaultTaskDirs::Substantive
         );
         assert!(VaultTaskDirs::parse(Some("bogus")).is_err());
-    }
-}
-
-impl crate::ingress::schedule::PollJob for ZhihuishuTracker {
-    fn job_interval(&self) -> std::time::Duration {
-        std::time::Duration::from_secs(self.config.interval_secs)
-    }
-
-    fn poll_json(
-        &self,
-    ) -> std::pin::Pin<
-        Box<dyn std::future::Future<Output = anyhow::Result<serde_json::Value>> + Send + '_>,
-    > {
-        Box::pin(async move { Ok(serde_json::to_value(self.poll_once().await?)?) })
     }
 }

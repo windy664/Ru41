@@ -256,7 +256,7 @@ impl CodexAgent {
             } else {
                 "Codex did not report turn.completed".to_owned()
             };
-            return Err(Ru41Error::AgentProcess(message.into()).into());
+            return Err(Ru41Error::AgentProcess(message).into());
         }
         let result: AgentResult = if use_output_file {
             // 即使子进程产出畸形的超大文件，也做有界读取。

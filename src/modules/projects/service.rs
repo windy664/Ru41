@@ -169,11 +169,18 @@ impl ProjectsTracker {
                 note_rel: "github-account".into(),
                 repo: {
                     let mut parts = meta.full_name.split('/');
-                    (parts.next().unwrap_or(user).to_owned(), parts.next().unwrap_or_default().to_owned())
+                    (
+                        parts.next().unwrap_or(user).to_owned(),
+                        parts.next().unwrap_or_default().to_owned(),
+                    )
                 },
                 name,
             };
-            let other = if group == ACTIVE_DIR { ARCHIVED_DIR } else { ACTIVE_DIR };
+            let other = if group == ACTIVE_DIR {
+                ARCHIVED_DIR
+            } else {
+                ACTIVE_DIR
+            };
             let stale_path = format!(
                 "{}/{other}/{}/{REPO_FILE}",
                 self.config.projects_dir, entry.name
@@ -212,7 +219,11 @@ impl ProjectsTracker {
     fn scan_projects(&self) -> Result<Vec<ProjectEntry>> {
         let mut entries = Vec::new();
         for group in [ACTIVE_DIR, ARCHIVED_DIR] {
-            let root = self.config.vault_root.join(&self.config.projects_dir).join(group);
+            let root = self
+                .config
+                .vault_root
+                .join(&self.config.projects_dir)
+                .join(group);
             let Ok(projects) = std::fs::read_dir(&root) else {
                 continue;
             };
@@ -241,7 +252,11 @@ impl ProjectsTracker {
     fn count_project_dirs(&self) -> Result<usize> {
         let mut count = 0usize;
         for group in [ACTIVE_DIR, ARCHIVED_DIR] {
-            let root = self.config.vault_root.join(&self.config.projects_dir).join(group);
+            let root = self
+                .config
+                .vault_root
+                .join(&self.config.projects_dir)
+                .join(group);
             let Ok(projects) = std::fs::read_dir(&root) else {
                 continue;
             };
@@ -326,8 +341,8 @@ fn find_repo_note(
     group: &str,
     name: &str,
 ) -> Option<(String, (String, String))> {
-    let mut notes = std::fs::read_dir(project_dir).ok()?.flatten();
-    while let Some(note) = notes.next() {
+    let notes = std::fs::read_dir(project_dir).ok()?.flatten();
+    for note in notes {
         let file_name = note.file_name().to_string_lossy().into_owned();
         if !file_name.ends_with(".md")
             || matches!(file_name.as_str(), "Repo-GitHub.md" | "README.md")

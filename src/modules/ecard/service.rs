@@ -33,7 +33,6 @@ impl Default for EcardConfig {
     }
 }
 
-
 /// 一次轮询的报告。
 #[derive(Debug, Serialize)]
 pub struct EcardReport {

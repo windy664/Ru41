@@ -25,8 +25,8 @@ pub fn build_tracker(config: &Config, store: Arc<dyn TaskStore>) -> Result<Teach
     let tm = &config.sources.teachermate;
     let (notifier, notify_target) = crate::bootstrap::assembly::notify_pair(config, tm.notify)?;
     let resolved = tm.resolved(notify_target)?;
-    let client =
-        TeachermateClient::new(resolved.openid.clone()).with_openid_file(resolved.openid_path.clone());
+    let client = TeachermateClient::new(resolved.openid.clone())
+        .with_openid_file(resolved.openid_path.clone());
     Ok(TeachermateTracker::new(store, client, notifier, resolved))
 }
 
