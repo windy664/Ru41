@@ -6,7 +6,7 @@ pub mod competition;
 pub mod feed;
 pub mod github;
 
-pub use competition::{datafountain, devpost, lablab, wqai};
+pub use competition::{datafountain, devpost, lablab, wqai, xfyun};
 
 use anyhow::Result;
 use feed::FeedItem;
