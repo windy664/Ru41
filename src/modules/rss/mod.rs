@@ -24,7 +24,7 @@ pub const DEF: super::ModuleDef = super::ModuleDef {
             return Ok(None);
         }
         let rss = &config.sources.rss;
-        let mut tracker = RssTracker::new(
+        let tracker = RssTracker::new(
             store,
             crate::adapters::sources::feed::FeedClient::new(),
             rss.resolved(crate::bootstrap::assembly::source_notify(
@@ -32,10 +32,6 @@ pub const DEF: super::ModuleDef = super::ModuleDef {
                 rss.notify,
             )?)?,
         );
-        // 挂 Vault：digest 精选完成后归档进 05-Opportunities（机会雷达闭环）。
-        if let Some(vault) = crate::bootstrap::assembly::vault_if_ready(config, true)? {
-            tracker = tracker.with_vault(vault);
-        }
         Ok(Some(Box::new(tracker)))
     },
     qq_handlers: |_, _| Ok(Vec::new()),
