@@ -89,7 +89,14 @@ impl RssTracker {
         let mut errors = Vec::new();
         let mut items = Vec::new();
         for url in &self.config.feeds {
-            let feed_items = match self.client.fetch(url).await {
+            // `wqai+<url>` 前缀走湾区赛事页解析器，其余走 RSS/Atom。
+            let fetched_items = if let Some(page) = url.strip_prefix(crate::adapters::sources::wqai::URL_PREFIX) {
+                let client = crate::adapters::sources::wqai::WqaiClient::new();
+                client.fetch_race_items(page).await
+            } else {
+                self.client.fetch(url).await
+            };
+            let feed_items = match fetched_items {
                 Ok(feed_items) => feed_items,
                 Err(error) => {
                     errors.push(format!("{url}: {error:#}"));
