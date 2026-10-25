@@ -394,6 +394,14 @@ async fn todo_created_then_synced_on_platform_completion() {
         .filter(|m| m.contains("平台已完成"))
         .count();
     assert_eq!(total, 1);
+    // 回归：快照的完成标记必须真的落库（put_document(None) 仅新建会静默丢写），
+    // 否则作业总表永远把它列为未完成、每轮重复调 complete。
+    let snap = store
+        .document("zhihuishu_task", "职业生涯规划#T1")
+        .unwrap()
+        .unwrap();
+    assert_eq!(snap.value["todo_synced"], json!(true));
+    assert_eq!(snap.value["completed"], json!(true));
 }
 
 #[tokio::test]

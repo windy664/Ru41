@@ -206,7 +206,9 @@ impl ZhihuishuTracker {
                         .and_then(serde_json::Value::as_bool)
                         .unwrap_or(false);
                     if let (Some(todo_id), false) = (todo_id, already_synced) {
-                        let mut snapshot = existing.unwrap().value;
+                        let doc = existing.unwrap();
+                        let revision = doc.revision;
+                        let mut snapshot = doc.value;
                         let synced = match self.todos.complete(&todo_id, now) {
                             Ok(_) => {
                                 lines.push(format!(
@@ -220,8 +222,11 @@ impl ZhihuishuTracker {
                         if synced {
                             snapshot["todo_synced"] = serde_json::json!(true);
                             snapshot["completed"] = serde_json::json!(true);
+                            // 文档必然已存在，必须带 revision 走 CAS——
+                            // put_document(None) 是仅新建，写回会被静默丢弃，
+                            // 导致作业总表永远显示未完成、每轮重复 complete。
                             self.store
-                                .put_document("zhihuishu_task", &key, None, &snapshot)?;
+                                .put_document("zhihuishu_task", &key, Some(revision), &snapshot)?;
                         }
                     }
                 }
