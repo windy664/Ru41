@@ -4,6 +4,7 @@
 
 pub mod datafountain;
 pub mod devpost;
+pub mod hackertrip;
 pub mod lablab;
 pub mod wqai;
 pub mod xfyun;
