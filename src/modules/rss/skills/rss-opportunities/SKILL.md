@@ -16,7 +16,7 @@ description: 查询机会雷达的历史日报与最新机会（免费 AI 额度
 ## 雷达在盯哪些源
 
 - RSS 信息流：HackerNews、HuggingFace Blog、V2EX、ProductHunt、CSDN 极客头条、IT之家、极客公园、r/LocalLLaMA
-- 赛事平台（伪 feed 解析）：Devpost（海外黑客松）、lablab.ai（纯 AI 黑客松）、DataFountain（国内 CCF 系数据赛）、wqai 湾区 AI 日历
+- 赛事平台（伪 feed 解析）：Devpost（海外黑客松）、lablab.ai（纯 AI 黑客松）、DataFountain（国内 CCF 系数据赛）、wqai 湾区 AI 日历（赛事表格 + 官方公共 ICS：大湾区六城线下活动/峰会/沙龙，含城市场馆票务）
 - 页面监控（pagewatch）：腾讯安全众测 zc.tencent.com/hackathon
 - 明确不在覆盖内：Kaggle（缺 API key）、DoraHacks/天池（反爬拦脚本）、腾讯云黑客松（低质赛事多，用户主动放弃）、MLH（多为北美线下赛）
 
