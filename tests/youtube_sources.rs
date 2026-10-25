@@ -566,7 +566,17 @@ mod review_loop {
             .unwrap();
 
         // 第二天 12:15 日报：复习段只有到期的 1 个，批次登记在明天名下。
+        // 预埋一条当天旧批次记录：批次写入必须带 revision 覆盖它，而非插入忽略。
         let day2 = clock_at(1);
+        let day2_str = day2.format("%Y-%m-%d").to_string();
+        store
+            .put_document(
+                "youtube_review_batch",
+                &day2_str,
+                None,
+                &serde_json::json!({ "items": ["stale#9"], "pushed_at": 0, "resolved": false }),
+            )
+            .unwrap();
         let (job, fake) = review_job_at(store.clone(), day2);
         let report = ru41::ingress::schedule::PollJob::poll_json(&job)
             .await
@@ -583,12 +593,13 @@ mod review_loop {
             );
             assert!(!sent[0].contains("带人逐步看懂"), "未到期的不该出现在批里");
         }
-        let day2_str = day2.format("%Y-%m-%d").to_string();
         let batch = store
             .document("youtube_review_batch", &day2_str)
             .unwrap()
             .unwrap();
-        assert_eq!(batch.value["items"].as_array().unwrap().len(), 1);
+        let items = batch.value["items"].as_array().unwrap();
+        assert_eq!(items.len(), 1);
+        assert_eq!(items[0], "vidq#0", "旧批次记录必须被覆盖");
 
         // 反馈：/复习 all 记会，进一档。
         let reply = review::apply_feedback(&store, "all").unwrap();
