@@ -43,6 +43,14 @@ docker run --name "$BUILDER" \
 docker build -f "$BUILD_DIR/deploy/Dockerfile.patch" -t ru41:local "$BUILD_DIR"
 
 if [[ "${PUSH:-0}" == "1" ]]; then
-  python3 /tmp/ru41-push-image.py
+  python3 "$HOME/bin/ru41-push-image.py"
+  # skills 随镜像外挂在服务器 /etc/ru41/modules（bind mount 自 ~/ru41-mimo-smoke/modules），
+  # 不随 Dockerfile.patch 更新，这里显式同步并重启 worker 让新 skill 生效。
+  TARBALL="$(mktemp /tmp/ru41-modules-XXXXXX.tgz)"
+  tar czf "$TARBALL" -C "$BUILD_DIR/src/modules" .
+  python3 "$HOME/bin/ru41-scp.py" "$TARBALL" /tmp/ru41-modules.tgz
+  python3 "$HOME/bin/ru41-ssh-run2.py" \
+    'tar xzf /tmp/ru41-modules.tgz -C /home/windy2/ru41-mimo-smoke/modules && docker restart ru41-mimo-worker'
+  rm -f "$TARBALL"
 fi
 echo "ru41:local ready ($COMMIT)"
