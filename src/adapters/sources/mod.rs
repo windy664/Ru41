@@ -5,8 +5,10 @@
 pub mod competition;
 pub mod feed;
 pub mod github;
+pub mod jobs;
 
 pub use competition::{datafountain, devpost, hack123, hackertrip, lablab, wqai, xfyun};
+pub use jobs::mianling;
 
 use anyhow::Result;
 use feed::FeedItem;
@@ -32,6 +34,7 @@ pub const SOURCES: &[SourceDef] = &[
     xfyun::DEF,
     hackertrip::DEF,
     hack123::DEF,
+    mianling::DEF,
 ];
 
 /// 命中某个伪 feed 前缀则返回其抓取 future；未命中返回 None（按 RSS/Atom 处理）。
@@ -57,6 +60,7 @@ mod tests {
             ("xfyun+https://challenge.xfyun.cn/competition", true),
             ("hackertrip+https://hackertrip.space/api/hackathons", true),
             ("hack123+https://hack123.henryht.sh/llms.txt", true),
+            ("mianling+https://www.mianlingai.com/jobs/", true),
             ("https://news.ycombinator.com/rss", false),
         ] {
             assert_eq!(super::fetch_pseudo(url).is_some(), expect_hit, "{url}");
