@@ -70,6 +70,7 @@ def make_page():
     co.set_argument("--no-sandbox")
     co.set_argument("--disable-dev-shm-usage")
     co.set_argument("--disable-blink-features=AutomationControlled")
+    co.set_argument("--window-size=1280,900")
     co.auto_port()
     return WebPage(chromium_options=co)
 
@@ -105,6 +106,19 @@ def write_status(ok, jobs=0, note=""):
         payload["note"] = note
     with open(STATUS_PATH, "w", encoding="utf-8") as f:
         json.dump(payload, f, ensure_ascii=False, indent=2)
+
+
+def open_login_qr(page):
+    """打开登录页并切到扫码登录标签（默认是短信登录），让截图里有二维码。"""
+    page.get("https://www.zhipin.com/web/user/")
+    time.sleep(3)
+    try:
+        tab = page.ele("text:扫码登录", timeout=3)
+        if tab:
+            tab.click(by_js=True)
+            time.sleep(2)
+    except Exception:
+        pass
 
 
 def bail_for_login(page, note):
@@ -171,6 +185,11 @@ def main():
             bail_for_login(page, "命中登录页或验证码")
             return 0
         if not logged_in(page):
+            # 先跳登录页切到扫码标签再截图，让 PNG 里带可扫的二维码。
+            try:
+                open_login_qr(page)
+            except Exception:
+                pass
             bail_for_login(page, "未登录")
             return 0
 
