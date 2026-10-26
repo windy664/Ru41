@@ -257,7 +257,7 @@ impl YoutubeReviewJob {
             .into_iter()
             .filter(|task| {
                 task.request_key.starts_with("youtube:prep:")
-                    && !task.request_key.ends_with(":dead")
+                    && !task.request_key.contains(":dead")
                     && task.status == crate::domain::TaskStatus::Succeeded
                     && task.notify.is_none()
                     && task.result.as_ref().is_some_and(|r| {
@@ -459,7 +459,7 @@ impl YoutubeReviewJob {
             .into_iter()
             .filter(|task| {
                 task.request_key.starts_with("youtube:prep:")
-                    && !task.request_key.ends_with(":dead")
+                    && !task.request_key.contains(":dead")
                     && task.status == crate::domain::TaskStatus::Succeeded
                     && task.result.as_ref().is_some_and(|r| !r.summary.is_empty())
             })
@@ -946,7 +946,7 @@ fn latest_prep_summary(store: &Arc<dyn TaskStore>) -> Result<Option<String>> {
         .into_iter()
         .find(|task| {
             task.request_key.starts_with("youtube:prep:")
-                && !task.request_key.ends_with(":dead")
+                && !task.request_key.contains(":dead")
                 && task.status == crate::domain::TaskStatus::Succeeded
                 && task.result.as_ref().is_some_and(|r| !r.summary.is_empty())
         })
