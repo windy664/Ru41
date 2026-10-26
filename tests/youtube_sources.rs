@@ -553,6 +553,36 @@ mod review_loop {
             .unwrap();
     }
 
+    fn seed_dead_sheet(store: &Arc<dyn TaskStore>, video: &str) {
+        // 重做流程的产物：旧任务 request_key 加 :dead 后缀后重提交同一视频。
+        let mut service = TaskService::new(store.clone());
+        let enqueue = service
+            .enqueue_for(&format!("youtube:prep:{video}:dead"), "prompt", "codex")
+            .unwrap();
+        let claim = store
+            .claim_for(
+                "test-worker",
+                "codex",
+                None,
+                RunContract::AnalysisV1,
+                ru41::util::now(),
+                600,
+            )
+            .unwrap()
+            .expect("task claimable");
+        assert_eq!(claim.task.id, enqueue.task.id);
+        store
+            .succeed(
+                &claim,
+                &AgentResult {
+                    summary: SHEET.replace("vidq", video) + "\n（作废旧单子标记）\n",
+                },
+                None,
+                ru41::util::now(),
+            )
+            .unwrap();
+    }
+
     fn vocab(store: &Arc<dyn TaskStore>, video: &str, index: usize) -> serde_json::Value {
         store
             .document("youtube_vocab", &format!("{video}#{index}"))
@@ -713,6 +743,29 @@ mod review_loop {
             .unwrap();
         assert_eq!(report["digest_pushed"], 0);
         assert_eq!(fake.0.lock().unwrap().len(), 1);
+    }
+
+    #[tokio::test]
+    async fn digest_excludes_dead_tasks() {
+        let dir = tempfile::tempdir().unwrap();
+        let store: Arc<dyn TaskStore> =
+            Arc::new(SqliteTaskStore::open(&dir.path().join("state.db")).unwrap());
+        seed_succeeded_sheet(&store, "vidq");
+        seed_dead_sheet(&store, "vidq");
+        let (job, fake) = review_job_at(store.clone(), clock_at(0));
+
+        let report = ru41::ingress::schedule::PollJob::poll_json(&job)
+            .await
+            .unwrap();
+        assert_eq!(report["digest_pushed"], 1);
+        assert_eq!(report["extracted_videos"], 1, "dead 任务不参与提取");
+        let sent = fake.0.lock().unwrap();
+        assert_eq!(sent.len(), 1);
+        assert!(
+            !sent[0].contains("作废旧单子标记"),
+            "dead 任务不得进日报: {}",
+            sent[0]
+        );
     }
 
     #[tokio::test]
