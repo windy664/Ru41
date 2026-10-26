@@ -158,6 +158,17 @@ services:
     ports:
       - "127.0.0.1:4141:4141"
 
+  # 岗位总览：面灵职位表筛选（实习+校招、只留技术岗）→ vault 岗位总览.md，
+  # 跨轮合并状态扩窗口（面灵首页只有最新 50 条），[ru41] 自提交，需挂载 Vault。
+  jobs:
+    <<: *ru41-common
+    profiles: [jobs]
+    volumes:
+      - ../ru41.toml:/etc/ru41/ru41.toml:ro
+      - ../.ru41:/data
+      - ${RU41_VAULT_PATH:?set RU41_VAULT_PATH to the vault clone dir}:/vault
+    command: ["--config", "/etc/ru41/ru41.toml", "--db", "/data/state.db", "jobs", "run"]
+
   # 共享无头浏览器（browserless/chrome）：JS 重度页面（X、知乎、SPA）的统一
   # 渲染出口。附属与 agent 都用 HTTP API 直连，不再各自背一套 chromium。
   browser:

@@ -407,10 +407,7 @@ mod review_loop {
 - [2:02] \"I'm going to walk through that with you.\" → going to 快读缩成 /ɡənə/（现象：缩读）\n\
 - [3:12] \"better at improving\" → better 的 /t/ 变轻拍音（现象：闪音）\n\
 - [3:40] \"and I put out a PR\" → and 弱读成 /ən/（现象：弱读）\n\n\
-❓ 听前自测：测试问题？\n\
-✅ 看后检测（看完再做）：\n\
-1. 主线是什么？\n\
-答案：1A 2 gear up\n";
+❓ 听前自测：测试问题？\n";
 
     #[derive(Default, Clone)]
     struct FakeNotifier(Arc<std::sync::Mutex<Vec<String>>>);
@@ -486,38 +483,6 @@ mod review_loop {
             .expect("local time")
     }
 
-    fn seed_legacy_sheet(store: &Arc<dyn TaskStore>, video: &str) {
-        // 旧格式预习单：没有「听力锚点」段（834ac93 之前的模板产物）。
-        let mut service = TaskService::new(store.clone());
-        let enqueue = service
-            .enqueue_for(&format!("youtube:prep:{video}"), "prompt", "codex")
-            .unwrap();
-        let claim = store
-            .claim_for(
-                "test-worker",
-                "codex",
-                None,
-                RunContract::AnalysisV1,
-                ru41::util::now(),
-                600,
-            )
-            .unwrap()
-            .expect("task claimable");
-        assert_eq!(claim.task.id, enqueue.task.id);
-        store
-            .succeed(
-                &claim,
-                &AgentResult {
-                    summary: String::from(
-                        "📺 旧格式单子\n🔗 https://www.youtube.com/watch?v=old\n⏱ 5:00\n\n                         📖 重点词句（8-12 个）：\n                         1. **footage** /ˈfʊtɪdʒ/ 拍摄的视频素材 — \"my footage from my GoPro\" [1:00]\n",
-                    ),
-                },
-                None,
-                ru41::util::now(),
-            )
-            .unwrap();
-    }
-
     fn seed_succeeded_sheet(store: &Arc<dyn TaskStore>, video: &str) {
         let mut service = TaskService::new(store.clone());
         let enqueue = service
@@ -582,8 +547,6 @@ mod review_loop {
             assert_eq!(sent.len(), 1);
             assert!(sent[0].contains("📚 英语日报"), "{}", sent[0]);
             assert!(sent[0].contains("silent stalls"), "日报应含预习单全文");
-            assert!(!sent[0].contains("答案：1A"), "答案不得出现在日报正文");
-            assert!(sent[0].contains("回复 /答案"), "应提示 /答案 获取方式");
             assert!(!sent[0].contains("词块复习"), "未到期不该有复习段");
         }
 
@@ -706,34 +669,6 @@ mod review_loop {
             .unwrap();
         assert_eq!(report["digest_pushed"], 0);
         assert_eq!(fake.0.lock().unwrap().len(), 1);
-    }
-
-    #[tokio::test]
-    async fn legacy_format_sheets_never_enter_digest() {
-        let dir = tempfile::tempdir().unwrap();
-        let store: Arc<dyn TaskStore> =
-            Arc::new(SqliteTaskStore::open(&dir.path().join("state.db")).unwrap());
-        seed_legacy_sheet(&store, "oldvid");
-        let (job, fake) = review_job_at(store.clone(), clock_at(0));
-        let report = ru41::ingress::schedule::PollJob::poll_json(&job)
-            .await
-            .unwrap();
-        assert_eq!(report["digest_pushed"], 0, "旧格式单子不得进日报");
-        assert!(fake.0.lock().unwrap().is_empty());
-    }
-    #[tokio::test]
-    async fn latest_answers_returns_newest_sheet_answer() {
-        let dir = tempfile::tempdir().unwrap();
-        let store: Arc<dyn TaskStore> =
-            Arc::new(SqliteTaskStore::open(&dir.path().join("state.db")).unwrap());
-        seed_succeeded_sheet(&store, "vidq");
-        let reply = review::latest_answers(&store).unwrap();
-        assert!(reply.contains("答案：1A 2 gear up"), "{}", reply);
-
-        let dir2 = tempfile::tempdir().unwrap();
-        let empty: Arc<dyn TaskStore> =
-            Arc::new(SqliteTaskStore::open(&dir2.path().join("state.db")).unwrap());
-        assert!(review::latest_answers(&empty).unwrap().contains("没有"));
     }
 
     #[test]

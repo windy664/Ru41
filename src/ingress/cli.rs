@@ -152,6 +152,11 @@ pub enum Command {
         #[command(subcommand)]
         command: TrackerCommand,
     },
+    /// 岗位总览：面灵职位表筛选生成 vault 里的岗位总览.md，跨轮合并扩窗口。
+    Jobs {
+        #[command(subcommand)]
+        command: TrackerCommand,
+    },
     /// 博客发布管线：Vault 待发布目录 → 校验 → 博客仓库 _posts → 推送。
     Blog {
         #[command(subcommand)]
@@ -241,6 +246,7 @@ impl Command {
             Command::Blog { command } => Some(("blog", *command)),
             Command::Pagewatch { command } => Some(("pagewatch", *command)),
             Command::Competitions { command } => Some(("competitions", *command)),
+            Command::Jobs { command } => Some(("jobs", *command)),
             _ => None,
         }
     }

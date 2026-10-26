@@ -33,21 +33,59 @@ impl MianlingClient {
 
     pub async fn fetch_jobs(&self, url: &str) -> Result<Vec<FeedItem>> {
         let body = fetch_text(self.http.get(url), "mianling").await?;
-        parse_jobs_page(&body, url).context("mianling parse failed")
+        let jobs = parse_jobs_page(&body).context("mianling parse failed")?;
+        Ok(jobs
+            .into_iter()
+            .map(|job| job.into_feed_item(url))
+            .collect())
+    }
+
+    /// 结构化抓取：modules/jobs 的岗位总览需要分列字段，不走 FeedItem 拼串。
+    pub async fn fetch_jobs_struct(&self, url: &str) -> Result<Vec<MianlingJob>> {
+        let body = fetch_text(self.http.get(url), "mianling").await?;
+        parse_jobs_page(&body).context("mianling parse failed")
+    }
+}
+
+/// 一条岗位记录（公司/岗位/城市/对象/类型/发布日）。
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct MianlingJob {
+    pub company: String,
+    pub role: String,
+    pub city: String,
+    pub audience: String,
+    pub kind: String,
+    pub posted: String,
+}
+
+impl MianlingJob {
+    fn into_feed_item(self, page_url: &str) -> FeedItem {
+        let id_key = format!("{}:{}:{}", self.company, self.role, self.city);
+        FeedItem {
+            id: format!("mianling-{:x}", fnv1a(&id_key)),
+            title: format!("{} · {}", self.company, self.role),
+            link: page_url.to_owned(),
+            summary: format!(
+                "{} · {} · 对象 {} · 发布 {}",
+                self.kind, self.city, self.audience, self.posted
+            ),
+            published: self.posted,
+        }
     }
 }
 
 /// 解析岗位表格行；第一行是表头（首列"公司"）跳过。
-fn parse_jobs_page(html: &str, page_url: &str) -> Result<Vec<FeedItem>> {
+fn parse_jobs_page(html: &str) -> Result<Vec<MianlingJob>> {
     let row_re = regex::Regex::new(r#"(?s)<tr[^>]*data-slot="table-row"[^>]*>(.*?)</tr>"#)
         .expect("row regex");
     let rows = row_re.captures_iter(html).map(|c| c[1].to_owned());
     let cell_re = regex::Regex::new(r"(?s)<t[dh][^>]*>(.*?)</t[dh]>").expect("cell regex");
     let tag_re = regex::Regex::new(r"<[^>]+>").expect("tag regex");
     // 公司列混着标签文本（"美团世界500强知名互联网"），按已知标签词切开
-    let company_tag_re =
-        regex::Regex::new(r"世界500强|知名互联网|新势力车企|半导体大厂|国企|央企|外企")
-            .expect("company tag regex");
+    let company_tag_re = regex::Regex::new(
+        r"世界500强|知名互联网|新势力车企|半导体大厂|大模型公司|独角兽|上市公司|创业公司|高新技术企业|专精特新|小巨人|国企|央企|外企",
+    )
+    .expect("company tag regex");
     let mut items = Vec::new();
     for row in rows {
         let cells: Vec<String> = cell_re
@@ -60,14 +98,13 @@ fn parse_jobs_page(html: &str, page_url: &str) -> Result<Vec<FeedItem>> {
         if cells.len() < 8 || cells[0] == "公司" {
             continue;
         }
-        let (company, job, city, audience, kind, posted, verified) = (
+        let (company, job, city, audience, kind, posted) = (
             cells[0].clone(),
             cells[1].clone(),
             cells[2].clone(),
             cells[3].clone(),
             cells[4].clone(),
             cells[5].clone(),
-            cells[6].clone(),
         );
         if job.is_empty() {
             continue;
@@ -78,13 +115,13 @@ fn parse_jobs_page(html: &str, page_url: &str) -> Result<Vec<FeedItem>> {
             .unwrap_or(&company)
             .trim()
             .to_owned();
-        let id_key = format!("{company}:{job}:{city}");
-        items.push(FeedItem {
-            id: format!("mianling-{:x}", fnv1a(&id_key)),
-            title: format!("{company} · {job}"),
-            link: page_url.to_owned(),
-            summary: format!("{kind} · {city} · 对象 {audience} · 发布 {posted} · 核实 {verified}"),
-            published: posted,
+        items.push(MianlingJob {
+            company,
+            role: job,
+            city,
+            audience,
+            kind,
+            posted,
         });
     }
     Ok(items)
@@ -118,13 +155,21 @@ mod tests {
 
     #[test]
     fn parses_job_rows_and_skips_header() {
-        let items = parse_jobs_page(FIXTURE, "https://www.mianlingai.com/jobs/").unwrap();
+        let items = parse_jobs_page(FIXTURE).unwrap();
         assert_eq!(items.len(), 2, "表头被跳过");
-        assert_eq!(items[0].title, "美团 · 美团平台-数据开发工程师");
-        assert!(items[0].summary.contains("校招"));
-        assert!(items[0].summary.contains("北京"));
-        assert_eq!(items[0].published, "10月25日");
-        assert!(items[1].summary.contains("实习"));
-        assert!(items[1].id.starts_with("mianling-"));
+        assert_eq!(items[0].company, "美团");
+        assert_eq!(items[0].role, "美团平台-数据开发工程师");
+        assert_eq!(items[0].kind, "校招");
+        assert_eq!(items[0].city, "北京");
+        assert_eq!(items[0].posted, "10月25日");
+        assert_eq!(items[1].kind, "实习");
+
+        let feeds: Vec<FeedItem> = items
+            .into_iter()
+            .map(|job| job.into_feed_item("https://www.mianlingai.com/jobs/"))
+            .collect();
+        assert_eq!(feeds[0].title, "美团 · 美团平台-数据开发工程师");
+        assert!(feeds[0].summary.contains("校招"));
+        assert!(feeds[0].id.starts_with("mianling-"));
     }
 }
