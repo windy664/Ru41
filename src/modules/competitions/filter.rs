@@ -3,6 +3,7 @@
 //! 剔除中小学生赛与已截止；同名跨源去重（保留信息更全的）。
 
 use crate::adapters::sources::competition::devpost::{DevpostHackathon, parse_submission_end};
+use crate::adapters::sources::competition::hack123::Hack123Event;
 use crate::adapters::sources::competition::hackertrip::HackertripEvent;
 use crate::adapters::sources::competition::wqai::WqaiRace;
 use chrono::{Datelike, NaiveDate};
@@ -45,14 +46,18 @@ fn has_prize(text: &str) -> bool {
     !text.is_empty() && re.is_match(text)
 }
 
-/// 中小学生赛判定：名称直接点名，或受众描述含"面向小学/初中/高中""4-12 年级"。
+/// 中小学生赛判定：名称直接点名，或受众描述含"面向小学/初中/高中""4-12 年级"
+/// "aged 14–18""high school"（hack123 的受众段）等未成年信号。
 fn is_k12(name: &str, audience: &str) -> bool {
-    let name_re = regex::Regex::new(r"青少年|少年|中小学|K-?12").expect("k12 name regex");
+    let name_re = regex::Regex::new(r"青少年|少年|中小学|K-?12|中学生|高中生|(?i)high school")
+        .expect("k12 name regex");
     if name_re.is_match(name) {
         return true;
     }
-    let aud_re = regex::Regex::new(r"面向[^。；]{0,12}(小学|初中|高中)|4\s*[-–至]\s*12\s*年级")
-        .expect("k12 audience regex");
+    let aud_re = regex::Regex::new(
+        r"面向[^。；]{0,12}(小学|初中|高中)|4\s*[-–至]\s*12\s*年级|(?i)aged\s+1[2-8]",
+    )
+    .expect("k12 audience regex");
     aud_re.is_match(&format!("{name} {audience}"))
 }
 
@@ -261,6 +266,37 @@ pub fn collect_wqai(race: WqaiRace, today: NaiveDate) -> Option<CompetitionRow> 
     let k12 = is_k12(&race.title, &race.team);
     let row = from_wqai(race, today);
     let geo = geo_class(&row.place, false);
+    keep(row, geo, k12)
+}
+
+impl From<&Hack123Event> for CompetitionRow {
+    fn from(ev: &Hack123Event) -> Self {
+        CompetitionRow {
+            deadline: NaiveDate::parse_from_str(&ev.deadline, "%Y-%m-%d").ok(),
+            name: ev.name.clone(),
+            place: if ev.is_online() {
+                "线上".to_owned()
+            } else {
+                ev.place.clone()
+            },
+            prize: ev.prize.trim_start_matches("prize ").to_owned(),
+            start: NaiveDate::parse_from_str(&ev.starts, "%Y-%m-%d").ok(),
+            link: ev.link.clone(),
+            source: "hack123",
+            themes: if ev.themes.is_empty() {
+                vec![]
+            } else {
+                vec![ev.themes.clone()]
+            },
+            gba: false,
+        }
+    }
+}
+
+pub fn collect_hack123(ev: &Hack123Event) -> Option<CompetitionRow> {
+    let k12 = is_k12(&ev.name, &ev.audience);
+    let row = CompetitionRow::from(ev);
+    let geo = geo_class(&row.place, ev.is_online());
     keep(row, geo, k12)
 }
 
