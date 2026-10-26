@@ -187,13 +187,19 @@ impl YoutubeReviewJob {
             .collect();
         for task in sheets.iter() {
             if let Some(result) = &task.result {
-                // 双层结构：日报只推精简版；完整单子（听前自测+检测）回复 /学习 获取。
-                text.push_str(&format!("\n{}\n", digest_teaser(&result.summary)));
+                // 答案不出现在日报正文——先答再看，回复 /答案 获取。
+                let body = result
+                    .summary
+                    .lines()
+                    .filter(|line| !line.trim().starts_with("答案："))
+                    .collect::<Vec<_>>()
+                    .join("\n");
+                text.push_str(&format!("\n───\n{}\n", body.trim()));
                 has_content = true;
             }
         }
         if !sheet_ids.is_empty() {
-            text.push_str("\n（完整单子含检测题：回复 /学习 ｜ 对答案：回复 /答案）\n");
+            text.push_str("\n（看后检测答案：回复 /答案；漏收/重看完整单子：回复 /学习）\n");
         }
 
         // 到期词块复习。
@@ -552,116 +558,6 @@ impl YoutubeReviewJob {
         }
         Ok(retired)
     }
-}
-
-/// 从行里抠出词块名（兼容 `1. ⭐ **x**` / `1. **x**` / `- **"x"**` 三种行）。
-fn chunk_name(line: &str) -> Option<String> {
-    let s = line
-        .trim_start_matches(|c: char| c.is_ascii_digit() || c == '.' || c == '-' || c == ' ')
-        .trim_start_matches('⭐')
-        .trim_start();
-    let s = match s.strip_prefix("**\"") {
-        Some(s) => s,
-        None => s.strip_prefix("**")?,
-    };
-    let end = s.find("**")?;
-    Some(s[..end].trim_end_matches('"').to_owned()).filter(|s| !s.is_empty())
-}
-
-/// 日报精简版：从完整预习单确定性派生（不求模型；段落缺失就整段省略）。
-/// 完整单子（含听前自测与看后检测）通过 /学习 按需获取。
-fn digest_teaser(summary: &str) -> String {
-    let mut topic = Vec::new();
-    let mut equip = Vec::new();
-    let mut words = Vec::new();
-    let mut spoken = Vec::new();
-    let mut patterns = Vec::new();
-    let mut anchors = Vec::new();
-    let mut oral = String::new();
-    let mut section = "";
-    for line in summary.lines() {
-        let line = line.trim();
-        // 段头判断必须在 topic 行之前：🔗 重点单词 也以 🔗 开头。
-        if line.contains("重点单词") {
-            section = "word";
-            continue;
-        }
-        if line.contains("现场装备") {
-            section = "equip";
-            continue;
-        }
-        if line.contains("带走就用") {
-            section = "spoken";
-            continue;
-        }
-        if line.contains("重点句式") {
-            section = "pattern";
-            continue;
-        }
-        if line.contains("精听挑战") || line.starts_with("👂") {
-            section = "listen";
-            continue;
-        }
-        if line.starts_with("🎤") {
-            oral = line.to_owned();
-            continue;
-        }
-        if line.starts_with("📺") || line.starts_with("🔗") || line.starts_with("⏱") {
-            topic.push(line.to_owned());
-            continue;
-        }
-        match section {
-            "equip" if line.contains("⭐") => {
-                if let Some(name) = chunk_name(line) {
-                    equip.push(name);
-                }
-            }
-            "word" | "spoken" | "pattern"
-                if line.starts_with(|c: char| c.is_ascii_digit()) || line.starts_with("- ") =>
-            {
-                if let Some(name) = chunk_name(line) {
-                    match section {
-                        "word" => words.push(name),
-                        "spoken" => spoken.push(name),
-                        _ => patterns.push(name),
-                    }
-                }
-            }
-            "listen" if line.starts_with("- [") => {
-                let ts = line
-                    .split(']')
-                    .next()
-                    .map(|s| format!("{}]", s.trim_start_matches(['-', ' '])));
-                let tag = line
-                    .split("（现象：")
-                    .nth(1)
-                    .and_then(|rest| rest.split('）').next());
-                if let (Some(ts), Some(tag)) = (ts, tag) {
-                    anchors.push(format!("{ts} {tag}"));
-                }
-            }
-            _ => {}
-        }
-    }
-    let mut out = topic.join("\n");
-    let block = |label: &str, items: &[String]| {
-        if items.is_empty() {
-            String::new()
-        } else {
-            format!("\n**{label}**{}", items.join(" ｜ "))
-        }
-    };
-    out += &block("📖 词块：", &equip);
-    out += &block("🔗 单词：", &words);
-    out += &block("🗣 口语块：", &spoken);
-    out += &block("🧩 句式：", &patterns);
-    if !anchors.is_empty() {
-        out += &format!("\n**🎧 精听**{}", anchors.join(" ｜ "));
-    }
-    if !oral.is_empty() {
-        out += &format!("\n{oral}");
-    }
-    out
 }
 
 /// /学习：最近一期完整预习单（精简日报不含听前自测与看后检测）。
@@ -1173,19 +1069,6 @@ mod tests {
 👂 精听挑战（每处①盲听写词②对照找漏听③跟读）：\n\
 - [2:02] \"I'm going to walk through that with you.\" → 留意 going to 缩成 gonna。（现象：缩读）\n\n\
 ❓ 听前自测：为什么优先查 silent stalls？\n";
-
-    #[test]
-    fn digest_teaser_derives_compact_version() {
-        let teaser = digest_teaser(SAMPLE);
-        assert!(teaser.starts_with("📺 工程师让 dot"), "{}", teaser);
-        assert!(teaser.contains("**📖 词块：**silent stalls"));
-        assert!(!teaser.contains("fall back"), "非 ⭐ 场景词不进精简版");
-        assert!(teaser.contains("**🔗 单词：**verbose"));
-        assert!(teaser.contains("**🗣 口语块：**walk through … with you ｜ Let me choose one of…"));
-        assert!(teaser.contains("**🧩 句式：**Verb + sb + into + doing"));
-        assert!(teaser.contains("**🎧 精听**[2:02] 缩读"));
-        assert!(!teaser.contains("听前自测"), "精简版不含自测/检测");
-    }
 
     #[test]
     fn extracts_chunks_without_leaking_english() {

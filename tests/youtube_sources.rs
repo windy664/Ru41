@@ -622,8 +622,6 @@ mod review_loop {
             assert!(!sent[0].contains("答案：1A"), "答案不得出现在日报正文");
             assert!(sent[0].contains("回复 /答案"), "应提示 /答案 获取方式");
             assert!(!sent[0].contains("词块复习"), "未到期不该有复习段");
-            assert!(!sent[0].contains("听前自测"), "日报只推精简版");
-            assert!(sent[0].contains("/学习"), "应提示 /学习 获取完整单子");
         }
 
         // 同日再跑：日报已发，不重发。
