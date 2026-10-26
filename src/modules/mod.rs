@@ -4,6 +4,7 @@ pub mod competitions;
 pub mod ecard;
 pub mod homework;
 pub mod jwxt;
+pub mod jobs;
 pub mod obsidian;
 pub mod pagewatch;
 pub mod papers;
@@ -108,4 +109,5 @@ pub const MODULES: &[ModuleDef] = &[
     blog::DEF,
     planner::DEF,
     competitions::DEF,
+    jobs::DEF,
 ];

@@ -186,3 +186,8 @@ app_secret = ""
 # site_url = "https://windy664.github.io"
 # interval_secs = 300
 # notify = true
+
+# 岗位总览：面灵 AI 职位表（实习+校招，只留技术岗）→ vault
+# 05-Opportunities-机会/Internships-实习/岗位总览.md，跨轮合并扩窗口。需 [obsidian]。
+# [sources.jobs]
+# interval_secs = 21600
