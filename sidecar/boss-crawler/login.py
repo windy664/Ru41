@@ -10,7 +10,7 @@ import os
 import sys
 import time
 
-from main import LOGIN_SHOT, PROFILE_DIR, logged_in, make_page, write_status, log
+from main import LOGIN_SHOT, PROFILE_DIR, logged_in, make_page, open_login_qr, write_status, log
 
 WAIT_SECS = int(os.environ.get("BOSS_LOGIN_WAIT_SECS", "600"))
 
@@ -26,8 +26,7 @@ def main():
             write_status(True)
             return 0
         log("未登录，打开登录页并截图二维码…")
-        page.get("https://www.zhipin.com/web/user/")
-        time.sleep(3)
+        open_login_qr(page)
         page.get_screenshot(path=os.path.dirname(LOGIN_SHOT), name=os.path.basename(LOGIN_SHOT))
         write_status(False, note="等待扫码")
         log(f"二维码已存 {LOGIN_SHOT}，等待扫码（最长 {WAIT_SECS}s）…")
