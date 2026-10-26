@@ -249,7 +249,11 @@ impl YoutubeReviewJob {
                 task.request_key.starts_with("youtube:prep:")
                     && task.status == crate::domain::TaskStatus::Succeeded
                     && task.notify.is_none()
-                    && task.result.as_ref().is_some_and(|r| !r.summary.is_empty())
+                    && task.result.as_ref().is_some_and(|r| {
+                        // 新格式门槛：模板 834ac93 起才有「听力锚点」段。
+                        // 旧格式存量单（A/B 时期 notify 为空的遗留）永远不进日报。
+                        !r.summary.is_empty() && r.summary.contains("听力锚点")
+                    })
                     && !digested.contains(&task.id)
             })
             .take(MAX_SHEETS_PER_DIGEST)
