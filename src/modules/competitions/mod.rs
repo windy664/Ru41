@@ -124,6 +124,15 @@ impl CompetitionsService {
             Err(error) => eprintln!("[competitions] wqai fetch failed: {error:#}"),
         }
 
+        let h123 = crate::adapters::sources::competition::hack123::Hack123Client::new();
+        match h123
+            .fetch_events("https://hack123.henryht.sh/llms.txt")
+            .await
+        {
+            Ok(events) => all.extend(events.iter().filter_map(filter::collect_hack123)),
+            Err(error) => eprintln!("[competitions] hack123 fetch failed: {error:#}"),
+        }
+
         let today = chrono::Local::now().date_naive();
         build_rows(all, today)
     }
