@@ -12,7 +12,7 @@ pub fn render(entries: &[JobEntry], today: chrono::NaiveDate) -> String {
     let mut out = String::new();
     out.push_str("# 岗位总览\n\n");
     out.push_str(&format!(
-        "> 由 ru41 每 6 小时刷新（数据源：面灵 AI 职位表，含跨轮合并，发布超 30 天自动消失）。\n> 最近刷新：{}\n\n",
+        "> 由 ru41 每 6 小时刷新（数据源：面灵 AI 职位表 + BOSS 直聘 sidecar，含跨轮合并，发布超 30 天自动消失）。\n> 最近刷新：{}\n\n",
         today.format("%Y-%m-%d")
     ));
     out.push_str("**口径**：实习 + 校招都留（年级不作过滤）；只留技术岗（AI/大模型/Agent/算法/后端/安全/Infra/数据/开发），产品/运营/销售等非技术岗剔除；⭐ = 大湾区。\n\n");
@@ -25,7 +25,7 @@ pub fn render(entries: &[JobEntry], today: chrono::NaiveDate) -> String {
     let with_jd: Vec<&&JobEntry> = rows.iter().filter(|e| e.jd.is_some()).collect();
     if !with_jd.is_empty() {
         out.push_str(&format!("\n## JD 详情（{} 条）\n\n", with_jd.len()));
-        out.push_str("> 回源官方招聘站公开 API 抓取（ashby / greenhouse / smartrecruiters）；国内平台（飞书招聘/美团/腾讯/京东）接口待适配，暂缺。\n\n");
+        out.push_str("> 面灵条目回源官方招聘站公开 API 抓取（ashby / greenhouse / smartrecruiters）；BOSS 条目由 sidecar 详情接口直接带全文；其余国内平台（飞书招聘/美团/腾讯/京东）接口待适配，暂缺。\n\n");
         for e in with_jd {
             out.push_str(&format!("### {} · {}\n\n", e.company, e.role));
             out.push_str(&format!(

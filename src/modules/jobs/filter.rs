@@ -75,21 +75,30 @@ pub struct JobsState {
 
 /// 筛选一轮抓到的岗位：剔除非技术岗，保留实习+校招。
 pub fn filter_jobs(jobs: Vec<MianlingJob>) -> Vec<JobEntry> {
+    filter_entries(
+        jobs.into_iter()
+            .map(|job| JobEntry {
+                company: job.company,
+                role: job.role,
+                city: job.city,
+                audience: job.audience,
+                kind: job.kind,
+                posted: job.posted,
+                platform: job.platform,
+                jd: None,
+                jd_tried: false,
+            })
+            .collect(),
+    )
+}
+
+/// 对已构造好的条目（如 BOSS sidecar 结果）套用同一套技术岗口径。
+pub fn filter_entries(entries: Vec<JobEntry>) -> Vec<JobEntry> {
     let keep = keep_re();
     let drop = drop_re();
-    jobs.into_iter()
-        .filter(|job| !drop.is_match(&job.role) && keep.is_match(&job.role))
-        .map(|job| JobEntry {
-            company: job.company,
-            role: job.role,
-            city: job.city,
-            audience: job.audience,
-            kind: job.kind,
-            posted: job.posted,
-            platform: job.platform,
-            jd: None,
-            jd_tried: false,
-        })
+    entries
+        .into_iter()
+        .filter(|e| !drop.is_match(&e.role) && keep.is_match(&e.role))
         .collect()
 }
 

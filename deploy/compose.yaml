@@ -169,6 +169,23 @@ services:
       - ${RU41_VAULT_PATH:?set RU41_VAULT_PATH to the vault clone dir}:/vault
     command: ["--config", "/etc/ru41/ru41.toml", "--db", "/data/state.db", "jobs", "run"]
 
+  # BOSS 直聘爬取 sidecar：独立 Python 镜像（DrissionPage + chromium），
+  # 结果写 /data/boss_jobs.json 供 jobs 模块读取（[sources.jobs] boss_path）。
+  # restart: no —— 由宿主机 cron/systemd timer 触发（每天 9 点 / 21 点）：
+  #   docker compose -f deploy/compose.yaml run --rm boss-crawler
+  # 首次登录：docker compose run --rm boss-crawler python login.py，
+  # 二维码截图落在数据目录 boss_login_needed.png。
+  boss-crawler:
+    build: ../sidecar/boss-crawler
+    image: boss-crawler:local
+    init: true
+    restart: "no"
+    profiles: [jobs]
+    volumes:
+      - ${RU41_BOSS_DATA:-/home/windy2/boss-crawler-data}:/data
+    networks:
+      - ru41-net
+
   # 共享无头浏览器（browserless/chrome）：JS 重度页面（X、知乎、SPA）的统一
   # 渲染出口。附属与 agent 都用 HTTP API 直连，不再各自背一套 chromium。
   browser:

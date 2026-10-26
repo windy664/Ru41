@@ -3,8 +3,8 @@
 //! 生成 `05-Opportunities-机会/Internships-实习/岗位总览.md` 写进 vault，
 //! 变更以 [ru41] 前缀自提交（obsidian 闭环会自认，不触发整理任务）。
 
-mod filter;
-mod overview;
+pub mod filter;
+pub mod overview;
 
 use crate::ports::vault::Vault;
 use anyhow::Result;
@@ -20,6 +20,9 @@ pub const OVERVIEW_PATH: &str = "05-Opportunities-机会/Internships-实习/岗�
 pub struct JobsSection {
     /// 生成间隔（秒），默认 6 小时。
     pub interval_secs: Option<u64>,
+    /// BOSS 直聘 sidecar 结果文件路径（容器内视角，如 /data/boss_jobs.json）；
+    /// 缺省 None = 不启用第二数据源。
+    pub boss_path: Option<String>,
 }
 
 /// 注册表定义：依赖 obsidian 的 vault 配置（同一个仓库），未配置则缺席。
@@ -42,6 +45,7 @@ pub const DEF: super::ModuleDef = super::ModuleDef {
         Ok(Some(Box::new(JobsService {
             vault: crate::bootstrap::assembly::vault_client(&resolved),
             interval_secs: config.sources.jobs.interval_secs.unwrap_or(6 * 3600),
+            boss_path: config.sources.jobs.boss_path.clone(),
         })))
     },
     qq_handlers: |_, _| Ok(Vec::new()),
@@ -50,6 +54,7 @@ pub const DEF: super::ModuleDef = super::ModuleDef {
 pub struct JobsService {
     vault: Arc<dyn Vault>,
     interval_secs: u64,
+    boss_path: Option<String>,
 }
 
 impl JobsService {
@@ -60,7 +65,16 @@ impl JobsService {
         let mut jobs = client.fetch_latest("实习").await?;
         jobs.extend(client.fetch_latest("校招").await?);
         let fetched = jobs.len();
-        let fresh = filter::filter_jobs(jobs);
+        let mut fresh = filter::filter_jobs(jobs);
+
+        // 第二数据源：BOSS 直聘 sidecar 结果文件。读失败只降级记日志，
+        // 不影响面灵链路。
+        if let Some(path) = &self.boss_path {
+            match crate::adapters::sources::jobs::boss::load_entries(path) {
+                Ok(entries) => fresh.extend(entries),
+                Err(error) => eprintln!("[jobs.boss] {path} 读取失败（降级跳过）: {error:#}"),
+            }
+        }
 
         let today = chrono::Local::now().date_naive();
         let today_md = (
