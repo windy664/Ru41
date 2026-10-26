@@ -483,6 +483,38 @@ mod review_loop {
             .expect("local time")
     }
 
+    fn seed_legacy_sheet(store: &Arc<dyn TaskStore>, video: &str) {
+        // 旧格式预习单：没有「听力锚点」段（834ac93 之前的模板产物）。
+        let mut service = TaskService::new(store.clone());
+        let enqueue = service
+            .enqueue_for(&format!("youtube:prep:{video}"), "prompt", "codex")
+            .unwrap();
+        let claim = store
+            .claim_for(
+                "test-worker",
+                "codex",
+                None,
+                RunContract::AnalysisV1,
+                ru41::util::now(),
+                600,
+            )
+            .unwrap()
+            .expect("task claimable");
+        assert_eq!(claim.task.id, enqueue.task.id);
+        store
+            .succeed(
+                &claim,
+                &AgentResult {
+                    summary: String::from(
+                        "📺 旧格式单子\n🔗 https://www.youtube.com/watch?v=old\n⏱ 5:00\n\n                         📖 重点词句（8-12 个）：\n                         1. **footage** /ˈfʊtɪdʒ/ 拍摄的视频素材 — \"my footage from my GoPro\" [1:00]\n",
+                    ),
+                },
+                None,
+                ru41::util::now(),
+            )
+            .unwrap();
+    }
+
     fn seed_succeeded_sheet(store: &Arc<dyn TaskStore>, video: &str) {
         let mut service = TaskService::new(store.clone());
         let enqueue = service
@@ -671,6 +703,19 @@ mod review_loop {
         assert_eq!(fake.0.lock().unwrap().len(), 1);
     }
 
+    #[tokio::test]
+    async fn legacy_format_sheets_never_enter_digest() {
+        let dir = tempfile::tempdir().unwrap();
+        let store: Arc<dyn TaskStore> =
+            Arc::new(SqliteTaskStore::open(&dir.path().join("state.db")).unwrap());
+        seed_legacy_sheet(&store, "oldvid");
+        let (job, fake) = review_job_at(store.clone(), clock_at(0));
+        let report = ru41::ingress::schedule::PollJob::poll_json(&job)
+            .await
+            .unwrap();
+        assert_eq!(report["digest_pushed"], 0, "旧格式单子不得进日报");
+        assert!(fake.0.lock().unwrap().is_empty());
+    }
     #[test]
     fn extracts_without_english_leak() {
         let items = review::extract_vocab(SHEET);
