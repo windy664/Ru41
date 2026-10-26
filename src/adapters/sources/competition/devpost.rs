@@ -38,8 +38,15 @@ struct DevpostHackathon {
 }
 
 #[derive(Debug, serde::Deserialize)]
+struct DevpostMeta {
+    total_count: Option<usize>,
+}
+
+#[derive(Debug, serde::Deserialize)]
 struct DevpostResponse {
     hackathons: Vec<DevpostHackathon>,
+    #[serde(default)]
+    meta: Option<DevpostMeta>,
 }
 
 impl DevpostClient {
@@ -50,19 +57,41 @@ impl DevpostClient {
     }
 
     /// 调搜索 API 拉赛事列表；只保留 open/upcoming 状态的条目。
+    /// API 默认每页只有 9 条，per_page 上限 40（2026-10 实测），而在办赛事
+    /// 有 160+ 场——不分页会漏掉截止日靠后的（PayPal AI Hackathon 曾因此漏捕）。
+    /// 最多 6 页，或累计达到 total_count / 页面无新增时提前结束。
     pub async fn fetch_hackathons(&self, url: &str) -> Result<Vec<FeedItem>> {
-        let body = fetch_text(
-            self.http
-                .get(url)
-                .header("Accept", "application/json")
-                .header("X-Requested-With", "XMLHttpRequest"),
-            "devpost",
-        )
-        .await?;
-        let response: DevpostResponse =
-            serde_json::from_str(&body).context("devpost json parse failed")?;
-        Ok(response
-            .hackathons
+        const MAX_PAGES: u32 = 6;
+        const PER_PAGE: u32 = 40;
+        let sep = if url.contains('?') { '&' } else { '?' };
+        let mut all: Vec<DevpostHackathon> = Vec::new();
+        let mut seen_ids = std::collections::HashSet::new();
+        for page in 1..=MAX_PAGES {
+            let paged = format!("{url}{sep}per_page={PER_PAGE}&page={page}");
+            let body = fetch_text(
+                self.http
+                    .get(&paged)
+                    .header("Accept", "application/json")
+                    .header("X-Requested-With", "XMLHttpRequest"),
+                "devpost",
+            )
+            .await?;
+            let response: DevpostResponse =
+                serde_json::from_str(&body).context("devpost json parse failed")?;
+            let total = response.meta.and_then(|m| m.total_count);
+            let mut new_on_page = 0;
+            for h in response.hackathons {
+                if seen_ids.insert(h.id) {
+                    all.push(h);
+                    new_on_page += 1;
+                }
+            }
+            // 空页/无新增（页序漂移）/已拿全：停
+            if new_on_page == 0 || total.is_some_and(|t| all.len() >= t) {
+                break;
+            }
+        }
+        Ok(all
             .into_iter()
             .filter(|h| matches!(h.open_state.as_deref(), Some("open") | Some("upcoming")))
             .map(|h| {
