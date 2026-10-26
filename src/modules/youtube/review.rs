@@ -187,9 +187,19 @@ impl YoutubeReviewJob {
             .collect();
         for task in sheets.iter() {
             if let Some(result) = &task.result {
-                text.push_str(&format!("\n───\n{}\n", result.summary.trim()));
+                // 答案不出现在日报正文——先答再看，回复 /答案 获取。
+                let body = result
+                    .summary
+                    .lines()
+                    .filter(|line| !line.trim().starts_with("答案："))
+                    .collect::<Vec<_>>()
+                    .join("\n");
+                text.push_str(&format!("\n───\n{}\n", body.trim()));
                 has_content = true;
             }
+        }
+        if !sheet_ids.is_empty() {
+            text.push_str("\n（看后检测答案：回复 /答案）\n");
         }
 
         // 到期词块复习。
@@ -546,6 +556,27 @@ impl YoutubeReviewJob {
         }
         Ok(retired)
     }
+}
+
+/// /答案：最新一期预习单的看后检测答案；日报正文刻意不含答案，先答再看。
+pub fn latest_answers(store: &Arc<dyn TaskStore>) -> Result<String> {
+    for task in store.list(SCAN_LIMIT)? {
+        if !task.request_key.starts_with("youtube:prep:")
+            || task.status != crate::domain::TaskStatus::Succeeded
+        {
+            continue;
+        }
+        if let Some(result) = &task.result {
+            if let Some(line) = result
+                .summary
+                .lines()
+                .find(|line| line.trim().starts_with("答案："))
+            {
+                return Ok(format!("✅ 最近一期看后检测答案\n{}", line.trim()));
+            }
+        }
+    }
+    Ok("最近一期预习单没有看后检测答案。".into())
 }
 
 /// 「会」：进一档；走完阶梯毕业为 known（预习挑词将排除）。

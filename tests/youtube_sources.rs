@@ -407,7 +407,10 @@ mod review_loop {
 - [2:02] \"I'm going to walk through that with you.\" → going to 快读缩成 /ɡənə/（现象：缩读）\n\
 - [3:12] \"better at improving\" → better 的 /t/ 变轻拍音（现象：闪音）\n\
 - [3:40] \"and I put out a PR\" → and 弱读成 /ən/（现象：弱读）\n\n\
-❓ 听前自测：测试问题？\n";
+❓ 听前自测：测试问题？\n\
+✅ 看后检测（看完再做）：\n\
+1. 主线是什么？\n\
+答案：1A 2 gear up\n";
 
     #[derive(Default, Clone)]
     struct FakeNotifier(Arc<std::sync::Mutex<Vec<String>>>);
@@ -579,6 +582,8 @@ mod review_loop {
             assert_eq!(sent.len(), 1);
             assert!(sent[0].contains("📚 英语日报"), "{}", sent[0]);
             assert!(sent[0].contains("silent stalls"), "日报应含预习单全文");
+            assert!(!sent[0].contains("答案：1A"), "答案不得出现在日报正文");
+            assert!(sent[0].contains("回复 /答案"), "应提示 /答案 获取方式");
             assert!(!sent[0].contains("词块复习"), "未到期不该有复习段");
         }
 
@@ -716,6 +721,21 @@ mod review_loop {
         assert_eq!(report["digest_pushed"], 0, "旧格式单子不得进日报");
         assert!(fake.0.lock().unwrap().is_empty());
     }
+    #[tokio::test]
+    async fn latest_answers_returns_newest_sheet_answer() {
+        let dir = tempfile::tempdir().unwrap();
+        let store: Arc<dyn TaskStore> =
+            Arc::new(SqliteTaskStore::open(&dir.path().join("state.db")).unwrap());
+        seed_succeeded_sheet(&store, "vidq");
+        let reply = review::latest_answers(&store).unwrap();
+        assert!(reply.contains("答案：1A 2 gear up"), "{}", reply);
+
+        let dir2 = tempfile::tempdir().unwrap();
+        let empty: Arc<dyn TaskStore> =
+            Arc::new(SqliteTaskStore::open(&dir2.path().join("state.db")).unwrap());
+        assert!(review::latest_answers(&empty).unwrap().contains("没有"));
+    }
+
     #[test]
     fn extracts_without_english_leak() {
         let items = review::extract_vocab(SHEET);
