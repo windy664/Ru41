@@ -17,6 +17,8 @@ pub struct EcardConfig {
     pub interval_secs: u64,
     /// 提醒投递目标（装配层按 [notify] 渠道解析，如 feishu 的 default 或 qq 的 user:{openid}）。
     pub notify_target: String,
+    /// 每日推送余额日报（健康读数也发一条；低余额仍走提醒）。
+    pub daily_report: bool,
 }
 
 impl Default for EcardConfig {
@@ -29,6 +31,7 @@ impl Default for EcardConfig {
             water_threshold: 1.0,
             interval_secs: 86_400,
             notify_target: String::new(),
+            daily_report: false,
         }
     }
 }
@@ -43,6 +46,7 @@ pub struct EcardReport {
     pub room_label: String,
     pub alert_sent: bool,
     pub alert_reason: Option<String>,
+    pub report_sent: bool,
 }
 
 /// 水电监控：查询余额 → 读数落 records 形成历史 → 阈值判断（纯 Rust，不经 Agent）
@@ -144,6 +148,35 @@ impl EcardTracker {
                 alert_sent = true;
             }
         }
+        // 每日日报：daily_report 开启时，每天第一条健康读数也推送余额快照；
+        // ecard_report 同日去重，低余额仍单独走 ecard_alert，不重复打扰。
+        let mut report_sent = false;
+        if low.is_empty()
+            && self.config.daily_report
+            && let Some(notifier) = &self.notifier
+            && self.store.document("ecard_report", &today)?.is_none()
+        {
+            notifier
+                .send(
+                    &self.config.notify_target,
+                    None,
+                    &format!(
+                        "【水电日报】{room_label}：电 {} / 水 {}（{today}）。低于阈值（电{:.0}度/水{:.0}吨）会单独提醒。",
+                        power.map_or("--".into(), |p| format!("{p:.2}度")),
+                        water.map_or("--".into(), |w| format!("{w:.2}吨")),
+                        self.config.power_threshold,
+                        self.config.water_threshold,
+                    ),
+                )
+                .await?;
+            self.store.put_document(
+                "ecard_report",
+                &today,
+                None,
+                &serde_json::json!({ "ts": now, "power": power, "water": water }),
+            )?;
+            report_sent = true;
+        }
         Ok(EcardReport {
             power,
             water,
@@ -152,6 +185,7 @@ impl EcardTracker {
             room_label,
             alert_sent,
             alert_reason,
+            report_sent,
         })
     }
 }

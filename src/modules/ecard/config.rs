@@ -25,6 +25,8 @@ pub struct EcardSection {
     pub interval_secs: Option<u64>,
     /// 低余额时是否经默认通知出口提醒；默认 true。
     pub notify: Option<bool>,
+    /// 每日推送余额日报（健康读数也发一条）；默认 false。
+    pub daily_report: Option<bool>,
 }
 
 impl EcardSection {
@@ -70,6 +72,7 @@ impl EcardSection {
                 .unwrap_or(Self::DEFAULT_WATER_THRESHOLD),
             interval_secs: self.interval_secs.unwrap_or(Self::DEFAULT_INTERVAL_SECS),
             notify_target,
+            daily_report: self.daily_report.unwrap_or(false),
         })
     }
 
