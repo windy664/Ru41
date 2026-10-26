@@ -34,6 +34,9 @@ pub struct RssSection {
     /// daily 模式入池前是否跑关键词粗筛；默认 true。
     /// false 时近时效新条目全量入池（封顶 80），相关性判断完全交给 digest。
     pub pool_keyword_filter: Option<bool>,
+    /// 标题级丢弃规则（正则列表，命中即不入池）：用于源级噪声过滤，
+    /// 如 V2EX 的 [推广]/[中转站] 节点（纯营销，digest 之前就该丢掉）。
+    pub drop_title_patterns: Option<Vec<String>>,
 }
 
 impl RssSection {
@@ -60,6 +63,15 @@ impl RssSection {
             morning_hour: self.morning_hour,
             max_age_days: self.max_age_days.unwrap_or(2),
             pool_keyword_filter: self.pool_keyword_filter.unwrap_or(true),
+            drop_title_patterns: self
+                .drop_title_patterns
+                .clone()
+                .unwrap_or_default()
+                .iter()
+                .map(|p| {
+                    regex::Regex::new(p).with_context(|| format!("invalid drop_title_pattern: {p}"))
+                })
+                .collect::<Result<Vec<_>>>()?,
         })
     }
 }
