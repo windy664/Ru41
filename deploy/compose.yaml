@@ -158,6 +158,14 @@ services:
     ports:
       - "127.0.0.1:4141:4141"
 
+  # 智慧树作业/考试提醒：.223 sidecar 每晚采集，报告由本地 timer 拉取到 .ru41/zhihuishu/，
+  # 本服务按 interval_secs 轮询报告并在临期时 QQ 推送（2026-10-26 形势与政策考试事故后接入）。
+  zhihuishu:
+    <<: *ru41-common
+    profiles: [zhihuishu]
+    volumes: *ru41-volumes
+    command: ["--config", "/etc/ru41/ru41.toml", "--db", "/data/state.db", "schedule", "run", "zhihuishu"]
+
   # 岗位总览：面灵职位表筛选（实习+校招、只留技术岗）→ vault 岗位总览.md，
   # 跨轮合并状态扩窗口（面灵首页只有最新 50 条），[ru41] 自提交，需挂载 Vault。
   jobs:
@@ -186,10 +194,11 @@ services:
     networks:
       - ru41-net
 
-  # 共享无头浏览器（browserless/chrome）：JS 重度页面（X、知乎、SPA）的统一
+  # 共享无头浏览器（browserless/chromium v2）：JS 重度页面（X、知乎、SPA）的统一
   # 渲染出口。附属与 agent 都用 HTTP API 直连，不再各自背一套 chromium。
+  # 注意：旧镜像 browserless/chrome 的 docker hub latest 官方冻结于 2024-02，勿回退。
   browser:
-    image: docker.m.daocloud.io/browserless/chrome:latest
+    image: browserless/chromium:latest
     init: true
     restart: unless-stopped
     profiles: [browser]
