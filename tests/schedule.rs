@@ -151,6 +151,23 @@ fn parse_rejects_garbage() {
 }
 
 #[test]
+fn parse_absolute_dates() {
+    let now = now_anchor();
+    // M-D：过去的日期滚到明年
+    let (starts, _, r) = parse_event_when("10-25 9:00-10:30", now, &options()).unwrap();
+    assert_eq!(r, EventRecurrence::None);
+    assert!(starts > now, "过去的 M-D 滚到明年");
+    // YYYY-M-D：远未来原样接受
+    let (starts, _, _) = parse_event_when("2027-03-15 09:00-09:30", now, &options()).unwrap();
+    assert!(starts > now + 30 * 86400);
+    // M月D日
+    assert!(parse_event_when("12月1日 14:00-15:00", now, &options()).is_some());
+    // 裸时刻仍是"今天"
+    let today_start = parse_event_when("23:00-23:30", now, &options());
+    assert!(today_start.is_some());
+}
+
+#[test]
 fn service_crud_and_cancel() {
     let (_dir, store) = fixture();
     let service = ScheduleService::new(store.clone(), options());
