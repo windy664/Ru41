@@ -622,6 +622,8 @@ mod review_loop {
             assert!(!sent[0].contains("答案：1A"), "答案不得出现在日报正文");
             assert!(sent[0].contains("回复 /答案"), "应提示 /答案 获取方式");
             assert!(!sent[0].contains("词块复习"), "未到期不该有复习段");
+            assert!(!sent[0].contains("听前自测"), "日报只推精简版");
+            assert!(sent[0].contains("/学习"), "应提示 /学习 获取完整单子");
         }
 
         // 同日再跑：日报已发，不重发。
@@ -743,6 +745,22 @@ mod review_loop {
             .unwrap();
         assert_eq!(report["digest_pushed"], 0);
         assert_eq!(fake.0.lock().unwrap().len(), 1);
+    }
+
+    #[tokio::test]
+    async fn latest_sheet_returns_newest_full_sheet() {
+        let dir = tempfile::tempdir().unwrap();
+        let store: Arc<dyn TaskStore> =
+            Arc::new(SqliteTaskStore::open(&dir.path().join("state.db")).unwrap());
+        assert!(
+            review::latest_sheet(&store)
+                .unwrap()
+                .contains("最近没有预习单")
+        );
+        seed_succeeded_sheet(&store, "vidq");
+        let sheet = review::latest_sheet(&store).unwrap();
+        assert!(sheet.contains("听前自测"), "完整单子应含自测");
+        assert!(sheet.contains("答案：1A"), "完整单子应含检测答案");
     }
 
     #[tokio::test]
