@@ -31,6 +31,9 @@ pub struct RssConfig {
     /// daily 模式入池前是否跑关键词粗筛；false 时新条目全量入池，
     /// 相关性判断完全交给 digest（每天仅 1-2 次 GLM 调用，成本不变）。
     pub pool_keyword_filter: bool,
+    /// 标题级丢弃规则（配置里的正则编译产物）：命中即不入池。
+    /// 用于源级噪声过滤（V2EX 推广/中转站节点等纯营销）。
+    pub drop_title_patterns: Vec<regex::Regex>,
 }
 
 impl Default for RssConfig {
@@ -49,6 +52,7 @@ impl Default for RssConfig {
             morning_hour: None,
             max_age_days: 2,
             pool_keyword_filter: true,
+            drop_title_patterns: Vec::new(),
         }
     }
 }
@@ -127,6 +131,14 @@ impl RssTracker {
             items.extend(
                 feed_items
                     .into_iter()
+                    // 源级噪声过滤：标题命中丢弃规则的不入池（比 digest 拦截省 LLM 调用）
+                    .filter(|item| {
+                        !self
+                            .config
+                            .drop_title_patterns
+                            .iter()
+                            .any(|re| re.is_match(&item.title))
+                    })
                     .take(self.config.max_items_per_feed as usize)
                     .filter(|item| match parse_item_time(&item.published) {
                         Some(ts) => ts >= cutoff,

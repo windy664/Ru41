@@ -28,6 +28,17 @@ impl NotifyDispatcher {
         let mut sent = 0;
         for task in tasks {
             let Some(route) = &task.notify else { continue };
+            // 雷达日报空报不推送：digest 判"无值得关注"时静默消化。
+            // prompt 的"只回一行 📭"纪律 LLM 不总遵守（会展开舍弃说明），程序兜底。
+            if task.request_key.starts_with("rss:digest:")
+                && task
+                    .result
+                    .as_ref()
+                    .is_some_and(|r| is_quiet_digest(&r.summary))
+            {
+                self.store.mark_notified(task.id)?;
+                continue;
+            }
             let Some(channel) = self
                 .channels
                 .iter()
@@ -271,6 +282,13 @@ fn progress_text(doc: &crate::domain::records::Document, task: &Task) -> String 
     }
 }
 
+/// 雷达日报"空报"判定：摘要开头含 📭 或"无/没有值得关注"即视为空报。
+/// 只看前 80 字：正文里提到这些词（如"其余条目无值得关注的"）不算空报。
+fn is_quiet_digest(summary: &str) -> bool {
+    let head: String = summary.chars().take(80).collect();
+    head.contains('📭') || head.contains("无值得关注") || head.contains("没有值得关注")
+}
+
 /// 通知文本：成功用结果摘要，失败带原因。不加脚手架页脚——
 /// 用户要的是原生 codex 输出，不是 ru41 的机械说明。
 fn notify_text(task: &Task) -> String {
@@ -309,6 +327,20 @@ fn effective_msg_id(task: &Task, now: i64) -> Option<&str> {
 mod tests {
     use super::*;
     use crate::domain::{NotifyRoute, TaskStatus};
+
+    #[test]
+    fn quiet_digest_detection_looks_at_head_only() {
+        assert!(is_quiet_digest("📭 今日无值得关注的机会。"));
+        assert!(is_quiet_digest(
+            "本批次无值得关注的内容。\n\n**舍弃说明**\n- FreeDNS……"
+        ));
+        assert!(is_quiet_digest("今天没有值得关注的新条目。"));
+        assert!(!is_quiet_digest("本批次筛出 6 条，全部为今日条目。"));
+        // 正文深处的提及不算空报
+        let mut real = "本批次筛出 2 条值得关注：".repeat(6);
+        real.push_str("其余条目无值得关注的内容");
+        assert!(!is_quiet_digest(&real));
+    }
 
     fn task(created_at: &str) -> Task {
         Task {
