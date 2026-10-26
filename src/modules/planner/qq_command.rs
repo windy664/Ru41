@@ -209,7 +209,7 @@ impl TodoQqCommand {
                 due_at,
                 remind_at: due_at,
                 source: Some(TodoSource {
-                    channel: "qq".into(),
+                    channel: ctx.reply_channel.into(),
                     source_id: Some(ctx.msg_id.to_owned()),
                 }),
             },
@@ -243,7 +243,7 @@ impl TodoQqCommand {
                 location: None,
                 recurrence,
                 source: Some(EventSource {
-                    channel: "qq".into(),
+                    channel: ctx.reply_channel.into(),
                     source_id: Some(ctx.msg_id.to_owned()),
                 }),
             },

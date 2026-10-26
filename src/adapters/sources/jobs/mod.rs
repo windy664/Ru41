@@ -2,5 +2,6 @@
 //! 与竞赛源同级注册进 sources 注册表，共用 `前缀+<url>` 路由。
 
 pub mod boss;
+pub mod entry;
 pub mod jd;
 pub mod mianling;

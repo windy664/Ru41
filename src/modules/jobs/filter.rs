@@ -6,25 +6,15 @@ use crate::adapters::sources::jobs::mianling::MianlingJob;
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
 
+/// 条目类型与技术岗口径在适配器层定义（`adapters::sources::jobs::entry`），
+/// 此处 re-export 保持模块内既有引用路径不变。
+pub use crate::adapters::sources::jobs::entry::{JobEntry, filter_entries};
+
 /// 状态文件在 vault 里的位置（点开头，Obsidian 默认不显示）。
 pub const STATE_PATH: &str = "05-Opportunities-机会/Internships-实习/.jobs-state.json";
 
 /// 条目保留天数：发布超过这么久没再出现的岗位从总览里消失。
 const KEEP_DAYS: i64 = 30;
-
-/// 技术向保留词（命中即留）。
-fn keep_re() -> regex::Regex {
-    regex::Regex::new(
-        r"(?i)AI|大模型|Agent|智能体|算法|后端|全栈|安全|Infra|数据|研发|推理|模型|LLM|Coding|前端|嵌入式|运维|开发|工程师|Intern|Engineer",
-    )
-    .expect("keep regex")
-}
-
-/// 非技术剔除词（命中即丢，优先级高于保留词——"AI产品经理"这类擦边岗不要）。
-fn drop_re() -> regex::Regex {
-    regex::Regex::new(r"产品|运营|商业分析|买手|销售|客服|维养|行政|人力|市场|解决方案|技术支持")
-        .expect("drop regex")
-}
 
 /// 大湾区城市（标注 ⭐，不改排序）。
 pub fn is_gba(city: &str) -> bool {
@@ -44,27 +34,6 @@ pub fn posted_md(posted: &str) -> Option<(u32, u32)> {
     let re = regex::Regex::new(r"(\d{1,2})月(\d{1,2})日").expect("posted regex");
     let caps = re.captures(posted)?;
     Some((caps[1].parse().ok()?, caps[2].parse().ok()?))
-}
-
-/// 合并后的总览条目。
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct JobEntry {
-    pub company: String,
-    pub role: String,
-    pub city: String,
-    pub audience: String,
-    /// "实习" / "校招"。
-    pub kind: String,
-    pub posted: String,
-    /// 回源平台（ashby/greenhouse/...），老状态文件没有此字段。
-    #[serde(default)]
-    pub platform: Option<String>,
-    /// JD 纯文本（回源官方招聘站抓到才有）。
-    #[serde(default)]
-    pub jd: Option<String>,
-    /// 已尝试过 JD 抓取（无论成败），避免每轮反复打官方 API。
-    #[serde(default)]
-    pub jd_tried: bool,
 }
 
 /// 状态文件内容：key = 公司|岗位|城市。
@@ -90,16 +59,6 @@ pub fn filter_jobs(jobs: Vec<MianlingJob>) -> Vec<JobEntry> {
             })
             .collect(),
     )
-}
-
-/// 对已构造好的条目（如 BOSS sidecar 结果）套用同一套技术岗口径。
-pub fn filter_entries(entries: Vec<JobEntry>) -> Vec<JobEntry> {
-    let keep = keep_re();
-    let drop = drop_re();
-    entries
-        .into_iter()
-        .filter(|e| !drop.is_match(&e.role) && keep.is_match(&e.role))
-        .collect()
 }
 
 /// 把本轮岗位合并进状态：同 key 覆盖发布日等字段，但保留已抓到的 JD；

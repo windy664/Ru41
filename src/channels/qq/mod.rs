@@ -29,9 +29,8 @@ pub const TARGET_GROUP_PREFIX: &str = "group:";
 pub const TARGET_C2C_PREFIX: &str = "user:";
 
 /// QQ 渠道的消息请求键，保证同一 msg_id 只入队一次。
-pub fn msg_request_key(msg_id: &str) -> String {
-    format!("qq:msg:{msg_id}")
-}
+/// 实现已上移到 `ports::commands::msg_request_key`（模块侧也复用），此处 re-export 兼容旧路径。
+pub use crate::ports::commands::msg_request_key;
 
 /// 同一 msg_id 被动回复的序号器：msg_seq 必须从 1 开始递增且不能重复。
 /// QQ 网关进程内 QqBot（命令/回执）与 QqNotifier（终态/进度通知）共享一个实例，

@@ -149,12 +149,9 @@ pub fn vault_if_ready(config: &Config, enabled: bool) -> Result<Option<Arc<dyn V
 }
 
 /// yt-dlp 客户端工厂：tracker、QQ 命令与 CLI prep 共用同一份配置来源。
+/// 实现留在 modules::youtube（tracker/QQ 命令同源），此处仅为装配层转发。
 pub fn youtube_client(config: &Config) -> YtDlpClient {
-    let youtube = &config.sources.youtube;
-    YtDlpClient::new(
-        youtube.ytdlp_bin.clone().unwrap_or_else(|| "yt-dlp".into()),
-        youtube.proxy_url.clone(),
-    )
+    crate::modules::youtube::ytdlp_client(config)
 }
 
 /// [sources.youtube] 语义的通知出口（CLI youtube prep 使用；与 poll 装配一致）。
