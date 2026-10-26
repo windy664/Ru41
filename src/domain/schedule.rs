@@ -371,17 +371,17 @@ fn split_oneoff<'a>(
     if let Some(rest) = text.strip_prefix("今晚") {
         return Some((today, Some(20), rest.trim_start_matches([' ', '的'])));
     }
+    // 日期头：开头的数字/连字符/月/日 串（如 "10-25"、"2027-03-15"、"10月25日"）。
+    // 纯时刻（"14:00"）不含 '-'/'月'，落回"今天 + 时刻"路径。
     let head_end = text
-        .find(|c: char| c.is_ascii_digit() || c.is_whitespace())
+        .find(|c: char| !(c.is_ascii_digit() || c == '-' || c == '月' || c == '日'))
         .unwrap_or(text.len());
     let head = &text[..head_end];
-    if head.contains('月') || head.contains('-') || head.chars().all(|c| c.is_ascii_digit()) {
-        let digits: String = head
-            .chars()
-            .filter(|c| c.is_ascii_digit() || *c == '-')
-            .collect();
-        if let Some(mut date) = parse_month_day(&digits, today) {
-            if date < today {
+    if !head.is_empty() && (head.contains('月') || head.contains('-')) {
+        let normalized = head.replace('月', "-").replace('日', "");
+        if let Some(mut date) = parse_month_day(&normalized, today) {
+            // 无年份的 M-D（一个连字符）落在过去则滚到明年；带年份的按原样（允许远未来）。
+            if date < today && normalized.matches('-').count() == 1 {
                 date = date.checked_add_signed(Duration::days(365))?;
             }
             let rest = text[head.len()..].trim_start_matches([' ', '的']);
@@ -391,7 +391,7 @@ fn split_oneoff<'a>(
     Some((today, None, text))
 }
 
-/// M-D / M月D日（head 已去掉「月」「日」等字，只留数字与连字符）→ 日期。
+/// M-D / YYYY-M-D（'月' 已换成 '-'、'日' 已去掉）→ 日期。
 fn parse_month_day(digits: &str, today: NaiveDate) -> Option<NaiveDate> {
     let parts: Vec<&str> = digits.split('-').filter(|p| !p.is_empty()).collect();
     match parts.as_slice() {
