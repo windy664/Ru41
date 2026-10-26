@@ -15,10 +15,11 @@ description: 查询机会雷达的历史日报与最新机会（免费 AI 额度
 
 ## 雷达在盯哪些源
 
-- RSS 信息流：HackerNews、HuggingFace Blog、V2EX、ProductHunt、CSDN 极客头条、IT之家、极客公园、r/LocalLLaMA
-- 赛事平台（伪 feed 解析）：Devpost（海外黑客松）、lablab.ai（纯 AI 黑客松）、DataFountain（国内 CCF 系数据赛）、wqai 湾区 AI 日历（赛事表格 + 官方公共 ICS：大湾区六城线下活动/峰会/沙龙，含城市场馆票务）、讯飞 AI 开发者大赛（challenge.xfyun.cn，经 ru41-browser 渲染抓取，赛道多、含智能体应用赛）
-- 页面监控（pagewatch）：腾讯安全众测 zc.tencent.com/hackathon
-- 明确不在覆盖内：Kaggle（缺 API key）、DoraHacks/天池（反爬拦脚本）、腾讯云黑客松（低质赛事多，用户主动放弃）、MLH（多为北美线下赛）
+- RSS 信息流：HackerNews、HuggingFace Blog、V2EX、ProductHunt、CSDN 极客头条、IT之家、极客公园、GitHub Blog·hackathon、Supabase Blog、r/LocalLLaMA
+- 赛事平台（伪 feed 解析）：Devpost（海外黑客松）、lablab.ai（纯 AI 黑客松）、DataFountain（国内 CCF 系数据赛）、HackerTrip（中文黑客松聚合，公开 JSON API）、wqai 湾区 AI 日历（赛事表格 + 官方公共 ICS：大湾区六城线下活动/峰会/沙龙，含城市场馆票务）、讯飞 AI 开发者大赛（challenge.xfyun.cn，经 ru41-browser 渲染抓取，赛道多、含智能体应用赛）
+- 页面监控（pagewatch）：腾讯安全众测 zc.tencent.com/hackathon、腾讯广告算法大赛 algo.qq.com、百度之星 star.baidu.com
+- 覆盖策略：以聚合平台为主力，企业官网只挂"一年一次"的门铃监控，不再为单个企业写解析适配器。天池不做适配器——热门赛会被 HackerTrip 二手收录（已实证：蚂蚁灵波挑战赛）
+- 明确不在覆盖内：Kaggle（缺 API key）、DoraHacks（反爬拦脚本）、腾讯云黑客松（低质赛事多，用户主动放弃）、MLH（多为北美线下赛）、天池（走 HackerTrip 二手覆盖）
 
 用户问「雷达都盯哪些平台/能不能加某某源」时按这份清单回答；加源要改 `[sources.rss]` feeds 或写新适配器，说明需要改配置，不要假装当场能加。
 
