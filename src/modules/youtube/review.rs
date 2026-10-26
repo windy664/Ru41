@@ -721,7 +721,11 @@ pub fn extract_vocab(summary: &str) -> Vec<VocabItem> {
             section = "equip";
             continue;
         }
-        if line.contains("带走就用") {
+        if line.contains("重点单词") {
+            section = "word";
+            continue;
+        }
+        if line.contains("带走就用") || line.contains("重点句式") {
             section = "carry";
             continue;
         }
@@ -733,7 +737,20 @@ pub fn extract_vocab(summary: &str) -> Vec<VocabItem> {
             continue;
         }
         let body = match section {
-            "equip" => line
+            // 学习负载控制：装备只有 ⭐ 必学条目进复习，场景词只出现在日报里。
+            "equip" => {
+                let stripped =
+                    line.trim_start_matches(|c: char| c.is_ascii_digit() || c == '.' || c == ' ');
+                if !stripped.starts_with('⭐') {
+                    None
+                } else {
+                    stripped
+                        .trim_start_matches('⭐')
+                        .trim_start()
+                        .strip_prefix("**")
+                }
+            }
+            "word" => line
                 .trim_start_matches(|c: char| c.is_ascii_digit() || c == '.' || c == ' ')
                 .strip_prefix("**"),
             "carry" => line.trim_start_matches("- ").strip_prefix("**\""),
@@ -1025,22 +1042,37 @@ mod tests {
 🔗 https://www.youtube.com/watch?v=6f7ojkd4_Wc\n⏱ 5:11\n\n\
 🗺 听什么（按视频顺序 2-4 段，每段一行）：\n\
 - [0:18] 建反馈页面 → 抓住：tracker 指反馈跟踪表\n\n\
-📖 现场装备（4-6 个，宁少勿滥，只收理解这期视频的关键）：\n\
-1. **silent stalls** 助手说在工作，却卡住不再回应；别误解为：正常安静运行；\"Okay. Silent stalls sounds like\" [2:44]\n\
+📖 现场装备（⭐ 进间隔复习，其余为场景词）：\n\
+1. ⭐ **silent stalls** 助手说在工作，却卡住不再回应；别误解为：正常安静运行；\"Okay. Silent stalls sounds like\" [2:44]\n\
 2. **fall back** 首选模型不可用时改用可用模型；\"Instead, it could just fall back\" [3:32]\n\
-（「别误解为」仅当该词块存在真实混淆点时才写，写在释义后；没有就整条省略，禁止凑数）\n\n\
+\n\
+🔗 重点单词（认识但不会主动用的词）：\n\
+1. **verbose** /vɜːˈboʊs/ adj. 冗长的；搭配 verbose output；词形 verbosity；\"it was way too verbose\" [1:12]\n\n\
 🔁 带走就用（2-3 个可迁移口语块）：\n\
 - **\"walk through … with you\"** 带人逐步看懂 → 你可以说：\"I'll walk through the code with you.\"；\"I'm going to walk through that with you.\" [2:02]\n\
 - **\"Let me choose one of…\"** 从几个选项中挑一个 → 你可以说：\"Let me choose one of these topics.\"；\"Let me choose one of these issues.\" [0:54]\n\n\
-👂 听力锚点（2-3 处，具体到时刻和音）：\n\
+🧩 重点句式（1-2 个，宁缺毋滥）：\n\
+- **\"Verb + sb + into + doing\"** 说服某人做某事；陷阱：into 后接动名词 → 你可以说：\"He talked me into trying Rust.\"；\"they gaslit himself into thinking\" [2:03]\n\
+\n\
+👂 精听挑战（每处①盲听写词②对照找漏听③跟读）：\n\
 - [2:02] \"I'm going to walk through that with you.\" → 留意 going to 缩成 gonna。\n\n\
 ❓ 听前自测：为什么优先查 silent stalls？\n";
 
     #[test]
     fn extracts_chunks_without_leaking_english() {
         let items = extract_vocab(SAMPLE);
-        assert_eq!(items.len(), 4);
+        assert_eq!(items.len(), 5);
         assert_eq!(items[0].chunk, "silent stalls");
+        assert!(
+            items.iter().all(|item| item.chunk != "fall back"),
+            "非 ⭐ 场景词不得进复习"
+        );
+        assert_eq!(items[1].chunk, "verbose");
+        assert_eq!(items[1].kind, "equip");
+        assert!(
+            !items[1].cue.contains("way too verbose"),
+            "单词条目原句泄漏"
+        );
         assert!(items[0].cue.contains("卡住"));
         assert!(
             !items[0].cue.contains("Silent stalls sounds like"),
@@ -1050,6 +1082,12 @@ mod tests {
         assert_eq!(items[0].kind, "equip");
         assert_eq!(items[2].chunk, "walk through … with you");
         assert_eq!(items[2].kind, "carry");
+        assert_eq!(items[4].chunk, "Verb + sb + into + doing");
+        assert!(items[4].cue.contains("说服某人做某事"));
+        assert!(
+            !items[4].cue.contains("talked me into trying"),
+            "句式条目例句泄漏"
+        );
         assert!(
             !items[2].cue.contains("walk through the code"),
             "你可以说 例句泄漏: {}",

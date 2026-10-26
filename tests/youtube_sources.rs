@@ -398,11 +398,17 @@ mod review_loop {
 
     const SHEET: &str = "📺 测试视频主线\n\
 🔗 https://www.youtube.com/watch?v=vidq\n⏱ 5:00\n\n\
-📖 现场装备（4-6 个，宁少勿滥，只收理解这期视频的关键）：\n\
-1. **silent stalls** 助手卡住不回应；\"Okay. Silent stalls sounds like\" [2:44]\n\
+📖 现场装备（⭐ 进间隔复习）：\n\
+1. ⭐ **silent stalls** 助手卡住不回应；\"Okay. Silent stalls sounds like\" [2:44]\n\
 2. **fall back** 首选不可用改用可用；\"Instead, it could just fall back\" [3:32]\n\n\
+🔗 重点单词（认识但不会主动用的词）：\n\
+1. **verbose** /vɜːˈboʊs/ adj. 冗长的；搭配 verbose output；词形 verbosity；\"it was way too verbose\" [1:12]\n\
+\n\
 🔁 带走就用（2-3 个可迁移口语块）：\n\
-- **\"walk through … with you\"** 带人逐步看懂 → 你可以说：\"I'll walk through the code with you.\"；\"I'm going to walk through that with you.\" [2:02]\n\n\
+- **\"walk through … with you\"** 带人逐步看懂 → 你可以说：\"I'll walk through the code with you.\"；\"I'm going to walk through that with you.\" [2:02]\n\
+\n\
+🧩 重点句式（1-2 个）：\n\
+- **\"Verb + sb + into + doing\"** 说服某人做某事 → 你可以说：\"He talked me into trying Rust.\"；\"gaslit himself into thinking\" [2:03]\n\n\
 👂 精听挑战（每处①盲听写词②对照找漏听③跟读）：\n\
 - [2:02] \"I'm going to walk through that with you.\" → going to 快读缩成 /ɡənə/（现象：缩读）\n\
 - [3:12] \"better at improving\" → better 的 /t/ 变轻拍音（现象：闪音）\n\
@@ -574,8 +580,9 @@ mod review_loop {
             .document("youtube_vocab", "vidq#meta")
             .unwrap()
             .unwrap();
-        assert_eq!(meta.value["count"], 3);
+        assert_eq!(meta.value["count"], 4);
         assert_eq!(vocab(&store, "vidq", 0)["chunk"], "silent stalls");
+        assert_eq!(vocab(&store, "vidq", 1)["chunk"], "verbose");
         assert_eq!(vocab(&store, "vidq", 2)["chunk"], "walk through … with you");
         {
             let sent = fake.0.lock().unwrap();
@@ -739,7 +746,8 @@ mod review_loop {
     #[test]
     fn extracts_without_english_leak() {
         let items = review::extract_vocab(SHEET);
-        assert_eq!(items.len(), 3);
+        assert_eq!(items.len(), 4);
+        assert!(items.iter().all(|item| item.chunk != "fall back"));
         for item in &items {
             assert!(!item.cue.contains("sounds like"));
             assert!(!item.cue.contains("你可以说"));
