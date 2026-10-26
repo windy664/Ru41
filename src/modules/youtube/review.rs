@@ -260,9 +260,9 @@ impl YoutubeReviewJob {
                     && task.status == crate::domain::TaskStatus::Succeeded
                     && task.notify.is_none()
                     && task.result.as_ref().is_some_and(|r| {
-                        // 新格式门槛：模板 834ac93 起才有「听力锚点」段。
-                        // 旧格式存量单（A/B 时期 notify 为空的遗留）永远不进日报。
-                        !r.summary.is_empty() && r.summary.contains("听力锚点")
+                        // 新格式门槛：模板 7cc2910 起才有「精听挑战」段。
+                        // 中间版（有听力锚点段）与 A/B 时期旧单永远不进日报，防重复打扰。
+                        !r.summary.is_empty() && r.summary.contains("精听挑战")
                     })
                     && !digested.contains(&task.id)
             })
