@@ -394,6 +394,10 @@ fn digest_hash(candidates: &[(String, FeedItem)]) -> u64 {
 
 /// 资讯精选 prompt：输出口径按设计文档 3.4 的四段式，区分事实与推断。
 fn digest_prompt(interests: &str, candidates: &[FeedItem]) -> String {
+    // 任务入队校验上限是 65536 字节（app/task validate_input），池子随源增多
+    // 会涨破它——这里给 prompt 留 6 万字节预算：单条摘要截断、超预算截尾。
+    const PROMPT_BUDGET: usize = 60_000;
+    const SUMMARY_MAX: usize = 400;
     let mut prompt = format!(
         "你是信息筛选助手，正在为用户出一份日报。以下是最新采集到的资讯条目（含标题与摘要级内容）。\n\
          个人关注方向：{interests}\n\n\
@@ -408,11 +412,22 @@ fn digest_prompt(interests: &str, candidates: &[FeedItem]) -> String {
          == 候选条目（{} 条）==\n",
         candidates.len()
     );
-    for item in candidates {
-        prompt.push_str(&format!(
+    for (i, item) in candidates.iter().enumerate() {
+        let entry = format!(
             "\n---\n{}\n链接：{}\n发布：{}\n内容：{}\n",
-            item.title, item.link, item.published, item.summary
-        ));
+            item.title,
+            item.link,
+            item.published,
+            crate::util::truncate_chars(&item.summary, SUMMARY_MAX)
+        );
+        if prompt.len() + entry.len() > PROMPT_BUDGET {
+            prompt.push_str(&format!(
+                "\n（其余 {} 条超出长度预算，本次略去）\n",
+                candidates.len() - i
+            ));
+            break;
+        }
+        prompt.push_str(&entry);
     }
     prompt
 }
@@ -536,6 +551,21 @@ mod tests {
         assert!(prompt.contains("📭 今日无值得关注的机会"));
         assert!(prompt.contains("不要附加任何解释"));
         assert!(prompt.contains("不要逐条罗列舍弃理由"));
+    }
+
+    #[test]
+    fn digest_prompt_stays_within_enqueue_budget() {
+        // 大量长摘要条目也不能顶破任务入队的 65536 字节上限
+        let mut big = Vec::new();
+        for i in 0..500 {
+            let (url, mut it) = item(&format!("n{i}"));
+            it.summary = "长".repeat(2000);
+            big.push((url, it));
+        }
+        let candidates: Vec<super::FeedItem> = big.into_iter().map(|(_, it)| it).collect();
+        let prompt = super::digest_prompt("i", &candidates);
+        assert!(prompt.len() <= 65_536, "实际 {} 字节", prompt.len());
+        assert!(prompt.contains("超出长度预算"));
     }
 
     #[test]
