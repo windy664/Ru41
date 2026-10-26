@@ -1,7 +1,4 @@
-use crate::{
-    app::identity::IdentityService,
-    ports::commands::{CommandContext, CommandHandler, Reply},
-};
+use crate::ports::commands::{CommandContext, CommandHandler, Reply};
 use anyhow::Result;
 use std::{
     future::Future,
@@ -45,8 +42,8 @@ impl CommandHandler for ZhihuishuQqCommand {
             if !arg.is_empty() {
                 return Ok(None);
             }
-            if let Some(reply) = authorize(ctx)? {
-                return Ok(Some(reply));
+            if let Some(reply) = ctx.require_private("查询作业", "作业信息属于个人数据")? {
+                return Ok(Some(Reply::text(reply)));
             }
             Ok(Some(Reply::text(format_homework(&self.report_path))))
         })
@@ -61,28 +58,12 @@ impl CommandHandler for ZhihuishuQqCommand {
             if !looks_like_homework_question(content) {
                 return Ok(None);
             }
-            if let Some(reply) = authorize(ctx)? {
-                return Ok(Some(reply));
+            if let Some(reply) = ctx.require_private("查询作业", "作业信息属于个人数据")? {
+                return Ok(Some(Reply::text(reply)));
             }
             Ok(Some(Reply::text(format_homework(&self.report_path))))
         })
     }
-}
-
-/// 与 ecard 同款双闸：先身份绑定，再限定单聊（作业属个人数据）。
-fn authorize(ctx: &CommandContext<'_>) -> Result<Option<Reply>> {
-    let identity = IdentityService::new(ctx.store.clone());
-    if !identity.is_bound("qq", ctx.author_openid)? {
-        return Ok(Some(Reply::text(
-            "## 需要身份绑定\n\n请先发送 `绑定 <口令>`，再查询作业。".to_owned(),
-        )));
-    }
-    if !ctx.is_c2c {
-        return Ok(Some(Reply::text(
-            "## 请单聊查询\n\n作业信息属于个人数据，群聊不展示。".to_owned(),
-        )));
-    }
-    Ok(None)
 }
 
 /// 自然语言命中要克制：既提「作业/截止」又带疑问色彩才拦截，避免日常闲聊被吞。

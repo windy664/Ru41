@@ -176,3 +176,8 @@ impl CommandContext<'_> {
         Ok(None)
     }
 }
+
+/// 渠道消息的任务请求键，保证同一 msg_id 只入队一次（渠道适配器与扩展命令共用）。
+pub fn msg_request_key(msg_id: &str) -> String {
+    format!("qq:msg:{msg_id}")
+}

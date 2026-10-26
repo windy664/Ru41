@@ -2,7 +2,7 @@
 //! sidecar 把岗位写到 boss_jobs.json（encryptJobId 去重、14 天未再出现的剔除），
 //! jobs 模块 poll 时读进来与面灵条目合并。读失败/文件不存在只降级记日志。
 
-use crate::modules::jobs::filter::{JobEntry, filter_entries};
+use super::entry::{JobEntry, filter_entries};
 use anyhow::{Context, Result};
 use serde::Deserialize;
 

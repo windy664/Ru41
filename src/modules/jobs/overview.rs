@@ -1,6 +1,7 @@
 //! 岗位总览渲染：实习/校招两节，发布日倒序，大湾区 ⭐ 标注。
 
-use super::filter::{JobEntry, is_gba, posted_md};
+use super::filter::{is_gba, posted_md};
+use crate::adapters::sources::jobs::entry::JobEntry;
 
 pub fn render(entries: &[JobEntry], today: chrono::NaiveDate) -> String {
     let mut rows: Vec<&JobEntry> = entries.iter().collect();
