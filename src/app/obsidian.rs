@@ -52,6 +52,12 @@ struct ObsidianState {
     /// 已放弃的提交：不再自动入队，人工删除状态文档后重置。
     #[serde(default)]
     abandoned: Option<String>,
+    /// 上次知识库重建的 Unix 秒；0 表示从未重建。
+    #[serde(default)]
+    last_reindex_at: i64,
+    /// 有未索引的内容变更（冷却期跳过时置位，冷却结束后补建）。
+    #[serde(default)]
+    index_dirty: bool,
 }
 
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
@@ -179,8 +185,8 @@ impl ObsidianService {
             report.action = self.handle_new_head(&mut state, &target).await?;
             report.changed_files = state.pending.as_ref().map(|p| p.files.len()).unwrap_or(0);
         }
+        self.maybe_reindex(&mut state, &head_before, &target, report.committed);
         self.save_state(&state)?;
-        self.maybe_reindex(&state, &head_before, &target, report.committed);
         if let Err(error) = self.render_todo_view().await {
             // 视图渲染失败不影响 git 闭环本体，下轮自然重试。
             eprintln!("[obsidian] todo view render failed: {error:#}");
@@ -202,7 +208,23 @@ impl ObsidianService {
         tokio::task::spawn_blocking(move || -> Result<()> {
             if let Some(existing) = vault.read_file(TODO_VIEW_PATH)? {
                 // 1. 勾选回写：旧文件里用户手动的 [x]/[ ] 变更写回数据库。
+                //    先取当前状态对比，只在勾选与数据库不一致时调用，
+                //    否则每轮都会对同一批条目空调 complete/restore 刷错误日志。
+                let current: std::collections::HashMap<String, crate::domain::todo::TodoStatus> =
+                    service
+                        .list(crate::domain::todo::TodoView::All, now, 1000)?
+                        .into_iter()
+                        .map(|item| (item.id, item.status))
+                        .collect();
                 for (id, checked) in parse_checkbox_states(&existing) {
+                    let needs_sync = match current.get(&id) {
+                        Some(crate::domain::todo::TodoStatus::Completed) => !checked,
+                        Some(_) => checked,
+                        None => false, // id 已失效（被删/重建），忽略
+                    };
+                    if !needs_sync {
+                        continue;
+                    }
                     let result = if checked {
                         service.complete(&id, now).map(|_| ())
                     } else {
@@ -269,9 +291,12 @@ impl ObsidianService {
 
     /// vault 内容变更后后台重建知识库索引（衍生数据，全量重灌）。
     /// 整理任务进行中跳过：agent 正在搬文件，等整理提交后的下一轮再索引。
+    /// 冷却：chaoxing/zhihuishu 等兄弟模块每几分钟就往同一仓库推自提交，
+    /// 全量重建是分钟级满载 embedding，不节流会把小机器烧到热保护——
+    /// 变更先置 dirty，冷却窗结束才真正重建。
     fn maybe_reindex(
         &self,
-        state: &ObsidianState,
+        state: &mut ObsidianState,
         head_before: &str,
         target: &str,
         committed: bool,
@@ -279,10 +304,21 @@ impl ObsidianService {
         let Some(knowledge) = &self.knowledge else {
             return;
         };
-        let changed = committed || head_before != target;
-        if !changed || state.pending.is_some() {
+        /// 两次全量重建的最小间隔（秒）。
+        const REINDEX_COOLDOWN_SECS: i64 = 1800;
+        if committed || head_before != target {
+            state.index_dirty = true;
+        }
+        if !state.index_dirty || state.pending.is_some() {
             return;
         }
+        let now = crate::util::now();
+        if now - state.last_reindex_at < REINDEX_COOLDOWN_SECS {
+            return;
+        }
+        // 乐观记账：失败也会由下一轮的新变更重新置 dirty。
+        state.last_reindex_at = now;
+        state.index_dirty = false;
         let knowledge = knowledge.clone();
         let vault_path = self.config.vault_path.clone();
         tokio::task::spawn_blocking(move || match knowledge.index_vault(&vault_path) {

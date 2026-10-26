@@ -54,6 +54,14 @@ where
     F: Fn() -> Fut,
     Fut: Future<Output = Result<serde_json::Value>>,
 {
+    // 间隔下限兜底：配置写成 0/过小时，无 sleep 的紧密循环会把宿主机 CPU 打满
+    // （有过 obsidian 容器把笔记本烧到热保护的先例），这里强制抬到 30s。
+    let interval = if interval < Duration::from_secs(30) {
+        eprintln!("[{name}] interval {interval:?} 过小，已抬到 30s 下限");
+        Duration::from_secs(30)
+    } else {
+        interval
+    };
     loop {
         match poll().await {
             Ok(report) => println!("{}", serde_json::to_string(&report)?),
