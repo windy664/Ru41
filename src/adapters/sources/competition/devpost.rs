@@ -148,10 +148,12 @@ impl DevpostClient {
             .into_iter()
             .filter(|h| matches!(h.open_state.as_deref(), Some("open") | Some("upcoming")))
             .map(|h| {
+                // $0 是"无奖金"不是"未知"：如实标注，防 digest 模型脑补金额。
                 let prize = h
                     .prize_amount
                     .map(|p| strip_tags(&p))
-                    .filter(|p| !p.is_empty() && *p != "0")
+                    .filter(|p| !p.is_empty())
+                    .map(|p| if p == "0" { "无奖金".into() } else { p })
                     .unwrap_or_else(|| "未标注".into());
                 let mut summary_parts = vec![];
                 if let Some(org) = &h.organization_name {
