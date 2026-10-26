@@ -21,6 +21,61 @@ pub struct HackerTripClient {
     http: reqwest::Client,
 }
 
+/// 类型化赛事条目：雷达映射成 FeedItem，竞赛日程总览直接用结构体字段。
+pub struct HackertripEvent {
+    pub id: String,
+    pub name: String,
+    pub city: String,
+    /// online / offline / hybrid
+    pub mode: String,
+    pub status: String,
+    pub prize_pool: String,
+    /// ISO 日期（yyyy-mm-dd），空串表示无
+    pub registration_deadline: String,
+    pub start_date: String,
+    pub website: String,
+    pub theme: String,
+    pub tracks: Vec<String>,
+}
+
+impl HackertripEvent {
+    /// 雷达候选条目形态：摘要拼接城市/奖池/截止等关键字段。
+    fn to_feed_item(&self) -> FeedItem {
+        let mode_cn = match self.mode.as_str() {
+            "online" => "线上",
+            "offline" => "线下",
+            "hybrid" => "混合",
+            _ => "",
+        };
+        let mut summary_parts = vec![];
+        let place = [self.city.as_str(), mode_cn]
+            .into_iter()
+            .filter(|s| !s.is_empty())
+            .collect::<Vec<_>>()
+            .join("·");
+        if !place.is_empty() {
+            summary_parts.push(place);
+        }
+        if !self.prize_pool.is_empty() {
+            let p = crate::util::truncate_chars(&self.prize_pool, 60);
+            summary_parts.push(format!("奖池 {p}"));
+        }
+        if !self.registration_deadline.is_empty() {
+            summary_parts.push(format!("报名截止 {}", self.registration_deadline));
+        }
+        if self.status == "live" {
+            summary_parts.push("进行中".to_owned());
+        }
+        FeedItem {
+            id: format!("hackertrip-{}", self.id),
+            title: self.name.clone(),
+            link: self.website.clone(),
+            summary: summary_parts.join(" · "),
+            published: self.registration_deadline.clone(),
+        }
+    }
+}
+
 impl Default for HackerTripClient {
     fn default() -> Self {
         Self::new()
@@ -35,24 +90,42 @@ impl HackerTripClient {
     }
 
     pub async fn fetch_hackathons(&self, url: &str) -> Result<Vec<FeedItem>> {
+        Ok(self
+            .fetch_events(url)
+            .await?
+            .iter()
+            .map(HackertripEvent::to_feed_item)
+            .collect())
+    }
+
+    /// 拉全量并解析为类型化条目；只保留 upcoming / live。
+    pub async fn fetch_events(&self, url: &str) -> Result<Vec<HackertripEvent>> {
         let body = fetch_text(self.http.get(url), "hackertrip").await?;
         parse_events(&body).context("hackertrip json parse failed")
     }
 }
 
 /// 解析 /api/hackathons：JSON 数组，只保留 upcoming / live。
-fn parse_events(body: &str) -> Result<Vec<FeedItem>> {
+fn parse_events(body: &str) -> Result<Vec<HackertripEvent>> {
     let events: Vec<serde_json::Value> = serde_json::from_str(body)?;
     Ok(events.iter().filter_map(map_event).collect())
 }
 
-fn map_event(ev: &serde_json::Value) -> Option<FeedItem> {
+fn str_field(ev: &serde_json::Value, key: &str) -> String {
+    ev.get(key)
+        .and_then(|v| v.as_str())
+        .unwrap_or("")
+        .trim()
+        .to_owned()
+}
+
+fn map_event(ev: &serde_json::Value) -> Option<HackertripEvent> {
     let status = ev.get("status")?.as_str()?;
     if status != "upcoming" && status != "live" {
         return None;
     }
     let id = ev.get("id")?.as_str()?;
-    let name = ev.get("name")?.as_str()?.trim();
+    let name = str_field(ev, "name");
     if name.is_empty() {
         return None;
     }
@@ -63,46 +136,32 @@ fn map_event(ev: &serde_json::Value) -> Option<FeedItem> {
         .filter(|s| !s.is_empty())
         .unwrap_or("https://hackertrip.space/explore")
         .to_owned();
-    let city = ev.get("city").and_then(|v| v.as_str()).unwrap_or("");
-    let mode = match ev.get("mode").and_then(|v| v.as_str()) {
-        Some("online") => "线上",
-        Some("offline") => "线下",
-        Some("hybrid") => "混合",
-        _ => "",
-    };
-    let mut summary_parts = vec![];
-    let place = [city, mode]
-        .into_iter()
-        .filter(|s| !s.is_empty())
-        .collect::<Vec<_>>()
-        .join("·");
-    if !place.is_empty() {
-        summary_parts.push(place);
-    }
-    if let Some(p) = ev.get("prizePool").and_then(|v| v.as_str())
-        && !p.is_empty()
-    {
-        // prizePool 常是长段描述，截断保留关键信息
-        let p = crate::util::truncate_chars(p, 60);
-        summary_parts.push(format!("奖池 {p}"));
-    }
-    let deadline = ev
-        .get("registrationDeadline")
-        .and_then(|v| v.as_str())
-        .and_then(|s| s.get(..10))
-        .unwrap_or("");
-    if !deadline.is_empty() {
-        summary_parts.push(format!("报名截止 {deadline}"));
-    }
-    if status == "live" {
-        summary_parts.push("进行中".to_owned());
-    }
-    Some(FeedItem {
-        id: format!("hackertrip-{id}"),
-        title: name.to_owned(),
-        link: website,
-        summary: summary_parts.join(" · "),
-        published: deadline.to_owned(),
+    let tracks = ev
+        .get("tracks")
+        .and_then(|v| v.as_array())
+        .map(|arr| {
+            arr.iter()
+                .filter_map(|t| t.get("title").and_then(|v| v.as_str()))
+                .map(|s| s.trim().to_owned())
+                .filter(|s| !s.is_empty())
+                .collect()
+        })
+        .unwrap_or_default();
+    Some(HackertripEvent {
+        id: id.to_owned(),
+        name,
+        city: str_field(ev, "city"),
+        mode: str_field(ev, "mode"),
+        status: status.to_owned(),
+        prize_pool: str_field(ev, "prizePool"),
+        registration_deadline: str_field(ev, "registrationDeadline")
+            .chars()
+            .take(10)
+            .collect(),
+        start_date: str_field(ev, "startDate").chars().take(10).collect(),
+        website,
+        theme: str_field(ev, "theme"),
+        tracks,
     })
 }
 
@@ -119,7 +178,8 @@ mod tests {
         "status": "upcoming",
         "prizePool": "总奖池超 20 万元：冠军 8 万元现金+奖杯",
         "registrationDeadline": "2027-01-10T15:59:59.000Z",
-        "website": "https://example.com/signup"
+        "website": "https://example.com/signup",
+        "tracks": [{"title": "开放式命题", "description": ""}]
       },
       {
         "id": "ht-live-1",
@@ -143,19 +203,24 @@ mod tests {
     fn keeps_upcoming_and_live_only() {
         let items = parse_events(FIXTURE).unwrap();
         assert_eq!(items.len(), 2, "closed 的被过滤");
-        assert_eq!(items[0].id, "hackertrip-ht-2027");
-        assert_eq!(items[0].title, "雾客松 2027（WAKEATHON）重庆跨年 AI 黑客松");
-        assert_eq!(items[0].link, "https://example.com/signup");
-        assert!(items[0].summary.contains("重庆·混合"));
-        assert!(items[0].summary.contains("奖池 总奖池超 20 万元"));
-        assert!(items[0].summary.contains("报名截止 2027-01-10"));
-        assert!(items[1].summary.contains("进行中"));
+        let first = &items[0];
+        assert_eq!(first.id, "ht-2027");
+        assert_eq!(first.name, "雾客松 2027（WAKEATHON）重庆跨年 AI 黑客松");
+        assert_eq!(first.website, "https://example.com/signup");
+        assert_eq!(first.registration_deadline, "2027-01-10");
+        assert_eq!(first.tracks, vec!["开放式命题".to_owned()]);
+        let item = first.to_feed_item();
+        assert_eq!(item.id, "hackertrip-ht-2027");
+        assert!(item.summary.contains("重庆·混合"));
+        assert!(item.summary.contains("奖池 总奖池超 20 万元"));
+        assert!(item.summary.contains("报名截止 2027-01-10"));
+        assert!(items[1].to_feed_item().summary.contains("进行中"));
     }
 
     #[test]
     fn falls_back_to_explore_when_no_website() {
         let body = r#"[{"id":"x","name":"无官网","status":"upcoming"}]"#;
         let items = parse_events(body).unwrap();
-        assert_eq!(items[0].link, "https://hackertrip.space/explore");
+        assert_eq!(items[0].website, "https://hackertrip.space/explore");
     }
 }

@@ -25,16 +25,62 @@ impl Default for DevpostClient {
 }
 
 #[derive(Debug, serde::Deserialize)]
-struct DevpostHackathon {
-    id: i64,
-    title: String,
-    url: String,
-    open_state: Option<String>,
-    submission_period_dates: Option<String>,
-    time_left_to_submission: Option<String>,
-    prize_amount: Option<String>,
-    registrations_count: Option<i64>,
-    organization_name: Option<String>,
+pub struct DevpostHackathon {
+    pub id: i64,
+    pub title: String,
+    pub url: String,
+    pub open_state: Option<String>,
+    pub submission_period_dates: Option<String>,
+    pub time_left_to_submission: Option<String>,
+    pub prize_amount: Option<String>,
+    pub registrations_count: Option<i64>,
+    pub organization_name: Option<String>,
+    #[serde(default)]
+    pub themes: Vec<DevpostTheme>,
+    #[serde(default)]
+    pub displayed_location: Option<DevpostLocation>,
+}
+
+#[derive(Debug, serde::Deserialize)]
+pub struct DevpostTheme {
+    pub name: String,
+}
+
+#[derive(Debug, serde::Deserialize)]
+pub struct DevpostLocation {
+    pub location: String,
+}
+
+impl DevpostHackathon {
+    /// 奖金文本（剥 HTML 标签）。
+    pub fn prize_text(&self) -> String {
+        self.prize_amount
+            .as_deref()
+            .map(strip_tags)
+            .unwrap_or_default()
+    }
+
+    /// 是否纯线上。
+    pub fn is_online(&self) -> bool {
+        self.displayed_location
+            .as_ref()
+            .is_some_and(|l| l.location.eq_ignore_ascii_case("online"))
+    }
+
+    pub fn theme_names(&self) -> Vec<String> {
+        self.themes.iter().map(|t| t.name.clone()).collect()
+    }
+}
+
+/// 解析提交窗口的结束日："Oct 23 - 25, 2026" / "Oct 23 - Nov 25, 2026"。
+pub fn parse_submission_end(period: &str) -> Option<chrono::NaiveDate> {
+    let re = regex::Regex::new(r"(\w+) (\d+) - (?:(\w+) )?(\d+), (\d{4})").ok()?;
+    let caps = re.captures(period)?;
+    let month = caps
+        .get(3)
+        .map_or_else(|| caps[1].to_owned(), |m| m.as_str().to_owned());
+    chrono::NaiveDate::parse_from_str(&format!("{} {} {}", month, &caps[4], &caps[5]), "%b %d %Y")
+        .ok()
 }
 
 #[derive(Debug, serde::Deserialize)]
@@ -56,11 +102,11 @@ impl DevpostClient {
         }
     }
 
-    /// 调搜索 API 拉赛事列表；只保留 open/upcoming 状态的条目。
+    /// 调搜索 API 拉赛事列表（类型化条目，含 open/upcoming 过滤前的全量）。
     /// API 默认每页只有 9 条，per_page 上限 40（2026-10 实测），而在办赛事
     /// 有 160+ 场——不分页会漏掉截止日靠后的（PayPal AI Hackathon 曾因此漏捕）。
     /// 最多 6 页，或累计达到 total_count / 页面无新增时提前结束。
-    pub async fn fetch_hackathons(&self, url: &str) -> Result<Vec<FeedItem>> {
+    pub async fn fetch_all(&self, url: &str) -> Result<Vec<DevpostHackathon>> {
         const MAX_PAGES: u32 = 6;
         const PER_PAGE: u32 = 40;
         let sep = if url.contains('?') { '&' } else { '?' };
@@ -91,7 +137,14 @@ impl DevpostClient {
                 break;
             }
         }
-        Ok(all
+        Ok(all)
+    }
+
+    /// 雷达入口：fetch_all 之上只保留 open/upcoming 并映射成 FeedItem。
+    pub async fn fetch_hackathons(&self, url: &str) -> Result<Vec<FeedItem>> {
+        Ok(self
+            .fetch_all(url)
+            .await?
             .into_iter()
             .filter(|h| matches!(h.open_state.as_deref(), Some("open") | Some("upcoming")))
             .map(|h| {

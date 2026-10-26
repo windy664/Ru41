@@ -1,5 +1,6 @@
 pub mod blog;
 pub mod chaoxing;
+pub mod competitions;
 pub mod ecard;
 pub mod homework;
 pub mod jwxt;
@@ -106,4 +107,5 @@ pub const MODULES: &[ModuleDef] = &[
     obsidian::DEF,
     blog::DEF,
     planner::DEF,
+    competitions::DEF,
 ];

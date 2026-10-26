@@ -44,6 +44,15 @@ impl WqaiClient {
             parse_race_page(&body, url)
         }
     }
+
+    /// 竞赛日程总览用的类型化入口（仅赛事表格页，丢弃状态列）。
+    pub async fn fetch_races(&self, url: &str) -> Result<Vec<WqaiRace>> {
+        let body = fetch_text(self.http.get(url), "wqai").await?;
+        Ok(parse_race_rows(&body, url)
+            .into_iter()
+            .map(|(race, _)| race)
+            .collect())
+    }
 }
 
 /// 解析 iCalendar：展开折行 → 切 VEVENT → 提取字段。
@@ -170,13 +179,39 @@ fn ics_date_str(raw: &str) -> Option<String> {
     ))
 }
 
+/// 赛事页表格的类型化行：雷达映射成 FeedItem，竞赛日程总览直接用字段。
+pub struct WqaiRace {
+    pub id: String,
+    pub title: String,
+    pub link: String,
+    /// 截止列原文（"10-28" / "2026-10-26" 等），年份推断在调用方做。
+    pub deadline_raw: String,
+    pub venue: String,
+    pub team: String,
+    pub rewards: String,
+}
+
+impl WqaiRace {
+    fn to_feed_item(&self, status: &str) -> FeedItem {
+        FeedItem {
+            id: self.id.clone(),
+            title: self.title.clone(),
+            link: self.link.clone(),
+            summary: format!(
+                "截止 {} · {} · {} · 奖励：{} · 状态：{status}",
+                self.deadline_raw, self.venue, self.team, self.rewards
+            ),
+            published: String::new(),
+        }
+    }
+}
+
 /// 解析赛事页表格：<tr><td>截止</td><td><a href="race-rNNN.html">名称</a></td>
 /// <td>地点</td><td>组队</td><td>奖励</td><td>状态</td></tr>。
-/// 只取带 race- 链接的条目；已关闭区（Closed）的条目状态文本不同但也带链接，
-/// 靠 id 去重后重开/变更不会再入池，符合"只报新出现"的口径。
-fn parse_race_page(html: &str, page_url: &str) -> Result<Vec<FeedItem>> {
+/// 只取带 race- 链接且 st open（开放中）的条目。
+pub fn parse_race_rows(html: &str, page_url: &str) -> Vec<(WqaiRace, String)> {
     let base = page_url.rsplit_once('/').map(|(b, _)| b).unwrap_or("");
-    let mut items = Vec::new();
+    let mut rows = Vec::new();
     let mut rest = html;
     while let Some(row_start) = rest.find("<tr><td>") {
         // 只跳过 "<tr>"，保留首个 "<td>" 让 split("<td>") 的列对齐
@@ -184,15 +219,23 @@ fn parse_race_page(html: &str, page_url: &str) -> Result<Vec<FeedItem>> {
         let row_end = rest.find("</tr>").unwrap_or(rest.len());
         let row = &rest[..row_end];
         rest = &rest[row_end..];
-        let Some(item) = parse_row(row, base) else {
+        let Some(race) = parse_row(row, base) else {
             continue;
         };
-        items.push(item);
+        rows.push(race);
     }
-    Ok(items)
+    rows
 }
 
-fn parse_row(row: &str, base: &str) -> Option<FeedItem> {
+/// 解析赛事页为 FeedItem（雷达入口）。
+fn parse_race_page(html: &str, page_url: &str) -> Result<Vec<FeedItem>> {
+    Ok(parse_race_rows(html, page_url)
+        .into_iter()
+        .map(|(race, status)| race.to_feed_item(&status))
+        .collect())
+}
+
+fn parse_row(row: &str, base: &str) -> Option<(WqaiRace, String)> {
     let cells: Vec<&str> = row.split("<td>").skip(1).collect();
     if cells.len() < 6 {
         return None;
@@ -217,18 +260,16 @@ fn parse_row(row: &str, base: &str) -> Option<FeedItem> {
     if !row.contains("st open") {
         return None;
     }
-    let deadline = cell_text(0);
-    let venue = cell_text(2);
-    let team = cell_text(3);
-    let rewards = cell_text(4);
-    let status = cell_text(5);
-    Some(FeedItem {
+    let race = WqaiRace {
         id: href.trim_end_matches(".html").to_owned(),
-        title: title.clone(),
+        title,
         link: format!("{base}/{href}"),
-        summary: format!("截止 {deadline} · {venue} · {team} · 奖励：{rewards} · 状态：{status}"),
-        published: String::new(),
-    })
+        deadline_raw: cell_text(0),
+        venue: cell_text(2),
+        team: cell_text(3),
+        rewards: cell_text(4),
+    };
+    Some((race, cell_text(5)))
 }
 
 #[cfg(test)]
