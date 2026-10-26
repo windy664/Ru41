@@ -21,6 +21,22 @@ pub fn render(entries: &[JobEntry], today: chrono::NaiveDate) -> String {
     render_table(&mut out, &intern);
     out.push_str(&format!("\n## 校招（{} 条）\n\n", campus.len()));
     render_table(&mut out, &campus);
+
+    let with_jd: Vec<&&JobEntry> = rows.iter().filter(|e| e.jd.is_some()).collect();
+    if !with_jd.is_empty() {
+        out.push_str(&format!("\n## JD 详情（{} 条）\n\n", with_jd.len()));
+        out.push_str("> 回源官方招聘站公开 API 抓取（ashby / greenhouse / smartrecruiters）；国内平台（飞书招聘/美团/腾讯/京东）接口待适配，暂缺。\n\n");
+        for e in with_jd {
+            out.push_str(&format!("### {} · {}\n\n", e.company, e.role));
+            out.push_str(&format!(
+                "{} · {} · 发布 {}\n\n{}\n\n",
+                e.kind,
+                e.city,
+                e.posted,
+                e.jd.as_deref().unwrap_or("")
+            ));
+        }
+    }
     out
 }
 
@@ -54,6 +70,9 @@ mod tests {
                 audience: "日常实习".into(),
                 kind: "实习".into(),
                 posted: "10月24日".into(),
+                platform: Some("feishu-hire".into()),
+                jd: None,
+                jd_tried: true,
             },
             JobEntry {
                 company: "美团".into(),
@@ -62,6 +81,9 @@ mod tests {
                 audience: "未公布".into(),
                 kind: "校招".into(),
                 posted: "10月25日".into(),
+                platform: Some("meituan".into()),
+                jd: Some("负责数据平台研发……".into()),
+                jd_tried: true,
             },
         ];
         let md = render(&entries, chrono::NaiveDate::from_ymd_opt(2026, 10, 26).unwrap());
@@ -70,5 +92,7 @@ mod tests {
         assert!(md.contains("⭐ 广州 / 深圳"));
         assert!(md.contains("| 10月24日 | 字节跳动 |"));
         assert!(md.contains("| 10月25日 | 美团 |"));
+        assert!(md.contains("## JD 详情（1 条）"));
+        assert!(md.contains("### 美团 · 数据开发工程师"));
     }
 }

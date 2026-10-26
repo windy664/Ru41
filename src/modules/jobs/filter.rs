@@ -56,6 +56,15 @@ pub struct JobEntry {
     /// "实习" / "校招"。
     pub kind: String,
     pub posted: String,
+    /// 回源平台（ashby/greenhouse/...），老状态文件没有此字段。
+    #[serde(default)]
+    pub platform: Option<String>,
+    /// JD 纯文本（回源官方招聘站抓到才有）。
+    #[serde(default)]
+    pub jd: Option<String>,
+    /// 已尝试过 JD 抓取（无论成败），避免每轮反复打官方 API。
+    #[serde(default)]
+    pub jd_tried: bool,
 }
 
 /// 状态文件内容：key = 公司|岗位|城市。
@@ -77,15 +86,22 @@ pub fn filter_jobs(jobs: Vec<MianlingJob>) -> Vec<JobEntry> {
             audience: job.audience,
             kind: job.kind,
             posted: job.posted,
+            platform: job.platform,
+            jd: None,
+            jd_tried: false,
         })
         .collect()
 }
 
-/// 把本轮岗位合并进状态：同 key 覆盖（刷新发布日），过期条目清除。
-/// `today_md` 是当前 (月, 日)。
+/// 把本轮岗位合并进状态：同 key 覆盖发布日等字段，但保留已抓到的 JD；
+/// 过期条目清除。`today_md` 是当前 (月, 日)。
 pub fn merge(state: &mut JobsState, fresh: Vec<JobEntry>, today_md: (u32, u32)) {
-    for entry in fresh {
+    for mut entry in fresh {
         let key = format!("{}|{}|{}", entry.company, entry.role, entry.city);
+        if let Some(old) = state.entries.get(&key) {
+            entry.jd = old.jd.clone();
+            entry.jd_tried = old.jd_tried;
+        }
         state.entries.insert(key, entry);
     }
     state.entries.retain(|_, entry| {
@@ -116,6 +132,7 @@ mod tests {
             audience: "未公布".into(),
             kind: kind.into(),
             posted: posted.into(),
+            platform: None,
         }
     }
 
