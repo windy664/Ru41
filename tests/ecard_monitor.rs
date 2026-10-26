@@ -18,6 +18,12 @@ const BALANCE_JSON: &str = r#"{"ret":true,"msg":"查询成功","obj":{
   "building":"测试楼A栋","room":"A#101",
   "formatPowerBalanceStr":"8.50度","formatWaterBalanceStr":"2.80吨"}}"#;
 
+const HEALTHY_JSON: &str = r#"{"ret":true,"msg":"查询成功","obj":{
+  "roomNum":"2158","powerBalance":"33.5","waterBalance":"3.4",
+  "schoolAreaNo":"81","buildingNo":"1859","schoolArea":"测试校区",
+  "building":"测试楼A栋","room":"A#101",
+  "formatPowerBalanceStr":"33.50度","formatWaterBalanceStr":"3.40吨"}}"#;
+
 /// 本地 mock ecard：返回固定余额，记录请求体。
 fn mock_ecard(payload: &'static str) -> (String, Arc<Mutex<Vec<String>>>) {
     let listener = TcpListener::bind("127.0.0.1:0").unwrap();
@@ -159,6 +165,54 @@ async fn no_alert_above_threshold() {
     assert!(!report.alert_sent);
     assert_eq!(report.alert_reason, None);
     assert!(channel.sent.lock().unwrap().is_empty());
+}
+
+#[tokio::test]
+async fn daily_report_sends_once_per_day_when_enabled() {
+    let (base, _bodies) = mock_ecard(HEALTHY_JSON);
+    let dir = tempfile::tempdir().unwrap();
+    let store: Arc<dyn TaskStore> =
+        Arc::new(SqliteTaskStore::open(&dir.path().join("state.db")).unwrap());
+    let channel = Arc::new(MockChannel::default());
+    let notifier: Arc<dyn NotifyChannel> = channel.clone();
+    let tracker = EcardTracker::new(
+        store.clone(),
+        EcardClient::with_base_url(&base),
+        Some(notifier),
+        EcardConfig {
+            notify_target: "default".into(),
+            daily_report: true,
+            ..Default::default()
+        },
+    );
+
+    // 首轮：健康读数也推日报。
+    let report = tracker.poll_once().await.unwrap();
+    assert!(!report.alert_sent);
+    assert!(report.report_sent);
+    let text = channel.sent.lock().unwrap()[0].clone();
+    assert!(text.starts_with("default|【水电日报】"));
+    assert!(text.contains("33.50度"));
+
+    // 同日第二轮：读数照常更新，日报不重复。
+    let again = tracker.poll_once().await.unwrap();
+    assert!(!again.report_sent);
+    assert_eq!(channel.sent.lock().unwrap().len(), 1);
+    assert!(store.document("ecard_report", &ru41::util::today_utc(ru41::util::now()))
+        .unwrap()
+        .is_some());
+
+    // 未开启 daily_report 时不发送。
+    let quiet = EcardTracker::new(
+        store,
+        EcardClient::with_base_url(&base),
+        Some(Arc::new(MockChannel::default())),
+        EcardConfig {
+            notify_target: "default".into(),
+            ..Default::default()
+        },
+    );
+    assert!(!quiet.poll_once().await.unwrap().report_sent);
 }
 
 #[tokio::test]
