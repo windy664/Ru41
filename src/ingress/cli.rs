@@ -147,6 +147,11 @@ pub enum Command {
         #[command(subcommand)]
         command: TrackerCommand,
     },
+    /// 竞赛日程总览：多源赛事筛选生成 vault 里的日程总览.md，每日刷新。
+    Competitions {
+        #[command(subcommand)]
+        command: TrackerCommand,
+    },
     /// 博客发布管线：Vault 待发布目录 → 校验 → 博客仓库 _posts → 推送。
     Blog {
         #[command(subcommand)]
@@ -235,6 +240,7 @@ impl Command {
             Command::Obsidian { command } => Some(("obsidian", *command)),
             Command::Blog { command } => Some(("blog", *command)),
             Command::Pagewatch { command } => Some(("pagewatch", *command)),
+            Command::Competitions { command } => Some(("competitions", *command)),
             _ => None,
         }
     }
