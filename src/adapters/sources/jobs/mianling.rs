@@ -45,9 +45,101 @@ impl MianlingClient {
         let body = fetch_text(self.http.get(url), "mianling").await?;
         parse_jobs_page(&body).context("mianling parse failed")
     }
+
+    /// tRPC 公开接口：campusJob.list 按 employmentType（"实习"/"校招"）取最新 50 条，
+    /// 比 SSR 表格多了 platform（回源平台）与精确发布时间。翻页需登录，只取第 1 页。
+    pub async fn fetch_latest(&self, employment_type: &str) -> Result<Vec<MianlingJob>> {
+        #[derive(serde::Deserialize)]
+        struct Trpc {
+            result: TrpcResult,
+        }
+        #[derive(serde::Deserialize)]
+        struct TrpcResult {
+            data: TrpcData,
+        }
+        #[derive(serde::Deserialize)]
+        struct TrpcData {
+            json: TrpcJson,
+        }
+        #[derive(serde::Deserialize)]
+        struct TrpcJson {
+            items: Vec<ApiItem>,
+        }
+        #[derive(serde::Deserialize)]
+        struct ApiItem {
+            company: String,
+            title: String,
+            cities: Vec<String>,
+            batch: Option<String>,
+            #[serde(rename = "employmentType")]
+            employment_type: String,
+            #[serde(rename = "publishedAt")]
+            published_at: Option<String>,
+            platform: Option<String>,
+        }
+        let input = serde_json::json!({"json": {"page": 1, "pageSize": 50, "employmentType": employment_type}});
+        let url = format!(
+            "https://api.aceround.app/trpc/campusJob.list?input={}",
+            urlencoding(&input.to_string())
+        );
+        let trpc: Trpc = self
+            .http
+            .get(&url)
+            .send()
+            .await?
+            .error_for_status()?
+            .json()
+            .await?;
+        Ok(trpc
+            .result
+            .data
+            .json
+            .items
+            .into_iter()
+            .map(|item| MianlingJob {
+                company: item.company,
+                role: item.title,
+                city: if item.cities.is_empty() {
+                    "未公布".into()
+                } else {
+                    item.cities.join(" / ")
+                },
+                audience: item.batch.unwrap_or_else(|| "未公布".into()),
+                kind: item.employment_type,
+                posted: item
+                    .published_at
+                    .as_deref()
+                    .map(iso_to_md)
+                    .unwrap_or_else(|| "未公布".into()),
+                platform: item.platform,
+            })
+            .collect())
+    }
 }
 
-/// 一条岗位记录（公司/岗位/城市/对象/类型/发布日）。
+/// 最小 URL query 编码（按 UTF-8 字节编码，中文也要正确成 %XX%XX%XX）。
+fn urlencoding(text: &str) -> String {
+    text.bytes()
+        .map(|b| match b {
+            b'A'..=b'Z' | b'a'..=b'z' | b'0'..=b'9' | b'-' | b'_' | b'.' | b'~' => {
+                (b as char).to_string()
+            }
+            _ => format!("%{b:02X}"),
+        })
+        .collect()
+}
+
+/// ISO 时间戳 → "10月25日"（UTC+8，与面灵页面展示一致）。
+fn iso_to_md(iso: &str) -> String {
+    chrono::DateTime::parse_from_rfc3339(iso)
+        .map(|dt| {
+            let local = dt.with_timezone(&chrono::FixedOffset::east_opt(8 * 3600).unwrap());
+            format!("{}月{}日", local.format("%m").to_string().trim_start_matches('0'), local.format("%d").to_string().trim_start_matches('0'))
+        })
+        .unwrap_or_else(|_| "未公布".into())
+}
+
+/// 一条岗位记录（公司/岗位/城市/对象/类型/发布日/回源平台）。
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct MianlingJob {
     pub company: String,
@@ -56,6 +148,8 @@ pub struct MianlingJob {
     pub audience: String,
     pub kind: String,
     pub posted: String,
+    /// 回源平台（ashby/greenhouse/feishu-hire/...）；SSR 表格拿不到，为 None。
+    pub platform: Option<String>,
 }
 
 impl MianlingJob {
@@ -122,6 +216,7 @@ fn parse_jobs_page(html: &str) -> Result<Vec<MianlingJob>> {
             audience,
             kind,
             posted,
+            platform: None,
         });
     }
     Ok(items)

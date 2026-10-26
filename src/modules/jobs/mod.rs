@@ -53,25 +53,59 @@ pub struct JobsService {
 }
 
 impl JobsService {
-    /// 抓面灵 → 筛选 → 合并状态 → 渲染 → 有变化才写文件并自提交。
+    /// 抓面灵 tRPC 接口（实习+校招各最新 50）→ 筛选 → 合并状态 →
+    /// 给没抓过 JD 的条目回源官方招聘站补 JD → 渲染 → 有变化才写文件并自提交。
     pub async fn poll_once(&self) -> Result<serde_json::Value> {
         let client = crate::adapters::sources::jobs::mianling::MianlingClient::new();
-        let jobs = client
-            .fetch_jobs_struct("https://www.mianlingai.com/jobs/")
-            .await?;
+        let mut jobs = client.fetch_latest("实习").await?;
+        jobs.extend(client.fetch_latest("校招").await?);
         let fetched = jobs.len();
         let fresh = filter::filter_jobs(jobs);
 
         let today = chrono::Local::now().date_naive();
-        let today_md = (today.format("%m").to_string().parse().unwrap_or(0), today.format("%d").to_string().parse().unwrap_or(0));
+        let today_md = (
+            today.format("%m").to_string().parse().unwrap_or(0),
+            today.format("%d").to_string().parse().unwrap_or(0),
+        );
 
         let vault = self.vault.clone();
-        let changed = tokio::task::spawn_blocking(move || -> Result<bool> {
+        let mut state: filter::JobsState = tokio::task::spawn_blocking(move || -> Result<_> {
             let mut state: filter::JobsState = vault
                 .read_file(filter::STATE_PATH)?
                 .and_then(|text| serde_json::from_str(&text).ok())
                 .unwrap_or_default();
             filter::merge(&mut state, fresh, today_md);
+            Ok(state)
+        })
+        .await??;
+
+        // JD 补全：只补没试过的，单轮限 15 条，失败也标记 jd_tried 不再重试。
+        let http = crate::util::http_client();
+        let mut jd_filled = 0usize;
+        let pending: Vec<String> = state
+            .entries
+            .iter()
+            .filter(|(_, e)| !e.jd_tried)
+            .map(|(k, _)| k.clone())
+            .take(15)
+            .collect();
+        for key in pending {
+            let entry = state.entries.get(&key).expect("pending key").clone();
+            let platform = entry.platform.clone().unwrap_or_default();
+            let jd = crate::adapters::sources::jobs::jd::fetch_jd(
+                &http, &platform, &entry.company, &entry.role,
+            )
+            .await;
+            let slot = state.entries.get_mut(&key).expect("pending key");
+            slot.jd_tried = true;
+            if let Some(text) = jd {
+                slot.jd = Some(text);
+                jd_filled += 1;
+            }
+        }
+
+        let vault = self.vault.clone();
+        let changed = tokio::task::spawn_blocking(move || -> Result<bool> {
             let rows: Vec<filter::JobEntry> = state.entries.values().cloned().collect();
             let content = overview::render(&rows, today);
 
@@ -94,6 +128,7 @@ impl JobsService {
         Ok(serde_json::json!({
             "action": if changed { "updated" } else { "unchanged" },
             "fetched": fetched,
+            "jd_filled": jd_filled,
         }))
     }
 }
