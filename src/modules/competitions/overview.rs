@@ -6,7 +6,7 @@ use chrono::NaiveDate;
 pub fn render(rows: &[CompetitionRow], today: NaiveDate) -> String {
     let mut out = format!(
         "# 📅 竞赛日程总览\n\n\
-         > 生成于 {today} · 由 ru41 competitions 附属每日刷新，过期赛事自动移出\n\
+         > 生成于 {today} · 由 ru41 competitions 附属每 6 小时刷新，过期赛事自动移出\n\
          > 口径：必须有奖（现金/奖品/权益，纯证书不收）× 大湾区线下 ⭐ / 国内线上 / 国外线上；\n\
          > 剔除中小学生赛与已截止；同名跨源去重\n\n\
          | 报名截止 | 赛事 | 地点/形式 | 奖池/奖励 | 题材/赛道 | 开赛 | 来源 |\n\
