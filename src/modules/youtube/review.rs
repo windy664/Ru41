@@ -257,6 +257,7 @@ impl YoutubeReviewJob {
             .into_iter()
             .filter(|task| {
                 task.request_key.starts_with("youtube:prep:")
+                    && !task.request_key.ends_with(":dead")
                     && task.status == crate::domain::TaskStatus::Succeeded
                     && task.notify.is_none()
                     && task.result.as_ref().is_some_and(|r| {
@@ -458,6 +459,7 @@ impl YoutubeReviewJob {
             .into_iter()
             .filter(|task| {
                 task.request_key.starts_with("youtube:prep:")
+                    && !task.request_key.ends_with(":dead")
                     && task.status == crate::domain::TaskStatus::Succeeded
                     && task.result.as_ref().is_some_and(|r| !r.summary.is_empty())
             })
@@ -566,14 +568,15 @@ pub fn latest_answers(store: &Arc<dyn TaskStore>) -> Result<String> {
         {
             continue;
         }
-        if let Some(result) = &task.result {
-            if let Some(line) = result
-                .summary
-                .lines()
-                .find(|line| line.trim().starts_with("答案："))
-            {
-                return Ok(format!("✅ 最近一期看后检测答案\n{}", line.trim()));
-            }
+        let Some(result) = &task.result else {
+            continue;
+        };
+        if let Some(line) = result
+            .summary
+            .lines()
+            .find(|line| line.trim().starts_with("答案："))
+        {
+            return Ok(format!("✅ 最近一期看后检测答案\n{}", line.trim()));
         }
     }
     Ok("最近一期预习单没有看后检测答案。".into())
@@ -943,6 +946,7 @@ fn latest_prep_summary(store: &Arc<dyn TaskStore>) -> Result<Option<String>> {
         .into_iter()
         .find(|task| {
             task.request_key.starts_with("youtube:prep:")
+                && !task.request_key.ends_with(":dead")
                 && task.status == crate::domain::TaskStatus::Succeeded
                 && task.result.as_ref().is_some_and(|r| !r.summary.is_empty())
         })
