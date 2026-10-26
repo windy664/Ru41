@@ -4,8 +4,10 @@
 
 pub mod datafountain;
 pub mod devpost;
+pub mod gsoc;
 pub mod hack123;
 pub mod hackertrip;
 pub mod lablab;
+pub mod lfx;
 pub mod wqai;
 pub mod xfyun;
