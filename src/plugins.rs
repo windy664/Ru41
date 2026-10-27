@@ -43,6 +43,9 @@ pub struct PluginEntry {
     pub magic: u64,
     pub api_version: u32,
     pub ru41_version: &'static str,
+    /// 编译插件时 ru41 crate 的 git commit；pkg 版本不变时布局仍可能漂移，
+    /// 双方都有 git 元数据时要求完全一致，任一方 unknown 降级为告警放行。
+    pub git_hash: &'static str,
     pub name: &'static str,
     pub register: fn() -> ModuleDef,
 }
@@ -54,6 +57,7 @@ impl PluginEntry {
             magic: PLUGIN_API_MAGIC,
             api_version: PLUGIN_API_VERSION,
             ru41_version: env!("CARGO_PKG_VERSION"),
+            git_hash: env!("RU41_GIT_HASH"),
             name,
             register,
         }
@@ -130,6 +134,20 @@ fn load_one(path: &Path) -> Result<(libloading::Library, &'static ModuleDef)> {
         meta.ru41_version,
         env!("CARGO_PKG_VERSION")
     );
+    let host_hash = env!("RU41_GIT_HASH");
+    if meta.git_hash != "unknown" && host_hash != "unknown" {
+        anyhow::ensure!(
+            meta.git_hash == host_hash,
+            "git commit 不匹配：插件 {} / 宿主 {}（pkg 版本相同但布局可能已漂移，需重编插件）",
+            meta.git_hash,
+            host_hash
+        );
+    } else if meta.git_hash != host_hash {
+        eprintln!(
+            "[plugins] 警告：无法校验 {} 的 git commit（插件 {} / 宿主 {}），按版本号放行",
+            meta.name, meta.git_hash, host_hash
+        );
+    }
     // DEF 泄漏为 'static：与宿主内建模块同生命周期，永不回收（不卸载原则）。
     let def: &'static ModuleDef = Box::leak(Box::new((meta.register)()));
     Ok((lib, def))

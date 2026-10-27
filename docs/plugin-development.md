@@ -23,8 +23,9 @@ cp target/release/libru41_plugin_foo.so <服务器>:/etc/ru41/plugins/
 
 1. **同一 rustc**：插件和宿主用同一个 Rust 工具链编译。
 2. **同一 ru41 版本**：Cargo.toml 里 `ru41 = { git = "...", rev = "<宿主部署的 commit>" }`，
-   宿主升级后插件必须改 rev 重编。入口握手会校验 `CARGO_PKG_VERSION`，
-   不一致拒绝加载（日志 `[plugins] 跳过 ...ru41 版本不匹配`）。
+   宿主升级后插件必须改 rev 重编。入口握手双重校验：`CARGO_PKG_VERSION` 必须相等；
+   双方都有 git 元数据时还要求 commit hash 一致（pkg 版本不变但布局可能已漂移），
+   容器内无 .git 构建时降级为版本号校验 + 告警日志。
 3. **同一依赖锁**：tokio/serde 等共享依赖版本必须与宿主一致——
    把主仓库的 `Cargo.lock` 复制进插件仓库最稳妥。
 

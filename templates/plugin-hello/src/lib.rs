@@ -14,6 +14,8 @@ use ru41::modules::{JobSchedule, ModuleDef};
 ///
 /// # Safety
 /// 插件与宿主必须同一 rustc + 同一 ru41 版本编译（入口握手校验）。
+// PluginEntry 是 Rust 原生布局（版本握手保证同编译器），抑制 FFI 布局警告。
+#[allow(improper_ctypes_definitions)]
 #[unsafe(no_mangle)]
 pub extern "C" fn ru41_plugin_entry() -> ru41::plugins::PluginEntry {
     ru41::plugins::PluginEntry::new("hello", || DEF)
