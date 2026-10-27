@@ -12,8 +12,14 @@ ru41 支持 Pumpkin/bevy 式动态插件：独立 crate 编译成 `.so`，扔进
 cp -r templates/plugin-hello /your/workspace/ru41-plugin-foo
 cd ru41-plugin-foo
 # 编辑 Cargo.toml 的 name 与 src/lib.rs 的模块名
-cargo build --release
-cp target/release/libru41_plugin_foo.so <服务器>:/etc/ru41/plugins/
+
+# 插件必须在与运行时镜像相同 glibc 的环境里编译（本机 glibc 比容器新会
+# dlopen 失败：version `GLIBC_X.XX' not found）。用净室容器编译：
+docker run --rm -v <ru41仓库路径>:/build \
+  -e CARGO_TARGET_DIR=/build/templates/plugin-foo/target-docker \
+  -w /build/templates/plugin-foo rust:1.98-trixie cargo build --release
+
+cp target-docker/release/libru41_plugin_foo.so <服务器>:/etc/ru41/plugins/
 # 重启需要它的容器（poll/run 类重启模块容器；QQ 命令类重启 qq 容器）
 ```
 
