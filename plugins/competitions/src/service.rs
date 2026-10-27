@@ -55,6 +55,8 @@ pub static DEF: ru41::modules::ModuleDef = ru41::modules::ModuleDef {
         })))
     },
     qq_handlers: |_, _| Ok(Vec::new()),
+    image_consumers: ru41::modules::no_image_consumers,
+    cli: ru41::modules::no_cli,
 };
 
 #[derive(Clone)]

@@ -153,7 +153,7 @@ fn label_slug(label: &str) -> String {
 }
 
 /// UTC 时间戳转 +08:00 的 YYYY-MM-DD HH:mm。
-pub(crate) fn format_cn(ts: i64) -> String {
+pub fn format_cn(ts: i64) -> String {
     chrono::DateTime::from_timestamp(ts, 0)
         .map(|d| {
             d.with_timezone(&chrono::FixedOffset::east_opt(8 * 3600).expect("utc+8"))

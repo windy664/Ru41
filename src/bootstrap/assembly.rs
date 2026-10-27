@@ -14,10 +14,7 @@ use crate::{
         cli::QqCredentials,
         schedule::{PollJob, ScheduledJob},
     },
-    modules::{
-        chaoxing::{ChaoxingClient, ChaoxingQrSigner},
-        youtube::source::YtDlpClient,
-    },
+    modules::youtube::source::YtDlpClient,
     ports::{
         channel::NotifyChannel,
         commands::{CommandHandler, ImageConsumer},
@@ -56,30 +53,12 @@ pub fn qq_command_handlers(config: &Config, backend: &str) -> Result<Vec<Arc<dyn
     Ok(handlers)
 }
 
-/// QQ 图片消费者装配：学习通二维码照片签到（把二维码图片发给机器人即签）。
-/// [sources.chaoxing] 未配置齐时返回空，消息全部走原有通道。
+/// QQ 图片消费者装配：各模块经 DEF.image_consumers 自报（如学习通二维码
+/// 照片签到），装配层不认识任何具体业务。
 pub fn qq_image_consumers(config: &Config) -> Result<Vec<Arc<dyn ImageConsumer>>> {
     let mut consumers: Vec<Arc<dyn ImageConsumer>> = Vec::new();
-    if config
-        .sources
-        .get::<crate::modules::chaoxing::ChaoxingSection>("chaoxing")?
-        .is_ready()
-    {
-        let cfg = config
-            .sources
-            .get::<crate::modules::chaoxing::ChaoxingSection>("chaoxing")?
-            .resolved(String::new())?;
-        // 与签到轮询各用一份 cookie 文件，避免两进程争写同一会话文件。
-        let client = ChaoxingClient::new(
-            cfg.phone.clone(),
-            cfg.password.clone(),
-            cfg.cookie_path.with_extension("qr.json"),
-        );
-        consumers.push(Arc::new(ChaoxingQrSigner::new(
-            client,
-            cfg.default_location.clone(),
-            cfg.enc_sample_path.clone(),
-        )));
+    for def in crate::modules::sorted() {
+        consumers.extend((def.image_consumers)(config)?);
     }
     Ok(consumers)
 }

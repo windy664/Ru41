@@ -18,7 +18,7 @@ cd ru41-plugin-foo
 docker run --rm -v <ru41仓库路径>:/build \
   -e CARGO_TARGET_DIR=/build/templates/plugin-foo/target-docker \
   -e RU41_GIT_HASH_OVERRIDE=$(git -C <ru41仓库路径> rev-parse HEAD) \
-  -w /build/templates/plugin-foo rust:1.98-trixie cargo build --release
+  -w /build/templates/plugin-foo rust:1.98-trixie cargo build --release --features plugin-entry --features plugin-entry
 
 cp target-docker/release/libru41_plugin_foo.so <服务器>:/etc/ru41/plugins/
 # 重启需要它的容器（poll/run 类重启模块容器；QQ 命令类重启 qq 容器）

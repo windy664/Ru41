@@ -66,4 +66,6 @@ pub static DEF: super::ModuleDef = super::ModuleDef {
             config.todo.options()?.offset_seconds,
         ))])
     },
+    image_consumers: super::no_image_consumers,
+    cli: super::no_cli,
 };

@@ -30,7 +30,7 @@ for entry in "${PLUGINS[@]}"; do
     -e CARGO_TARGET_DIR="/build/$dir/target-docker" \
     -e RU41_GIT_HASH_OVERRIDE="$COMMIT" \
     -w "/build/$dir" rust:1.98-trixie \
-    cargo build --release
+    cargo build --release --features plugin-entry
   if [[ "${PUSH:-0}" == "1" ]]; then
     python3 "$SCP" "$dir/target-docker/release/$so" "$PLUGIN_DIR_ON_SERVER/$so"
   fi

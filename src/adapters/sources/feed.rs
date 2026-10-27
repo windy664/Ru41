@@ -45,6 +45,7 @@ pub struct FeedItem {
 }
 
 /// 通用订阅源客户端（RSS 2.0 / Atom 自动识别）；每个源的抓取间隔由调用方控制。
+#[derive(Clone)]
 pub struct FeedClient {
     http: reqwest::Client,
 }

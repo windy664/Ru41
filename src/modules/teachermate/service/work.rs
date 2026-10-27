@@ -4,7 +4,7 @@
 //! 红线：作业只做提醒/跟踪/归档，不做自动作答（自动答题=代写）。
 
 use crate::app::todo::TodoService;
-use crate::app::homework_work::{self, WorkNoteItem};
+use crate::app::homework_work::{self as work_common, WorkNoteItem};
 use crate::modules::teachermate::config::TeachermateConfig;
 use crate::modules::teachermate::source::{
     CourseHomework, Homework, TeachermateClient, homework_status_open,
@@ -439,7 +439,7 @@ impl TeachermateWorkTracker {
                 .collect();
             vault.write_file(
                 &format!("{course_base}/微助教作业.md"),
-                &homework_work::render_work_course_note(
+                &work_common::render_work_course_note(
                     course_title,
                     "微助教",
                     &rows,
@@ -455,14 +455,14 @@ impl TeachermateWorkTracker {
                 if dirs == crate::ports::vault::VaultTaskDirs::Substantive && !work.is_open() {
                     continue;
                 }
-                let folder = homework_work::work_folder_name(
+                let folder = work_common::work_folder_name(
                     work.name.as_str(),
                     deadline.as_deref(),
                     Some(work.h_id),
                 );
                 vault.write_file(
                     &format!("{course_base}/{folder}/作业说明.md"),
-                    &homework_work::render_work_task_note(
+                    &work_common::render_work_task_note(
                         course_title,
                         "微助教",
                         &work.name,
@@ -489,7 +489,7 @@ impl TeachermateWorkTracker {
 
 /// 微助教截止时间原文 → 本机固定偏移时间戳。格式未实测，宽容尝试常见形态。
 fn deadline_ts(raw: &str, offset_seconds: i32) -> Option<i64> {
-    homework_work::platform_ts(
+    work_common::platform_ts(
         raw,
         offset_seconds,
         &[

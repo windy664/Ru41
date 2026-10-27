@@ -5,7 +5,7 @@
 use crate::app::todo::TodoService;
 use crate::modules::chaoxing::config::ChaoxingConfig;
 use crate::modules::chaoxing::source::{ChaoxingClient, ChaoxingWork};
-use crate::app::homework_work::{self, WorkNoteItem};
+use crate::app::homework_work::{self as work_common, WorkNoteItem};
 use crate::ports::{channel::NotifyChannel, storage::TaskStore, vault::Vault};
 use anyhow::Result;
 use serde::Serialize;
@@ -184,7 +184,7 @@ impl ChaoxingWorkTracker {
                             ));
                             if self.config.work_todo_sync && !work.status.contains("已过期") {
                                 let end_ts = deadline.as_deref().and_then(|s| {
-                                    homework_work::platform_ts(s, offset, DEADLINE_FORMATS)
+                                    work_common::platform_ts(s, offset, DEADLINE_FORMATS)
                                 });
                                 let due_soon_flag = end_ts
                                     .map(|ts| ts - now <= urgent_window && ts > now)
@@ -266,7 +266,7 @@ impl ChaoxingWorkTracker {
                         } else if open {
                             // 临期/过期每日最多提醒一次
                             let end_ts = deadline.as_deref().and_then(|s| {
-                                homework_work::platform_ts(s, offset, DEADLINE_FORMATS)
+                                work_common::platform_ts(s, offset, DEADLINE_FORMATS)
                             });
                             let is_overdue = end_ts.map(|ts| ts < now).unwrap_or(false);
                             let is_due_soon = end_ts
@@ -397,7 +397,7 @@ impl ChaoxingWorkTracker {
                 .collect();
             vault.write_file(
                 &format!("{course_base}/学习通作业.md"),
-                &homework_work::render_work_course_note(
+                &work_common::render_work_course_note(
                     course_title,
                     "学习通",
                     &rows,
@@ -413,10 +413,10 @@ impl ChaoxingWorkTracker {
                 if dirs == crate::ports::vault::VaultTaskDirs::Substantive && !work.is_open() {
                     continue;
                 }
-                let folder = homework_work::work_folder_name(&work.title, deadline.as_deref(), None);
+                let folder = work_common::work_folder_name(&work.title, deadline.as_deref(), None);
                 vault.write_file(
                     &format!("{course_base}/{folder}/作业说明.md"),
-                    &homework_work::render_work_task_note(
+                    &work_common::render_work_task_note(
                         course_title,
                         "学习通",
                         &work.title,
@@ -435,7 +435,7 @@ impl ChaoxingWorkTracker {
         // 跨平台聚合：学习通 + 智慧树 + 微助教快照 → 学期级作业总表
         vault.write_file(
             &format!("{base}/作业总表.md"),
-            &homework_work::render_homework_dashboard(self.store.as_ref(), now, offset)?,
+            &work_common::render_homework_dashboard(self.store.as_ref(), now, offset)?,
         )?;
         written += 1;
         if vault.commit_all("[ru41] chaoxing 课程作业同步")? {

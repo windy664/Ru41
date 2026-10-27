@@ -284,6 +284,11 @@ impl SourcesSection {
         })
     }
 
+    /// 配置段是否存在（status 等只做"配没配"判断，不解析具体字段）。
+    pub fn has(&self, name: &str) -> bool {
+        self.modules.contains_key(name)
+    }
+
     /// 校验 [sources] 下的键都属于已注册模块；未知键只警告（服务器存量配置
     /// 可能带着新版模块的键跑旧二进制，报错会妨碍回滚）。
     pub fn warn_unknown_keys(&self) {

@@ -75,7 +75,7 @@ fn rejects_symlinked_skill_directories() {
 
 #[test]
 fn bundled_module_skills_are_valid() {
-    let packages = load_roots(&[std::path::PathBuf::from("src/modules")]).unwrap();
+    let packages = ru41::skills::load_roots(&ru41::skills::default_roots()).unwrap();
     assert!(packages.iter().any(|package| {
         package.name == "arxiv-research" && package.instructions.contains("arXiv ID")
     }));

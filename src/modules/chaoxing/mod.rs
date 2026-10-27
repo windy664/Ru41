@@ -102,4 +102,6 @@ pub static DEF: super::ModuleDef = super::ModuleDef {
         _ => Ok(None),
     },
     qq_handlers: |_, _| Ok(Vec::new()),
+    image_consumers: super::no_image_consumers,
+    cli: super::no_cli,
 };
