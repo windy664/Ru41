@@ -5,6 +5,7 @@ pub mod channels;
 pub mod domain;
 pub mod ingress;
 pub mod modules;
+pub mod plugins;
 pub mod ports;
 pub mod privacy;
 pub mod runtime;

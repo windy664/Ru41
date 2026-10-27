@@ -78,6 +78,8 @@ impl JobSchedule {
 
 /// 附属模块的自描述：装配自己的轮询 job 与 QQ 命令。
 /// 构造时配置未就绪应返回 Ok(None)/空 Vec（模块静默缺席），而不是报错。
+/// Copy：动态插件按值返回 DEF，宿主 Box::leak 成 'static。
+#[derive(Clone, Copy)]
 pub struct ModuleDef {
     pub name: &'static str,
     /// 注册顺序（QQ 命令 first-match-wins 的消费序，小者先行）。
@@ -114,6 +116,7 @@ pub static MODULES: [ModuleDef];
 /// 按 (priority, name) 稳定排序后的注册表视图。
 pub fn sorted() -> Vec<&'static ModuleDef> {
     let mut defs: Vec<&'static ModuleDef> = MODULES.iter().collect();
+    defs.extend(crate::plugins::external_defs());
     defs.sort_by(|a, b| a.priority.cmp(&b.priority).then_with(|| a.name.cmp(b.name)));
     defs
 }
