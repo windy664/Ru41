@@ -133,6 +133,25 @@ impl CompetitionsService {
             Err(error) => eprintln!("[competitions] hack123 fetch failed: {error:#}"),
         }
 
+        // 国内直采源：讯飞（浏览器渲染，站方无公开 API）+ DataFountain（SSR 列表页）。
+        let xfyun = crate::adapters::sources::competition::xfyun::XfyunClient::new();
+        match xfyun
+            .fetch_competitions("https://challenge.xfyun.cn/competition")
+            .await
+        {
+            Ok(items) => all.extend(items.iter().filter_map(filter::collect_xfyun)),
+            Err(error) => eprintln!("[competitions] xfyun fetch failed: {error:#}"),
+        }
+
+        let df = crate::adapters::sources::competition::datafountain::DataFountainClient::new();
+        match df
+            .fetch_competitions("https://www.datafountain.cn/competitions")
+            .await
+        {
+            Ok(items) => all.extend(items.iter().filter_map(filter::collect_datafountain)),
+            Err(error) => eprintln!("[competitions] datafountain fetch failed: {error:#}"),
+        }
+
         let today = chrono::Local::now().date_naive();
         build_rows(all, today)
     }
