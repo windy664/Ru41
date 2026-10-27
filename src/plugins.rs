@@ -135,18 +135,27 @@ fn load_one(path: &Path) -> Result<(libloading::Library, &'static ModuleDef)> {
         env!("CARGO_PKG_VERSION")
     );
     let host_hash = env!("RU41_GIT_HASH");
-    if meta.git_hash != "unknown" && host_hash != "unknown" {
-        anyhow::ensure!(
-            meta.git_hash == host_hash,
-            "git commit 不匹配：插件 {} / 宿主 {}（pkg 版本相同但布局可能已漂移，需重编插件）",
-            meta.git_hash,
-            host_hash
-        );
-    } else if meta.git_hash != host_hash {
-        eprintln!(
-            "[plugins] 警告：无法校验 {} 的 git commit（插件 {} / 宿主 {}），按版本号放行",
-            meta.name, meta.git_hash, host_hash
-        );
+    if meta.git_hash != host_hash {
+        // 双方都有 hash 且不同：布局可能已漂移，硬拒。
+        // 插件 unknown 而宿主有 hash：插件没按规范编（缺 OVERRIDE），硬拒。
+        // 仅宿主 unknown（无 git 元数据的非常规构建）才降级告警放行。
+        if host_hash == "unknown" {
+            eprintln!(
+                "[plugins] 警告：宿主无 git 元数据，无法校验 {}（插件 {}），按版本号放行",
+                meta.name, meta.git_hash
+            );
+        } else if meta.git_hash == "unknown" {
+            anyhow::bail!(
+                "插件 {} 未嵌入 git commit（需用 RU41_GIT_HASH_OVERRIDE 重编）",
+                meta.name
+            );
+        } else {
+            anyhow::bail!(
+                "git commit 不匹配：插件 {} / 宿主 {}（pkg 版本相同但布局可能已漂移，需重编插件）",
+                meta.git_hash,
+                host_hash
+            );
+        }
     }
     // DEF 泄漏为 'static：与宿主内建模块同生命周期，永不回收（不卸载原则）。
     let def: &'static ModuleDef = Box::leak(Box::new((meta.register)()));
