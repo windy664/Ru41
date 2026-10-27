@@ -46,6 +46,8 @@ impl PollJob for HelloJob {
     ) -> std::pin::Pin<
         Box<dyn std::future::Future<Output = anyhow::Result<serde_json::Value>> + Send + '_>,
     > {
-        Box::pin(async { Ok(serde_json::json!({"ok": true, "from": "hello plugin"})) })
+        // 插件的 async 工作必须经 bridge 在插件自己的 tokio runtime 上跑
+        // （dylib 各自静态链接 tokio，宿主 reactor 对插件代码不可见）。
+        ru41::plugins::bridge(async { Ok(serde_json::json!({"ok": true, "from": "hello plugin"})) })
     }
 }
