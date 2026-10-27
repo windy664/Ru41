@@ -12,3 +12,4 @@
 /config/local.toml
 /ru41.toml
 templates/*/target*/
+plugins/*/target*/

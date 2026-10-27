@@ -35,6 +35,13 @@ cp target-docker/release/libru41_plugin_foo.so <服务器>:/etc/ru41/plugins/
 3. **同一依赖锁**：tokio/serde 等共享依赖版本必须与宿主一致——
    把主仓库的 `Cargo.lock` 复制进插件仓库最稳妥。
 
+## 现有插件
+
+| 插件 | 目录 | 说明 |
+|---|---|---|
+| hello | `templates/plugin-hello/` | 最小模板 |
+| competitions | `plugins/competitions/` | 竞赛日程总览（从内建模块迁出的首个真实插件，带配置 + vault + 多源抓取） |
+
 ## 插件形态
 
 ```rust
