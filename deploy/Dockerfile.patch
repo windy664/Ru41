@@ -12,4 +12,5 @@ RUN apt-get update \
     && pip3 install --break-system-packages --no-cache-dir requests beautifulsoup4 lxml
 COPY target/release/ru41 /usr/local/bin/ru41
 COPY src/modules /etc/ru41/modules
+COPY .plugins-dist/ /etc/ru41/plugins/
 USER node

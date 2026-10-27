@@ -17,7 +17,18 @@ PLUGIN_DIR_ON_SERVER="/home/windy2/ru41-plugins"
 # (crate 目录, 产物 so 文件名)
 PLUGINS=(
   "plugins/competitions:libru41_plugin_competitions.so"
-  "templates/plugin-hello:libru41_plugin_hello.so"
+  "plugins/papers:libru41_plugin_papers.so"
+  "plugins/rss:libru41_plugin_rss.so"
+  "plugins/pagewatch:libru41_plugin_pagewatch.so"
+  "plugins/jobs:libru41_plugin_jobs.so"
+  "plugins/programs:libru41_plugin_programs.so"
+  "plugins/research:libru41_plugin_research.so"
+  "plugins/zhihuishu:libru41_plugin_zhihuishu.so"
+  "plugins/homework:libru41_plugin_homework.so"
+  "plugins/ecard:libru41_plugin_ecard.so"
+  "plugins/compshare:libru41_plugin_compshare.so"
+  "plugins/blog:libru41_plugin_blog.so"
+  "plugins/projects:libru41_plugin_projects.so"
 )
 
 for entry in "${PLUGINS[@]}"; do
@@ -30,7 +41,7 @@ for entry in "${PLUGINS[@]}"; do
     -e CARGO_TARGET_DIR="/build/$dir/target-docker" \
     -e RU41_GIT_HASH_OVERRIDE="$COMMIT" \
     -w "/build/$dir" rust:1.98-trixie \
-    cargo build --release --features plugin-entry
+    cargo build --locked --release --features plugin-entry
   if [[ "${PUSH:-0}" == "1" ]]; then
     python3 "$SCP" "$dir/target-docker/release/$so" "$PLUGIN_DIR_ON_SERVER/$so"
   fi

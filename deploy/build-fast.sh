@@ -39,8 +39,29 @@ docker run --name "$BUILDER" \
   -v "$BUILD_DIR":/build \
   -v "$HOME/.cargo/registry:/usr/local/cargo/registry" \
   -e RU41_GIT_HASH_OVERRIDE="$COMMIT" \
+  -e CARGO_TARGET_DIR=/build/target \
   -w /build rust:1.98-trixie \
   cargo build --locked --release --bin ru41
+
+# 插件与宿主同 commit 净室编译（git hash 握手要求）；输出到
+  # plugins/*/target-docker，Dockerfile.patch 打进 /etc/ru41/plugins。
+  for dir in "$BUILD_DIR"/plugins/*/; do
+    name="$(basename "$dir")"
+    docker run --rm \
+      -v "$BUILD_DIR":/build \
+      -v "$HOME/.cargo/registry:/usr/local/cargo/registry" \
+      -e CARGO_TARGET_DIR="/build/plugins/$name/target-docker" \
+      -e RU41_GIT_HASH_OVERRIDE="$COMMIT" \
+      -w "/build/plugins/$name" rust:1.98-trixie \
+      cargo build --locked --release --features plugin-entry
+  done
+  # 汇集 .so 到独立目录：Dockerfile.patch 只 COPY 这个目录，
+  # 避免把 plugins/ 的 target-docker（数 GB）带进构建上下文。
+  rm -rf "$BUILD_DIR/.plugins-dist"
+  mkdir -p "$BUILD_DIR/.plugins-dist"
+  find "$BUILD_DIR/plugins" -name 'libru41_plugin_*.so' -path '*/release/*' \
+    -exec cp {} "$BUILD_DIR/.plugins-dist/" \;
+  ls "$BUILD_DIR/.plugins-dist" | wc -l
 
 docker build -f "$BUILD_DIR/deploy/Dockerfile.patch" -t ru41:local "$BUILD_DIR"
 
