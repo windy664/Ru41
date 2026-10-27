@@ -9,8 +9,8 @@ pub mod obsidian;
 pub mod pagewatch;
 pub mod papers;
 pub mod planner;
+pub mod programs;
 pub mod projects;
-pub mod research;
 pub mod rss;
 pub mod teachermate;
 pub mod youtube;
@@ -111,5 +111,5 @@ pub const MODULES: &[ModuleDef] = &[
     planner::DEF,
     competitions::DEF,
     jobs::DEF,
-    research::DEF,
+    programs::DEF,
 ];
