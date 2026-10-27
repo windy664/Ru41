@@ -28,6 +28,18 @@ cp target-docker/release/libru41_plugin_foo.so <服务器>:/etc/ru41/plugins/
 
 ## 硬约束（违反 = ABI 未定义行为，不是报错）
 
+0. **async 边界必须过桥**：dylib 各静态链接一份 tokio，宿主 reactor 对插件
+   代码不可见——插件 future 若被宿主直接驱动，reqwest/tokio 调用会
+   "no reactor running" panic 并 abort 宿主（2026-10-27 实测）。
+   `PollJob::poll_json`、QQ handler 等返回 future 的入口一律：
+   ```rust
+   fn poll_json(&self) -> Pin<Box<dyn Future<Output = Result<Value>> + Send + '_>> {
+       let owned = self.clone(); // bridge 要 'static
+       ru41::plugins::bridge(async move { owned.poll_once().await })
+   }
+   ```
+   桥内 catch_unwind，插件 panic 降级为 Err 不带崩宿主。
+
 1. **同一 rustc**：插件和宿主用同一个 Rust 工具链编译。
 2. **同一 ru41 版本**：Cargo.toml 里 `ru41 = { git = "...", rev = "<宿主部署的 commit>" }`，
    宿主升级后插件必须改 rev 重编。入口握手双重校验：`CARGO_PKG_VERSION` 必须相等；

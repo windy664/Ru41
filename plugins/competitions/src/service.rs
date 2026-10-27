@@ -57,6 +57,7 @@ pub static DEF: ru41::modules::ModuleDef = ru41::modules::ModuleDef {
     qq_handlers: |_, _| Ok(Vec::new()),
 };
 
+#[derive(Clone)]
 pub struct CompetitionsService {
     vault: Arc<dyn Vault>,
     interval_secs: u64,
@@ -173,6 +174,10 @@ impl ru41::ingress::schedule::PollJob for CompetitionsService {
         &self,
     ) -> std::pin::Pin<Box<dyn std::future::Future<Output = Result<serde_json::Value>> + Send + '_>>
     {
-        Box::pin(async move { self.poll_once().await })
+        // 插件态：真实工作必须在插件自己的 tokio runtime 上跑（dylib 各自
+        // 静态链接 tokio，宿主 reactor 对本插件代码不可见）；桥内 catch_unwind。
+        let owned = self.clone();
+        ru41::plugins::bridge(async move { owned.poll_once().await })
     }
+
 }
