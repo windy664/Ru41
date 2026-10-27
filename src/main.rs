@@ -228,7 +228,8 @@ async fn main() -> Result<()> {
         | Command::Blog { .. }
         | Command::Pagewatch { .. }
         | Command::Competitions { .. }
-        | Command::Jobs { .. } => {
+        | Command::Jobs { .. }
+        | Command::Research { .. } => {
             unreachable!("handled by tracker dispatch above")
         }
         Command::Youtube { command } => match command {

@@ -157,6 +157,11 @@ pub enum Command {
         #[command(subcommand)]
         command: TrackerCommand,
     },
+    /// 科研机会总览：GSoC 时间线 / LFX 开放项目 / OSPP 节奏卡，生成 vault 科研机会总览.md。
+    Research {
+        #[command(subcommand)]
+        command: TrackerCommand,
+    },
     /// 博客发布管线：Vault 待发布目录 → 校验 → 博客仓库 _posts → 推送。
     Blog {
         #[command(subcommand)]
@@ -247,6 +252,7 @@ impl Command {
             Command::Pagewatch { command } => Some(("pagewatch", *command)),
             Command::Competitions { command } => Some(("competitions", *command)),
             Command::Jobs { command } => Some(("jobs", *command)),
+            Command::Research { command } => Some(("research", *command)),
             _ => None,
         }
     }
