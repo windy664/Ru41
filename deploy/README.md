@@ -71,6 +71,10 @@ docker compose -f deploy/compose.yaml --profile rss --profile notify up -d worke
 # 水电监控（纯 Rust 阈值判断，不要求 worker）
 docker compose -f deploy/compose.yaml --profile ecard up -d ecard
 
+# 恒源云 GPU 库存（Cookie 走环境变量；需 [sources.compshare] 与默认 QQ 出口）
+RU41_COMPSHARE_COOKIE='完整的 .compshare.cn Cookie' \
+  docker compose -f deploy/compose.yaml --profile compshare up -d compshare
+
 # 教务课表（CAS 自动登录、变更提醒、明日课表、日程同步；需先配置 [sources.jwxt]）
 docker compose -f deploy/compose.yaml --profile jwxt up -d jwxt
 
@@ -81,7 +85,7 @@ RU41_TODO_NOTIFY_TARGET="user:<openid>" docker compose -f deploy/compose.yaml --
 docker compose -f deploy/compose.yaml --profile api up -d serve worker
 ```
 
-`papers/rss/ecard` 缺少必填配置时会直接报错，应先完成对应配置再启用 profile。`qq run` 与独立 `notify` 二选一，避免同时运行两条通知派发路径。
+`papers/rss/ecard/compshare` 缺少必填配置时会直接报错，应先完成对应配置再启用 profile。`qq run` 与独立 `notify` 二选一，避免同时运行两条通知派发路径。
 
 常用运维：
 
