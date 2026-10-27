@@ -82,7 +82,12 @@ impl CodexSession {
                         .as_str()
                         .context("missing thread id")?
                         .to_string();
-                    let prompt = request.prompt.clone();
+                    let skills = request
+                        .context
+                        .as_ref()
+                        .map_or(&[][..], |context| context.skills.as_slice());
+                    let prompt =
+                        crate::skills::skills_index_prefix(skills) + &request.prompt;
                     let mut params = json!({"threadId":id,"input":[{"type":"text","text":prompt}]});
                     if self.output_schema {
                         params["outputSchema"] = json!({"type":"object","properties":{"summary":{"type":"string"}},"required":["summary"],"additionalProperties":false});

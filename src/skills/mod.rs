@@ -218,6 +218,24 @@ pub fn materialize(run_dir: &Path, packages: &[SkillPackage]) -> Result<()> {
     Ok(())
 }
 
+/// codex 专用技能索引前缀：codex 不把 .agents/skills 自动挂进上下文
+/// （它原生只看 $CODEX_HOME/skills），所以在 prompt 开头列名称+简介+路径，
+/// 模型按需自行 Read 对应 SKILL.md。只列索引不内联全文，控制 prompt 体积。
+pub fn skills_index_prefix(skills: &[SkillPackage]) -> String {
+    if skills.is_empty() {
+        return String::new();
+    }
+    let mut out = String::from("可用技能（已在工作目录 .agents/skills/ 下，匹配需求时先读对应 SKILL.md 再行动）：\n");
+    for skill in skills {
+        out.push_str(&format!(
+            "- {}（.agents/skills/{}/SKILL.md）：{}\n",
+            skill.name, skill.name, skill.description
+        ));
+    }
+    out.push('\n');
+    out
+}
+
 pub fn render_for_prompt(prompt: &str, packages: &[SkillPackage]) -> String {
     if packages.is_empty() {
         return prompt.to_owned();
