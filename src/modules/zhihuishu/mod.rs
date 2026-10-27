@@ -12,10 +12,15 @@ pub use source::{
 };
 
 /// 注册表定义：zhihuishu 的调度清单、tracker、QQ 命令闭环。
-pub const DEF: super::ModuleDef = super::ModuleDef {
+#[linkme::distributed_slice(super::MODULES)]
+pub static DEF: super::ModuleDef = super::ModuleDef {
     name: "zhihuishu",
+    priority: 20,
+    config_key: Some("zhihuishu"),
     schedule: |config| {
-        let zhihuishu = &config.sources.zhihuishu;
+        let zhihuishu = config
+            .sources
+            .get_or_default::<crate::modules::zhihuishu::ZhihuishuSection>("zhihuishu");
         // sidecar 驱动模块：没有凭证类开关，恒为启用（报告缺失时轮询自然空转）。
         vec![super::JobSchedule::simple(
             "zhihuishu",
@@ -30,7 +35,9 @@ pub const DEF: super::ModuleDef = super::ModuleDef {
         if name != "zhihuishu" {
             return Ok(None);
         }
-        let zhihuishu = &config.sources.zhihuishu;
+        let zhihuishu = config
+            .sources
+            .get::<crate::modules::zhihuishu::ZhihuishuSection>("zhihuishu")?;
         let (notifier, notify_target) =
             crate::bootstrap::assembly::notify_pair(config, zhihuishu.notify)?;
         let vault = crate::bootstrap::assembly::vault_if_ready(
@@ -49,7 +56,7 @@ pub const DEF: super::ModuleDef = super::ModuleDef {
         Ok(vec![std::sync::Arc::new(ZhihuishuQqCommand::new(
             config
                 .sources
-                .zhihuishu
+                .get::<crate::modules::zhihuishu::ZhihuishuSection>("zhihuishu")?
                 .resolved(String::new())?
                 .report_path,
         ))])

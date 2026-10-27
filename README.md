@@ -158,7 +158,7 @@ Worker 会真实调用 Agent 并消耗对应额度。`--once` 最多领取一个
 | [`src/modules/`](src/modules/) · [`src/channels/`](src/channels/) | 论文、RSS、水电业务与消息渠道 |
 | [`src/ingress/`](src/ingress/) · [`src/bootstrap/`](src/bootstrap/) | 入口、配置与装配 |
 
-当前采用**编译期静态装配**。模块需要显式注册，不是放入目录就能动态加载的插件。
+当前采用**编译期静态装配 + linkme 分布式注册**。模块在自己的 `mod.rs` 里自注册（`#[distributed_slice]`），新增附属只写自己目录 + 一行 `pub mod`，不编辑 cli.rs/main.rs/config.rs。仍是编译期模块，不是放入目录就能动态加载的插件。
 
 ```bash
 cargo fmt --all -- --check

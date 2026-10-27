@@ -230,25 +230,50 @@ pub struct NotifySection {
     pub channel: Option<String>,
 }
 
-/// 附属来源配置由各自业务模块定义，这里只做组合。
+/// 附属来源配置按模块名分布式解析：新增模块不再往这里加字段，
+/// 各自的 Section 类型留在模块目录里，读取走 `get::<T>(name)`。
 #[derive(Debug, Default, Deserialize)]
-#[serde(default, deny_unknown_fields)]
+#[serde(default)]
 pub struct SourcesSection {
-    pub arxiv: crate::modules::papers::ArxivSection,
-    pub rss: crate::modules::rss::RssSection,
-    pub projects: crate::modules::projects::ProjectsSection,
-    pub youtube: crate::modules::youtube::YoutubeSection,
-    pub ecard: crate::modules::ecard::EcardSection,
-    pub chaoxing: crate::modules::chaoxing::ChaoxingSection,
-    pub jwxt: crate::modules::jwxt::JwxtSection,
-    pub zhihuishu: crate::modules::zhihuishu::ZhihuishuSection,
-    pub teachermate: crate::modules::teachermate::TeachermateSection,
-    pub blog: crate::modules::blog::BlogSection,
-    pub pagewatch: crate::modules::pagewatch::PagewatchSection,
-    pub competitions: crate::modules::competitions::CompetitionsSection,
-    pub jobs: crate::modules::jobs::JobsSection,
-    pub programs: crate::modules::programs::ProgramsSection,
-    pub research: crate::modules::research::ResearchSection,
+    #[serde(flatten)]
+    modules: std::collections::HashMap<String, toml::Value>,
+}
+
+impl SourcesSection {
+    /// 按模块名解析配置段（Result 上下文用）；段缺失返回 Default，
+    /// 存在但解析失败报错——字段拼错由模块 Section 的 deny_unknown_fields 兜住。
+    pub fn get<T: Default + serde::de::DeserializeOwned>(&self, name: &str) -> Result<T> {
+        match self.modules.get(name) {
+            None => Ok(T::default()),
+            Some(value) => value
+                .clone()
+                .try_into()
+                .with_context(|| format!("[sources.{name}] 配置解析失败")),
+        }
+    }
+
+    /// 非 Result 上下文（如 schedule 清单闭包）用：解析失败记日志并退回 Default
+    /// （等价于"未配置"，模块静默缺席）。
+    pub fn get_or_default<T: Default + serde::de::DeserializeOwned>(&self, name: &str) -> T {
+        self.get(name).unwrap_or_else(|error| {
+            eprintln!("[config] {error:#}；按未配置处理");
+            T::default()
+        })
+    }
+
+    /// 校验 [sources] 下的键都属于已注册模块；未知键只警告（服务器存量配置
+    /// 可能带着新版模块的键跑旧二进制，报错会妨碍回滚）。
+    pub fn warn_unknown_keys(&self) {
+        let known: Vec<&str> = crate::modules::sorted()
+            .iter()
+            .filter_map(|def| def.config_key)
+            .collect();
+        for key in self.modules.keys() {
+            if !known.contains(&key.as_str()) {
+                eprintln!("[config] 警告：[sources.{key}] 不属于任何已注册模块，将被忽略");
+            }
+        }
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -313,6 +338,7 @@ impl Config {
                     .with_context(|| format!("cannot read config file {}", path.display()))?;
                 let config: Config = toml::from_str(&text)
                     .with_context(|| format!("invalid config file {}", path.display()))?;
+                config.sources.warn_unknown_keys();
                 return Ok((config, Some(path)));
             }
         }

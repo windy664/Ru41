@@ -383,7 +383,12 @@ fn rejects_unknown_config_fields() {
         "[sources.youtube]\nchannels = [\"@a\"]\nbogus_field = 1\n",
     )
     .unwrap();
-    let result = ru41::bootstrap::config::Config::load_from(None, cwd.path(), None);
+    // 分布式配置：[sources] 层不再逐字段校验，但模块 Section 读取时
+    // deny_unknown_fields 仍然兜住拼错的字段名。
+    let (config, _) = ru41::bootstrap::config::Config::load_from(None, cwd.path(), None).unwrap();
+    let result = config
+        .sources
+        .get::<ru41::modules::youtube::YoutubeSection>("youtube");
     assert!(result.is_err());
 }
 

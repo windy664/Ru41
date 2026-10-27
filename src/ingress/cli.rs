@@ -92,35 +92,10 @@ pub enum Command {
     /// 长驻运行终态通知派发；按配置注册渠道（当前为飞书 webhook）。
     /// QQ 网关在 qq run 内自带派发，此命令用于不跑 QQ 的部署。
     Notify,
-    /// arXiv 论文追踪：轮询新论文、去重粗筛后合成精选 digest 任务。
-    Papers {
-        #[command(subcommand)]
-        command: TrackerCommand,
-    },
-    /// RSS 信息流追踪：轮询订阅源、去重粗筛后合成精选 digest 任务。
-    Rss {
-        #[command(subcommand)]
-        command: TrackerCommand,
-    },
-    /// 项目库管理：扫 02-Projects 项目笔记，GitHub 项目同步 README+元数据入库。
-    Projects {
-        #[command(subcommand)]
-        command: TrackerCommand,
-    },
     /// YouTube 英语预习：轮询频道新视频，字幕转写生成重点词句预习单并推送。
     Youtube {
         #[command(subcommand)]
         command: YoutubeCommand,
-    },
-    /// 校园卡水电监控：查询余额、记录历史、低余额提醒。
-    Ecard {
-        #[command(subcommand)]
-        command: TrackerCommand,
-    },
-    /// 智慧树作业提醒：读取 sidecar 报告，新任务与临近截止提醒（考试式仅提醒人工）。
-    Zhihuishu {
-        #[command(subcommand)]
-        command: TrackerCommand,
     },
     /// 学习通签到监控：协议端直连，检测待签活动并提醒，支持手动签到。
     Chaoxing {
@@ -137,41 +112,10 @@ pub enum Command {
         #[command(subcommand)]
         command: JwxtCommand,
     },
-    /// Obsidian Vault 闭环：Git 轮询发现 Inbox 新提交，入队整理任务，完成后提交推送。
-    Obsidian {
-        #[command(subcommand)]
-        command: TrackerCommand,
-    },
-    /// 页面监控：盯没有 RSS 的网页（赛事官网/公告页），内容变更即通知。
-    Pagewatch {
-        #[command(subcommand)]
-        command: TrackerCommand,
-    },
-    /// 竞赛日程总览：多源赛事筛选生成 vault 里的日程总览.md，每日刷新。
-    Competitions {
-        #[command(subcommand)]
-        command: TrackerCommand,
-    },
-    /// 岗位总览：面灵职位表筛选生成 vault 里的岗位总览.md，跨轮合并扩窗口。
-    Jobs {
-        #[command(subcommand)]
-        command: TrackerCommand,
-    },
-    /// 项目计划总览：GSoC 时间线 / LFX 开放项目 / OSPP 节奏卡，生成 vault 项目总览.md。
-    Programs {
-        #[command(subcommand)]
-        command: TrackerCommand,
-    },
-    /// 科研机会总览：Mitacs/港校暑研/中科院科创等窗口倒计时，生成 vault 科研总览.md。
-    Research {
-        #[command(subcommand)]
-        command: TrackerCommand,
-    },
-    /// 博客发布管线：Vault 待发布目录 → 校验 → 博客仓库 _posts → 推送。
-    Blog {
-        #[command(subcommand)]
-        command: TrackerCommand,
-    },
+    /// 附属 tracker 通用入口：`ru41 <模块名> poll|run`（模块名见 `schedule list`；
+    /// 有专属子命令的模块如 youtube/chaoxing/teachermate/jwxt 在上方独立变体）。
+    #[command(external_subcommand)]
+    Tracker(Vec<String>),
     /// 定时任务注册表：统一查看和运行各附属的轮询任务。
     Schedule {
         #[command(subcommand)]
@@ -238,30 +182,6 @@ pub enum TrackerCommand {
     Poll,
     /// 常驻运行，按该来源配置的 interval_secs 周期轮询。
     Run,
-}
-
-impl Command {
-    /// 纯 tracker 子命令（仅 Poll/Run 两态、分支体完全一致）的统一查表：
-    /// 返回 (tracker_job 登记名, 子命令)。登记名必须与 modules 注册表一致。
-    /// 有额外子命令的模块（youtube/chaoxing/teachermate/jwxt）不在此列，
-    /// 仍由 main 的专属分支处理。
-    pub fn as_tracker(&self) -> Option<(&'static str, TrackerCommand)> {
-        match self {
-            Command::Papers { command } => Some(("papers", *command)),
-            Command::Rss { command } => Some(("rss", *command)),
-            Command::Projects { command } => Some(("projects", *command)),
-            Command::Ecard { command } => Some(("ecard", *command)),
-            Command::Zhihuishu { command } => Some(("zhihuishu", *command)),
-            Command::Obsidian { command } => Some(("obsidian", *command)),
-            Command::Blog { command } => Some(("blog", *command)),
-            Command::Pagewatch { command } => Some(("pagewatch", *command)),
-            Command::Competitions { command } => Some(("competitions", *command)),
-            Command::Jobs { command } => Some(("jobs", *command)),
-            Command::Programs { command } => Some(("programs", *command)),
-            Command::Research { command } => Some(("research", *command)),
-            _ => None,
-        }
-    }
 }
 
 #[derive(Subcommand)]

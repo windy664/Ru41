@@ -50,7 +50,7 @@ pub fn notify_channels(
 pub fn qq_command_handlers(config: &Config, backend: &str) -> Result<Vec<Arc<dyn CommandHandler>>> {
     // 注册表模块的 QQ 命令先行收集（数据驱动）。
     let mut handlers: Vec<Arc<dyn CommandHandler>> = Vec::new();
-    for def in crate::modules::MODULES {
+    for def in crate::modules::sorted() {
         handlers.extend((def.qq_handlers)(config, backend)?);
     }
     Ok(handlers)
@@ -60,8 +60,15 @@ pub fn qq_command_handlers(config: &Config, backend: &str) -> Result<Vec<Arc<dyn
 /// [sources.chaoxing] 未配置齐时返回空，消息全部走原有通道。
 pub fn qq_image_consumers(config: &Config) -> Result<Vec<Arc<dyn ImageConsumer>>> {
     let mut consumers: Vec<Arc<dyn ImageConsumer>> = Vec::new();
-    if config.sources.chaoxing.is_ready() {
-        let cfg = config.sources.chaoxing.resolved(String::new())?;
+    if config
+        .sources
+        .get::<crate::modules::chaoxing::ChaoxingSection>("chaoxing")?
+        .is_ready()
+    {
+        let cfg = config
+            .sources
+            .get::<crate::modules::chaoxing::ChaoxingSection>("chaoxing")?
+            .resolved(String::new())?;
         // 与签到轮询各用一份 cookie 文件，避免两进程争写同一会话文件。
         let client = ChaoxingClient::new(
             cfg.phone.clone(),
@@ -156,7 +163,13 @@ pub fn youtube_client(config: &Config) -> YtDlpClient {
 
 /// [sources.youtube] 语义的通知出口（CLI youtube prep 使用；与 poll 装配一致）。
 pub fn youtube_prep_route(config: &Config) -> Result<Option<crate::domain::NotifyRoute>> {
-    source_notify(config, config.sources.youtube.notify)
+    source_notify(
+        config,
+        config
+            .sources
+            .get::<crate::modules::youtube::YoutubeSection>("youtube")?
+            .notify,
+    )
 }
 
 /// 按 [notify] 渠道构造具体通知器；渠道知识只存在于装配层。
@@ -215,8 +228,8 @@ pub fn vault_client(
 /// 定时任务注册表：全部来自 modules::MODULES 注册表的数据驱动汇总；
 /// 新附属在模块内声明 DEF 即自动出现在 schedule list，无需改这里。
 pub fn scheduled_jobs(config: &Config) -> Vec<ScheduledJob> {
-    crate::modules::MODULES
-        .iter()
+    crate::modules::sorted()
+        .into_iter()
         .flat_map(|def| {
             (def.schedule)(config)
                 .into_iter()
@@ -233,7 +246,7 @@ pub fn tracker_job(
     name: &str,
 ) -> Result<Option<Box<dyn PollJob>>> {
     // 注册表优先：已迁移模块数据驱动装配；未命中再走老的手写注册。
-    for def in crate::modules::MODULES {
+    for def in crate::modules::sorted() {
         if let Some(job) = (def.tracker)(config, store.clone(), name)? {
             return Ok(Some(job));
         }

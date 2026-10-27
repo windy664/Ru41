@@ -6,8 +6,11 @@ pub mod qq_command;
 pub use qq_command::ObsidianQqCommand;
 
 /// 注册表定义：obsidian 同步服务（含知识库索引挂载）与 /记一下 命令闭环。
-pub const DEF: super::ModuleDef = super::ModuleDef {
+#[linkme::distributed_slice(super::MODULES)]
+pub static DEF: super::ModuleDef = super::ModuleDef {
     name: "obsidian",
+    priority: super::DEFAULT_PRIORITY,
+    config_key: None,
     schedule: |config| {
         let ready = config.obsidian.is_ready();
         vec![super::JobSchedule::simple(

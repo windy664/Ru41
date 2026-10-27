@@ -7,10 +7,15 @@ pub use config::PagewatchSection;
 pub use service::{PagewatchConfig, PagewatchReport, PagewatchTracker, WatchedPage};
 
 /// 注册表定义：pagewatch 轮询 job。无 QQ 命令（只看不回话）。
-pub const DEF: super::ModuleDef = super::ModuleDef {
+#[linkme::distributed_slice(super::MODULES)]
+pub static DEF: super::ModuleDef = super::ModuleDef {
     name: "pagewatch",
+    priority: super::DEFAULT_PRIORITY,
+    config_key: Some("pagewatch"),
     schedule: |config| {
-        let section = &config.sources.pagewatch;
+        let section = config
+            .sources
+            .get_or_default::<crate::modules::pagewatch::PagewatchSection>("pagewatch");
         vec![super::JobSchedule::simple(
             "pagewatch",
             section
@@ -24,7 +29,9 @@ pub const DEF: super::ModuleDef = super::ModuleDef {
         if name != "pagewatch" {
             return Ok(None);
         }
-        let section = &config.sources.pagewatch;
+        let section = config
+            .sources
+            .get::<crate::modules::pagewatch::PagewatchSection>("pagewatch")?;
         let route = crate::bootstrap::assembly::source_notify(config, section.notify)?;
         let notifier = match &route {
             Some(route) => Some(crate::bootstrap::assembly::default_notifier(
@@ -40,12 +47,9 @@ pub const DEF: super::ModuleDef = super::ModuleDef {
         } else {
             None
         };
-        Ok(Some(Box::new(PagewatchTracker::new(
-            store,
-            notifier,
-            section.resolved(route)?,
-        )
-        .with_vault_opt(vault))))
+        Ok(Some(Box::new(
+            PagewatchTracker::new(store, notifier, section.resolved(route)?).with_vault_opt(vault),
+        )))
     },
     qq_handlers: |_, _| Ok(Vec::new()),
 };

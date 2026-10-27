@@ -15,7 +15,9 @@ pub use service::{YoutubeConfig, YoutubePollReport, YoutubeTracker};
 
 /// yt-dlp 客户端工厂：tracker、QQ 命令与 CLI prep 共用同一份配置来源。
 pub fn ytdlp_client(config: &crate::bootstrap::config::Config) -> source::YtDlpClient {
-    let youtube = &config.sources.youtube;
+    let youtube = config
+        .sources
+        .get_or_default::<crate::modules::youtube::YoutubeSection>("youtube");
     source::YtDlpClient::new(
         youtube.ytdlp_bin.clone().unwrap_or_else(|| "yt-dlp".into()),
         youtube.proxy_url.clone(),
@@ -24,10 +26,15 @@ pub fn ytdlp_client(config: &crate::bootstrap::config::Config) -> source::YtDlpC
 }
 
 /// 注册表定义：youtube 的调度清单、tracker 构造、QQ 命令都在本模块内闭环。
-pub const DEF: super::ModuleDef = super::ModuleDef {
+#[linkme::distributed_slice(super::MODULES)]
+pub static DEF: super::ModuleDef = super::ModuleDef {
     name: "youtube",
+    priority: super::DEFAULT_PRIORITY,
+    config_key: Some("youtube"),
     schedule: |config| {
-        let youtube = &config.sources.youtube;
+        let youtube = config
+            .sources
+            .get_or_default::<crate::modules::youtube::YoutubeSection>("youtube");
         let ready = youtube.channels.as_ref().is_some_and(|c| !c.is_empty());
         vec![
             super::JobSchedule::simple(
@@ -48,7 +55,9 @@ pub const DEF: super::ModuleDef = super::ModuleDef {
         ]
     },
     tracker: |config, store, name| {
-        let youtube = &config.sources.youtube;
+        let youtube = config
+            .sources
+            .get::<crate::modules::youtube::YoutubeSection>("youtube")?;
         match name {
             "youtube" => Ok(Some(Box::new(YoutubeTracker::new(
                 store,
@@ -72,16 +81,21 @@ pub const DEF: super::ModuleDef = super::ModuleDef {
         Ok(vec![std::sync::Arc::new(
             qq_command::YoutubeQqCommand::new(
                 ytdlp_client(config),
-                config.sources.youtube.interests.clone().unwrap_or_default(),
                 config
                     .sources
-                    .youtube
+                    .get::<crate::modules::youtube::YoutubeSection>("youtube")?
+                    .interests
+                    .clone()
+                    .unwrap_or_default(),
+                config
+                    .sources
+                    .get::<crate::modules::youtube::YoutubeSection>("youtube")?
                     .level
                     .clone()
                     .unwrap_or_else(|| config::YoutubeSection::DEFAULT_LEVEL.into()),
                 config
                     .sources
-                    .youtube
+                    .get::<crate::modules::youtube::YoutubeSection>("youtube")?
                     .max_transcript_chars
                     .unwrap_or(config::YoutubeSection::DEFAULT_MAX_TRANSCRIPT_CHARS),
                 backend.to_owned(),

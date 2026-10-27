@@ -23,7 +23,9 @@ pub fn build_tracker(
     config: &crate::bootstrap::config::Config,
     store: Arc<dyn crate::ports::storage::TaskStore>,
 ) -> Result<JwxtTracker> {
-    let jwxt = &config.sources.jwxt;
+    let jwxt = config
+        .sources
+        .get::<crate::modules::jwxt::JwxtSection>("jwxt")?;
     let (notifier, notify_target) = crate::bootstrap::assembly::notify_pair(config, jwxt.notify)?;
     let resolved = jwxt.resolved(notify_target)?;
     let client = JwxtClient::new(
@@ -40,10 +42,15 @@ pub fn build_tracker(
 }
 
 /// 注册表定义：jwxt 的调度清单、课表/课前提醒两个 tracker、QQ 命令闭环。
-pub const DEF: super::ModuleDef = super::ModuleDef {
+#[linkme::distributed_slice(super::MODULES)]
+pub static DEF: super::ModuleDef = super::ModuleDef {
     name: "jwxt",
+    priority: super::DEFAULT_PRIORITY,
+    config_key: Some("jwxt"),
     schedule: |config| {
-        let jwxt = &config.sources.jwxt;
+        let jwxt = config
+            .sources
+            .get_or_default::<crate::modules::jwxt::JwxtSection>("jwxt");
         let todo_route_ready = crate::bootstrap::assembly::default_notify_route(config)
             .ok()
             .flatten()
@@ -83,7 +90,9 @@ pub const DEF: super::ModuleDef = super::ModuleDef {
         ]
     },
     tracker: |config, store, name| {
-        let jwxt = &config.sources.jwxt;
+        let jwxt = config
+            .sources
+            .get::<crate::modules::jwxt::JwxtSection>("jwxt")?;
         match name {
             "jwxt" => Ok(Some(Box::new(build_tracker(config, store)?))),
             "class-remind" => {
@@ -111,11 +120,16 @@ pub const DEF: super::ModuleDef = super::ModuleDef {
         Ok(vec![std::sync::Arc::new(JwxtQqCommand::new(
             config
                 .sources
-                .jwxt
+                .get::<crate::modules::jwxt::JwxtSection>("jwxt")?
                 .semester_start
                 .as_deref()
                 .and_then(|raw| chrono::NaiveDate::parse_from_str(raw.trim(), "%Y-%m-%d").ok()),
-            config.sources.jwxt.section_clock().ok().flatten(),
+            config
+                .sources
+                .get::<crate::modules::jwxt::JwxtSection>("jwxt")?
+                .section_clock()
+                .ok()
+                .flatten(),
         ))])
     },
 };
