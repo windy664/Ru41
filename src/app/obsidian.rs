@@ -23,6 +23,36 @@ pub struct ObsidianConfig {
     pub notify: Option<NotifyRoute>,
 }
 
+/// 由 [obsidian] 配置段解析运行时配置。ObsidianSection 数据类型住在
+/// ru41-plugin-api（配置属于插件边界），产出物 ObsidianConfig 是宿主
+/// 运行时概念，解析逻辑以扩展 trait 留在宿主。
+pub trait ObsidianSectionExt {
+    fn resolved(&self, notify: Option<NotifyRoute>) -> Result<ObsidianConfig>;
+}
+
+impl ObsidianSectionExt for crate::bootstrap::config::ObsidianSection {
+    fn resolved(&self, notify: Option<NotifyRoute>) -> Result<ObsidianConfig> {
+        use crate::bootstrap::config::ObsidianSection as S;
+        let vault_path = self
+            .vault_path
+            .clone()
+            .filter(|p| !p.trim().is_empty())
+            .context("obsidian.vault_path required")?;
+        Ok(ObsidianConfig {
+            vault_path: PathBuf::from(vault_path),
+            remote: self.remote.clone().unwrap_or_else(|| S::DEFAULT_REMOTE.into()),
+            branch: self.branch.clone().unwrap_or_else(|| S::DEFAULT_BRANCH.into()),
+            inbox_dir: self
+                .inbox_dir
+                .clone()
+                .unwrap_or_else(|| S::DEFAULT_INBOX_DIR.into()),
+            interval_secs: self.interval_secs.unwrap_or(S::DEFAULT_INTERVAL_SECS),
+            backend: self.backend.clone().unwrap_or_else(|| "codex".into()),
+            notify,
+        })
+    }
+}
+
 /// 一轮轮询的结果报告。
 #[derive(Debug, Serialize)]
 pub struct ObsidianPollReport {

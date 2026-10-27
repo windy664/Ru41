@@ -44,11 +44,13 @@ docker run --name "$BUILDER" \
   -w /build rust:1.98-trixie \
   cargo build --locked --release --bin ru41
 
-# 插件与宿主同 commit 净室编译（git hash 握手要求）；输出到
-  # plugins/*/target-docker，Dockerfile.patch 打进 /etc/ru41/plugins。
+# 插件净室编译；输出到 plugins/*/target-docker，Dockerfile.patch 打进
+  # /etc/ru41/plugins。握手 v2 硬门是 ru41-plugin-api 版本 + deps stamp
+  # （不是 git commit），lockfile 从根同步保证两侧解析同一组依赖版本。
   for dir in "$BUILD_DIR"/plugins/*/; do
     [ -f "$dir/Cargo.toml" ] || continue
     name="$(basename "$dir")"
+    cp "$BUILD_DIR/Cargo.lock" "$dir/Cargo.lock"
     docker run --rm \
       -v "$BUILD_DIR":/build \
       -v "$HOME/.cargo/registry:/usr/local/cargo/registry" \
@@ -56,7 +58,7 @@ docker run --name "$BUILDER" \
       -e CARGO_TARGET_DIR="/build/plugins/$name/target-docker" \
       -e RU41_GIT_HASH_OVERRIDE="$COMMIT" \
       -w "/build/plugins/$name" rust:1.98-trixie \
-      cargo build --locked --release --features plugin-entry
+      cargo build --release --features plugin-entry
   done
   # 汇集 .so 到独立目录：Dockerfile.patch 只 COPY 这个目录，
   # 避免把 plugins/ 的 target-docker（数 GB）带进构建上下文。

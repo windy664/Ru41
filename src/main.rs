@@ -57,7 +57,7 @@ async fn main() -> Result<()> {
         }
     }
     // 插件加载完成后再做 [sources] 未知键告警（否则插件的配置段全被误报）。
-    config.sources.warn_unknown_keys();
+    ru41::bootstrap::config::warn_unknown_source_keys(&config.sources);
     // 附属 tracker 通用入口（ru41 <模块名> poll|run）：模块名经注册表校验，
     // 分支体完全一致，统一分发，不进下面的大 match。
     if let Command::Tracker(args) = &cli.command {

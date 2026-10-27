@@ -3041,6 +3041,7 @@ dependencies = [
  "regex",
  "reqwest",
  "rqrr",
+ "ru41-plugin-api",
  "rusqlite",
  "schemars",
  "serde",
@@ -3053,6 +3054,20 @@ dependencies = [
  "toml_edit",
  "tower",
  "url",
+]
+
+[[package]]
+name = "ru41-plugin-api"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "chrono",
+ "futures-util",
+ "schemars",
+ "serde",
+ "serde_json",
+ "tokio",
+ "toml",
 ]
 
 [[package]]

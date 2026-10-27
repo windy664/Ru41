@@ -74,7 +74,8 @@ impl DeliveryFailure {
     }
 }
 
-pub(crate) fn lease_deadline(now: i64, seconds: i64) -> Result<i64> {
+/// 供存储适配器（宿主侧 sqlite/postgres）共用的租约截止计算。
+pub fn lease_deadline(now: i64, seconds: i64) -> Result<i64> {
     ensure!(
         now >= 0 && (1..=86400).contains(&seconds),
         "invalid consumer lease"

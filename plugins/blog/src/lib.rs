@@ -9,6 +9,7 @@ pub mod service;
 
 pub use config::BlogSection;
 pub use service::{BlogConfig, BlogPollReport, BlogPublishTracker};
+use ru41::app::obsidian::ObsidianSectionExt;
 
 /// 注册表定义：blog 发布管线的调度清单与 tracker 闭环。
 pub static DEF: ru41::modules::ModuleDef = ru41::modules::ModuleDef {
