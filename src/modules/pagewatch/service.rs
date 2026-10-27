@@ -72,12 +72,13 @@ impl PagewatchTracker {
     }
 
     pub async fn poll_once(&self) -> Result<PagewatchReport> {
-        let mut changed = Vec::new();
+        // (名称, url, 新增行, 消失行)
+        let mut changed: Vec<(String, String, Vec<String>, Vec<String>)> = Vec::new();
         let mut suppressed = Vec::new();
         let mut errors = Vec::new();
         for page in &self.config.pages {
-            match self.fetch_fingerprint(&page.url).await {
-                Ok(fingerprint) => {
+            match self.fetch_content(&page.url).await {
+                Ok((fingerprint, text_lines)) => {
                     match self.store.document("pagewatch_page", &page.url)? {
                         // 首次抓取：只建基线，不通知（否则接入当天全是"变更"）。
                         None => {
@@ -88,6 +89,7 @@ impl PagewatchTracker {
                                 &serde_json::json!({
                                     "name": page.name,
                                     "fingerprint": fingerprint,
+                                    "lines": text_lines,
                                     "baseline_at": crate::util::now(),
                                 }),
                             )?;
@@ -95,9 +97,22 @@ impl PagewatchTracker {
                         Some(doc) if doc.value["fingerprint"].as_str() == Some(&fingerprint) => {}
                         Some(doc) => {
                             let now = crate::util::now();
+                            let old_lines: Vec<String> = doc
+                                .value
+                                .get("lines")
+                                .and_then(|v| v.as_array())
+                                .map(|a| {
+                                    a.iter()
+                                        .filter_map(|l| l.as_str().map(str::to_owned))
+                                        .collect()
+                                })
+                                .unwrap_or_default();
+                            let (added, removed) = diff_lines(&old_lines, &text_lines);
+                            // 行集合没变只是顺序/空白抖动：静默跟随基线，不打扰。
+                            let meaningful = !added.is_empty() || !removed.is_empty();
                             let last_notified =
                                 doc.value["notified_at"].as_i64().unwrap_or(0);
-                            let notify = should_notify(last_notified, now);
+                            let notify = meaningful && should_notify(last_notified, now);
                             // 无论是否通知都更新基线：噪声页静默跟随，真变更冷却后能再报。
                             self.store.put_document(
                                 "pagewatch_page",
@@ -106,12 +121,20 @@ impl PagewatchTracker {
                                 &serde_json::json!({
                                     "name": page.name,
                                     "fingerprint": fingerprint,
+                                    "lines": text_lines,
                                     "last_changed_at": now,
                                     "notified_at": if notify { now } else { last_notified },
                                 }),
                             )?;
-                            if notify {
-                                changed.push(page.name.clone());
+                            if !meaningful {
+                                // 顺序抖动，不计入任何列表
+                            } else if notify {
+                                changed.push((
+                                    page.name.clone(),
+                                    page.url.clone(),
+                                    added,
+                                    removed,
+                                ));
                             } else {
                                 suppressed.push(page.name.clone());
                             }
@@ -125,47 +148,41 @@ impl PagewatchTracker {
         if !changed.is_empty()
             && let Some(notifier) = &self.notifier
         {
-            let lines: Vec<String> = self
-                .config
-                .pages
-                .iter()
-                .filter(|page| changed.contains(&page.name))
-                .map(|page| format!("· {}：{}", page.name, page.url))
-                .collect();
-            notifier
-                .send(
-                    &self.notify_target,
-                    None,
-                    &format!(
-                        "📡 监控页面有更新：\n{}\n内容发生变化，可能是新赛事/新公告上线，建议去看看。",
-                        lines.join("\n")
-                    ),
-                )
-                .await?;
+            let mut msg = String::from("📡 监控页面有更新：\n");
+            for (name, url, added, removed) in &changed {
+                msg.push_str(&format!("\n**{name}**\n"));
+                for line in added.iter().take(6) {
+                    msg.push_str(&format!("+ {}\n", crate::util::truncate_chars(line, 90)));
+                }
+                for line in removed.iter().take(2) {
+                    msg.push_str(&format!("- {}\n", crate::util::truncate_chars(line, 90)));
+                }
+                msg.push_str(&format!("🔗 {url}\n"));
+            }
+            notifier.send(&self.notify_target, None, &msg).await?;
             notified = true;
         }
         Ok(PagewatchReport {
             pages: self.config.pages.len(),
-            changed,
+            changed: changed.iter().map(|(name, _, _, _)| name.clone()).collect(),
             suppressed,
             errors,
             notified,
         })
     }
 
-    /// 页面内容指纹：剔除动态噪声后取稳定散列。
-    /// 只比"内容是否变了"，不做语义 diff（语义判断交给人和 agent）。
+    /// 页面内容：指纹 + 可见文本行（供变更时算行级 diff 贴进通知）。
     /// 网络/代理抖动失败时隔 3 秒重试一次，仍失败才记 error。
-    async fn fetch_fingerprint(&self, url: &str) -> Result<String> {
+    async fn fetch_content(&self, url: &str) -> Result<(String, Vec<String>)> {
         match self.fetch_body(url).await {
-            Ok(body) => Ok(content_fingerprint(&body)),
+            Ok(body) => Ok(extract_text(&body)),
             Err(first) => {
                 tokio::time::sleep(std::time::Duration::from_secs(3)).await;
                 let body = self
                     .fetch_body(url)
                     .await
                     .with_context(|| format!("{first:#}; retry failed"))?;
-                Ok(content_fingerprint(&body))
+                Ok(extract_text(&body))
             }
         }
     }
@@ -184,8 +201,25 @@ impl PagewatchTracker {
     }
 }
 
-/// 内容指纹：剔除 script/style/注释后，再去掉所有标签只留可见文本取散列。
-/// 只比"内容是否变了"，不做语义 diff（语义判断交给人和 agent）。
+/// 行级 diff：保序集合差——新增/消失的行各是什么。顺序抖动不产生输出。
+fn diff_lines(old: &[String], new: &[String]) -> (Vec<String>, Vec<String>) {
+    let old_set: std::collections::HashSet<&str> = old.iter().map(|s| s.as_str()).collect();
+    let new_set: std::collections::HashSet<&str> = new.iter().map(|s| s.as_str()).collect();
+    let added = new
+        .iter()
+        .filter(|l| !old_set.contains(l.as_str()))
+        .cloned()
+        .collect();
+    let removed = old
+        .iter()
+        .filter(|l| !new_set.contains(l.as_str()))
+        .cloned()
+        .collect();
+    (added, removed)
+}
+
+/// 提取可见文本：(内容指纹, 行列表)。剔除 script/style/注释 → 块级标签转换行 →
+/// 去全部标签 → 行内空白归一。指纹只用于"变没变"的快速比对，diff 才是给人看的。
 ///
 /// 为什么标签也要去：Cloudflare 邮箱混淆（data-cfemail、
 /// /cdn-cgi/l/email-protection#随机串）和构建期随机 class/id 都藏在标签属性里，
@@ -193,7 +227,7 @@ impl PagewatchTracker {
 /// （2026-10-27 Mitacs 页面每 30 分钟误报一次的根因）。
 /// 注意：纯 SPA 页面（正文只有"加载中"）剔除脚本后指纹恒定，
 /// 永远报不出变化——这类页面应改用其数据 API 配 RSS 伪 feed 监控。
-fn content_fingerprint(html: &str) -> String {
+fn extract_text(html: &str) -> (String, Vec<String>) {
     use regex::Regex;
     use std::sync::OnceLock;
     fn noise() -> &'static Regex {
@@ -203,17 +237,35 @@ fn content_fingerprint(html: &str) -> String {
                 .expect("noise regex")
         })
     }
+    fn block_tags() -> &'static Regex {
+        static RE: OnceLock<Regex> = OnceLock::new();
+        RE.get_or_init(|| {
+            Regex::new(r"(?i)</(?:p|div|li|tr|td|h[1-6]|section|article|header|footer|ul|ol|table)>|<br[^>]*>")
+                .expect("block tag regex")
+        })
+    }
     fn tags() -> &'static Regex {
         static RE: OnceLock<Regex> = OnceLock::new();
         RE.get_or_init(|| Regex::new(r"(?s)<[^>]+>").expect("tag regex"))
     }
     let stripped = noise().replace_all(html, " ");
-    let text = tags().replace_all(&stripped, " ");
-    let normalized: String = text.split_whitespace().collect();
+    let broken = block_tags().replace_all(&stripped, "\n");
+    let text = tags().replace_all(&broken, " ");
+    let lines: Vec<String> = text
+        .lines()
+        .map(|l| l.split_whitespace().collect::<Vec<_>>().join(" "))
+        .filter(|l| !l.is_empty())
+        .map(|l| crate::util::truncate_chars(&l, 200))
+        .take(3000)
+        .collect();
     use std::hash::{Hash, Hasher};
     let mut hasher = std::collections::hash_map::DefaultHasher::new();
-    normalized.hash(&mut hasher);
-    format!("{:016x}", hasher.finish())
+    lines.join(" ").hash(&mut hasher);
+    (format!("{:016x}", hasher.finish()), lines)
+}
+
+fn content_fingerprint(html: &str) -> String {
+    extract_text(html).0
 }
 
 impl crate::ingress::schedule::PollJob for PagewatchTracker {
@@ -263,6 +315,28 @@ mod tests {
         assert!(!should_notify(now - 3600, now));
         // 7 小时前报过 → 过冷却期，再报
         assert!(should_notify(now - 7 * 3600, now));
+    }
+
+    #[test]
+    fn extract_text_breaks_block_tags_into_lines() {
+        let html = r#"<html><body><h1>比赛列表</h1><p>第一场 <b>黑客松</b></p><p>第二场</p></body></html>"#;
+        let (fp, lines) = extract_text(html);
+        assert!(!fp.is_empty());
+        assert_eq!(lines, vec!["比赛列表", "第一场 黑客松", "第二场"]);
+    }
+
+    #[test]
+    fn diff_lines_reports_added_and_removed_ignoring_reorder() {
+        let old = vec!["a".to_owned(), "b".to_owned(), "c".to_owned()];
+        // 纯换序 → 无增删（顺序抖动不打扰）
+        let reordered = vec!["c".to_owned(), "a".to_owned(), "b".to_owned()];
+        let (added, removed) = diff_lines(&old, &reordered);
+        assert!(added.is_empty() && removed.is_empty());
+        // 有新增有消失
+        let new = vec!["a".to_owned(), "d".to_owned()];
+        let (added, removed) = diff_lines(&old, &new);
+        assert_eq!(added, vec!["d".to_owned()]);
+        assert_eq!(removed, vec!["b".to_owned(), "c".to_owned()]);
     }
 
     #[test]
