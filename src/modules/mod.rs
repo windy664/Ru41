@@ -94,7 +94,8 @@ pub struct ModuleDef {
 pub type ScheduleFn = fn(&Config) -> Vec<JobSchedule>;
 pub type TrackerFn = fn(&Config, Arc<dyn TaskStore>, &str) -> Result<Option<Box<dyn PollJob>>>;
 pub type QqHandlersFn = fn(&Config, &str) -> Result<Vec<Arc<dyn CommandHandler>>>;
-pub type ImageConsumersFn = fn(&Config) -> Result<Vec<Arc<dyn crate::ports::commands::ImageConsumer>>>;
+pub type ImageConsumersFn =
+    fn(&Config) -> Result<Vec<Arc<dyn crate::ports::commands::ImageConsumer>>>;
 /// 专属 CLI 输出（异步 fn 指针；实现内如需 reactor 请过 plugins::bridge）。
 pub type CliFn = fn(
     &Config,
@@ -114,9 +115,8 @@ pub fn no_image_consumers(
 pub fn no_cli(
     _: &Config,
     _: &[String],
-) -> std::pin::Pin<
-    Box<dyn std::future::Future<Output = Result<Option<serde_json::Value>>> + Send>,
-> {
+) -> std::pin::Pin<Box<dyn std::future::Future<Output = Result<Option<serde_json::Value>>> + Send>>
+{
     Box::pin(async { Ok(None) })
 }
 

@@ -49,6 +49,7 @@ pub fn format_reminder(items: &[TodoItem], now: i64, options: TodoOptions) -> St
 }
 
 /// 私人常驻待办用例；与一次性 Agent Task 不同，Todo 关注长期承诺、截止和逾期。
+#[derive(Clone)]
 pub struct TodoService {
     store: std::sync::Arc<dyn TaskStore>,
     options: TodoOptions,

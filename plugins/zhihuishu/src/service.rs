@@ -62,6 +62,7 @@ pub struct ZhihuishuPollReport {
 /// - 登录态失效 → 每日最多提醒一次（提醒人工重新登录 sidecar）。
 ///
 /// 红线：考试式任务（限时/监考）只提醒人工，不进入任何自动作答流程。
+#[derive(Clone)]
 pub struct ZhihuishuTracker {
     todos: TodoService,
     vault: Option<Arc<dyn Vault>>,
@@ -677,7 +678,8 @@ impl ru41::ingress::schedule::PollJob for ZhihuishuTracker {
     ) -> std::pin::Pin<
         Box<dyn std::future::Future<Output = anyhow::Result<serde_json::Value>> + Send + '_>,
     > {
-        Box::pin(async move { Ok(serde_json::to_value(self.poll_once().await?)?) })
+        let owned = self.clone();
+        ru41::plugins::bridge(async move { Ok(serde_json::to_value(owned.poll_once().await?)?) })
     }
 }
 

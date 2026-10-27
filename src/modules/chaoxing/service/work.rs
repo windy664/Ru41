@@ -2,10 +2,10 @@
 //! 与智慧树作业模块同构，共享同一 Vault 学期目录并聚合作业总表。
 //! 红线：作业只做提醒/跟踪/归档，不做自动作答（自动答题=代写）。
 
+use crate::app::homework_work::{self as work_common, WorkNoteItem};
 use crate::app::todo::TodoService;
 use crate::modules::chaoxing::config::ChaoxingConfig;
 use crate::modules::chaoxing::source::{ChaoxingClient, ChaoxingWork};
-use crate::app::homework_work::{self as work_common, WorkNoteItem};
 use crate::ports::{channel::NotifyChannel, storage::TaskStore, vault::Vault};
 use anyhow::Result;
 use serde::Serialize;

@@ -66,7 +66,6 @@ fn home_config_used_when_cwd_has_none() {
     assert_eq!(config.channel.qq.bind_secret.as_deref(), Some("s3cret"));
 }
 
-
 #[test]
 fn parses_notify_section() {
     let cwd = tempfile::tempdir().unwrap();
@@ -82,8 +81,6 @@ fn parses_notify_section() {
         Some("user:U1")
     );
 }
-
-
 
 #[test]
 fn explicit_path_wins_and_missing_explicit_path_fails() {

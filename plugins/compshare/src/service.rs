@@ -69,6 +69,7 @@ pub struct CompshareReport {
 
 /// 库存监控：调用创建页容量接口 → 严格按 ResourceEnough 判定 →
 /// 首轮有货或无货→有货时经注入通知渠道提醒；持续状态不重复打扰。
+#[derive(Clone)]
 pub struct CompshareTracker {
     store: Arc<dyn TaskStore>,
     client: CompshareClient,
@@ -218,6 +219,7 @@ impl ru41::ingress::schedule::PollJob for CompshareTracker {
     ) -> std::pin::Pin<
         Box<dyn std::future::Future<Output = anyhow::Result<serde_json::Value>> + Send + '_>,
     > {
-        Box::pin(async move { Ok(serde_json::to_value(self.poll_once().await?)?) })
+        let owned = self.clone();
+        ru41::plugins::bridge(async move { Ok(serde_json::to_value(owned.poll_once().await?)?) })
     }
 }

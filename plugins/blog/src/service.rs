@@ -84,6 +84,7 @@ struct RejectedPost {
 
 /// 博客发布追踪器：监听 Vault 已发布目录的新增 markdown，校验后写入博客仓库并推送。
 /// 发布入口就是「把定稿从 Drafts-草稿 移入 Published-已发布 并推送」，没有中间队列。
+#[derive(Clone)]
 pub struct BlogPublishTracker {
     store: Arc<dyn TaskStore>,
     vault: Arc<dyn Vault>,
@@ -462,7 +463,8 @@ impl ru41::ingress::schedule::PollJob for BlogPublishTracker {
         &self,
     ) -> std::pin::Pin<Box<dyn std::future::Future<Output = Result<serde_json::Value>> + Send + '_>>
     {
-        Box::pin(async move { Ok(serde_json::to_value(self.poll_once().await?)?) })
+        let owned = self.clone();
+        ru41::plugins::bridge(async move { Ok(serde_json::to_value(owned.poll_once().await?)?) })
     }
 }
 
