@@ -55,8 +55,9 @@ impl GsocClient {
         }
     }
 
-    /// 探测明年→今年，取第一个存在且 is_active 的 program，映射成 FeedItem。
-    pub async fn fetch_program(&self, _url: &str) -> Result<Vec<FeedItem>> {
+    /// 探测明年→今年，取第一个存在且 is_active 的 program（结构化数据，
+    /// 供科研机会总览等需要完整时间线的消费方使用）。
+    pub async fn fetch_active_program(&self) -> Result<Option<GsocProgram>> {
         let now = crate::util::now();
         let this_year: i32 = crate::util::today_utc(now)[..4]
             .parse()
@@ -69,10 +70,19 @@ impl GsocClient {
             };
             let program = parse_program(&body).context("gsoc json parse failed")?;
             if program.is_active {
-                return Ok(program_items(&program, now));
+                return Ok(Some(program));
             }
         }
-        Ok(vec![])
+        Ok(None)
+    }
+
+    /// 探测明年→今年，取第一个存在且 is_active 的 program，映射成 FeedItem。
+    pub async fn fetch_program(&self, _url: &str) -> Result<Vec<FeedItem>> {
+        let now = crate::util::now();
+        Ok(match self.fetch_active_program().await? {
+            Some(program) => program_items(&program, now),
+            None => vec![],
+        })
     }
 }
 
@@ -131,7 +141,7 @@ fn label_slug(label: &str) -> String {
 }
 
 /// UTC 时间戳转 +08:00 的 YYYY-MM-DD HH:mm。
-fn format_cn(ts: i64) -> String {
+pub(crate) fn format_cn(ts: i64) -> String {
     chrono::DateTime::from_timestamp(ts, 0)
         .map(|d| {
             d.with_timezone(&chrono::FixedOffset::east_opt(8 * 3600).expect("utc+8"))
