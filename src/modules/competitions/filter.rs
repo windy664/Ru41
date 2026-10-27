@@ -99,13 +99,21 @@ fn row_score(row: &CompetitionRow) -> u8 {
     !row.prize.is_empty() as u8 + row.deadline.is_some() as u8 + (row.source == "HackerTrip") as u8
 }
 
+/// 全量入口前的 prize 闸门：常规要求现金/奖品/权益；CTFtime 的权重豁免行
+/// （"权重 N（奖金未公布）"）由 collect_ctftime 判定后放行。
+fn prize_gate(row: &CompetitionRow) -> bool {
+    if row.prize.is_empty() {
+        return false;
+    }
+    has_prize(&row.prize) || (row.source == "CTFtime" && row.prize.contains("权重"))
+}
+
 /// 全量入口：逐条应用口径 → 未来过滤 → 去重 → 大湾区优先 + 截止日升序。
 pub fn build_rows(input: Vec<CompetitionRow>, today: NaiveDate) -> Vec<CompetitionRow> {
     let mut rows: Vec<CompetitionRow> = input
         .into_iter()
         .filter(|r| {
-            !r.prize.is_empty()
-                && has_prize(&r.prize)
+            prize_gate(r)
                 && !is_k12(&r.name, "")
                 && is_future(r, today)
         })
@@ -351,6 +359,59 @@ pub fn collect_datafountain(
     keep(row, Geo::Online, is_k12(&item.title, ""))
 }
 
+/// CTFtime（全球 CTF 日历，国内 S/A 级安全赛赛季在此登记）：
+/// 无报名截止字段，用开赛日做行动节点；奖金常 TBD，weight ≥ 20 的大赛
+/// 即使奖金未公布也保留（prize 列写"权重 N（奖金未公布）"，靠
+/// build_rows 的 ctftime 豁免过 prize 闸门）。
+pub fn collect_ctftime(ev: &crate::adapters::sources::competition::ctftime::CtftimeEvent) -> Option<CompetitionRow> {
+    if is_k12(&ev.title, "") {
+        return None;
+    }
+    let prize: String = if has_prize(&ev.prizes) {
+        ev.prizes.chars().take(40).collect()
+    } else if ev.weight >= 20.0 {
+        format!("权重 {:.0}（奖金未公布）", ev.weight)
+    } else {
+        return None;
+    };
+    let row = CompetitionRow {
+        deadline: None,
+        name: ev.title.clone(),
+        place: if ev.onsite {
+            ev.location.clone()
+        } else {
+            "线上".to_owned()
+        },
+        prize,
+        start: NaiveDate::parse_from_str(&ev.start, "%Y-%m-%dT%H:%M:%S%:z").ok(),
+        link: if ev.url.is_empty() {
+            ev.ctftime_url.clone()
+        } else {
+            ev.url.clone()
+        },
+        source: "CTFtime",
+        themes: if ev.format.is_empty() {
+            vec![]
+        } else {
+            vec![format!("CTF·{}", ev.format)]
+        },
+        gba: false,
+    };
+    let geo = geo_class(&row.place, !ev.onsite);
+    keep_notable(row, geo)
+}
+
+/// keep 的变体：prize 已在 collect 侧判定完（含 ctftime 权重豁免），这里只做 geo。
+fn keep_notable(row: CompetitionRow, geo: Geo) -> Option<CompetitionRow> {
+    if geo == Geo::Drop {
+        return None;
+    }
+    Some(CompetitionRow {
+        gba: geo == Geo::Gba,
+        ..row
+    })
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -449,6 +510,42 @@ mod tests {
             ..xf.clone()
         };
         assert!(collect_xfyun(&no_prize).is_none());
+    }
+
+    #[test]
+    fn ctftime_collector_weight_exemption_and_drop_rules() {
+        use crate::adapters::sources::competition::ctftime::CtftimeEvent;
+        let ev = |title: &str, prizes: &str, weight: f64, onsite: bool, loc: &str| CtftimeEvent {
+            id: 1,
+            title: title.into(),
+            url: String::new(),
+            ctftime_url: "https://ctftime.org/event/1/".into(),
+            onsite,
+            location: loc.into(),
+            format: "Jeopardy".into(),
+            prizes: prizes.into(),
+            start: "2026-11-06T09:00:00+00:00".into(),
+            finish: "2026-11-08T09:00:00+00:00".into(),
+            weight,
+        };
+        // 有奖金：直接留
+        let r = collect_ctftime(&ev("SomeCTF", "$10,000", 5.0, false, "")).unwrap();
+        assert_eq!(r.prize, "$10,000");
+        assert_eq!(r.start, NaiveDate::from_ymd_opt(2026, 11, 6));
+        assert!(r.deadline.is_none());
+        // 奖金 TBD 但权重高：留，prize 写权重
+        let r = collect_ctftime(&ev("XCTF Finals", "TBD", 50.0, false, "")).unwrap();
+        assert!(r.prize.contains("权重 50"));
+        // 奖金 TBD 且权重低：丢
+        assert!(collect_ctftime(&ev("SmallCTF", "TBD", 5.0, false, "")).is_none());
+        // 线下非大湾区：丢；线下大湾区：留且标 gba
+        assert!(collect_ctftime(&ev("OnsiteCTF", "$1,000", 0.0, true, "北京")).is_none());
+        let r = collect_ctftime(&ev("GBA CTF", "$1,000", 0.0, true, "深圳")).unwrap();
+        assert!(r.gba);
+        // 权重豁免行能过 build_rows 的 prize 闸门
+        let today = NaiveDate::from_ymd_opt(2026, 10, 26).unwrap();
+        let out = build_rows(vec![collect_ctftime(&ev("XCTF Finals", "TBD", 50.0, false, "")).unwrap()], today);
+        assert_eq!(out.len(), 1);
     }
 
     #[test]

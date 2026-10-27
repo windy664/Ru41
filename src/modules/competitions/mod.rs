@@ -152,6 +152,13 @@ impl CompetitionsService {
             Err(error) => eprintln!("[competitions] datafountain fetch failed: {error:#}"),
         }
 
+        // CTFtime：全球 CTF 日历（国内 S/A 级安全赛赛季在此登记），未来 120 天窗口。
+        let ctf = crate::adapters::sources::competition::ctftime::CtftimeClient::new();
+        match ctf.fetch_events(120).await {
+            Ok(events) => all.extend(events.iter().filter_map(filter::collect_ctftime)),
+            Err(error) => eprintln!("[competitions] ctftime fetch failed: {error:#}"),
+        }
+
         let today = chrono::Local::now().date_naive();
         build_rows(all, today)
     }
