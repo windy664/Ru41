@@ -212,6 +212,14 @@ impl QqApiClient {
                 .context("cannot send QQ message")?;
             let status = response.status();
             let body: serde_json::Value = response.json().await.unwrap_or_default();
+            // 尝试级日志：定位「服务端只发一次、用户收两条」类双发问题——
+            // 若 markdown 尝试返回了错误状态码但平台实际已送达，降级重试会再发一条。
+            eprintln!(
+                "[qq.send] {} markdown={markdown} keyboard={} status={status} err={}",
+                url.rsplit('/').nth(2).unwrap_or(url),
+                keyboard.is_some(),
+                body.get("code").and_then(|c| c.as_i64()).unwrap_or(0),
+            );
             if status.is_success() {
                 return Ok(body);
             }
