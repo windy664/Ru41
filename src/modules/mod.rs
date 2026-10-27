@@ -1,6 +1,5 @@
 pub mod blog;
 pub mod chaoxing;
-pub mod competitions;
 pub mod compshare;
 pub mod ecard;
 pub mod homework;

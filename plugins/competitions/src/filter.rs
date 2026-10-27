@@ -2,10 +2,10 @@
 //! 必须有奖（现金/奖品/权益，纯证书不要）× 地理只留大湾区线下/国内线上/国外线上；
 //! 剔除中小学生赛与已截止；同名跨源去重（保留信息更全的）。
 
-use crate::adapters::sources::competition::devpost::{DevpostHackathon, parse_submission_end};
-use crate::adapters::sources::competition::hack123::Hack123Event;
-use crate::adapters::sources::competition::hackertrip::HackertripEvent;
-use crate::adapters::sources::competition::wqai::WqaiRace;
+use ru41::adapters::sources::competition::devpost::{DevpostHackathon, parse_submission_end};
+use ru41::adapters::sources::competition::hack123::Hack123Event;
+use ru41::adapters::sources::competition::hackertrip::HackertripEvent;
+use ru41::adapters::sources::competition::wqai::WqaiRace;
 use chrono::{Datelike, NaiveDate};
 
 /// 总览表格的一行。
@@ -160,13 +160,13 @@ impl From<&HackertripEvent> for CompetitionRow {
         };
         let mut themes = vec![];
         if !ev.theme.is_empty() {
-            themes.push(crate::util::truncate_chars(&ev.theme, 30));
+            themes.push(ru41::util::truncate_chars(&ev.theme, 30));
         }
         themes.extend(
             ev.tracks
                 .iter()
                 .take(4)
-                .map(|t| crate::util::truncate_chars(t, 20)),
+                .map(|t| ru41::util::truncate_chars(t, 20)),
         );
         CompetitionRow {
             deadline: NaiveDate::parse_from_str(&ev.registration_deadline, "%Y-%m-%d").ok(),
@@ -315,7 +315,7 @@ fn summary_field<'a>(summary: &'a str, key: &str) -> Option<&'a str> {
 
 /// 讯飞 AI 开发者大赛（国内，线上为主）：summary 含 "奖金 ￥X · 报名截止 YYYY-MM-DD"，
 /// published 即报名截止日；无独立详情页，link 是列表页。
-pub fn collect_xfyun(item: &crate::adapters::sources::feed::FeedItem) -> Option<CompetitionRow> {
+pub fn collect_xfyun(item: &ru41::adapters::sources::feed::FeedItem) -> Option<CompetitionRow> {
     let prize = summary_field(&item.summary, "奖金").unwrap_or("");
     let category = summary_field(&item.summary, "#").map(String::from);
     let row = CompetitionRow {
@@ -335,7 +335,7 @@ pub fn collect_xfyun(item: &crate::adapters::sources::feed::FeedItem) -> Option<
 /// DataFountain（国内 CCF 系数据赛，线上）：summary 含
 /// "赛期 YYYY.MM.DD - YYYY.MM.DD · 奖金 ￥X"，截止取赛期结束日。
 pub fn collect_datafountain(
-    item: &crate::adapters::sources::feed::FeedItem,
+    item: &ru41::adapters::sources::feed::FeedItem,
 ) -> Option<CompetitionRow> {
     let prize = summary_field(&item.summary, "奖金").unwrap_or("");
     let deadline = summary_field(&item.summary, "赛期")
@@ -368,7 +368,7 @@ fn one_line(text: &str) -> String {
 }
 
 pub fn collect_ctftime(
-    ev: &crate::adapters::sources::competition::ctftime::CtftimeEvent,
+    ev: &ru41::adapters::sources::competition::ctftime::CtftimeEvent,
 ) -> Option<CompetitionRow> {
     if is_k12(&ev.title, "") {
         return None;
@@ -488,7 +488,7 @@ mod tests {
 
     #[test]
     fn xfyun_and_datafountain_collectors_parse_summary_fields() {
-        let xf = crate::adapters::sources::feed::FeedItem {
+        let xf = ru41::adapters::sources::feed::FeedItem {
             id: "xfyun-1".into(),
             title: "Spark-X2.5端侧模型创新挑战赛".into(),
             link: "https://challenge.xfyun.cn/competition".into(),
@@ -500,7 +500,7 @@ mod tests {
         assert_eq!(row.prize, "￥100000");
         assert_eq!(row.themes, vec!["大模型技术".to_string()]);
 
-        let df = crate::adapters::sources::feed::FeedItem {
+        let df = ru41::adapters::sources::feed::FeedItem {
             id: "df-1169".into(),
             title: "AI新睿人才星探计划".into(),
             link: "https://www.datafountain.cn/competitions/1169".into(),
@@ -512,7 +512,7 @@ mod tests {
         assert_eq!(row.prize, "￥90,000");
 
         // 无奖金字段的条目被口径丢弃
-        let no_prize = crate::adapters::sources::feed::FeedItem {
+        let no_prize = ru41::adapters::sources::feed::FeedItem {
             summary: "举办方 某单位 · 报名截止 2026-11-10".into(),
             ..xf.clone()
         };
@@ -521,7 +521,7 @@ mod tests {
 
     #[test]
     fn ctftime_collector_weight_exemption_and_drop_rules() {
-        use crate::adapters::sources::competition::ctftime::CtftimeEvent;
+        use ru41::adapters::sources::competition::ctftime::CtftimeEvent;
         let ev = |title: &str, prizes: &str, weight: f64, onsite: bool, loc: &str| CtftimeEvent {
             id: 1,
             title: title.into(),

@@ -1,6 +1,6 @@
 //! 日程总览 markdown 渲染：大湾区 ⭐ 在前、按报名截止升序；纯函数便于测试。
 
-use super::filter::CompetitionRow;
+use crate::filter::CompetitionRow;
 use chrono::NaiveDate;
 
 pub fn render(rows: &[CompetitionRow], today: NaiveDate) -> String {
