@@ -38,6 +38,7 @@ fi
 docker run --name "$BUILDER" \
   -v "$BUILD_DIR":/build \
   -v "$HOME/.cargo/registry:/usr/local/cargo/registry" \
+  -v "$HOME/.cache/ort.pyke.io:/root/.cache/ort.pyke.io" \
   -e RU41_GIT_HASH_OVERRIDE="$COMMIT" \
   -e CARGO_TARGET_DIR=/build/target \
   -w /build rust:1.98-trixie \
@@ -51,6 +52,7 @@ docker run --name "$BUILDER" \
     docker run --rm \
       -v "$BUILD_DIR":/build \
       -v "$HOME/.cargo/registry:/usr/local/cargo/registry" \
+  -v "$HOME/.cache/ort.pyke.io:/root/.cache/ort.pyke.io" \
       -e CARGO_TARGET_DIR="/build/plugins/$name/target-docker" \
       -e RU41_GIT_HASH_OVERRIDE="$COMMIT" \
       -w "/build/plugins/$name" rust:1.98-trixie \
