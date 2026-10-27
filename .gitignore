@@ -11,4 +11,4 @@
 *.sqlite-wal
 /config/local.toml
 /ru41.toml
-templates/*/target/
+templates/*/target*/
