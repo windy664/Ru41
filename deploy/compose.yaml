@@ -188,6 +188,17 @@ services:
       - ${RU41_VAULT_PATH:?set RU41_VAULT_PATH to the vault clone dir}:/vault
     command: ["--config", "/etc/ru41/ru41.toml", "--db", "/data/state.db", "programs", "run"]
 
+  # 科研机会总览：Mitacs/港校暑研/中科院科创等窗口倒计时 → vault 科研总览.md。
+  # 纯本地渲染（无网络依赖），[ru41] 自提交，需挂载 Vault。
+  research:
+    <<: *ru41-common
+    profiles: [research]
+    volumes:
+      - ../ru41.toml:/etc/ru41/ru41.toml:ro
+      - ../.ru41:/data
+      - ${RU41_VAULT_PATH:?set RU41_VAULT_PATH to the vault clone dir}:/vault
+    command: ["--config", "/etc/ru41/ru41.toml", "--db", "/data/state.db", "research", "run"]
+
   # BOSS 直聘爬取 sidecar：独立 Python 镜像（DrissionPage + chromium），
   # 结果写 /data/boss_jobs.json 供 jobs 模块读取（[sources.jobs] boss_path）。
   # restart: no —— 由宿主机 cron/systemd timer 触发（每天 9 点 / 21 点）：
