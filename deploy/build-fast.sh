@@ -46,6 +46,7 @@ docker run --name "$BUILDER" \
 # 插件与宿主同 commit 净室编译（git hash 握手要求）；输出到
   # plugins/*/target-docker，Dockerfile.patch 打进 /etc/ru41/plugins。
   for dir in "$BUILD_DIR"/plugins/*/; do
+    [ -f "$dir/Cargo.toml" ] || continue
     name="$(basename "$dir")"
     docker run --rm \
       -v "$BUILD_DIR":/build \
