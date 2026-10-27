@@ -65,6 +65,11 @@ docker run --name "$BUILDER" \
   find "$BUILD_DIR/plugins" -name 'libru41_plugin_*.so' -path '*/release/*' \
     -exec cp {} "$BUILD_DIR/.plugins-dist/" \;
   ls "$BUILD_DIR/.plugins-dist" | wc -l
+  # 验收：每个 .so 必须导出入口符号（feature 漏开/陈旧产物立即暴露）。
+  for so in "$BUILD_DIR"/.plugins-dist/libru41_plugin_*.so; do
+    nm -D --defined-only "$so" | grep -q ru41_plugin_entry \
+      || { echo "[build-fast] FATAL: $so 缺少 ru41_plugin_entry"; exit 1; }
+  done
 
 docker build -f "$BUILD_DIR/deploy/Dockerfile.patch" -t ru41:local "$BUILD_DIR"
 
