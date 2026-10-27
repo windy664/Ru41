@@ -409,6 +409,9 @@ mod review_loop {
 \n\
 🧩 重点句式（1-2 个）：\n\
 - **\"Verb + sb + into + doing\"** 说服某人做某事 → 你可以说：\"He talked me into trying Rust.\"；\"gaslit himself into thinking\" [2:03]\n\n\
+🎤 口语任务：用 try + V-ing 说一句你自己的真实情况。\n\
+🗣 雅思口语迁移（45-60 秒连续表达）：AI 会取代专业工作吗？观点→原因→例子→结论。\n\
+✍️ 雅思写作迁移（1-2 句）：把「AI 让律师更高效地审查协议」译成英文（用 allow sb to do）\n\
 👂 精听挑战（每处①盲听写词②对照找漏听③跟读）：\n\
 - [2:02] \"I'm going to walk through that with you.\" → going to 快读缩成 /ɡənə/（现象：缩读）\n\
 - [3:12] \"better at improving\" → better 的 /t/ 变轻拍音（现象：闪音）\n\
@@ -714,12 +717,58 @@ mod review_loop {
         let report = ru41::ingress::schedule::PollJob::poll_json(&job)
             .await
             .unwrap();
-        assert_eq!(report["digest_pushed"], 1, "日报打包：预习单 + 发音专题");
+        assert_eq!(report["digest_pushed"], 1, "日报打包：预习单");
         {
             let sent = fake.0.lock().unwrap();
             assert_eq!(sent.len(), 1, "一天只有一条日报");
             assert!(sent[0].contains("📚 英语日报"), "{}", sent[0]);
-            assert!(sent[0].contains("发音专题"), "推送缺专题头：{}", sent[0]);
+            assert!(
+                !sent[0].contains("发音专题"),
+                "专题不得带当天精听刚覆盖的实例：{}",
+                sent[0]
+            );
+            assert!(
+                [
+                    "连读", "弱读", "闪音", "失爆", "同化", "缩读", "重音", "其他"
+                ]
+                .iter()
+                .any(|c| sent[0].contains(c)),
+                "专题应带现象类别：{}",
+                sent[0]
+            );
+            assert!(
+                ["[2:02]", "[3:12]", "[3:40]"]
+                    .iter()
+                    .any(|ts| sent[0].contains(ts)),
+                "例句应带时间戳：{}",
+                sent[0]
+            );
+        }
+        // 第二天：单子上限 2/天，vids 滞留进当日日报 → 其锚点仍被当日排除；
+        // 前两天的锚点隔夜可用但只有 2 条，未达阈值。
+        let (job2, fake2) = review_job_at(store.clone(), clock_at(1));
+        let report = ru41::ingress::schedule::PollJob::poll_json(&job2)
+            .await
+            .unwrap();
+        assert_eq!(report["digest_pushed"], 1, "滞留单子单独成日报");
+        {
+            let sent = fake2.0.lock().unwrap();
+            assert_eq!(sent.len(), 1);
+            assert!(
+                !sent[0].contains("发音专题"),
+                "第二天只有 2 条隔夜锚点，未达阈值：{}",
+                sent[0]
+            );
+        }
+        // 第三天：三张单子都已推完，无当日排除 → 缩读 3 条凑齐阈值成专题。
+        let (job3, fake3) = review_job_at(store.clone(), clock_at(2));
+        let report = ru41::ingress::schedule::PollJob::poll_json(&job3)
+            .await
+            .unwrap();
+        assert_eq!(report["digest_pushed"], 1, "专题单独成日报也算有内容");
+        {
+            let sent = fake3.0.lock().unwrap();
+            assert!(sent[0].contains("发音专题"), "第三天应推专题：{}", sent[0]);
             assert!(
                 [
                     "连读", "弱读", "闪音", "失爆", "同化", "缩读", "重音", "其他"
@@ -738,11 +787,11 @@ mod review_loop {
             );
         }
         // 锚点已标记 topic_pushed，日报当天已发 → 再跑不重发。
-        let report = ru41::ingress::schedule::PollJob::poll_json(&job)
+        let report = ru41::ingress::schedule::PollJob::poll_json(&job3)
             .await
             .unwrap();
         assert_eq!(report["digest_pushed"], 0);
-        assert_eq!(fake.0.lock().unwrap().len(), 1);
+        assert_eq!(fake3.0.lock().unwrap().len(), 1);
     }
 
     #[tokio::test]

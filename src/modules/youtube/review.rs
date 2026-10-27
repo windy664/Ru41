@@ -216,7 +216,16 @@ impl YoutubeReviewJob {
             && doc.value["date"].as_str() == Some(today)
         {
             // 今天已推过专题，不再附第二期。
-        } else if let Ok(Some((section, docs))) = self.topic_section() {
+        } else if let Ok(Some((section, docs))) = self.topic_section(
+            &sheets
+                .iter()
+                .filter_map(|task| {
+                    task.request_key
+                        .strip_prefix("youtube:prep:")
+                        .map(str::to_owned)
+                })
+                .collect::<Vec<_>>(),
+        ) {
             text.push_str(&section);
             topic_docs = Some(docs);
             has_content = true;
@@ -353,13 +362,23 @@ impl YoutubeReviewJob {
     }
 
     /// 发音专题段：同一现象的新锚点攒够 TOPIC_MIN_ANCHORS 条，取最新几条做例句。
-    fn topic_section(&self) -> Result<Option<(String, Vec<crate::domain::records::Document>)>> {
+    fn topic_section(
+        &self,
+        today_videos: &[String],
+    ) -> Result<Option<(String, Vec<crate::domain::records::Document>)>> {
         let mut by_category: std::collections::HashMap<
             String,
             Vec<crate::domain::records::Document>,
         > = Default::default();
         for doc in self.store.documents(ANCHOR_KIND, 2_000)? {
             if doc.value["topic_pushed"].as_bool() == Some(true) {
+                continue;
+            }
+            // 当天精听刚覆盖的实例不进专题，避免同日重复；老锚点不受影响。
+            if today_videos
+                .iter()
+                .any(|video| doc.id.starts_with(&format!("{video}#")))
+            {
                 continue;
             }
             let category = doc.value["category"].as_str().unwrap_or("其他").to_owned();
@@ -740,7 +759,12 @@ pub fn extract_vocab(summary: &str) -> Vec<VocabItem> {
             section = "carry";
             continue;
         }
-        if line.starts_with("👂") || line.starts_with("❓") || line.starts_with("📺") {
+        if line.starts_with("👂")
+            || line.starts_with("❓")
+            || line.starts_with("📺")
+            || line.starts_with("🗣")
+            || line.starts_with("✍️")
+        {
             section = "";
             continue;
         }
@@ -1066,6 +1090,10 @@ mod tests {
 🧩 重点句式（1-2 个，宁缺毋滥）：\n\
 - **\"Verb + sb + into + doing\"** 说服某人做某事；陷阱：into 后接动名词 → 你可以说：\"He talked me into trying Rust.\"；\"they gaslit himself into thinking\" [2:03]\n\
 \n\
+🎤 口语任务：用 try + V-ing 说一句你自己的真实情况。\n\
+🗣 雅思口语迁移（45-60 秒连续表达）：AI 会取代专业工作吗？观点→原因→例子→结论。\n\
+✍️ 雅思写作迁移（1-2 句）：把「AI 让律师更高效地审查协议」译成英文（用 allow sb to do）\n\
+- **\"decoy phrase\"** 诱饵；\"should not extract\" [9:99]\n\
 👂 精听挑战（每处①盲听写词②对照找漏听③跟读）：\n\
 - [2:02] \"I'm going to walk through that with you.\" → 留意 going to 缩成 gonna。（现象：缩读）\n\n\
 ❓ 听前自测：为什么优先查 silent stalls？\n";
@@ -1099,6 +1127,10 @@ mod tests {
         assert!(
             !items[4].cue.contains("talked me into trying"),
             "句式条目例句泄漏"
+        );
+        assert!(
+            items.iter().all(|item| !item.chunk.contains("decoy")),
+            "🗣/✍️ 段落必须重置解析，迁移任务行不得当词块"
         );
         assert!(
             !items[2].cue.contains("walk through the code"),
