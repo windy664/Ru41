@@ -1,6 +1,7 @@
 //! 作业监控跨平台共享件：学习通/微助教/智慧树三个作业 tracker 原本各自
 //! 抄了一份的渲染与时间解析函数。平台差异用参数吸收（平台名、截止串、
 //! 防重名 id、状态文案、页脚），不引入 trait 抽象。
+//! （整体插件化后，多个作业插件共享此件，必须留在 lib 层。）
 
 use crate::ports::{storage::TaskStore, vault::VaultTaskDirs};
 use anyhow::Result;
@@ -235,7 +236,7 @@ pub fn render_homework_dashboard(
             course.clone(),
             course,
             title,
-            super::homework_status_open(status),
+            homework_status_open(status),
         ));
     }
     // 未完成在前按截止升序（空截止垫底），已完成按截止降序
@@ -279,4 +280,10 @@ pub fn render_homework_dashboard(
         }
     }
     Ok(out)
+}
+
+/// 需要动作的作业状态（微助教口径）：1 未完成 / 2 被打回 / 7 补交中。
+/// 其余（已超时/已提交/评分中/已公布/已批阅）视为收敛。
+pub fn homework_status_open(status: i64) -> bool {
+    matches!(status, 1 | 2 | 7)
 }

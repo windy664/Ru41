@@ -1,4 +1,5 @@
 pub mod digest;
+pub mod homework_work;
 pub mod identity;
 pub mod interactions;
 pub mod knowledge;
