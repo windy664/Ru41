@@ -24,13 +24,23 @@ pub struct PagewatchConfig {
     pub notify: Option<NotifyRoute>,
 }
 
-/// 一轮轮询的结果报告；单页失败不中断其他页面，错误收进 errors。
+/// 一页一轮询的结果报告；单页失败不中断其他页面，错误收进 errors。
 #[derive(Debug, Serialize)]
 pub struct PagewatchReport {
     pub pages: usize,
     pub changed: Vec<String>,
+    /// 检测到变化但因通知冷却被压下的页面（基线已静默更新）。
+    pub suppressed: Vec<String>,
     pub errors: Vec<String>,
     pub notified: bool,
+}
+
+/// 同一页两次通知的最小间隔：防动态噪声页面刷屏，也防真变更时连发。
+const NOTIFY_COOLDOWN_SECS: i64 = 6 * 3600;
+
+/// 冷却判定：距上次通知超过冷却期才再报。
+fn should_notify(last_notified: i64, now: i64) -> bool {
+    now - last_notified > NOTIFY_COOLDOWN_SECS
 }
 
 pub struct PagewatchTracker {
@@ -63,6 +73,7 @@ impl PagewatchTracker {
 
     pub async fn poll_once(&self) -> Result<PagewatchReport> {
         let mut changed = Vec::new();
+        let mut suppressed = Vec::new();
         let mut errors = Vec::new();
         for page in &self.config.pages {
             match self.fetch_fingerprint(&page.url).await {
@@ -83,6 +94,11 @@ impl PagewatchTracker {
                         }
                         Some(doc) if doc.value["fingerprint"].as_str() == Some(&fingerprint) => {}
                         Some(doc) => {
+                            let now = crate::util::now();
+                            let last_notified =
+                                doc.value["notified_at"].as_i64().unwrap_or(0);
+                            let notify = should_notify(last_notified, now);
+                            // 无论是否通知都更新基线：噪声页静默跟随，真变更冷却后能再报。
                             self.store.put_document(
                                 "pagewatch_page",
                                 &page.url,
@@ -90,10 +106,15 @@ impl PagewatchTracker {
                                 &serde_json::json!({
                                     "name": page.name,
                                     "fingerprint": fingerprint,
-                                    "last_changed_at": crate::util::now(),
+                                    "last_changed_at": now,
+                                    "notified_at": if notify { now } else { last_notified },
                                 }),
                             )?;
-                            changed.push(page.name.clone());
+                            if notify {
+                                changed.push(page.name.clone());
+                            } else {
+                                suppressed.push(page.name.clone());
+                            }
                         }
                     }
                 }
@@ -126,6 +147,7 @@ impl PagewatchTracker {
         Ok(PagewatchReport {
             pages: self.config.pages.len(),
             changed,
+            suppressed,
             errors,
             notified,
         })
@@ -133,9 +155,23 @@ impl PagewatchTracker {
 
     /// 页面内容指纹：剔除动态噪声后取稳定散列。
     /// 只比"内容是否变了"，不做语义 diff（语义判断交给人和 agent）。
+    /// 网络/代理抖动失败时隔 3 秒重试一次，仍失败才记 error。
     async fn fetch_fingerprint(&self, url: &str) -> Result<String> {
-        let body = self
-            .http
+        match self.fetch_body(url).await {
+            Ok(body) => Ok(content_fingerprint(&body)),
+            Err(first) => {
+                tokio::time::sleep(std::time::Duration::from_secs(3)).await;
+                let body = self
+                    .fetch_body(url)
+                    .await
+                    .with_context(|| format!("{first:#}; retry failed"))?;
+                Ok(content_fingerprint(&body))
+            }
+        }
+    }
+
+    async fn fetch_body(&self, url: &str) -> Result<String> {
+        self.http
             .get(url)
             .send()
             .await
@@ -144,13 +180,17 @@ impl PagewatchTracker {
             .context("page returned error status")?
             .text()
             .await
-            .context("page body read failed")?;
-        Ok(content_fingerprint(&body))
+            .context("page body read failed")
     }
 }
 
-/// 内容指纹：先剔除 script/style 块与 HTML 注释（里面常藏每请求都变的
-/// token、构建标识、RSC 载荷，如 Next.js 的随机 _rsc 参数），再去空白散列。
+/// 内容指纹：剔除 script/style/注释后，再去掉所有标签只留可见文本取散列。
+/// 只比"内容是否变了"，不做语义 diff（语义判断交给人和 agent）。
+///
+/// 为什么标签也要去：Cloudflare 邮箱混淆（data-cfemail、
+/// /cdn-cgi/l/email-protection#随机串）和构建期随机 class/id 都藏在标签属性里，
+/// 每请求都变但可见内容没变——按标签散列会把这种噪声当成"页面更新"反复误报
+/// （2026-10-27 Mitacs 页面每 30 分钟误报一次的根因）。
 /// 注意：纯 SPA 页面（正文只有"加载中"）剔除脚本后指纹恒定，
 /// 永远报不出变化——这类页面应改用其数据 API 配 RSS 伪 feed 监控。
 fn content_fingerprint(html: &str) -> String {
@@ -163,8 +203,13 @@ fn content_fingerprint(html: &str) -> String {
                 .expect("noise regex")
         })
     }
+    fn tags() -> &'static Regex {
+        static RE: OnceLock<Regex> = OnceLock::new();
+        RE.get_or_init(|| Regex::new(r"(?s)<[^>]+>").expect("tag regex"))
+    }
     let stripped = noise().replace_all(html, " ");
-    let normalized: String = stripped.split_whitespace().collect();
+    let text = tags().replace_all(&stripped, " ");
+    let normalized: String = text.split_whitespace().collect();
     use std::hash::{Hash, Hasher};
     let mut hasher = std::collections::hash_map::DefaultHasher::new();
     normalized.hash(&mut hasher);
@@ -198,6 +243,26 @@ mod tests {
         // 正文真变了必须能检出。
         let page_c = r#"<html><body><h1>赛事一览</h1><p>新赛事上线</p></body></html>"#;
         assert_ne!(content_fingerprint(page_a), content_fingerprint(page_c));
+    }
+
+    #[test]
+    fn fingerprint_ignores_cloudflare_email_obfuscation() {
+        // Cloudflare 邮箱混淆：data-cfemail 与 email-protection# 哈希每请求都变，
+        // 可见文本不变——不得触发"变更"（Mitacs 误报根因）。
+        let page_a = r#"<html><body><p>Contact <a href="/cdn-cgi/l/email-protection#aaaa"><span data-cfemail="1111">[email&#160;protected]</span></a></p></body></html>"#;
+        let page_b = r#"<html><body><p>Contact <a href="/cdn-cgi/l/email-protection#zzzz"><span data-cfemail="9999">[email&#160;protected]</span></a></p></body></html>"#;
+        assert_eq!(content_fingerprint(page_a), content_fingerprint(page_b));
+    }
+
+    #[test]
+    fn cooldown_gates_repeat_notify() {
+        let now = 1_793_000_000;
+        // 从未通知过 → 报
+        assert!(should_notify(0, now));
+        // 1 小时前报过 → 冷却中压下
+        assert!(!should_notify(now - 3600, now));
+        // 7 小时前报过 → 过冷却期，再报
+        assert!(should_notify(now - 7 * 3600, now));
     }
 
     #[test]
