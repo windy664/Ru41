@@ -19,7 +19,9 @@ use std::sync::Arc;
 
 /// 签到 tracker 的具体类型构造：DEF 注册表与 main.rs 的 sign/login 分支共用。
 pub fn build_tracker(config: &Config, store: Arc<dyn TaskStore>) -> Result<ChaoxingTracker> {
-    let chaoxing = &config.sources.chaoxing;
+    let chaoxing = config
+        .sources
+        .get::<crate::modules::chaoxing::ChaoxingSection>("chaoxing")?;
     let (notifier, notify_target) =
         crate::bootstrap::assembly::notify_pair(config, chaoxing.notify)?;
     let resolved = chaoxing.resolved(notify_target)?;
@@ -36,7 +38,9 @@ pub fn build_work_tracker(
     config: &Config,
     store: Arc<dyn TaskStore>,
 ) -> Result<ChaoxingWorkTracker> {
-    let chaoxing = &config.sources.chaoxing;
+    let chaoxing = config
+        .sources
+        .get::<crate::modules::chaoxing::ChaoxingSection>("chaoxing")?;
     let (notifier, notify_target) =
         crate::bootstrap::assembly::notify_pair(config, chaoxing.notify)?;
     let resolved = chaoxing.resolved(notify_target.clone())?;
@@ -56,10 +60,15 @@ pub fn build_work_tracker(
 }
 
 /// 注册表定义：chaoxing 的调度清单、两个 tracker（签到/作业）都在本模块内闭环。
-pub const DEF: super::ModuleDef = super::ModuleDef {
+#[linkme::distributed_slice(super::MODULES)]
+pub static DEF: super::ModuleDef = super::ModuleDef {
     name: "chaoxing",
+    priority: super::DEFAULT_PRIORITY,
+    config_key: Some("chaoxing"),
     schedule: |config| {
-        let chaoxing = &config.sources.chaoxing;
+        let chaoxing = config
+            .sources
+            .get_or_default::<crate::modules::chaoxing::ChaoxingSection>("chaoxing");
         vec![
             super::JobSchedule::simple(
                 "chaoxing",

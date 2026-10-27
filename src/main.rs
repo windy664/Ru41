@@ -47,9 +47,22 @@ async fn main() -> Result<()> {
     if let Some(path) = &config_path {
         eprintln!("[config] using {}", path.display());
     }
-    // 纯 tracker 子命令（papers/rss/projects/ecard/zhihuishu/obsidian/blog）
-    // 分支体完全一致，查表统一分发，不进下面的大 match。
-    if let Some((name, tracker_command)) = cli.command.as_tracker() {
+    // 附属 tracker 通用入口（ru41 <模块名> poll|run）：模块名经注册表校验，
+    // 分支体完全一致，统一分发，不进下面的大 match。
+    if let Command::Tracker(args) = &cli.command {
+        let name = args
+            .first()
+            .context("用法: ru41 <模块名> poll|run（模块名见 schedule list）")?;
+        anyhow::ensure!(
+            ru41::modules::MODULES.iter().any(|def| def.name == name),
+            "未知模块: {name}（可用模块见 schedule list）"
+        );
+        let tracker_command = match args.get(1).map(String::as_str) {
+            Some("poll") => TrackerCommand::Poll,
+            Some("run") => TrackerCommand::Run,
+            Some(other) => anyhow::bail!("用法: ru41 {name} poll|run（不支持 {other}）"),
+            None => anyhow::bail!("用法: ru41 {name} poll|run"),
+        };
         let output =
             tracker_or_exit(tracker_cli(name, tracker_command, &config, &store_config).await?)?;
         println!("{}", serde_json::to_string_pretty(&output)?);
@@ -219,20 +232,7 @@ async fn main() -> Result<()> {
             dispatcher.run_loop(shutdown_channel()?).await?;
             return Ok(());
         }
-        Command::Papers { .. }
-        | Command::Rss { .. }
-        | Command::Projects { .. }
-        | Command::Ecard { .. }
-        | Command::Zhihuishu { .. }
-        | Command::Obsidian { .. }
-        | Command::Blog { .. }
-        | Command::Pagewatch { .. }
-        | Command::Competitions { .. }
-        | Command::Jobs { .. }
-        | Command::Programs { .. }
-        | Command::Research { .. } => {
-            unreachable!("handled by tracker dispatch above")
-        }
+        Command::Tracker(_) => unreachable!("handled by tracker dispatch above"),
         Command::Youtube { command } => match command {
             YoutubeCommand::Prep { url } => {
                 let Some(video_id) = parse_video_id(&url) else {
@@ -240,7 +240,9 @@ async fn main() -> Result<()> {
                         "无法从「{url}」解析视频 ID（支持 watch / youtu.be / shorts 链接或 11 位 ID）"
                     );
                 };
-                let youtube = &config.sources.youtube;
+                let youtube = config
+                    .sources
+                    .get::<ru41::modules::youtube::YoutubeSection>("youtube")?;
                 let message = prep_video_task(
                     &open_store(&store_config)?,
                     &youtube_client(&config),
@@ -322,7 +324,10 @@ async fn main() -> Result<()> {
                 serde_json::to_value(tracker.poll_once().await?)?
             }
             TeachermateCommand::Bind { link } => {
-                let openid_path = config.sources.teachermate.openid_path_or_default();
+                let openid_path = config
+                    .sources
+                    .get::<ru41::modules::teachermate::TeachermateSection>("teachermate")?
+                    .openid_path_or_default();
                 ru41::modules::teachermate::cli::bind_json(&link, &openid_path).await?
             }
             TeachermateCommand::Sign { sign_id, lat, lon } => {
@@ -346,7 +351,9 @@ async fn main() -> Result<()> {
             }
             JwxtCommand::Classes { when } => ru41::modules::jwxt::cli::classes_json(
                 open_store(&store_config)?,
-                &config.sources.jwxt,
+                &config
+                    .sources
+                    .get::<ru41::modules::jwxt::JwxtSection>("jwxt")?,
                 &when,
             )?,
         },

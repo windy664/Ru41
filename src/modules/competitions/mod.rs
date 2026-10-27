@@ -25,15 +25,18 @@ pub struct CompetitionsSection {
 }
 
 /// 注册表定义：依赖 obsidian 的 vault 配置（同一个仓库），未配置则缺席。
-pub const DEF: super::ModuleDef = super::ModuleDef {
+#[linkme::distributed_slice(super::MODULES)]
+pub static DEF: super::ModuleDef = super::ModuleDef {
     name: "competitions",
+    priority: super::DEFAULT_PRIORITY,
+    config_key: Some("competitions"),
     schedule: |config| {
         let ready = config.obsidian.is_ready();
         vec![super::JobSchedule::simple(
             "competitions",
             config
                 .sources
-                .competitions
+                .get_or_default::<CompetitionsSection>("competitions")
                 .interval_secs
                 .unwrap_or(6 * 3600),
             ready,
@@ -49,7 +52,7 @@ pub const DEF: super::ModuleDef = super::ModuleDef {
             vault: crate::bootstrap::assembly::vault_client(&resolved),
             interval_secs: config
                 .sources
-                .competitions
+                .get::<CompetitionsSection>("competitions")?
                 .interval_secs
                 .unwrap_or(6 * 3600),
         })))

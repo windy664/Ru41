@@ -11,10 +11,15 @@ pub use source::{EcardBalance, EcardClient, EcardRoom};
 /// 注册表定义：ecard 的调度清单、tracker 构造、QQ 命令都在本模块内闭环。
 use anyhow::Context as _;
 
-pub const DEF: super::ModuleDef = super::ModuleDef {
+#[linkme::distributed_slice(super::MODULES)]
+pub static DEF: super::ModuleDef = super::ModuleDef {
     name: "ecard",
+    priority: super::DEFAULT_PRIORITY,
+    config_key: Some("ecard"),
     schedule: |config| {
-        let ecard = &config.sources.ecard;
+        let ecard = config
+            .sources
+            .get_or_default::<crate::modules::ecard::EcardSection>("ecard");
         vec![super::JobSchedule::simple(
             "ecard",
             ecard
@@ -29,7 +34,9 @@ pub const DEF: super::ModuleDef = super::ModuleDef {
         if name != "ecard" {
             return Ok(None);
         }
-        let ecard = &config.sources.ecard;
+        let ecard = config
+            .sources
+            .get::<crate::modules::ecard::EcardSection>("ecard")?;
         let base_url = ecard
             .base_url
             .clone()

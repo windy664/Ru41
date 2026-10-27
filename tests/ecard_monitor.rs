@@ -198,9 +198,12 @@ async fn daily_report_sends_once_per_day_when_enabled() {
     let again = tracker.poll_once().await.unwrap();
     assert!(!again.report_sent);
     assert_eq!(channel.sent.lock().unwrap().len(), 1);
-    assert!(store.document("ecard_report", &ru41::util::today_utc(ru41::util::now()))
-        .unwrap()
-        .is_some());
+    assert!(
+        store
+            .document("ecard_report", &ru41::util::today_utc(ru41::util::now()))
+            .unwrap()
+            .is_some()
+    );
 
     // 未开启 daily_report 时不发送。
     let quiet = EcardTracker::new(

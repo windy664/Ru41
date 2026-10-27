@@ -75,7 +75,9 @@ fn parses_arxiv_sources_section() {
     )
     .unwrap();
     let (config, _) = Config::load_from(None, cwd.path(), None).unwrap();
-    let arxiv = &config.sources.arxiv;
+    let arxiv = config
+        .sources
+        .get_or_default::<ru41::modules::papers::ArxivSection>("arxiv");
     assert_eq!(
         arxiv.categories.as_deref(),
         Some(&["cs.CR".to_owned(), "cs.AI".to_owned()][..])
@@ -115,7 +117,9 @@ fn parses_rss_sources_section() {
     )
     .unwrap();
     let (config, _) = Config::load_from(None, cwd.path(), None).unwrap();
-    let rss = &config.sources.rss;
+    let rss = config
+        .sources
+        .get_or_default::<ru41::modules::rss::RssSection>("rss");
     assert_eq!(
         rss.feeds.as_deref(),
         Some(&["https://example.com/feed.xml".to_owned()][..])

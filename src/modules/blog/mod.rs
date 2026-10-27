@@ -11,10 +11,15 @@ pub use config::BlogSection;
 pub use service::{BlogConfig, BlogPollReport, BlogPublishTracker};
 
 /// 注册表定义：blog 发布管线的调度清单与 tracker 闭环。
-pub const DEF: super::ModuleDef = super::ModuleDef {
+#[linkme::distributed_slice(super::MODULES)]
+pub static DEF: super::ModuleDef = super::ModuleDef {
     name: "blog",
+    priority: super::DEFAULT_PRIORITY,
+    config_key: Some("blog"),
     schedule: |config| {
-        let blog = &config.sources.blog;
+        let blog = config
+            .sources
+            .get_or_default::<crate::modules::blog::BlogSection>("blog");
         let ready = blog.is_ready() && config.obsidian.is_ready();
         vec![super::JobSchedule::simple(
             "blog",
@@ -33,7 +38,9 @@ pub const DEF: super::ModuleDef = super::ModuleDef {
         if name != "blog" {
             return Ok(None);
         }
-        let blog = &config.sources.blog;
+        let blog = config
+            .sources
+            .get::<crate::modules::blog::BlogSection>("blog")?;
         anyhow::ensure!(
             config.obsidian.is_ready(),
             "sources.blog requires obsidian.vault_path (posts live in the vault repo)"

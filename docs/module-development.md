@@ -2,7 +2,24 @@
 
 Ru41 的附属模块采用**垂直业务目录 + 编译期静态装配**。模块自己持有配置、外部来源、业务逻辑和可选渠道命令；核心不反向 import 模块。
 
-**注册表接入（推荐）**：新模块在 `mod.rs` 里定义 `pub const DEF: super::ModuleDef`（声明调度清单、tracker 构造、QQ 命令），再到 `src/modules/mod.rs` 的 `MODULES` 表加一行——调度清单（schedule list）、`tracker_job` 装配、QQ 命令注册全自动，不再碰 main.rs/assembly.rs。全部 12 个模块均已迁移，assembly.rs 不再持有任何模块注册代码。
+**分布式注册（linkme）**：新模块在 `mod.rs` 里定义
+
+```rust
+#[linkme::distributed_slice(super::MODULES)]
+pub static DEF: super::ModuleDef = super::ModuleDef {
+    name: "<name>",
+    priority: super::DEFAULT_PRIORITY, // QQ 命令 first-match-wins 的顺序；一般不用改
+    config_key: Some("<name>"),        // [sources] 下的配置段名；无配置段写 None
+    schedule: |config| { /* 调度清单，未就绪时 enabled=false 并给原因 */ },
+    tracker: |config, store, name| { /* 名字命中才构造 tracker，否则 Ok(None) */ },
+    qq_handlers: |_, _| Ok(Vec::new()),
+};
+```
+
+再到 `src/modules/mod.rs` 加一行 `pub mod <name>;`（保持字母序）即完成注册——调度清单、tracker 装配、QQ 命令注册、`ru41 <name> poll|run` CLI 入口全自动，**不再编辑 cli.rs / main.rs / config.rs / assembly.rs**。
+
+- linkme 遍历顺序不稳定，消费方一律走 `modules::sorted()`（按 priority、name 排序）；需要 first-match-wins 语义的（如 homework 先于 zhihuishu）显式给更小 priority。
+- 配置段按模块名分布式解析：读取用 `config.sources.get::<XxxSection>("<name>")?`（Result 上下文）或 `config.sources.get_or_default::<XxxSection>("<name>")`（schedule 闭包等非 Result 上下文，解析失败按未配置处理）。`[sources]` 下不属于任何注册模块的键会在加载时告警。
 
 ## 目录约定
 
@@ -60,24 +77,23 @@ src/modules/<name>/
 
 新建 `src/modules/<name>/`，并在 `src/modules/mod.rs` 添加 `pub mod <name>;`。`lib.rs` 已导出整个 `modules`，无需为每个新模块重复修改。
 
-配置类型通常 `Deserialize + Default` 并使用 `deny_unknown_fields`。在 `bootstrap/config.rs` 的组合配置中引用该类型；保持外部 TOML 字段清晰、可选且有明确默认值。密钥优先使用环境变量，真实值只放 gitignored 的本地配置。自包含附属放 `[sources.<name>]`；共享能力按「升级路径」放顶层段（如 `[todo]`、`[obsidian]`）。
+配置类型通常 `Deserialize + Default` 并使用 `deny_unknown_fields`，定义在自己目录（如 `modules/<name>/config.rs`）。**不再往 `bootstrap/config.rs` 加字段**——`[sources]` 按模块名分布式解析，读取走 `config.sources.get::<XxxSection>("<name>")?`。保持外部 TOML 字段清晰、可选且有明确默认值。密钥优先使用环境变量，真实值只放 gitignored 的本地配置。自包含附属放 `[sources.<name>]`；共享能力按「升级路径」放顶层段（如 `[todo]`、`[obsidian]`）。
 
-### 2. 在装配层构造实例
+### 2. 在 DEF 闭包里构造实例
 
-在 `bootstrap/assembly.rs` 增加 `<name>_tracker(config, store)`：
+在 DEF 的 `tracker` 闭包里校验必填配置（给出带配置路径的错误信息）、构造来源客户端与业务 Config：
 
-- 校验必填配置并给出带配置路径的错误信息
-- 构造来源客户端与业务 Config
 - 需要默认通知时复用装配层的路由助手：`notify_pair(config, section.notify)` 一次拿到 `(notifier, target)`；需要 Obsidian 同步时用 `vault_if_ready(config, section.vault_sync)` 接线 Vault
 - 不在业务模块里硬编码 webhook、QQ target 或渠道名称
 
-### 3. 接入 CLI 与定时执行
+### 3. CLI 与定时执行
 
-在 `ingress/cli.rs` 增加命令定义，在 `main.rs` 增加命令分发：
+`ru41 <name> poll|run` 由通用 Tracker 分发自动生成（模块名经注册表校验），**无需编辑 cli.rs / main.rs**：
 
-- main.rs 只做参数路由；模块专属的处理逻辑放 `modules/<name>/cli.rs`（参考 jwxt 的 `classes_json`/`login_json`），核心入口不得认识附属内部
 - `poll`：执行一轮并输出 JSON 报告，适合系统 cron 和调试
 - `run`：调用 `ingress/schedule.rs::run_periodic`，适合常驻进程
+
+只有带额外子命令的模块（youtube/chaoxing/teachermate/jwxt）才需要在 `ingress/cli.rs` 加专属变体；模块专属的处理逻辑放 `modules/<name>/cli.rs`（参考 jwxt 的 `classes_json`/`login_json`），核心入口不得认识附属内部。
 
 调度清单在模块 DEF 的 `schedule` 闭包里声明（任务名、间隔、启用条件、禁用原因）；poll/run 命令按 `{name} poll|run` 约定自动生成，不合约定的用 `JobSchedule` 的 `poll_command`/`run_command` 字段覆盖（如 chaoxing-work 用 `chaoxing work`）。声明后任务自动出现在 `ru41 schedule list`，并可被 `ru41 schedule run <name>` 统一启动。
 
@@ -99,7 +115,7 @@ src/modules/<name>/
 - 需要终态回复时，用 `CommandContext::reply_route()` 构造 `NotifyRoute`（渠道字面量由渠道适配器注入 `reply_channel`，模块内不得手写渠道名）
 - 私人数据用 `CommandContext::require_private(action, privacy_note)` 统一双闸（身份绑定 + 单聊），参考 ecard 的水电命令
 
-然后在 `bootstrap/assembly.rs::qq_command_handlers` 注册 handler。QQ 渠道只遍历 handler，不应 import 新模块。
+然后在 DEF 的 `qq_handlers` 闭包返回 handler（装配层按 priority 顺序收集）。QQ 渠道只遍历 handler，不应 import 新模块。
 
 ### 5. 可选：提供通知渠道
 
@@ -133,7 +149,7 @@ src/modules/<name>/
 - 单轮业务：成功、无候选、幂等重复、来源失败
 - 通知路由：配置出口正确传递，业务不点名渠道
 - QQ 命令：别名、非法参数不拦截、权限与隐私边界
-- 配置：TOML 字段能解析，未知字段仍被拒绝
+- 配置：TOML 字段能解析，未知字段在 Section 读取时仍被拒绝（deny_unknown_fields）
 
 外部 HTTP 服务使用本地 mock，不在自动测试中消耗真实模型额度或访问私人服务。提交前必须通过：
 

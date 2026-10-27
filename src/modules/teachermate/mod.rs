@@ -22,7 +22,9 @@ use std::sync::Arc;
 
 /// 签到 tracker 的具体类型构造：DEF 注册表与 main.rs 的 bind 分支共用。
 pub fn build_tracker(config: &Config, store: Arc<dyn TaskStore>) -> Result<TeachermateTracker> {
-    let tm = &config.sources.teachermate;
+    let tm = config
+        .sources
+        .get::<crate::modules::teachermate::TeachermateSection>("teachermate")?;
     let (notifier, notify_target) = crate::bootstrap::assembly::notify_pair(config, tm.notify)?;
     let resolved = tm.resolved(notify_target)?;
     let client = TeachermateClient::new(resolved.openid.clone())
@@ -35,7 +37,9 @@ pub fn build_work_tracker(
     config: &Config,
     store: Arc<dyn TaskStore>,
 ) -> Result<TeachermateWorkTracker> {
-    let tm = &config.sources.teachermate;
+    let tm = config
+        .sources
+        .get::<crate::modules::teachermate::TeachermateSection>("teachermate")?;
     let (notifier, notify_target) = crate::bootstrap::assembly::notify_pair(config, tm.notify)?;
     let resolved = tm.resolved(notify_target.clone())?;
     let vault = crate::bootstrap::assembly::vault_if_ready(config, resolved.work_vault_sync)?;
@@ -51,10 +55,15 @@ pub fn build_work_tracker(
 }
 
 /// 注册表定义：teachermate 的调度清单、两个 tracker（签到/作业）、QQ 命令闭环。
-pub const DEF: super::ModuleDef = super::ModuleDef {
+#[linkme::distributed_slice(super::MODULES)]
+pub static DEF: super::ModuleDef = super::ModuleDef {
     name: "teachermate",
+    priority: super::DEFAULT_PRIORITY,
+    config_key: Some("teachermate"),
     schedule: |config| {
-        let tm = &config.sources.teachermate;
+        let tm = config
+            .sources
+            .get_or_default::<crate::modules::teachermate::TeachermateSection>("teachermate");
         vec![
             super::JobSchedule::simple(
                 "teachermate",
@@ -89,7 +98,10 @@ pub const DEF: super::ModuleDef = super::ModuleDef {
     qq_handlers: |config, _| {
         Ok(vec![std::sync::Arc::new(
             qq_command::TeachermateQqCommand::new(
-                config.sources.teachermate.openid_path_or_default(),
+                config
+                    .sources
+                    .get::<crate::modules::teachermate::TeachermateSection>("teachermate")?
+                    .openid_path_or_default(),
             ),
         )])
     },

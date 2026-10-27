@@ -26,13 +26,20 @@ pub struct ResearchSection {
 }
 
 /// 注册表定义：依赖 obsidian 的 vault 配置（同一个仓库），未配置则缺席。
-pub const DEF: super::ModuleDef = super::ModuleDef {
+#[linkme::distributed_slice(super::MODULES)]
+pub static DEF: super::ModuleDef = super::ModuleDef {
     name: "research",
+    priority: super::DEFAULT_PRIORITY,
+    config_key: Some("research"),
     schedule: |config| {
         let ready = config.obsidian.is_ready();
         vec![super::JobSchedule::simple(
             "research",
-            config.sources.research.interval_secs.unwrap_or(6 * 3600),
+            config
+                .sources
+                .get_or_default::<crate::modules::research::ResearchSection>("research")
+                .interval_secs
+                .unwrap_or(6 * 3600),
             ready,
             (!ready).then(|| "复用 [obsidian] vault_path，未配置".into()),
         )]
@@ -44,7 +51,11 @@ pub const DEF: super::ModuleDef = super::ModuleDef {
         let resolved = config.obsidian.resolved(None)?;
         Ok(Some(Box::new(ResearchService {
             vault: crate::bootstrap::assembly::vault_client(&resolved),
-            interval_secs: config.sources.research.interval_secs.unwrap_or(6 * 3600),
+            interval_secs: config
+                .sources
+                .get::<crate::modules::research::ResearchSection>("research")?
+                .interval_secs
+                .unwrap_or(6 * 3600),
         })))
     },
     qq_handlers: |_, _| Ok(Vec::new()),

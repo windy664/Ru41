@@ -3,8 +3,8 @@ pub mod chaoxing;
 pub mod competitions;
 pub mod ecard;
 pub mod homework;
-pub mod jwxt;
 pub mod jobs;
+pub mod jwxt;
 pub mod obsidian;
 pub mod pagewatch;
 pub mod papers;
@@ -79,6 +79,14 @@ impl JobSchedule {
 /// 构造时配置未就绪应返回 Ok(None)/空 Vec（模块静默缺席），而不是报错。
 pub struct ModuleDef {
     pub name: &'static str,
+    /// 注册顺序（QQ 命令 first-match-wins 的消费序，小者先行）。
+    /// 默认 DEFAULT_PRIORITY；跨平台聚合类命令（如 homework 必须先于
+    /// 单平台 zhihuishu）显式给更小值。
+    pub priority: u8,
+    /// 该模块在 `[sources]` 下的配置段名；None 表示无独立配置段
+    /// （如 homework 聚合其他平台、obsidian 走顶层 [obsidian]）。
+    /// 用于 [sources] 未知键告警；papers 的配置段是 "arxiv"（历史名）。
+    pub config_key: Option<&'static str>,
     /// 调度清单（schedule list 展示用，不构造 tracker）。
     pub schedule: ScheduleFn,
     /// 按 job 名构造 tracker；名字不属于本模块返回 Ok(None)。
@@ -92,26 +100,19 @@ pub type ScheduleFn = fn(&Config) -> Vec<JobSchedule>;
 pub type TrackerFn = fn(&Config, Arc<dyn TaskStore>, &str) -> Result<Option<Box<dyn PollJob>>>;
 pub type QqHandlersFn = fn(&Config, &str) -> Result<Vec<Arc<dyn CommandHandler>>>;
 
-/// 注册表：装配层遍历它构建 jobs/handlers；老模块暂时保留在
-/// assembly 的手写注册里，逐个迁移过来后删除。
-pub const MODULES: &[ModuleDef] = &[
-    papers::DEF,
-    pagewatch::DEF,
-    rss::DEF,
-    ecard::DEF,
-    projects::DEF,
-    youtube::DEF,
-    chaoxing::DEF,
-    teachermate::DEF,
-    jwxt::DEF,
-    // 跨平台聚合 /作业 必须先于 zhihuishu 注册（first-match-wins）。
-    homework::DEF,
-    zhihuishu::DEF,
-    obsidian::DEF,
-    blog::DEF,
-    planner::DEF,
-    competitions::DEF,
-    jobs::DEF,
-    programs::DEF,
-    research::DEF,
-];
+/// 绝大多数模块的注册顺序：不显式关心 first-match-wins 语义时用此值。
+pub const DEFAULT_PRIORITY: u8 = 100;
+
+/// 分布式注册表：各模块在自己的 mod.rs 里用
+/// `#[linkme::distributed_slice(MODULES)] pub static DEF: ModuleDef = ...`
+/// 自注册，新增附属不再编辑本文件的注册清单。
+/// 注意：linkme 的遍历顺序不保证稳定，消费方一律走 `sorted()`。
+#[linkme::distributed_slice]
+pub static MODULES: [ModuleDef];
+
+/// 按 (priority, name) 稳定排序后的注册表视图。
+pub fn sorted() -> Vec<&'static ModuleDef> {
+    let mut defs: Vec<&'static ModuleDef> = MODULES.iter().collect();
+    defs.sort_by(|a, b| a.priority.cmp(&b.priority).then_with(|| a.name.cmp(b.name)));
+    defs
+}

@@ -9,10 +9,15 @@ pub use service::{PaperTracker, PapersConfig, PollReport, deep_read_task};
 pub use source::{ArxivClient, ArxivEntry};
 
 /// 注册表定义：papers 的调度清单、tracker 构造、QQ 命令都在本模块内闭环。
-pub const DEF: super::ModuleDef = super::ModuleDef {
+#[linkme::distributed_slice(super::MODULES)]
+pub static DEF: super::ModuleDef = super::ModuleDef {
     name: "papers",
+    priority: super::DEFAULT_PRIORITY,
+    config_key: Some("arxiv"),
     schedule: |config| {
-        let arxiv = &config.sources.arxiv;
+        let arxiv = config
+            .sources
+            .get_or_default::<crate::modules::papers::ArxivSection>("arxiv");
         let ready = arxiv.categories.as_ref().is_some_and(|c| !c.is_empty());
         vec![super::JobSchedule::simple(
             "papers",
@@ -27,7 +32,9 @@ pub const DEF: super::ModuleDef = super::ModuleDef {
         if name != "papers" {
             return Ok(None);
         }
-        let arxiv = &config.sources.arxiv;
+        let arxiv = config
+            .sources
+            .get::<crate::modules::papers::ArxivSection>("arxiv")?;
         Ok(Some(Box::new(PaperTracker::new(
             store,
             ArxivClient::new(),
@@ -40,7 +47,12 @@ pub const DEF: super::ModuleDef = super::ModuleDef {
     qq_handlers: |config, backend| {
         Ok(vec![std::sync::Arc::new(PapersQqCommand::new(
             ArxivClient::new(),
-            config.sources.arxiv.interests.clone().unwrap_or_default(),
+            config
+                .sources
+                .get::<crate::modules::papers::ArxivSection>("arxiv")?
+                .interests
+                .clone()
+                .unwrap_or_default(),
             backend.to_owned(),
         ))])
     },
