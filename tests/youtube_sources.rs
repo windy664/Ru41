@@ -130,6 +130,7 @@ fn tracker_with(
             .to_string_lossy()
             .to_string(),
         proxy_url: None,
+        ytdlp_cookies: None,
     };
     YoutubeTracker::new(store, config)
 }
@@ -328,6 +329,7 @@ async fn prep_video_task_creates_deduped_tasks() {
             .to_string_lossy()
             .to_string(),
         None,
+        None,
     );
     let route = NotifyRoute {
         channel: "qq".into(),
@@ -471,6 +473,7 @@ mod review_loop {
             digest_at: "12:10".into(),
             ytdlp_bin: "yt-dlp".into(),
             proxy_url: None,
+            ytdlp_cookies: None,
         };
         let fake = FakeNotifier::default();
         (

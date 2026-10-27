@@ -38,6 +38,8 @@ pub struct YoutubeSection {
     pub ytdlp_bin: Option<String>,
     /// 传给 yt-dlp 子进程的代理（HTTPS_PROXY/HTTP_PROXY）；缺省继承 ru41 进程环境。
     pub proxy_url: Option<String>,
+    /// yt-dlp --cookies 文件路径（Netscape 格式）；缺省不带 cookies。
+    pub ytdlp_cookies: Option<String>,
 }
 
 impl YoutubeSection {
@@ -86,6 +88,7 @@ impl YoutubeSection {
                 .unwrap_or_else(|| Self::DEFAULT_DIGEST_AT.into()),
             ytdlp_bin: self.ytdlp_bin.clone().unwrap_or_else(|| "yt-dlp".into()),
             proxy_url: self.proxy_url.clone(),
+            ytdlp_cookies: self.ytdlp_cookies.clone(),
         })
     }
 }
@@ -128,6 +131,7 @@ mod tests {
     fn resolves_defaults_and_requires_channels() {
         let section = YoutubeSection {
             channels: Some(vec!["@Fireship".into()]),
+            ytdlp_cookies: Some("/data/yt.txt".into()),
             ..Default::default()
         };
         let config = section.resolved(None).unwrap();
@@ -137,6 +141,7 @@ mod tests {
         assert_eq!(config.max_age_days, YoutubeSection::DEFAULT_MAX_AGE_DAYS);
         assert_eq!(config.level, "CET-6 / B2");
         assert_eq!(config.ytdlp_bin, "yt-dlp");
+        assert_eq!(config.ytdlp_cookies.as_deref(), Some("/data/yt.txt"));
 
         assert!(YoutubeSection::default().resolved(None).is_err());
     }

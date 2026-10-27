@@ -36,6 +36,8 @@ pub struct YoutubeConfig {
     pub digest_at: String,
     pub ytdlp_bin: String,
     pub proxy_url: Option<String>,
+    /// yt-dlp --cookies 文件（Netscape 格式）；过字幕接口 429/bot 风控。
+    pub ytdlp_cookies: Option<String>,
 }
 
 /// 一轮轮询的结果报告；单频道/单视频失败不中断，错误收进 errors。
@@ -69,7 +71,11 @@ pub struct YoutubeTracker {
 
 impl YoutubeTracker {
     pub fn new(store: Arc<dyn TaskStore>, config: YoutubeConfig) -> Self {
-        let client = YtDlpClient::new(config.ytdlp_bin.clone(), config.proxy_url.clone());
+        let client = YtDlpClient::new(
+            config.ytdlp_bin.clone(),
+            config.proxy_url.clone(),
+            config.ytdlp_cookies.clone(),
+        );
         Self {
             store,
             client,
