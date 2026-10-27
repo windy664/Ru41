@@ -8,6 +8,7 @@ mod service;
 pub use service::{CompetitionsService, DEF, OVERVIEW_PATH};
 
 /// 宿主加载入口（插件不用 linkme，走显式注册）。
+#[cfg(feature = "plugin-entry")]
 #[allow(improper_ctypes_definitions)]
 #[unsafe(no_mangle)]
 pub extern "C" fn ru41_plugin_entry() -> ru41::plugins::PluginEntry {

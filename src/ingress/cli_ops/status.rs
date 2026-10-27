@@ -32,9 +32,9 @@ fn snapshot(cli: &Cli, dump: bool) -> Result<Value> {
         "notify": config.notify.channel,
         "qq_configured": configured(config.channel.qq.app_id.as_deref()) && configured(config.channel.qq.app_secret.as_deref()),
         "feishu_configured": configured(config.channel.feishu.webhook_url.as_deref()),
-        "papers_configured": config.sources.get::<crate::modules::papers::ArxivSection>("arxiv")?.categories.is_some(),
-        "rss_configured": config.sources.get::<crate::modules::rss::RssSection>("rss")?.feeds.is_some(),
-        "ecard_configured": config.sources.get::<crate::modules::ecard::EcardSection>("ecard")?.base_url.is_some(),
+        "papers_configured": config.sources.has("arxiv"),
+        "rss_configured": config.sources.has("rss"),
+        "ecard_configured": config.sources.has("ecard"),
     });
     let mut value = json!({
         "version": env!("CARGO_PKG_VERSION"),

@@ -1,21 +1,9 @@
-pub mod blog;
 pub mod chaoxing;
-pub mod compshare;
-pub mod ecard;
-pub mod homework;
-pub mod jobs;
 pub mod jwxt;
 pub mod obsidian;
-pub mod pagewatch;
-pub mod papers;
 pub mod planner;
-pub mod programs;
-pub mod projects;
-pub mod research;
-pub mod rss;
 pub mod teachermate;
 pub mod youtube;
-pub mod zhihuishu;
 
 /// 附属注册表：新模块只需①写自己目录 ②这里加一行——调度清单、
 /// tracker 装配、QQ 命令注册全部数据驱动，不再碰 main.rs/assembly.rs。
@@ -95,12 +83,42 @@ pub struct ModuleDef {
     pub tracker: TrackerFn,
     /// QQ 扩展命令；无命令返回空 Vec。
     pub qq_handlers: QqHandlersFn,
+    /// QQ 图片消费者（如学习通二维码签到）；无则用 no_image_consumers。
+    pub image_consumers: ImageConsumersFn,
+    /// 专属 CLI 子命令（poll/run 之外，如 youtube prep / chaoxing sign / jwxt login）；
+    /// 入参为模块名之后的原始参数，输出 JSON。无则用 no_cli。
+    pub cli: CliFn,
 }
 
-/// ModuleDef 的三个装配入口签名（抽类型别名压平复杂度）。
+/// ModuleDef 的装配入口签名（抽类型别名压平复杂度）。
 pub type ScheduleFn = fn(&Config) -> Vec<JobSchedule>;
 pub type TrackerFn = fn(&Config, Arc<dyn TaskStore>, &str) -> Result<Option<Box<dyn PollJob>>>;
 pub type QqHandlersFn = fn(&Config, &str) -> Result<Vec<Arc<dyn CommandHandler>>>;
+pub type ImageConsumersFn = fn(&Config) -> Result<Vec<Arc<dyn crate::ports::commands::ImageConsumer>>>;
+/// 专属 CLI 输出（异步 fn 指针；实现内如需 reactor 请过 plugins::bridge）。
+pub type CliFn = fn(
+    &Config,
+    &[String],
+) -> std::pin::Pin<
+    Box<dyn std::future::Future<Output = Result<Option<serde_json::Value>>> + Send>,
+>;
+
+/// 无图片消费者的默认实现。
+pub fn no_image_consumers(
+    _: &Config,
+) -> Result<Vec<Arc<dyn crate::ports::commands::ImageConsumer>>> {
+    Ok(Vec::new())
+}
+
+/// 无专属 CLI 的默认实现：返回 None，由入口侧报"不支持"。
+pub fn no_cli(
+    _: &Config,
+    _: &[String],
+) -> std::pin::Pin<
+    Box<dyn std::future::Future<Output = Result<Option<serde_json::Value>>> + Send>,
+> {
+    Box::pin(async { Ok(None) })
+}
 
 /// 绝大多数模块的注册顺序：不显式关心 first-match-wins 语义时用此值。
 pub const DEFAULT_PRIORITY: u8 = 100;

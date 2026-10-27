@@ -27,6 +27,8 @@ pub struct SkillFile {
 pub fn default_roots() -> Vec<PathBuf> {
     vec![
         PathBuf::from("src/modules"),
+        // 整体插件化：插件的技能包在 plugins/<模块>/skills/。
+        PathBuf::from("plugins"),
         PathBuf::from("/etc/ru41/modules"),
     ]
 }

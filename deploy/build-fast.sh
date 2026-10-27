@@ -49,7 +49,18 @@ if [[ "${PUSH:-0}" == "1" ]]; then
   # skills 随镜像外挂在服务器 /etc/ru41/modules（bind mount 自 ~/ru41-mimo-smoke/modules），
   # 不随 Dockerfile.patch 更新，这里显式同步并重启 worker 让新 skill 生效。
   TARBALL="$(mktemp /tmp/ru41-modules-XXXXXX.tgz)"
-  tar czf "$TARBALL" -C "$BUILD_DIR/src/modules" .
+  # 技能包分布在 src/modules（内建）与 plugins（插件）两处，staging 成
+  # <模块>/skills/<技能> 布局后打包。
+  STAGE="$(mktemp -d)"
+  cp -r "$BUILD_DIR/src/modules/." "$STAGE/"
+  for d in "$BUILD_DIR"/plugins/*/skills; do
+    [ -d "$d" ] || continue
+    m="$(basename "$(dirname "$d")")"
+    mkdir -p "$STAGE/$m"
+    cp -r "$d" "$STAGE/$m/skills"
+  done
+  tar czf "$TARBALL" -C "$STAGE" .
+  rm -rf "$STAGE"
   python3 "$HOME/bin/ru41-scp.py" "$TARBALL" /tmp/ru41-modules.tgz
   # 同步后重建 $CODEX_HOME/skills 软链：codex 原生技能发现只看这个目录
   # （run_dir/.agents/skills 的 materialize 对 codex 不可见，2026-10-27 实证）。

@@ -132,4 +132,6 @@ pub static DEF: super::ModuleDef = super::ModuleDef {
                 .flatten(),
         ))])
     },
+    image_consumers: super::no_image_consumers,
+    cli: super::no_cli,
 };

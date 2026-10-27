@@ -3,11 +3,7 @@ use ru41::{
     app::task::TaskService,
     channels::qq::commands::{self, Command},
     domain::{NotifyRoute, TaskStatus},
-    modules::{
-        ecard::EcardQqCommand,
-        papers::{ArxivClient, PapersQqCommand},
-        planner::TodoQqCommand,
-    },
+    modules::planner::TodoQqCommand,
     ports::commands::{CommandContext, CommandHandler, Reply},
     ports::storage::TaskStore,
 };
@@ -183,185 +179,6 @@ fn bound_user_aggregates_across_conversations_in_c2c() {
     assert!(!group_view.text.contains(&format!("#{}", fixture.c2c_task)));
 }
 
-async fn utility_reply(fixture: &Fixture, target: &str, author: &str, is_c2c: bool) -> Reply {
-    let context = ctx(fixture, target, author, is_c2c);
-    let command = EcardQqCommand::new("codex".into());
-    command.handle("", &context).await.unwrap().unwrap()
-}
-
-#[tokio::test]
-async fn utility_command_requires_binding_and_c2c() {
-    let fixture = fixture();
-    // 写入一条读数。
-    fixture
-        .store
-        .put_document(
-            "ecard_reading",
-            "2026-10-14",
-            None,
-            &serde_json::json!({"power": 18.87, "water": 2.8, "room": "测试楼A栋 A#101", "ts": 1_760_000_000_i64}),
-        )
-        .unwrap();
-    // 未绑定：提示先绑定。
-    let reply = utility_reply(&fixture, "user:U1", "U1", true).await;
-    assert!(reply.text.contains("身份绑定"));
-    // 群聊（即使已绑定）：不展示私人数据。
-    commands::execute(
-        &Command::Bind("s3cret".into()),
-        &ctx(&fixture, "user:U1", "U1", true),
-    )
-    .unwrap();
-    let reply = utility_reply(&fixture, "group:G1", "U1", false).await;
-    assert!(reply.text.contains("单聊"));
-    // 绑定后单聊：返回余额与数据时间。
-    let reply = utility_reply(&fixture, "user:U1", "U1", true).await;
-    assert!(reply.text.contains("18.87度"));
-    assert!(reply.text.contains("2.80吨"));
-    assert!(reply.text.contains("测试楼A栋 A#101"));
-    assert!(reply.text.contains("数据时间"));
-}
-
-#[tokio::test]
-async fn utility_command_without_reading() {
-    let fixture = fixture();
-    commands::execute(
-        &Command::Bind("s3cret".into()),
-        &ctx(&fixture, "user:U1", "U1", true),
-    )
-    .unwrap();
-    let reply = utility_reply(&fixture, "user:U1", "U1", true).await;
-    assert!(reply.text.contains("暂无水电读数"));
-}
-
-#[tokio::test]
-async fn utility_natural_language_enqueues_authorized_analysis() {
-    let fixture = fixture();
-    for (date, power, water) in [("2026-10-13", 20.0, 3.0), ("2026-10-14", 18.5, 2.8)] {
-        fixture
-            .store
-            .put_document(
-                "ecard_reading",
-                date,
-                None,
-                &serde_json::json!({"power": power, "water": water, "room": "测试楼A栋 A#101", "ts": 1_760_000_000_i64}),
-            )
-            .unwrap();
-    }
-    commands::execute(
-        &Command::Bind("s3cret".into()),
-        &ctx(&fixture, "user:U1", "U1", true),
-    )
-    .unwrap();
-
-    let context = ctx(&fixture, "user:U1", "U1", true);
-    let command = EcardQqCommand::new("codex".into());
-    let reply = command
-        .handle_message("帮我看看宿舍电费还剩多少，顺便分析一下", &context)
-        .await
-        .unwrap()
-        .unwrap();
-    assert!(reply.text.contains("正在分析水电"));
-    assert!(reply.text.contains("2026-10-14"));
-
-    let task = fixture
-        .store
-        .list(10)
-        .unwrap()
-        .into_iter()
-        .find(|task| task.request_key.ends_with(":ecard-analysis"))
-        .unwrap();
-    assert_eq!(task.backend_id, "codex");
-    assert!(task.prompt.contains("帮我看看宿舍电费还剩多少"));
-    assert!(task.prompt.contains("2026-10-13"));
-    assert!(task.prompt.contains("2026-10-14"));
-    assert!(task.prompt.contains("18.5"));
-    assert!(task.prompt.contains("2.8"));
-    assert!(!task.prompt.contains("测试楼A栋"));
-    let notify = task.notify.unwrap();
-    assert_eq!(notify.target, "user:U1");
-    assert_eq!(notify.msg_id.as_deref(), Some("command-msg"));
-}
-
-#[tokio::test]
-async fn utility_recent_phrase_enqueues_authorized_analysis() {
-    let fixture = fixture();
-    fixture
-        .store
-        .put_document(
-            "ecard_reading",
-            "2026-10-18",
-            None,
-            &serde_json::json!({"power": 26.77, "water": 0.8, "room": "测试楼A栋 A#101", "ts": 1_760_000_000_i64}),
-        )
-        .unwrap();
-    commands::execute(
-        &Command::Bind("s3cret".into()),
-        &ctx(&fixture, "user:U1", "U1", true),
-    )
-    .unwrap();
-
-    let context = ctx(&fixture, "user:U1", "U1", true);
-    let command = EcardQqCommand::new("codex".into());
-    let reply = command
-        .handle_message("我宿舍近期水电费", &context)
-        .await
-        .unwrap()
-        .unwrap();
-    assert!(reply.text.contains("正在分析水电"));
-    let task = fixture
-        .store
-        .list(10)
-        .unwrap()
-        .into_iter()
-        .find(|task| task.request_key.ends_with(":ecard-analysis"))
-        .unwrap();
-    assert!(task.prompt.contains("我宿舍近期水电费"));
-    assert!(task.prompt.contains("2026-10-18"));
-    assert!(task.prompt.contains("26.77"));
-}
-
-#[tokio::test]
-async fn utility_natural_language_keeps_privacy_boundary() {
-    let fixture = fixture();
-    fixture
-        .store
-        .put_document(
-            "ecard_reading",
-            "2026-10-14",
-            None,
-            &serde_json::json!({"power": 18.5, "water": 2.8, "room": "测试楼A栋 A#101", "ts": 1_760_000_000_i64}),
-        )
-        .unwrap();
-    let command = EcardQqCommand::new("codex".into());
-
-    let unrelated = command
-        .handle_message(
-            "帮我总结一下今天的收件箱",
-            &ctx(&fixture, "user:U1", "U1", true),
-        )
-        .await
-        .unwrap();
-    assert!(unrelated.is_none());
-    let unbound = command
-        .handle_message("电费还剩多少", &ctx(&fixture, "user:U1", "U1", true))
-        .await
-        .unwrap()
-        .unwrap();
-    assert!(unbound.text.contains("身份绑定"));
-    commands::execute(
-        &Command::Bind("s3cret".into()),
-        &ctx(&fixture, "user:U1", "U1", true),
-    )
-    .unwrap();
-    let group = command
-        .handle_message("电费还剩多少", &ctx(&fixture, "group:G1", "U1", false))
-        .await
-        .unwrap()
-        .unwrap();
-    assert!(group.text.contains("单聊"));
-    assert_eq!(fixture.store.list(10).unwrap().len(), 2);
-}
-
 #[tokio::test]
 async fn todo_commands_add_list_and_complete_in_private_chat() {
     let fixture = fixture();
@@ -451,30 +268,15 @@ async fn todo_commands_reject_group_chat_and_parse_views() {
 
 #[test]
 fn extension_commands_match_aliases_and_join_help() {
-    let ecard = EcardQqCommand::new("codex".into());
-    for verb in ["水电", "电费", "水费", "utility"] {
-        assert!(ecard.matches(verb));
-    }
-    assert!(!ecard.matches("电费怎么交"));
-
-    let papers = PapersQqCommand::new(ArxivClient::new(), String::new(), "codex".into());
-    for verb in ["精读", "deep", "deepread"] {
-        assert!(papers.matches(verb));
-    }
-    assert!(!papers.matches("精读一下"));
-
     let todo = TodoQqCommand::new(ru41::domain::todo::TodoOptions::default());
     for verb in ["待办", "记待办", "完成", "推迟", "取消待办", "恢复待办"] {
         assert!(todo.matches(verb));
     }
 
-    let handlers: Vec<Arc<dyn CommandHandler>> =
-        vec![Arc::new(papers), Arc::new(ecard), Arc::new(todo)];
+    let handlers: Vec<Arc<dyn CommandHandler>> = vec![Arc::new(todo)];
     let help = commands::help_text(&handlers);
     assert!(help.contains("## Ru41 机器人"));
     assert!(help.contains("**扩展指令**"));
-    assert!(help.contains("精读 <arxiv-id>"));
-    assert!(help.contains("`/水电`：查询宿舍水电余额"));
     assert!(help.contains("`/待办`：今日、逾期、长期事项"));
     assert!(help.contains("当前对话会自动保留上下文"));
 }

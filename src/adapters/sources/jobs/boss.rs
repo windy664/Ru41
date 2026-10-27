@@ -93,8 +93,6 @@ pub fn load_entries(path: &str) -> Result<Vec<JobEntry>> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::modules::jobs::filter::{JobsState, merge};
-    use crate::modules::jobs::overview::render;
 
     const FIXTURE: &str = r#"{
   "updated_at": "2026-10-26T09:00:00",
@@ -164,46 +162,5 @@ mod tests {
     #[test]
     fn missing_file_is_err() {
         assert!(load_entries("/nonexistent/boss_jobs.json").is_err());
-    }
-
-    #[test]
-    fn boss_entries_merge_and_render_with_mianling() {
-        let dir = std::env::temp_dir().join(format!("boss-merge-test-{}", std::process::id()));
-        std::fs::create_dir_all(&dir).unwrap();
-        let path = dir.join("boss_jobs.json");
-        std::fs::write(&path, FIXTURE).unwrap();
-        let boss = load_entries(path.to_str().unwrap()).unwrap();
-
-        let mianling = crate::modules::jobs::filter::filter_jobs(vec![
-            crate::adapters::sources::jobs::mianling::MianlingJob {
-                company: "美团".into(),
-                role: "数据开发工程师".into(),
-                city: "北京".into(),
-                audience: "未公布".into(),
-                kind: "校招".into(),
-                posted: "10月26日".into(),
-                platform: Some("meituan".into()),
-            },
-        ]);
-
-        let mut state = JobsState::default();
-        merge(&mut state, mianling, (10, 26));
-        merge(&mut state, boss, (10, 26));
-        assert_eq!(state.entries.len(), 3);
-
-        let rows: Vec<JobEntry> = state.entries.values().cloned().collect();
-        let md = render(
-            &rows,
-            chrono::NaiveDate::from_ymd_opt(2026, 10, 26).unwrap(),
-        );
-        assert!(md.contains("## 实习（2 条）"));
-        assert!(md.contains("## 校招（1 条）"));
-        assert!(md.contains("⭐ 深圳"));
-        // BOSS 条目由 encryptJobId 构造出官方详情页链接，JD 标题可点击。
-        assert!(md.contains(
-            "### [星辰智能 · 大模型算法实习生](https://www.zhipin.com/job_detail/abc123.html)"
-        ));
-
-        std::fs::remove_dir_all(&dir).ok();
     }
 }
