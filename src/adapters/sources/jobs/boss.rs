@@ -70,6 +70,11 @@ pub fn load_entries(path: &str) -> Result<Vec<JobEntry>> {
                 platform: Some("boss".into()),
                 jd: (!j.jd.is_empty()).then_some(j.jd),
                 jd_tried: true,
+                link: Some(format!(
+                    "https://www.zhipin.com/job_detail/{}.html",
+                    j.encrypt_job_id
+                )),
+                link_tried: true,
             })
             .collect(),
     ))
@@ -178,7 +183,10 @@ mod tests {
         assert!(md.contains("## 实习（2 条）"));
         assert!(md.contains("## 校招（1 条）"));
         assert!(md.contains("⭐ 深圳"));
-        assert!(md.contains("### 星辰智能 · 大模型算法实习生"));
+        // BOSS 条目由 encryptJobId 构造出官方详情页链接，JD 标题可点击。
+        assert!(md.contains(
+            "### [星辰智能 · 大模型算法实习生](https://www.zhipin.com/job_detail/abc123.html)"
+        ));
 
         std::fs::remove_dir_all(&dir).ok();
     }

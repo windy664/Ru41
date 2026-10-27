@@ -37,6 +37,13 @@ pub struct JobEntry {
     /// 已尝试过 JD 抓取（无论成败），避免每轮反复打官方 API。
     #[serde(default)]
     pub jd_tried: bool,
+    /// 官方岗位页链接（BOSS 由 encryptJobId 构造；ashby/greenhouse/smartrecruiters
+    /// 回源抓 JD 命中时一并带出；面灵无公开详情页，国内平台暂缺）。
+    #[serde(default)]
+    pub link: Option<String>,
+    /// 已尝试过链接补全（无论成败），避免每轮反复打官方 API。
+    #[serde(default)]
+    pub link_tried: bool,
 }
 
 /// 对已构造好的条目（如 BOSS sidecar 结果）套用同一套技术岗口径。
