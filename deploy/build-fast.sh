@@ -23,6 +23,7 @@ if [[ "${RU41_BUILD_FROM:-head}" == "worktree" ]]; then
   BUILD_DIR="$PWD"
   echo "[build-fast] WARNING: building from WORKING TREE (uncommitted state included)"
 else
+  PREV_REF="$(git -C "$BUILD_DIR" symbolic-ref -q --short HEAD 2>/dev/null || true)"
   if [ ! -e "$BUILD_DIR/.git" ]; then
     git worktree add --detach "$BUILD_DIR" "$COMMIT"
   else
@@ -55,5 +56,9 @@ if [[ "${PUSH:-0}" == "1" ]]; then
   python3 "$HOME/bin/ru41-ssh-run2.py" \
     'tar xzf /tmp/ru41-modules.tgz -C /home/windy2/ru41-mimo-smoke/modules && mkdir -p /home/windy2/ru41-mimo-smoke/data/codex/skills && cd /home/windy2/ru41-mimo-smoke/data/codex/skills && for d in /home/windy2/ru41-mimo-smoke/modules/*/skills/*/; do name=$(basename "$d"); ln -sfn "/etc/ru41/modules/$(basename $(dirname $(dirname $d)))/skills/$name" "$name"; done && docker restart ru41-mimo-worker'
   rm -f "$TARBALL"
+fi
+# 恢复原分支：detached 只是构建姿态，别把后续提交留在游离头上。
+if [ -n "${PREV_REF:-}" ]; then
+  git -C "$BUILD_DIR" checkout -q "$PREV_REF" 2>/dev/null || true
 fi
 echo "ru41:local ready ($COMMIT)"
