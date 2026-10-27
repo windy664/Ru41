@@ -33,6 +33,8 @@ pub struct PagewatchReport {
     pub suppressed: Vec<String>,
     pub errors: Vec<String>,
     pub notified: bool,
+    /// 写入 vault 页面动态的条目数（不受 QQ 冷却影响，全量记录实质变更）。
+    pub vault_logged: usize,
 }
 
 /// 同一页两次通知的最小间隔：防动态噪声页面刷屏，也防真变更时连发。
@@ -49,6 +51,7 @@ pub struct PagewatchTracker {
     notifier: Option<Arc<dyn NotifyChannel>>,
     notify_target: String,
     config: PagewatchConfig,
+    vault: Option<Arc<dyn crate::ports::vault::Vault>>,
 }
 
 impl PagewatchTracker {
@@ -68,11 +71,18 @@ impl PagewatchTracker {
             notifier,
             notify_target,
             config,
+            vault: None,
         }
     }
 
+    pub fn with_vault_opt(mut self, vault: Option<Arc<dyn crate::ports::vault::Vault>>) -> Self {
+        self.vault = vault;
+        self
+    }
+
     pub async fn poll_once(&self) -> Result<PagewatchReport> {
-        // (名称, url, 新增行, 消失行)
+        // (名称, url, 新增行, 消失行)：meaningful 全量进 vault，changed 为冷却放行的 QQ 通知子集
+        let mut meaningful: Vec<(String, String, Vec<String>, Vec<String>)> = Vec::new();
         let mut changed: Vec<(String, String, Vec<String>, Vec<String>)> = Vec::new();
         let mut suppressed = Vec::new();
         let mut errors = Vec::new();
@@ -91,10 +101,27 @@ impl PagewatchTracker {
                                     "fingerprint": fingerprint,
                                     "lines": text_lines,
                                     "baseline_at": crate::util::now(),
+                                    "last_checked_at": crate::util::now(),
                                 }),
                             )?;
                         }
-                        Some(doc) if doc.value["fingerprint"].as_str() == Some(&fingerprint) => {}
+                        Some(doc) if doc.value["fingerprint"].as_str() == Some(&fingerprint) => {
+                            // 内容没变也刷新巡查时间，状态表才能反映"刚看过"。
+                            self.store.put_document(
+                                "pagewatch_page",
+                                &page.url,
+                                Some(doc.revision),
+                                &serde_json::json!({
+                                    "name": doc.value["name"].as_str().unwrap_or(&page.name),
+                                    "fingerprint": fingerprint,
+                                    "lines": doc.value["lines"].clone(),
+                                    "baseline_at": doc.value["baseline_at"].clone(),
+                                    "last_changed_at": doc.value["last_changed_at"].clone(),
+                                    "notified_at": doc.value["notified_at"].clone(),
+                                    "last_checked_at": crate::util::now(),
+                                }),
+                            )?;
+                        }
                         Some(doc) => {
                             let now = crate::util::now();
                             let old_lines: Vec<String> = doc
@@ -109,10 +136,10 @@ impl PagewatchTracker {
                                 .unwrap_or_default();
                             let (added, removed) = diff_lines(&old_lines, &text_lines);
                             // 行集合没变只是顺序/空白抖动：静默跟随基线，不打扰。
-                            let meaningful = !added.is_empty() || !removed.is_empty();
+                            let is_meaningful = !added.is_empty() || !removed.is_empty();
                             let last_notified =
                                 doc.value["notified_at"].as_i64().unwrap_or(0);
-                            let notify = meaningful && should_notify(last_notified, now);
+                            let notify = is_meaningful && should_notify(last_notified, now);
                             // 无论是否通知都更新基线：噪声页静默跟随，真变更冷却后能再报。
                             self.store.put_document(
                                 "pagewatch_page",
@@ -123,20 +150,24 @@ impl PagewatchTracker {
                                     "fingerprint": fingerprint,
                                     "lines": text_lines,
                                     "last_changed_at": now,
+                                    "last_checked_at": now,
                                     "notified_at": if notify { now } else { last_notified },
                                 }),
                             )?;
-                            if !meaningful {
+                            if !is_meaningful {
                                 // 顺序抖动，不计入任何列表
-                            } else if notify {
-                                changed.push((
+                            } else {
+                                meaningful.push((
                                     page.name.clone(),
                                     page.url.clone(),
                                     added,
                                     removed,
                                 ));
-                            } else {
-                                suppressed.push(page.name.clone());
+                                if notify {
+                                    changed.push(meaningful.last().expect("just pushed").clone());
+                                } else {
+                                    suppressed.push(page.name.clone());
+                                }
                             }
                         }
                     }
@@ -162,12 +193,38 @@ impl PagewatchTracker {
             notifier.send(&self.notify_target, None, &msg).await?;
             notified = true;
         }
+        // vault 状态表：每轮按各页文档全量重渲染，保证 Obsidian 里是最新状态；
+        // 内容没变化则不写文件不提交（obsidian 闭环也不会被触发）。
+        let mut vault_logged = 0usize;
+        if let Some(vault) = &self.vault {
+            let mut docs = std::collections::HashMap::new();
+            for page in &self.config.pages {
+                if let Some(doc) = self.store.document("pagewatch_page", &page.url)? {
+                    docs.insert(page.url.clone(), doc.value);
+                }
+            }
+            let content = render_status(&self.config.pages, &docs);
+            let vault = vault.clone();
+            vault_logged = docs.len();
+            tokio::task::spawn_blocking(move || -> Result<()> {
+                if vault.read_file(STATUS_PATH)?.as_deref() == Some(content.as_str()) {
+                    return Ok(());
+                }
+                vault.write_file(STATUS_PATH, &content)?;
+                if vault.commit_all("[ru41] 页面监控")? {
+                    vault.push()?;
+                }
+                Ok(())
+            })
+            .await??;
+        }
         Ok(PagewatchReport {
             pages: self.config.pages.len(),
             changed: changed.iter().map(|(name, _, _, _)| name.clone()).collect(),
             suppressed,
             errors,
             notified,
+            vault_logged,
         })
     }
 
@@ -218,6 +275,48 @@ fn diff_lines(old: &[String], new: &[String]) -> (Vec<String>, Vec<String>) {
     (added, removed)
 }
 
+/// 监控状态表在 vault 里的位置。
+pub const STATUS_PATH: &str = "05-Opportunities-机会/页面监控.md";
+
+/// Unix 秒 → "10-27 17:35"（本地时区）。
+fn fmt_ts(ts: i64) -> String {
+    chrono::DateTime::from_timestamp(ts, 0)
+        .map(|d| {
+            d.with_timezone(&chrono::Local).format("%m-%d %H:%M").to_string()
+        })
+        .unwrap_or_else(|| "—".into())
+}
+
+/// 监控状态表渲染：每轮全量重写，Obsidian 里永远是最新状态。纯函数便于测试。
+fn render_status(
+    pages: &[WatchedPage],
+    docs: &std::collections::HashMap<String, serde_json::Value>,
+) -> String {
+    let mut out = String::from(
+        "# 📡 页面监控\n\n         > ru41 pagewatch 附属每 30 分钟巡查一轮，只维护最新状态，不推送。\n         > 变更判定：可见文本行级比对（标签噪声/顺序抖动不算变更）。\n\n         | 页面 | 最近巡查 | 最近内容变更 |\n|---|---|---|\n",
+    );
+    for page in pages {
+        let row = match docs.get(&page.url) {
+            Some(doc) => {
+                let checked = doc["last_checked_at"]
+                    .as_i64()
+                    .or(doc["baseline_at"].as_i64())
+                    .map(fmt_ts)
+                    .unwrap_or_else(|| "—".into());
+                let changed = doc["last_changed_at"]
+                    .as_i64()
+                    .map(fmt_ts)
+                    .unwrap_or_else(|| "接入以来无变化".into());
+                format!("| [{}]({}) | {} | {} |", page.name, page.url, checked, changed)
+            }
+            None => format!("| [{}]({}) | 未建立基线 | — |", page.name, page.url),
+        };
+        out.push_str(&row);
+        out.push('\n');
+    }
+    out
+}
+
 /// 提取可见文本：(内容指纹, 行列表)。剔除 script/style/注释 → 块级标签转换行 →
 /// 去全部标签 → 行内空白归一。指纹只用于"变没变"的快速比对，diff 才是给人看的。
 ///
@@ -264,6 +363,7 @@ fn extract_text(html: &str) -> (String, Vec<String>) {
     (format!("{:016x}", hasher.finish()), lines)
 }
 
+#[cfg(test)]
 fn content_fingerprint(html: &str) -> String {
     extract_text(html).0
 }
@@ -337,6 +437,25 @@ mod tests {
         let (added, removed) = diff_lines(&old, &new);
         assert_eq!(added, vec!["d".to_owned()]);
         assert_eq!(removed, vec!["b".to_owned(), "c".to_owned()]);
+    }
+
+    #[test]
+    fn status_table_renders_pages_and_states() {
+        let pages = vec![
+            WatchedPage { name: "页面A".into(), url: "https://a".into() },
+            WatchedPage { name: "页面B".into(), url: "https://b".into() },
+        ];
+        let mut docs = std::collections::HashMap::new();
+        docs.insert(
+            "https://a".to_owned(),
+            serde_json::json!({"last_checked_at": 1_793_000_000, "last_changed_at": 1_792_900_000}),
+        );
+        let out = render_status(&pages, &docs);
+        assert!(out.contains("[页面A](https://a)"));
+        assert!(out.contains("[页面B](https://b) | 未建立基线"), "{out}");
+        assert!(out.contains("最近内容变更"), "{out}");
+        // 时间戳渲染成本地时刻而不是原始数字
+        assert!(!out.contains("1793000000"), "{out}");
     }
 
     #[test]
