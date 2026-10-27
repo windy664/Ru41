@@ -16,6 +16,29 @@ pub struct Config {
     pub api: ApiSection,
     pub sources: SourcesSection,
     pub notify: NotifySection,
+    pub plugins: PluginsSection,
+}
+
+/// 动态插件（cdylib）配置。
+#[derive(Debug, Default, Deserialize)]
+#[serde(default, deny_unknown_fields)]
+pub struct PluginsSection {
+    /// 插件目录；缺省 /etc/ru41/plugins，目录不存在视为无插件。
+    pub dir: Option<PathBuf>,
+    /// 显式关闭插件加载（默认开）。
+    pub enabled: Option<bool>,
+}
+
+impl PluginsSection {
+    pub fn dir_or_default(&self) -> PathBuf {
+        self.dir
+            .clone()
+            .unwrap_or_else(|| PathBuf::from("/etc/ru41/plugins"))
+    }
+
+    pub fn is_enabled(&self) -> bool {
+        self.enabled.unwrap_or(true)
+    }
 }
 
 /// HTTP API 配置；令牌也允许环境变量 RU41_API_TOKEN 注入（优先级更高）。

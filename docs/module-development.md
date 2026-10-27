@@ -21,6 +21,9 @@ pub static DEF: super::ModuleDef = super::ModuleDef {
 - linkme 遍历顺序不稳定，消费方一律走 `modules::sorted()`（按 priority、name 排序）；需要 first-match-wins 语义的（如 homework 先于 zhihuishu）显式给更小 priority。
 - 配置段按模块名分布式解析：读取用 `config.sources.get::<XxxSection>("<name>")?`（Result 上下文）或 `config.sources.get_or_default::<XxxSection>("<name>")`（schedule 闭包等非 Result 上下文，解析失败按未配置处理）。`[sources]` 下不属于任何注册模块的键会在加载时告警。
 
+> 想**不碰主仓库**开发附属（独立 repo、编 .so 热插拔上线）？
+> 见[动态插件开发指南](plugin-development.md)（cdylib 路线，版本锁约束更严）。
+
 ## 目录约定
 
 以 papers 为参考：

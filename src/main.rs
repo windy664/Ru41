@@ -47,6 +47,15 @@ async fn main() -> Result<()> {
     if let Some(path) = &config_path {
         eprintln!("[config] using {}", path.display());
     }
+    // 动态插件（cdylib）：启动时扫描加载，失败只告警不挡启动。
+    if config.plugins.is_enabled() {
+        let dir = config.plugins.dir_or_default();
+        match ru41::plugins::load_all(&dir) {
+            Ok(n) if n > 0 => eprintln!("[plugins] {n} 个外部插件已注册"),
+            Ok(_) => {}
+            Err(error) => eprintln!("[plugins] 插件目录 {} 加载失败: {error:#}", dir.display()),
+        }
+    }
     // 附属 tracker 通用入口（ru41 <模块名> poll|run）：模块名经注册表校验，
     // 分支体完全一致，统一分发，不进下面的大 match。
     if let Command::Tracker(args) = &cli.command {
@@ -54,7 +63,7 @@ async fn main() -> Result<()> {
             .first()
             .context("用法: ru41 <模块名> poll|run（模块名见 schedule list）")?;
         anyhow::ensure!(
-            ru41::modules::MODULES.iter().any(|def| def.name == name),
+            ru41::modules::sorted().iter().any(|def| def.name == name),
             "未知模块: {name}（可用模块见 schedule list）"
         );
         let tracker_command = match args.get(1).map(String::as_str) {

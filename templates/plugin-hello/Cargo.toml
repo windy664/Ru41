@@ -1,0 +1,15 @@
+[package]
+name = "ru41-plugin-hello"
+version = "0.1.0"
+edition = "2024"
+description = "ru41 动态插件模板：最小可加载示例，复制后改名即用"
+
+[lib]
+crate-type = ["cdylib"]
+
+[dependencies]
+# 插件必须与宿主使用同一版本的 ru41 crate（ABI 握手会校验）。
+# 本地开发用 path；独立仓库开发改成 git = "...", rev = "<宿主部署的 commit>"。
+ru41 = { path = "../.." }
+anyhow = "1"
+serde_json = "1"
