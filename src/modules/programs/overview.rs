@@ -31,7 +31,10 @@ fn render_gsoc(out: &mut String, program: Option<&GsocProgram>) {
         out.push_str("当季项目未公布或未激活，关注官网：https://summerofcode.withgoogle.com/\n\n");
         return;
     };
-    out.push_str(&format!("当前季：**GSoC {}**（阶段 `{}`）\n\n", p.year, p.phase));
+    out.push_str(&format!(
+        "当前季：**GSoC {}**（阶段 `{}`）\n\n",
+        p.year, p.phase
+    ));
 
     // 申请窗口内置顶提醒。
     let now = crate::util::now();
@@ -90,7 +93,11 @@ fn render_lfx(out: &mut String, items: &[FeedItem]) {
     }
     out.push_str("| 项目 | 详情 |\n|---|---|\n");
     for it in items {
-        let name = cell(it.title.strip_prefix("LFX Mentorship：").unwrap_or(&it.title));
+        let name = cell(
+            it.title
+                .strip_prefix("LFX Mentorship：")
+                .unwrap_or(&it.title),
+        );
         let summary = crate::util::truncate_chars(&cell(&it.summary), 160);
         out.push_str(&format!("| [{name}]({}) | {summary} |\n", it.link));
     }
@@ -148,7 +155,11 @@ mod tests {
     #[test]
     fn renders_gsoc_timeline_within_window() {
         let p = program();
-        let out = render(Some(&p), &[], NaiveDate::from_ymd_opt(2026, 10, 27).unwrap());
+        let out = render(
+            Some(&p),
+            &[],
+            NaiveDate::from_ymd_opt(2026, 10, 27).unwrap(),
+        );
         assert!(out.contains("GSoC 2027"));
         assert!(out.contains("Program Announce Date"), "{out}");
         assert!(out.contains("Contributor Proposals Open"), "{out}");
@@ -161,7 +172,11 @@ mod tests {
     fn renders_application_callout_inside_window() {
         let mut p = program();
         p.milestones[1].ts = crate::util::now() - 86_400; // open 昨天
-        let out = render(Some(&p), &[], NaiveDate::from_ymd_opt(2026, 10, 27).unwrap());
+        let out = render(
+            Some(&p),
+            &[],
+            NaiveDate::from_ymd_opt(2026, 10, 27).unwrap(),
+        );
         assert!(out.contains("🔥 **Contributor 申请进行中**"), "{out}");
     }
 
@@ -174,8 +189,14 @@ mod tests {
             summary: "Hyphae · 期次 SPRING 2027\n带换行的简介\r\n第二行".into(),
             published: "2026-10-27".into(),
         };
-        let out = render(None, &[item], NaiveDate::from_ymd_opt(2026, 10, 27).unwrap());
-        assert!(out.contains("[Hyphae APIS](https://mentorship.lfx.linuxfoundation.org/project/x)"));
+        let out = render(
+            None,
+            &[item],
+            NaiveDate::from_ymd_opt(2026, 10, 27).unwrap(),
+        );
+        assert!(
+            out.contains("[Hyphae APIS](https://mentorship.lfx.linuxfoundation.org/project/x)")
+        );
         assert!(out.contains("共 1 个开放项目"));
         // 换行必须被压平，否则 markdown 表格会破。
         assert!(out.contains("带换行的简介 第二行"), "{out}");

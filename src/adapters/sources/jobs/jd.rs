@@ -71,11 +71,14 @@ fn html_to_text(html: &str) -> String {
     }
 }
 
-async fn get_json<T: serde::de::DeserializeOwned>(
-    http: &reqwest::Client,
-    url: &str,
-) -> Result<T> {
-    Ok(http.get(url).send().await?.error_for_status()?.json().await?)
+async fn get_json<T: serde::de::DeserializeOwned>(http: &reqwest::Client, url: &str) -> Result<T> {
+    Ok(http
+        .get(url)
+        .send()
+        .await?
+        .error_for_status()?
+        .json()
+        .await?)
 }
 
 /// https://api.ashbyhq.com/posting-api/job-board/{slug}（全量 board，含 descriptionHtml）。
@@ -105,10 +108,10 @@ async fn ashby(http: &reqwest::Client, slug: &str, title: &str) -> Result<Option
         .map(|job| JdHit {
             text: html_to_text(&job.description_html),
             // 官方岗位页：优先 API 自带 jobUrl，缺省按 id 构造。
-            url: job.job_url.filter(|u| !u.is_empty()).or(Some(format!(
-                "https://jobs.ashbyhq.com/{slug}/{}",
-                job.id
-            ))),
+            url: job
+                .job_url
+                .filter(|u| !u.is_empty())
+                .or(Some(format!("https://jobs.ashbyhq.com/{slug}/{}", job.id))),
         }))
 }
 
@@ -132,26 +135,32 @@ async fn greenhouse(http: &reqwest::Client, slug: &str, title: &str) -> Result<O
         &format!("https://boards-api.greenhouse.io/v1/boards/{slug}/jobs"),
     )
     .await?;
-    let Some(job) = list.jobs.into_iter().find(|j| title_matches(&j.title, title)) else {
+    let Some(job) = list
+        .jobs
+        .into_iter()
+        .find(|j| title_matches(&j.title, title))
+    else {
         return Ok(None);
     };
     let detail: Detail = get_json(
         http,
-        &format!("https://boards-api.greenhouse.io/v1/boards/{slug}/jobs/{}", job.id),
+        &format!(
+            "https://boards-api.greenhouse.io/v1/boards/{slug}/jobs/{}",
+            job.id
+        ),
     )
     .await?;
     Ok(Some(JdHit {
         text: html_to_text(&detail.content),
-        url: Some(format!("https://boards.greenhouse.io/{slug}/jobs/{}", job.id)),
+        url: Some(format!(
+            "https://boards.greenhouse.io/{slug}/jobs/{}",
+            job.id
+        )),
     }))
 }
 
 /// https://api.smartrecruiters.com/v1/companies/{slug}/postings → 匹配 id → /postings/{id}。
-async fn smartrecruiters(
-    http: &reqwest::Client,
-    slug: &str,
-    title: &str,
-) -> Result<Option<JdHit>> {
+async fn smartrecruiters(http: &reqwest::Client, slug: &str, title: &str) -> Result<Option<JdHit>> {
     #[derive(serde::Deserialize)]
     struct List {
         content: Vec<ListItem>,
@@ -233,7 +242,10 @@ mod tests {
             "Software Engineer",
             "Software Engineer, Monetization Platform"
         ));
-        assert!(title_matches("后端开发实习生（IoT）", "后端开发实习生（IoT）"));
+        assert!(title_matches(
+            "后端开发实习生（IoT）",
+            "后端开发实习生（IoT）"
+        ));
         assert!(!title_matches("算法实习生", "产品经理"));
     }
 

@@ -122,16 +122,27 @@ mod tests {
             job("技术支持工程师", "校招", "10月21日"),
         ]);
         let roles: Vec<&str> = fresh.iter().map(|e| e.role.as_str()).collect();
-        assert_eq!(roles, ["AI研发实习生 - 模型数据工程", "Coding Agent 研发实习生"]);
+        assert_eq!(
+            roles,
+            ["AI研发实习生 - 模型数据工程", "Coding Agent 研发实习生"]
+        );
     }
 
     #[test]
     fn merge_refreshes_and_expires() {
         let mut state = JobsState::default();
-        merge(&mut state, filter_jobs(vec![job("算法实习生", "实习", "10月25日")]), (10, 26));
+        merge(
+            &mut state,
+            filter_jobs(vec![job("算法实习生", "实习", "10月25日")]),
+            (10, 26),
+        );
         assert_eq!(state.entries.len(), 1);
         // 同 key 再来一条更新的发布日：覆盖
-        merge(&mut state, filter_jobs(vec![job("算法实习生", "实习", "10月26日")]), (10, 26));
+        merge(
+            &mut state,
+            filter_jobs(vec![job("算法实习生", "实习", "10月26日")]),
+            (10, 26),
+        );
         assert_eq!(state.entries.len(), 1);
         assert_eq!(state.entries.values().next().unwrap().posted, "10月26日");
         // 推进 40 天：过期

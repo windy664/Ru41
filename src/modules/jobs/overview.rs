@@ -29,7 +29,9 @@ pub fn render(entries: &[JobEntry], today: chrono::NaiveDate) -> String {
         out.push_str("> 面灵条目回源官方招聘站公开 API 抓取（ashby / greenhouse / smartrecruiters）；BOSS 条目由 sidecar 详情接口直接带全文；其余国内平台（飞书招聘/美团/腾讯/京东）接口待适配，暂缺。\n\n");
         for e in with_jd {
             match &e.link {
-                Some(link) => out.push_str(&format!("### [{} · {}]({link})\n\n", e.company, e.role)),
+                Some(link) => {
+                    out.push_str(&format!("### [{} · {}]({link})\n\n", e.company, e.role))
+                }
                 None => out.push_str(&format!("### {} · {}\n\n", e.company, e.role)),
             }
             out.push_str(&format!(
@@ -102,7 +104,10 @@ mod tests {
                 link_tried: true,
             },
         ];
-        let md = render(&entries, chrono::NaiveDate::from_ymd_opt(2026, 10, 26).unwrap());
+        let md = render(
+            &entries,
+            chrono::NaiveDate::from_ymd_opt(2026, 10, 26).unwrap(),
+        );
         assert!(md.contains("## 实习（1 条）"));
         assert!(md.contains("## 校招（1 条）"));
         assert!(md.contains("⭐ 广州 / 深圳"));
@@ -111,6 +116,8 @@ mod tests {
         assert!(md.contains("## JD 详情（1 条）"));
         // 有链接的条目：表格岗位列与 JD 标题都可点击。
         assert!(md.contains("[美团 · 数据开发工程师](https://jobs.meituan.com/example)"));
-        assert!(md.contains("| 10月25日 | 美团 | [数据开发工程师](https://jobs.meituan.com/example) |"));
+        assert!(
+            md.contains("| 10月25日 | 美团 | [数据开发工程师](https://jobs.meituan.com/example) |")
+        );
     }
 }

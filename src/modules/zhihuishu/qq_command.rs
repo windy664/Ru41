@@ -42,7 +42,8 @@ impl CommandHandler for ZhihuishuQqCommand {
             if !arg.is_empty() {
                 return Ok(None);
             }
-            if let Some(reply) = ctx.require_private("查询作业", "作业信息属于个人数据")? {
+            if let Some(reply) = ctx.require_private("查询作业", "作业信息属于个人数据")?
+            {
                 return Ok(Some(Reply::text(reply)));
             }
             Ok(Some(Reply::text(format_homework(&self.report_path))))
@@ -58,7 +59,8 @@ impl CommandHandler for ZhihuishuQqCommand {
             if !looks_like_homework_question(content) {
                 return Ok(None);
             }
-            if let Some(reply) = ctx.require_private("查询作业", "作业信息属于个人数据")? {
+            if let Some(reply) = ctx.require_private("查询作业", "作业信息属于个人数据")?
+            {
                 return Ok(Some(Reply::text(reply)));
             }
             Ok(Some(Reply::text(format_homework(&self.report_path))))

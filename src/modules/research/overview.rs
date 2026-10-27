@@ -104,7 +104,11 @@ fn countdown_label(window: Option<((u32, u32), (u32, u32))>, today: NaiveDate) -
         let Some(open) = NaiveDate::from_ymd_opt(open_year, om, od) else {
             continue;
         };
-        let close_year = if crosses_year { open_year + 1 } else { open_year };
+        let close_year = if crosses_year {
+            open_year + 1
+        } else {
+            open_year
+        };
         let Some(close) = NaiveDate::from_ymd_opt(close_year, cm, cd) else {
             continue;
         };
@@ -140,12 +144,16 @@ mod tests {
         let after = countdown_label(MITACS, NaiveDate::from_ymd_opt(2027, 10, 1).unwrap());
         assert!(after.contains("2028 年 8 月"), "{after}");
         // 全年滚动
-        assert_eq!(countdown_label(None, NaiveDate::from_ymd_opt(2027, 1, 1).unwrap()), "随时可投");
+        assert_eq!(
+            countdown_label(None, NaiveDate::from_ymd_opt(2027, 1, 1).unwrap()),
+            "随时可投"
+        );
         // 跨年窗口（12/1–次年4/30）：1 月中应在窗口内，10 月应数日子
         let crossing = Some(((12, 1), (4, 30)));
         let mid = countdown_label(crossing, NaiveDate::from_ymd_opt(2027, 1, 15).unwrap());
         assert!(mid.contains("窗口进行中"), "{mid}");
-        let before_cross = countdown_label(crossing, NaiveDate::from_ymd_opt(2026, 10, 27).unwrap());
+        let before_cross =
+            countdown_label(crossing, NaiveDate::from_ymd_opt(2026, 10, 27).unwrap());
         assert!(before_cross.starts_with("距开窗约"), "{before_cross}");
     }
 
