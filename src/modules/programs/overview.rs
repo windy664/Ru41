@@ -1,4 +1,4 @@
-//! 科研机会总览 markdown 渲染：GSoC 当季时间线（近 7 天 ~ 未来 120 天）/
+//! 项目计划总览 markdown 渲染：GSoC 当季时间线（近 7 天 ~ 未来 120 天）/
 //! LFX 当前开放申请项目 / OSPP 静态卡；纯函数便于测试。
 
 use crate::adapters::sources::competition::gsoc::{GsocProgram, Milestone, format_cn};
@@ -11,9 +11,9 @@ const HORIZON_SECS: i64 = 120 * 86_400;
 
 pub fn render(gsoc: Option<&GsocProgram>, lfx: &[FeedItem], today: NaiveDate) -> String {
     let mut out = format!(
-        "# 🔬 科研机会总览\n\n\
-         > 生成于 {today} · 由 ru41 research 附属每 6 小时刷新\n\
-         > 口径：校外可参与的开源/科研项目计划，年级不作过滤，能申就申；\n\
+        "# 🧩 项目总览\n\n\
+         > 生成于 {today} · 由 ru41 programs 附属每 6 小时刷新\n\
+         > 口径：校外可个人申请的带薪开源项目计划，不看学校不看年级，能申就申；\n\
          > GSoC / OSPP 结项有钱，LFX 期次分 paid/unpaid 需逐个确认\n\n"
     );
     render_gsoc(&mut out, gsoc);

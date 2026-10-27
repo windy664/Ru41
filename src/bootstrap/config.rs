@@ -247,7 +247,7 @@ pub struct SourcesSection {
     pub pagewatch: crate::modules::pagewatch::PagewatchSection,
     pub competitions: crate::modules::competitions::CompetitionsSection,
     pub jobs: crate::modules::jobs::JobsSection,
-    pub research: crate::modules::research::ResearchSection,
+    pub programs: crate::modules::programs::ProgramsSection,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]

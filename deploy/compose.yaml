@@ -177,16 +177,16 @@ services:
       - ${RU41_VAULT_PATH:?set RU41_VAULT_PATH to the vault clone dir}:/vault
     command: ["--config", "/etc/ru41/ru41.toml", "--db", "/data/state.db", "jobs", "run"]
 
-  # 科研机会总览：GSoC 时间线 / LFX 开放项目 / OSPP 节奏卡 → vault 科研机会总览.md，
+  # 项目计划总览：GSoC 时间线 / LFX 开放项目 / OSPP 节奏卡 → vault 项目总览.md，
   # [ru41] 自提交，需挂载 Vault。
-  research:
+  programs:
     <<: *ru41-common
-    profiles: [research]
+    profiles: [programs]
     volumes:
       - ../ru41.toml:/etc/ru41/ru41.toml:ro
       - ../.ru41:/data
       - ${RU41_VAULT_PATH:?set RU41_VAULT_PATH to the vault clone dir}:/vault
-    command: ["--config", "/etc/ru41/ru41.toml", "--db", "/data/state.db", "research", "run"]
+    command: ["--config", "/etc/ru41/ru41.toml", "--db", "/data/state.db", "programs", "run"]
 
   # BOSS 直聘爬取 sidecar：独立 Python 镜像（DrissionPage + chromium），
   # 结果写 /data/boss_jobs.json 供 jobs 模块读取（[sources.jobs] boss_path）。

@@ -1,6 +1,6 @@
-//! 科研机会总览：GSoC 官方 API 时间线 + LFX Mentorship 开放申请项目 +
+//! 项目计划总览：GSoC 官方 API 时间线 + LFX Mentorship 开放申请项目 +
 //! OSPP 开源之夏（无公开 API，静态卡列往年节奏提示关注窗口），生成
-//! `05-Opportunities-机会/Research-科研/科研机会总览.md` 写进 vault，
+//! `05-Opportunities-机会/Programs-项目计划/项目总览.md` 写进 vault，
 //! 变更以 [ru41] 前缀自提交（obsidian 闭环会自认，不触发整理任务）。
 //! 雷达池里的 gsoc+/lfx+ 源负责"到点提醒"，本模块负责 vault 里的常驻全景。
 
@@ -12,47 +12,47 @@ use serde::Deserialize;
 use std::sync::Arc;
 
 /// 总览在 vault 里的位置。
-pub const OVERVIEW_PATH: &str = "05-Opportunities-机会/Research-科研/科研机会总览.md";
+pub const OVERVIEW_PATH: &str = "05-Opportunities-机会/Programs-项目计划/项目总览.md";
 
-/// `[sources.research]`：科研机会总览附属。
+/// `[sources.programs]`：项目计划总览附属。
 #[derive(Debug, Default, Deserialize)]
 #[serde(default, deny_unknown_fields)]
-pub struct ResearchSection {
+pub struct ProgramsSection {
     /// 生成间隔（秒），默认 6 小时。
     pub interval_secs: Option<u64>,
 }
 
 /// 注册表定义：依赖 obsidian 的 vault 配置（同一个仓库），未配置则缺席。
 pub const DEF: super::ModuleDef = super::ModuleDef {
-    name: "research",
+    name: "programs",
     schedule: |config| {
         let ready = config.obsidian.is_ready();
         vec![super::JobSchedule::simple(
-            "research",
-            config.sources.research.interval_secs.unwrap_or(6 * 3600),
+            "programs",
+            config.sources.programs.interval_secs.unwrap_or(6 * 3600),
             ready,
             (!ready).then(|| "复用 [obsidian] vault_path，未配置".into()),
         )]
     },
     tracker: |config, _store, name| {
-        if name != "research" {
+        if name != "programs" {
             return Ok(None);
         }
         let resolved = config.obsidian.resolved(None)?;
-        Ok(Some(Box::new(ResearchService {
+        Ok(Some(Box::new(ProgramsService {
             vault: crate::bootstrap::assembly::vault_client(&resolved),
-            interval_secs: config.sources.research.interval_secs.unwrap_or(6 * 3600),
+            interval_secs: config.sources.programs.interval_secs.unwrap_or(6 * 3600),
         })))
     },
     qq_handlers: |_, _| Ok(Vec::new()),
 };
 
-pub struct ResearchService {
+pub struct ProgramsService {
     vault: Arc<dyn Vault>,
     interval_secs: u64,
 }
 
-impl ResearchService {
+impl ProgramsService {
     /// 抓 GSoC 当季时间线 + LFX 开放项目 → 渲染 → 有变化才写文件并自提交。
     /// 单源失败记日志降级，不挡其他源。
     pub async fn poll_once(&self) -> Result<serde_json::Value> {
@@ -62,7 +62,7 @@ impl ResearchService {
         {
             Ok(program) => program,
             Err(error) => {
-                eprintln!("[research] gsoc fetch failed: {error:#}");
+                eprintln!("[programs] gsoc fetch failed: {error:#}");
                 None
             }
         };
@@ -72,7 +72,7 @@ impl ResearchService {
         {
             Ok(items) => items,
             Err(error) => {
-                eprintln!("[research] lfx fetch failed: {error:#}");
+                eprintln!("[programs] lfx fetch failed: {error:#}");
                 Vec::new()
             }
         };
@@ -87,7 +87,7 @@ impl ResearchService {
                 return Ok(false);
             }
             vault.write_file(OVERVIEW_PATH, &content)?;
-            if vault.commit_all("[ru41] 科研机会总览")? {
+            if vault.commit_all("[ru41] 项目总览")? {
                 vault.push()?;
             }
             Ok(true)
@@ -101,7 +101,7 @@ impl ResearchService {
     }
 }
 
-impl crate::ingress::schedule::PollJob for ResearchService {
+impl crate::ingress::schedule::PollJob for ProgramsService {
     fn job_interval(&self) -> std::time::Duration {
         std::time::Duration::from_secs(self.interval_secs)
     }
