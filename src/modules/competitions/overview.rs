@@ -13,7 +13,14 @@ pub fn render(rows: &[CompetitionRow], today: NaiveDate) -> String {
          |---|---|---|---|---|---|---|\n"
     );
     for row in rows {
-        let name = row.name.replace('|', "\\|");
+        // 单元格一律压单行：任何来源再产出带 \n 的字段也不许砸表结构。
+        let cell = |s: &str| -> String {
+            s.split_whitespace()
+                .collect::<Vec<_>>()
+                .join(" ")
+                .replace('|', "\\|")
+        };
+        let name = cell(&row.name);
         let star = if row.gba { "⭐ " } else { "" };
         let deadline = row
             .deadline
@@ -26,11 +33,15 @@ pub fn render(rows: &[CompetitionRow], today: NaiveDate) -> String {
         let themes = if row.themes.is_empty() {
             "—".to_owned()
         } else {
-            row.themes.join("、").replace('|', "\\|")
+            cell(&row.themes.join("、"))
         };
         out.push_str(&format!(
             "| {deadline} | {star}[{name}]({}) | {} | {} | {} | {start} | {} |\n",
-            row.link, row.place, row.prize, themes, row.source
+            row.link,
+            cell(&row.place),
+            cell(&row.prize),
+            themes,
+            row.source
         ));
     }
     out.push_str(&format!("\n共 {} 条\n", rows.len()));
@@ -65,5 +76,28 @@ mod tests {
     fn empty_renders_zero_count() {
         let out = render(&[], NaiveDate::from_ymd_opt(2026, 10, 26).unwrap());
         assert!(out.contains("共 0 条"));
+    }
+
+    #[test]
+    fn multiline_and_pipe_cells_are_squashed() {
+        let row = CompetitionRow {
+            deadline: None,
+            name: "多行\n名称".into(),
+            place: "线上".into(),
+            prize: "TBD\n1100$ | 奖品".into(),
+            start: None,
+            link: "https://example.com".into(),
+            source: "CTFtime",
+            themes: vec![],
+            gba: false,
+        };
+        let out = render(&[row], NaiveDate::from_ymd_opt(2026, 10, 26).unwrap());
+        let data_lines: Vec<&str> = out
+            .lines()
+            .filter(|l| l.starts_with("| ") && !l.contains("[ru41]") && l.contains(']'))
+            .collect();
+        assert_eq!(data_lines.len(), 1, "数据行不许因换行裂开：{data_lines:?}");
+        assert!(out.contains("多行 名称"));
+        assert!(out.contains("TBD 1100$ \\| 奖品"));
     }
 }

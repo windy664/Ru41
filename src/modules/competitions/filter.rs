@@ -112,11 +112,7 @@ fn prize_gate(row: &CompetitionRow) -> bool {
 pub fn build_rows(input: Vec<CompetitionRow>, today: NaiveDate) -> Vec<CompetitionRow> {
     let mut rows: Vec<CompetitionRow> = input
         .into_iter()
-        .filter(|r| {
-            prize_gate(r)
-                && !is_k12(&r.name, "")
-                && is_future(r, today)
-        })
+        .filter(|r| prize_gate(r) && !is_k12(&r.name, "") && is_future(r, today))
         .collect();
     // 去重：同名保留字段更全的
     let mut seen: std::collections::HashMap<String, CompetitionRow> = Default::default();
@@ -363,12 +359,23 @@ pub fn collect_datafountain(
 /// 无报名截止字段，用开赛日做行动节点；奖金常 TBD，weight ≥ 20 的大赛
 /// 即使奖金未公布也保留（prize 列写"权重 N（奖金未公布）"，靠
 /// build_rows 的 ctftime 豁免过 prize 闸门）。
-pub fn collect_ctftime(ev: &crate::adapters::sources::competition::ctftime::CtftimeEvent) -> Option<CompetitionRow> {
+/// CTFtime 的 prize 字段常是多行英文段落（含换行/pipe），进表格前压成单行。
+fn one_line(text: &str) -> String {
+    text.split_whitespace()
+        .collect::<Vec<_>>()
+        .join(" ")
+        .replace('|', "/")
+}
+
+pub fn collect_ctftime(
+    ev: &crate::adapters::sources::competition::ctftime::CtftimeEvent,
+) -> Option<CompetitionRow> {
     if is_k12(&ev.title, "") {
         return None;
     }
-    let prize: String = if has_prize(&ev.prizes) {
-        ev.prizes.chars().take(40).collect()
+    let prizes = one_line(&ev.prizes);
+    let prize: String = if has_prize(&prizes) {
+        prizes.chars().take(40).collect()
     } else if ev.weight >= 20.0 {
         format!("权重 {:.0}（奖金未公布）", ev.weight)
     } else {
@@ -376,7 +383,7 @@ pub fn collect_ctftime(ev: &crate::adapters::sources::competition::ctftime::Ctft
     };
     let row = CompetitionRow {
         deadline: None,
-        name: ev.title.clone(),
+        name: one_line(&ev.title),
         place: if ev.onsite {
             ev.location.clone()
         } else {
@@ -544,8 +551,23 @@ mod tests {
         assert!(r.gba);
         // 权重豁免行能过 build_rows 的 prize 闸门
         let today = NaiveDate::from_ymd_opt(2026, 10, 26).unwrap();
-        let out = build_rows(vec![collect_ctftime(&ev("XCTF Finals", "TBD", 50.0, false, "")).unwrap()], today);
+        let out = build_rows(
+            vec![collect_ctftime(&ev("XCTF Finals", "TBD", 50.0, false, "")).unwrap()],
+            today,
+        );
         assert_eq!(out.len(), 1);
+        // 多行带 pipe 的 prize 压成单行（表格安全）
+        let r = collect_ctftime(&ev(
+            "PINK+ CTF",
+            "TBD\nEstimated 1100$ | 奖品",
+            5.0,
+            false,
+            "",
+        ))
+        .unwrap();
+        assert!(!r.prize.contains('\n'), "prize 不得含换行: {:?}", r.prize);
+        assert!(!r.prize.contains('|'));
+        assert!(r.prize.contains("1100$"));
     }
 
     #[test]
