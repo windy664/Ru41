@@ -65,6 +65,16 @@ services:
     volumes: *ru41-volumes
     command: ["--config", "/etc/ru41/ru41.toml", "--db", "/data/state.db", "ecard", "run"]
 
+  compshare:
+    <<: *ru41-common
+    profiles: [compshare]
+    volumes: *ru41-volumes
+    environment:
+      RU41_CONFIG: /etc/ru41/ru41.toml
+      RU41_DB: /data/state.db
+      RU41_COMPSHARE_COOKIE: ${RU41_COMPSHARE_COOKIE:?set RU41_COMPSHARE_COOKIE}
+    command: ["--config", "/etc/ru41/ru41.toml", "--db", "/data/state.db", "compshare", "run"]
+
   chaoxing:
     <<: *ru41-common
     profiles: [chaoxing]

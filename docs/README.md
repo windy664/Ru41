@@ -33,6 +33,7 @@
 - [智慧树作业提醒](sources-zhihuishu.md)：sidecar 报告契约、deadline 分类与考试式红线
 - [学习通签到监控](sources-chaoxing.md)：协议端直连、待签提醒与手动签到红线
 - [教务课表监控](sources-jwxt.md)：CAS 单点登录拉课表、变更检测与明日课表提醒
+- [恒源云 GPU 库存监控](sources-compshare.md)：light-gpu 容量接口、P40 有货提醒与会话过期告警
 
 ## 推荐阅读顺序
 

@@ -24,6 +24,7 @@ fn registers_all_module_jobs() {
         "rss",
         "youtube",
         "ecard",
+        "compshare",
         "zhihuishu",
         "todo-remind",
     ] {
@@ -38,6 +39,7 @@ fn reports_disabled_without_config() {
     assert!(!job(&jobs, "rss").enabled);
     assert!(!job(&jobs, "youtube").enabled);
     assert!(!job(&jobs, "ecard").enabled);
+    assert!(!job(&jobs, "compshare").enabled);
     // 智慧树报告路径有默认值，登记即可启动。
     assert!(job(&jobs, "zhihuishu").enabled);
     assert!(!job(&jobs, "todo-remind").enabled);
@@ -52,6 +54,7 @@ fn flips_enabled_when_configured() {
          [sources.youtube]\nchannels = [\"@test\"]\n\
          [sources.ecard]\nbase_url = \"https://ecard.example.edu.cn\"\ntoken = \"t\"\n\
          impl_type = \"I\"\nschool_area_no = \"1\"\nbuilding_no = \"2\"\nroom_num = \"3\"\n\
+         [sources.compshare]\nproject_id = \"org-test\"\ncookie = \"c\"\ninterval_secs = 60\n\
          [notify]\nchannel = \"qq\"\n[channel.qq]\ndefault_notify_target = \"user:U1\"\n",
     );
     let jobs = scheduled_jobs(&config);
@@ -59,9 +62,11 @@ fn flips_enabled_when_configured() {
     assert!(job(&jobs, "rss").enabled);
     assert!(job(&jobs, "youtube").enabled);
     assert!(job(&jobs, "ecard").enabled);
+    assert!(job(&jobs, "compshare").enabled);
     assert!(job(&jobs, "todo-remind").enabled);
     assert_eq!(job(&jobs, "papers").interval_secs, Some(3600));
     assert_eq!(job(&jobs, "ecard").interval_secs, Some(86_400));
+    assert_eq!(job(&jobs, "compshare").interval_secs, Some(60));
 }
 
 #[test]

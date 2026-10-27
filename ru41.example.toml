@@ -102,6 +102,18 @@ app_secret = ""
 # water_threshold = 1.0    # 吨
 # interval_secs = 86400
 
+# 恒源云 light-gpu 库存监控（ru41 compshare poll/run），协议见 docs/sources-compshare.md。
+# Cookie 是登录态，建议用环境变量 RU41_COMPSHARE_COOKIE 注入，勿写进文件。
+# [sources.compshare]
+# project_id = "org-..."
+# image_id = "compshareImage-..."
+# region = "cn-wlcb"
+# zone = "cn-wlcb-01"
+# gpu_type = "P40"
+# disk_size_gb = 100
+# interval_secs = 60
+# notify = true
+
 # 智慧树作业提醒：消费 sidecar 采集器写出的报告文件（见 docs/sources-zhihuishu.md）。
 # [sources.zhihuishu]
 # report_path = ".ru41/zhihuishu/report.json"
