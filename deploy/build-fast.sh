@@ -62,8 +62,15 @@ docker run --name "$BUILDER" \
   # 避免把 plugins/ 的 target-docker（数 GB）带进构建上下文。
   rm -rf "$BUILD_DIR/.plugins-dist"
   mkdir -p "$BUILD_DIR/.plugins-dist"
-  find "$BUILD_DIR/plugins" -name 'libru41_plugin_*.so' -path '*/release/*' \
-    -exec cp {} "$BUILD_DIR/.plugins-dist/" \;
+  # 只收各插件自己 target-docker/release 下的 .so——插件间依赖会在
+  # 对方 deps/ 里产出一份无入口符号的副本（homework→zhihuishu 实证），
+  # 用 find 全扫会被覆盖。
+  for dir in "$BUILD_DIR"/plugins/*/; do
+    name="$(basename "$dir")"
+    so="$dir/target-docker/release/libru41_plugin_$name.so"
+    [ -f "$so" ] || { echo "[build-fast] FATAL: 插件产物缺失 $so"; exit 1; }
+    cp "$so" "$BUILD_DIR/.plugins-dist/"
+  done
   ls "$BUILD_DIR/.plugins-dist" | wc -l
   # 验收：每个 .so 必须导出入口符号（feature 漏开/陈旧产物立即暴露）。
   for so in "$BUILD_DIR"/.plugins-dist/libru41_plugin_*.so; do
