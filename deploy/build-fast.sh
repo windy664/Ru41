@@ -37,6 +37,7 @@ fi
 docker run --name "$BUILDER" \
   -v "$BUILD_DIR":/build \
   -v "$HOME/.cargo/registry:/usr/local/cargo/registry" \
+  -e RU41_GIT_HASH_OVERRIDE="$COMMIT" \
   -w /build rust:1.98-trixie \
   cargo build --locked --release --bin ru41
 

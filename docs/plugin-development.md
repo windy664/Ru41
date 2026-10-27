@@ -17,6 +17,7 @@ cd ru41-plugin-foo
 # dlopen 失败：version `GLIBC_X.XX' not found）。用净室容器编译：
 docker run --rm -v <ru41仓库路径>:/build \
   -e CARGO_TARGET_DIR=/build/templates/plugin-foo/target-docker \
+  -e RU41_GIT_HASH_OVERRIDE=$(git -C <ru41仓库路径> rev-parse HEAD) \
   -w /build/templates/plugin-foo rust:1.98-trixie cargo build --release
 
 cp target-docker/release/libru41_plugin_foo.so <服务器>:/etc/ru41/plugins/
@@ -30,8 +31,10 @@ cp target-docker/release/libru41_plugin_foo.so <服务器>:/etc/ru41/plugins/
 1. **同一 rustc**：插件和宿主用同一个 Rust 工具链编译。
 2. **同一 ru41 版本**：Cargo.toml 里 `ru41 = { git = "...", rev = "<宿主部署的 commit>" }`，
    宿主升级后插件必须改 rev 重编。入口握手双重校验：`CARGO_PKG_VERSION` 必须相等；
-   双方都有 git 元数据时还要求 commit hash 一致（pkg 版本不变但布局可能已漂移），
-   容器内无 .git 构建时降级为版本号校验 + 告警日志。
+   双方都有 git 元数据时还要求 commit hash 一致（pkg 版本不变但布局可能已漂移）。
+   注意：worktree 的 .git 是指针文件，容器内构建解析不到真 gitdir——
+   必须用 RU41_GIT_HASH_OVERRIDE 从宿主机显式注入（build-fast.sh 已内置），
+   否则两边都是 unknown，握手退化为仅版本号校验。
 3. **同一依赖锁**：tokio/serde 等共享依赖版本必须与宿主一致——
    把主仓库的 `Cargo.lock` 复制进插件仓库最稳妥。
 
