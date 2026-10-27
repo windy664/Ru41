@@ -34,7 +34,13 @@ struct BossJob {
 /// "2026-10-26" → "10月26日"（与 posted_md 解析兼容）；解析不了回 "未公布"。
 fn iso_date_to_md(iso: &str) -> String {
     chrono::NaiveDate::parse_from_str(iso, "%Y-%m-%d")
-        .map(|d| format!("{}月{}日", d.format("%m").to_string().trim_start_matches('0'), d.format("%d").to_string().trim_start_matches('0')))
+        .map(|d| {
+            format!(
+                "{}月{}日",
+                d.format("%m").to_string().trim_start_matches('0'),
+                d.format("%d").to_string().trim_start_matches('0')
+            )
+        })
         .unwrap_or_else(|_| "未公布".into())
 }
 
@@ -63,7 +69,11 @@ pub fn load_entries(path: &str) -> Result<Vec<JobEntry>> {
             .map(|j| JobEntry {
                 company: j.company,
                 role: j.job_name,
-                city: if j.city.is_empty() { "未公布".into() } else { j.city },
+                city: if j.city.is_empty() {
+                    "未公布".into()
+                } else {
+                    j.city
+                },
                 audience: audience_of(&j.experience, &j.degree),
                 kind: "实习".into(),
                 posted: iso_date_to_md(&j.first_seen),
@@ -141,7 +151,10 @@ mod tests {
         assert_eq!(first.jd.as_deref(), Some("参与大模型训练与评测……"));
         assert!(first.jd_tried);
 
-        let second = entries.iter().find(|e| e.role.contains("后端开发")).unwrap();
+        let second = entries
+            .iter()
+            .find(|e| e.role.contains("后端开发"))
+            .unwrap();
         assert_eq!(second.audience, "在校/应届");
         assert!(second.jd.is_none(), "空 JD 不落成 Some");
 
@@ -179,7 +192,10 @@ mod tests {
         assert_eq!(state.entries.len(), 3);
 
         let rows: Vec<JobEntry> = state.entries.values().cloned().collect();
-        let md = render(&rows, chrono::NaiveDate::from_ymd_opt(2026, 10, 26).unwrap());
+        let md = render(
+            &rows,
+            chrono::NaiveDate::from_ymd_opt(2026, 10, 26).unwrap(),
+        );
         assert!(md.contains("## 实习（2 条）"));
         assert!(md.contains("## 校招（1 条）"));
         assert!(md.contains("⭐ 深圳"));

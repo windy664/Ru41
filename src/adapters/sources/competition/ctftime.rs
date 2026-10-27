@@ -55,10 +55,10 @@ impl CtftimeClient {
     pub async fn fetch_events(&self, window_days: i64) -> Result<Vec<CtftimeEvent>> {
         let now = chrono::Utc::now().timestamp();
         let finish = now + window_days * 86400;
-        let url = format!(
-            "https://ctftime.org/api/v1/events/?limit=100&start={now}&finish={finish}"
-        );
-        let body = crate::adapters::sources::feed::fetch_text(self.http.get(url), "ctftime").await?;
+        let url =
+            format!("https://ctftime.org/api/v1/events/?limit=100&start={now}&finish={finish}");
+        let body =
+            crate::adapters::sources::feed::fetch_text(self.http.get(url), "ctftime").await?;
         serde_json::from_str(&body).context("ctftime json parse failed")
     }
 }

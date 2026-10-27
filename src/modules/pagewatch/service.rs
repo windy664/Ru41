@@ -137,8 +137,7 @@ impl PagewatchTracker {
                             let (added, removed) = diff_lines(&old_lines, &text_lines);
                             // 行集合没变只是顺序/空白抖动：静默跟随基线，不打扰。
                             let is_meaningful = !added.is_empty() || !removed.is_empty();
-                            let last_notified =
-                                doc.value["notified_at"].as_i64().unwrap_or(0);
+                            let last_notified = doc.value["notified_at"].as_i64().unwrap_or(0);
                             let notify = is_meaningful && should_notify(last_notified, now);
                             // 无论是否通知都更新基线：噪声页静默跟随，真变更冷却后能再报。
                             self.store.put_document(
@@ -282,7 +281,9 @@ pub const STATUS_PATH: &str = "05-Opportunities-机会/页面监控.md";
 fn fmt_ts(ts: i64) -> String {
     chrono::DateTime::from_timestamp(ts, 0)
         .map(|d| {
-            d.with_timezone(&chrono::Local).format("%m-%d %H:%M").to_string()
+            d.with_timezone(&chrono::Local)
+                .format("%m-%d %H:%M")
+                .to_string()
         })
         .unwrap_or_else(|| "—".into())
 }
@@ -307,7 +308,10 @@ fn render_status(
                     .as_i64()
                     .map(fmt_ts)
                     .unwrap_or_else(|| "接入以来无变化".into());
-                format!("| [{}]({}) | {} | {} |", page.name, page.url, checked, changed)
+                format!(
+                    "| [{}]({}) | {} | {} |",
+                    page.name, page.url, checked, changed
+                )
             }
             None => format!("| [{}]({}) | 未建立基线 | — |", page.name, page.url),
         };
@@ -442,8 +446,14 @@ mod tests {
     #[test]
     fn status_table_renders_pages_and_states() {
         let pages = vec![
-            WatchedPage { name: "页面A".into(), url: "https://a".into() },
-            WatchedPage { name: "页面B".into(), url: "https://b".into() },
+            WatchedPage {
+                name: "页面A".into(),
+                url: "https://a".into(),
+            },
+            WatchedPage {
+                name: "页面B".into(),
+                url: "https://b".into(),
+            },
         ];
         let mut docs = std::collections::HashMap::new();
         docs.insert(

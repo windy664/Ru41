@@ -225,7 +225,9 @@ pub fn skills_index_prefix(skills: &[SkillPackage]) -> String {
     if skills.is_empty() {
         return String::new();
     }
-    let mut out = String::from("可用技能（已在工作目录 .agents/skills/ 下，匹配需求时先读对应 SKILL.md 再行动）：\n");
+    let mut out = String::from(
+        "可用技能（已在工作目录 .agents/skills/ 下，匹配需求时先读对应 SKILL.md 再行动）：\n",
+    );
     for skill in skills {
         out.push_str(&format!(
             "- {}（.agents/skills/{}/SKILL.md）：{}\n",

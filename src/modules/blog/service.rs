@@ -317,7 +317,10 @@ impl BlogPublishTracker {
         } else {
             "published"
         };
-        if !posts.is_empty() || !rejected.is_empty() || !unpublish.is_empty() || !unsolved.is_empty()
+        if !posts.is_empty()
+            || !rejected.is_empty()
+            || !unpublish.is_empty()
+            || !unsolved.is_empty()
         {
             self.notify_result(&posts, &rejected, &unpublish, &unsolved)
                 .await?;
@@ -408,7 +411,10 @@ impl BlogPublishTracker {
             ));
         }
         for (path, target) in unpublished {
-            lines.push(format!("- 🗑 已下架 {}（源文件移出已发布目录：`{path}`）", target));
+            lines.push(format!(
+                "- 🗑 已下架 {}（源文件移出已发布目录：`{path}`）",
+                target
+            ));
         }
         for reject in rejected {
             lines.push(format!(
@@ -540,7 +546,8 @@ fn target_name_from_stem(published_path: &str) -> Option<String> {
         .then(|| format!("{}.md", sanitize_slug(stem)))
 }
 
-fn sanitize_slug(stem: &str) -> String {    let mut out = String::new();
+fn sanitize_slug(stem: &str) -> String {
+    let mut out = String::new();
     let mut last_dash = false;
     for ch in stem.chars() {
         let ok = ch.is_ascii_alphanumeric() || ('\u{4e00}'..='\u{9fff}').contains(&ch) || ch == '-';

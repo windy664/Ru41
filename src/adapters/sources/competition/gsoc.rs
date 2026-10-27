@@ -95,7 +95,12 @@ fn parse_program(body: &str) -> Result<GsocProgram> {
         .unwrap_or("")
         .to_owned();
     let mut milestones = vec![];
-    for m in v.get("milestones").and_then(|a| a.as_array()).into_iter().flatten() {
+    for m in v
+        .get("milestones")
+        .and_then(|a| a.as_array())
+        .into_iter()
+        .flatten()
+    {
         let label = m.get("label").and_then(|s| s.as_str()).unwrap_or("").trim();
         let datetime = m.get("datetime").and_then(|s| s.as_str()).unwrap_or("");
         let Some(ts) = chrono::DateTime::parse_from_rfc3339(datetime)
@@ -115,8 +120,15 @@ fn parse_program(body: &str) -> Result<GsocProgram> {
     }
     Ok(GsocProgram {
         year,
-        is_active: v.get("is_active").and_then(|b| b.as_bool()).unwrap_or(false),
-        phase: v.get("phase").and_then(|s| s.as_str()).unwrap_or("").to_owned(),
+        is_active: v
+            .get("is_active")
+            .and_then(|b| b.as_bool())
+            .unwrap_or(false),
+        phase: v
+            .get("phase")
+            .and_then(|s| s.as_str())
+            .unwrap_or("")
+            .to_owned(),
         milestones,
     })
 }
@@ -257,7 +269,11 @@ mod tests {
             .iter()
             .find(|i| i.id == "gsoc-2026-contributor-applications-open")
             .expect("窗口内应有申请进行中条目");
-        assert!(extra.summary.contains("2026-04-01 02:00"), "{}", extra.summary);
+        assert!(
+            extra.summary.contains("2026-04-01 02:00"),
+            "{}",
+            extra.summary
+        );
     }
 
     #[test]

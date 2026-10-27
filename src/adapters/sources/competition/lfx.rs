@@ -152,7 +152,10 @@ fn map_project(p: &serde_json::Value, today: &str) -> Option<FeedItem> {
         parts.push(format!("期次 {terms}"));
     }
     // createdOn 形如 "2025-02-10 19:56:08 +0000"，取日期部分。
-    let created = str_field(p, "createdOn").chars().take(10).collect::<String>();
+    let created = str_field(p, "createdOn")
+        .chars()
+        .take(10)
+        .collect::<String>();
     if !created.is_empty() {
         parts.push(format!("创建于 {created}"));
     }
@@ -216,7 +219,11 @@ mod tests {
         );
         assert!(it.summary.contains("Hyphae"));
         assert!(it.summary.contains("Java,JavaScript,Python"));
-        assert!(it.summary.contains("期次 UNPAID - SPRING 2026"), "{}", it.summary);
+        assert!(
+            it.summary.contains("期次 UNPAID - SPRING 2026"),
+            "{}",
+            it.summary
+        );
         assert!(it.summary.contains("创建于 2025-02-10"), "{}", it.summary);
         assert!(it.summary.contains("微服务网格示例项目"));
         // published 用抓取当天：老项目的 createdOn 会被 max_age_days 时效过滤丢弃。

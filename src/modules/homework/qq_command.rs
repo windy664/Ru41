@@ -43,7 +43,8 @@ impl CommandHandler for HomeworkQqCommand {
             if !arg.is_empty() {
                 return Ok(None);
             }
-            if let Some(reply) = ctx.require_private("查询作业", "作业信息属于个人数据")? {
+            if let Some(reply) = ctx.require_private("查询作业", "作业信息属于个人数据")?
+            {
                 return Ok(Some(Reply::text(reply)));
             }
             Ok(Some(Reply::text(render(ctx.store, &self.report_path))))
@@ -59,7 +60,8 @@ impl CommandHandler for HomeworkQqCommand {
             if !looks_like_homework_question(content) {
                 return Ok(None);
             }
-            if let Some(reply) = ctx.require_private("查询作业", "作业信息属于个人数据")? {
+            if let Some(reply) = ctx.require_private("查询作业", "作业信息属于个人数据")?
+            {
                 return Ok(Some(Reply::text(reply)));
             }
             Ok(Some(Reply::text(render(ctx.store, &self.report_path))))

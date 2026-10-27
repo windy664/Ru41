@@ -134,7 +134,11 @@ fn iso_to_md(iso: &str) -> String {
     chrono::DateTime::parse_from_rfc3339(iso)
         .map(|dt| {
             let local = dt.with_timezone(&chrono::FixedOffset::east_opt(8 * 3600).unwrap());
-            format!("{}月{}日", local.format("%m").to_string().trim_start_matches('0'), local.format("%d").to_string().trim_start_matches('0'))
+            format!(
+                "{}月{}日",
+                local.format("%m").to_string().trim_start_matches('0'),
+                local.format("%d").to_string().trim_start_matches('0')
+            )
         })
         .unwrap_or_else(|_| "未公布".into())
 }
