@@ -366,7 +366,6 @@ impl Config {
                     .with_context(|| format!("cannot read config file {}", path.display()))?;
                 let config: Config = toml::from_str(&text)
                     .with_context(|| format!("invalid config file {}", path.display()))?;
-                config.sources.warn_unknown_keys();
                 return Ok((config, Some(path)));
             }
         }
