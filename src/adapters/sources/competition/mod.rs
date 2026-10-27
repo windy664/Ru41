@@ -2,6 +2,7 @@
 //! 每个平台一个文件，模块内自描述 DEF（前缀 + 抓取入口），
 //! 经 sources 注册表进雷达候选池。接新竞赛网站 = 这里加一个文件 + 注册表一行。
 
+pub mod ctftime;
 pub mod datafountain;
 pub mod devpost;
 pub mod gsoc;
