@@ -893,6 +893,9 @@ impl ru41::ports::vault::Vault for WorkVault {
     fn changed_files(&self, _from: &str, _to: &str) -> anyhow::Result<Vec<String>> {
         Ok(vec![])
     }
+    fn changed_entries(&self, _from: &str, _to: &str) -> anyhow::Result<Vec<(String, bool)>> {
+        Ok(vec![])
+    }
     fn checkout_hard(&self, _sha: &str) -> anyhow::Result<()> {
         Ok(())
     }
