@@ -36,6 +36,10 @@ pub trait Vault: Send + Sync {
     fn head_subject(&self, sha: &str) -> Result<String>;
     /// from..to 之间变更的文件列表（相对路径）。
     fn changed_files(&self, from: &str, to: &str) -> Result<Vec<String>>;
+    /// from..to 之间变更的文件（相对路径，true = 删除）。
+    /// 不做重命名跟踪（--no-renames）：移出目录 = 旧路径删除 + 新路径新增，
+    /// 支撑「移出目录即下架/取消」类语义。
+    fn changed_entries(&self, from: &str, to: &str) -> Result<Vec<(String, bool)>>;
     /// 工作区硬对齐到指定提交；未提交内容会被丢弃。
     fn checkout_hard(&self, sha: &str) -> Result<()>;
     /// 暂存全部变更并提交；无可提交内容返回 false。

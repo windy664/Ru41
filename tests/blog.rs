@@ -148,7 +148,7 @@ async fn publishes_published_dir_post_end_to_end() {
     let blog_seed = fx._dir.path().join("blog-seed");
     git(&blog_seed, &["fetch", "origin"]);
     let log = git(&blog_seed, &["log", "--format=%s", "origin/master", "-1"]);
-    assert!(log.contains("[ru41] publish posts"), "{log}");
+    assert!(log.contains("[ru41] sync posts"), "{log}");
     let files = git(
         &blog_seed,
         &["show", "--name-only", "--format=", "origin/master"],
@@ -213,6 +213,62 @@ async fn rejects_invalid_frontmatter_without_blocking_others() {
         &["show", "--name-only", "--format=", "origin/master"],
     );
     assert!(files.contains("source/_posts/2026-10-19-"), "{files}");
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn moving_post_out_of_published_unpublishes_and_allows_republish() {
+    let fx = Fx::new();
+    let tracker = fx.tracker();
+    fx.push_published("要下架的文章.md", POST);
+    let report = tracker.poll_once().await.unwrap();
+    assert_eq!(report.published, 1);
+
+    // 移回草稿 = 下架：--no-renames 下旧路径以删除形式出现。
+    let seed = fx._dir.path().join("vault-seed");
+    std::fs::create_dir_all(seed.join("06-Blog-博客/Drafts-草稿")).unwrap();
+    git(
+        &seed,
+        &[
+            "mv",
+            "06-Blog-博客/Published-已发布/要下架的文章.md",
+            "06-Blog-博客/Drafts-草稿/要下架的文章.md",
+        ],
+    );
+    git(&seed, &["commit", "-m", "move back to drafts"]);
+    git(&seed, &["push", "origin", "master"]);
+
+    let report = tracker.poll_once().await.unwrap();
+    assert_eq!(report.unpublished, 1, "移出已发布目录应触发下架");
+    assert_eq!(report.published, 0);
+
+    // 博客仓库里文章已删除。
+    let blog_seed = fx._dir.path().join("blog-seed");
+    git(&blog_seed, &["fetch", "origin"]);
+    let files = git(
+        &blog_seed,
+        &["ls-tree", "-r", "--name-only", "origin/master"],
+    );
+    assert!(!files.contains("要下架"), "{files}");
+
+    // 再移回已发布：done 键已随下架清除，应能重新发布。
+    git(
+        &seed,
+        &[
+            "mv",
+            "06-Blog-博客/Drafts-草稿/要下架的文章.md",
+            "06-Blog-博客/Published-已发布/要下架的文章.md",
+        ],
+    );
+    git(&seed, &["commit", "-m", "republish"]);
+    git(&seed, &["push", "origin", "master"]);
+    let report = tracker.poll_once().await.unwrap();
+    assert_eq!(report.published, 1, "下架后移回应能重新发布");
+    git(&blog_seed, &["fetch", "origin"]);
+    let files = git(
+        &blog_seed,
+        &["ls-tree", "-r", "--name-only", "origin/master"],
+    );
+    assert!(files.contains("要下架"), "{files}");
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]

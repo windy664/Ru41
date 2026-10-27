@@ -93,6 +93,21 @@ impl Vault for GitVault {
             .collect())
     }
 
+    fn changed_entries(&self, from: &str, to: &str) -> Result<Vec<(String, bool)>> {
+        let out = self.git(&["diff", "--name-status", "--no-renames", from, to])?;
+        Ok(out
+            .lines()
+            .filter_map(|line| {
+                let (status, path) = line.split_once('\t')?;
+                let path = path.trim();
+                if path.is_empty() {
+                    return None;
+                }
+                Some((path.to_owned(), status.trim() == "D"))
+            })
+            .collect())
+    }
+
     fn checkout_hard(&self, sha: &str) -> Result<()> {
         self.locked(|vault| vault.git(&["reset", "--hard", sha]).map(|_| ()))
     }

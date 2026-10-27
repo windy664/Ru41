@@ -45,6 +45,8 @@ pub struct BlogPollReport {
     pub remote_head: String,
     pub published: usize,
     pub rejected: usize,
+    /// 本轮下架（移出已发布目录）的文章数。
+    pub unpublished: usize,
     pub notified: bool,
 }
 
@@ -56,6 +58,9 @@ struct BlogPublishState {
     /// 已处理（含校验拒绝）的已发布文件，键为 `路径:内容hash`，防止崩溃重试循环。
     #[serde(default)]
     done: Vec<String>,
+    /// 已发布 vault 路径 → 博客仓库文件名；下架时按它找要删的目标。
+    #[serde(default)]
+    published_map: std::collections::BTreeMap<String, String>,
     /// 最近一次失败已通知的 Vault HEAD（同一 HEAD 不重复通知）。
     #[serde(default)]
     notified_sha: Option<String>,
@@ -63,6 +68,8 @@ struct BlogPublishState {
 
 /// 已发布文件的校验结果。
 struct PendingPost {
+    /// vault 内的已发布路径（published_map 的键）。
+    source_path: String,
     content: String,
     /// 博客仓库文件名（YYYY-MM-DD-slug.md，URL 身份）。
     target_name: String,
@@ -147,35 +154,53 @@ impl BlogPublishTracker {
             remote_head: head.clone(),
             published: 0,
             rejected: 0,
+            unpublished: 0,
             notified: false,
         };
         if head == state.processed_sha {
             return Ok(report);
         }
 
-        // 找出本轮新出现且未处理过的已发布文件。
+        // 找出本轮已发布目录下的新增/修改与删除（--no-renames：移出=删除旧路径）。
         let vault = self.vault.clone();
         let from = state.processed_sha.clone();
         let published_prefix = format!("{}/", self.config.published_dir);
-        let candidates = tokio::task::spawn_blocking(move || -> Result<Vec<String>> {
+        let entries = tokio::task::spawn_blocking(move || -> Result<Vec<(String, bool)>> {
             let base = if from.is_empty() {
                 EMPTY_TREE.to_owned()
             } else {
                 from
             };
             Ok(vault
-                .changed_files(&base, &head_for_diff)?
+                .changed_entries(&base, &head_for_diff)?
                 .into_iter()
-                .filter(|f| f.starts_with(&published_prefix) && f.ends_with(".md"))
+                .filter(|(f, _)| f.starts_with(&published_prefix) && f.ends_with(".md"))
                 .collect())
         })
         .await??;
-        let fresh: Vec<String> = candidates
-            .into_iter()
+        let fresh: Vec<String> = entries
+            .iter()
+            .filter(|(_, deleted)| !deleted)
+            .map(|(path, _)| path.clone())
             .filter(|path| !state.done.contains(&done_key(path)))
             .collect();
-        if fresh.is_empty() {
-            // 没有新的待发布文件：只推进游标（如普通笔记提交）。
+        // 待下架：优先 published_map 记录的目标；老条目（无映射）从日期前缀文件名推导。
+        let mut unpublish: Vec<(String, String)> = Vec::new();
+        let mut unsolved: Vec<String> = Vec::new();
+        for (path, deleted) in &entries {
+            if !deleted {
+                continue;
+            }
+            if let Some(target) = state.published_map.get(path) {
+                unpublish.push((path.clone(), target.clone()));
+            } else if let Some(target) = target_name_from_stem(path) {
+                unpublish.push((path.clone(), target));
+            } else {
+                unsolved.push(path.clone());
+            }
+        }
+        if fresh.is_empty() && unpublish.is_empty() {
+            // 没有新的待发布/待下架文件：只推进游标（如普通笔记提交）。
             state.processed_sha = head.clone();
             self.save_state(&state)?;
             return Ok(report);
@@ -221,9 +246,15 @@ impl BlogPublishTracker {
             }
         }
 
-        // 写入博客仓库并推送；任何一步失败保留游标下轮重试（写文件幂等）。
-        if !posts.is_empty() {
+        // 写博客仓库并推送：先下架（删 _posts 文件）再发布——「在已发布目录内移动」
+        // 会产生同 target 的一删一增，顺序反了会把刚发布的删掉。
+        // 任何一步失败保留游标下轮重试（写文件/删除幂等）。
+        if !posts.is_empty() || !unpublish.is_empty() {
             let blog = self.blog.clone();
+            let removals: Vec<String> = unpublish
+                .iter()
+                .map(|(_, target)| format!("{}/{}", self.config.posts_dir, target))
+                .collect();
             let writes: Vec<(String, String)> = posts
                 .iter()
                 .map(|p| {
@@ -233,15 +264,16 @@ impl BlogPublishTracker {
                     )
                 })
                 .collect();
-            let config_path = self.config.repo_path.clone();
             let push_result = tokio::task::spawn_blocking(move || -> Result<()> {
+                for target in &removals {
+                    blog.remove_file(target)?;
+                }
                 for (target, content) in &writes {
                     blog.write_file(target, content)?;
                 }
-                let _ = &config_path;
                 // push 必须无条件执行：上一轮 push 失败时本地已存在未推送提交，
                 // 本轮 commit_all 为空集不代表远端已同步。
-                blog.commit_all("[ru41] publish posts")?;
+                blog.commit_all("[ru41] sync posts")?;
                 blog.push()?;
                 Ok(())
             })
@@ -262,19 +294,33 @@ impl BlogPublishTracker {
         for path in &fresh {
             state.done.push(done_key(path));
         }
+        for post in &posts {
+            state
+                .published_map
+                .insert(post.source_path.clone(), post.target_name.clone());
+        }
+        for (path, _) in &unpublish {
+            state.published_map.remove(path);
+            // 清掉 done 记录：同一文件以后移回已发布目录时应能重新发布。
+            let prefix = format!("{path}:");
+            state.done.retain(|k| !k.starts_with(&prefix));
+        }
         state.processed_sha = head.clone();
         state.notified_sha = None;
         self.save_state(&state)?;
 
         report.published = posts.len();
         report.rejected = rejected.len();
-        report.action = if posts.is_empty() {
+        report.unpublished = unpublish.len();
+        report.action = if posts.is_empty() && unpublish.is_empty() {
             "partial"
         } else {
             "published"
         };
-        if !posts.is_empty() || !rejected.is_empty() {
-            self.notify_result(&posts, &rejected).await?;
+        if !posts.is_empty() || !rejected.is_empty() || !unpublish.is_empty() || !unsolved.is_empty()
+        {
+            self.notify_result(&posts, &rejected, &unpublish, &unsolved)
+                .await?;
             report.notified = true;
         }
         Ok(report)
@@ -337,13 +383,20 @@ impl BlogPublishTracker {
             target_name.trim_end_matches(".md")
         );
         Ok(PendingPost {
+            source_path: published_path.to_owned(),
             content: content.to_owned(),
             target_name,
             url,
         })
     }
 
-    async fn notify_result(&self, posts: &[PendingPost], rejected: &[RejectedPost]) -> Result<()> {
+    async fn notify_result(
+        &self,
+        posts: &[PendingPost],
+        rejected: &[RejectedPost],
+        unpublished: &[(String, String)],
+        unsolved: &[String],
+    ) -> Result<()> {
         let Some(notifier) = &self.notifier else {
             return Ok(());
         };
@@ -354,10 +407,18 @@ impl BlogPublishTracker {
                 post.target_name, post.url
             ));
         }
+        for (path, target) in unpublished {
+            lines.push(format!("- 🗑 已下架 {}（源文件移出已发布目录：`{path}`）", target));
+        }
         for reject in rejected {
             lines.push(format!(
                 "- ❌ `{}`：{}",
                 reject.published_path, reject.reason
+            ));
+        }
+        for path in unsolved {
+            lines.push(format!(
+                "- ⚠️ `{path}` 已移出已发布目录，但无法确定博客仓库里的目标文件（文件名无日期前缀且不是本模块发布的），请手动到博客仓库 _posts 确认"
             ));
         }
         notifier
@@ -471,8 +532,15 @@ fn validate_categories(raw: &str) -> std::result::Result<(), String> {
 }
 
 /// slug 清洗：保留中英文字母数字与连字符，其余折叠为 '-'；空结果回退 post。
-fn sanitize_slug(stem: &str) -> String {
-    let mut out = String::new();
+/// 下架兜底：仅从路径推导博客仓库目标文件名——仅日期前缀文件名可行
+/// （与 prepare_post 的命名规则一致：slug 含日期），否则 None 走人工确认。
+fn target_name_from_stem(published_path: &str) -> Option<String> {
+    let stem = published_path.rsplit('/').next()?.trim_end_matches(".md");
+    (stem.len() >= 10 && stem.get(4..5) == Some("-") && stem.get(7..8) == Some("-"))
+        .then(|| format!("{}.md", sanitize_slug(stem)))
+}
+
+fn sanitize_slug(stem: &str) -> String {    let mut out = String::new();
     let mut last_dash = false;
     for ch in stem.chars() {
         let ok = ch.is_ascii_alphanumeric() || ('\u{4e00}'..='\u{9fff}').contains(&ch) || ch == '-';
