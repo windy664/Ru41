@@ -33,11 +33,19 @@ pub const DEF: super::ModuleDef = super::ModuleDef {
             )?),
             None => None,
         };
+        // 变更记录落 vault（Obsidian 里看，不打扰 QQ）；obsidian 未配置则只走通知。
+        let vault = if config.obsidian.is_ready() {
+            let resolved = config.obsidian.resolved(None)?;
+            Some(crate::bootstrap::assembly::vault_client(&resolved))
+        } else {
+            None
+        };
         Ok(Some(Box::new(PagewatchTracker::new(
             store,
             notifier,
             section.resolved(route)?,
-        ))))
+        )
+        .with_vault_opt(vault))))
     },
     qq_handlers: |_, _| Ok(Vec::new()),
 };
