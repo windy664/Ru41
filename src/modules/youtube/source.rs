@@ -176,6 +176,10 @@ impl YtDlpClient {
                 "en.*",
                 "--sub-format",
                 "vtt",
+                // 登录态下部分客户端只回 storyboard 不回媒体流，格式选择会炸；
+                // 反正 --skip-download，占位选个必定存在的 storyboard 即可。
+                "-f",
+                "sb0",
                 "-o",
             ]);
             command.arg(stem.to_string_lossy().to_string());
