@@ -19,6 +19,7 @@ pub fn ytdlp_client(config: &crate::bootstrap::config::Config) -> source::YtDlpC
     source::YtDlpClient::new(
         youtube.ytdlp_bin.clone().unwrap_or_else(|| "yt-dlp".into()),
         youtube.proxy_url.clone(),
+        youtube.ytdlp_cookies.clone(),
     )
 }
 

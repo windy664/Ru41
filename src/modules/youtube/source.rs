@@ -41,19 +41,29 @@ pub struct TranscriptSegment {
 pub struct YtDlpClient {
     bin: String,
     proxy_url: Option<String>,
+    ytdlp_cookies: Option<String>,
 }
 
 impl YtDlpClient {
-    pub fn new(bin: impl Into<String>, proxy_url: Option<String>) -> Self {
+    pub fn new(
+        bin: impl Into<String>,
+        proxy_url: Option<String>,
+        ytdlp_cookies: Option<String>,
+    ) -> Self {
         Self {
             bin: bin.into(),
             proxy_url,
+            ytdlp_cookies,
         }
     }
 
     fn command(&self) -> Command {
         let mut command = Command::new(&self.bin);
         command.kill_on_drop(true);
+        // 字幕接口对数据中心/直连 IP 风控（429/bot 校验），带账号 cookies 可过。
+        if let Some(cookies) = &self.ytdlp_cookies {
+            command.arg("--cookies").arg(cookies);
+        }
         if let Some(proxy) = &self.proxy_url {
             command.env("HTTP_PROXY", proxy).env("HTTPS_PROXY", proxy);
             command.env("http_proxy", proxy).env("https_proxy", proxy);
