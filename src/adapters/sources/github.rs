@@ -14,6 +14,7 @@ pub struct GithubRepoMeta {
 
 /// GitHub 公共客户端：免鉴权（60 次/时/IP），公开仓库的 README 与元数据抓取。
 /// 速率预算由调用方控制——projects 同步为低频任务，项目数量级远低于上限。
+#[derive(Clone)]
 pub struct GithubClient {
     http: reqwest::Client,
 }

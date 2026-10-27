@@ -57,6 +57,7 @@ pub struct ProjectsSyncReport {
 }
 
 /// 项目库同步器：低频（默认每日）扫描 + GitHub 拉取 + Vault 覆写。
+#[derive(Clone)]
 pub struct ProjectsTracker {
     config: ProjectsConfig,
     vault: Arc<dyn Vault>,
@@ -329,7 +330,8 @@ impl ru41::ingress::schedule::PollJob for ProjectsTracker {
         &self,
     ) -> std::pin::Pin<Box<dyn std::future::Future<Output = Result<serde_json::Value>> + Send + '_>>
     {
-        Box::pin(async move { Ok(serde_json::to_value(self.poll_once().await?)?) })
+        let owned = self.clone();
+        ru41::plugins::bridge(async move { Ok(serde_json::to_value(owned.poll_once().await?)?) })
     }
 }
 

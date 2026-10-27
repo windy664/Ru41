@@ -50,6 +50,7 @@ struct EcardResponse {
 /// G 校校园卡 ecard 平台客户端。水电查询不校验签名，凭 token 即可；
 /// 平台有 WAF 限流，调用方控制节奏（每日个位数请求），失败由上层退避。
 /// base_url 走本地配置（[sources.ecard] base_url），学校域名不写入代码。
+#[derive(Clone)]
 pub struct EcardClient {
     http: reqwest::Client,
     base_url: String,

@@ -42,6 +42,7 @@ struct CapacityResponse {
     specs: Vec<CapacitySpec>,
 }
 
+#[derive(Clone)]
 pub struct CompshareClient {
     http: reqwest::Client,
     base_url: String,

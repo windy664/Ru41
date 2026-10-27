@@ -51,6 +51,7 @@ pub struct EcardReport {
 
 /// 水电监控：查询余额 → 读数落 records 形成历史 → 阈值判断（纯 Rust，不经 Agent）
 /// → 低余额经注入的通知渠道提醒（同一天最多一条）。
+#[derive(Clone)]
 pub struct EcardTracker {
     store: Arc<dyn TaskStore>,
     client: EcardClient,
@@ -200,6 +201,7 @@ impl ru41::ingress::schedule::PollJob for EcardTracker {
     ) -> std::pin::Pin<
         Box<dyn std::future::Future<Output = anyhow::Result<serde_json::Value>> + Send + '_>,
     > {
-        Box::pin(async move { Ok(serde_json::to_value(self.poll_once().await?)?) })
+        let owned = self.clone();
+        ru41::plugins::bridge(async move { Ok(serde_json::to_value(owned.poll_once().await?)?) })
     }
 }

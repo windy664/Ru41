@@ -3,8 +3,8 @@
 //! 快照字段名（course/title/status/end_at）刻意对齐，跨平台作业总表直接聚合约。
 //! 红线：作业只做提醒/跟踪/归档，不做自动作答（自动答题=代写）。
 
-use crate::app::todo::TodoService;
 use crate::app::homework_work::{self as work_common, WorkNoteItem};
+use crate::app::todo::TodoService;
 use crate::modules::teachermate::config::TeachermateConfig;
 use crate::modules::teachermate::source::{
     CourseHomework, Homework, TeachermateClient, homework_status_open,
