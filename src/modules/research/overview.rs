@@ -59,8 +59,7 @@ fn render_gsoc(out: &mut String, program: Option<&GsocProgram>) {
     }
     out.push_str("| 时间 | 节点 |\n|---|---|\n");
     for m in ms {
-        let label = m.label.replace('|', "\\|");
-        out.push_str(&format!("| {} | {label} |\n", format_cn(m.ts)));
+        out.push_str(&format!("| {} | {} |\n", format_cn(m.ts), cell(&m.label)));
     }
     out.push_str("\n🔗 官网：https://summerofcode.withgoogle.com/\n\n");
 }
@@ -73,6 +72,15 @@ fn find_ts(program: &GsocProgram, label: &str) -> Option<i64> {
         .map(|m| m.ts)
 }
 
+/// 表格单元格消毒：竖线转义、换行压成空格（API 返回的简介常带 \n，会直接撑破表格）。
+fn cell(text: &str) -> String {
+    text.replace('|', "\\|")
+        .replace(['\n', '\r'], " ")
+        .split_whitespace()
+        .collect::<Vec<_>>()
+        .join(" ")
+}
+
 fn render_lfx(out: &mut String, items: &[FeedItem]) {
     out.push_str("## LFX Mentorship（Linux 基金会导师计划）\n\n");
     out.push_str("> 全年滚动，导师带做真实开源项目；当前开放申请的项目如下。\n\n");
@@ -82,12 +90,8 @@ fn render_lfx(out: &mut String, items: &[FeedItem]) {
     }
     out.push_str("| 项目 | 详情 |\n|---|---|\n");
     for it in items {
-        let name = it
-            .title
-            .strip_prefix("LFX Mentorship：")
-            .unwrap_or(&it.title)
-            .replace('|', "\\|");
-        let summary = crate::util::truncate_chars(&it.summary.replace('|', "\\|"), 160);
+        let name = cell(it.title.strip_prefix("LFX Mentorship：").unwrap_or(&it.title));
+        let summary = crate::util::truncate_chars(&cell(&it.summary), 160);
         out.push_str(&format!("| [{name}]({}) | {summary} |\n", it.link));
     }
     out.push_str(&format!("\n共 {} 个开放项目\n\n", items.len()));
@@ -167,12 +171,15 @@ mod tests {
             id: "lfx-x".into(),
             title: "LFX Mentorship：Hyphae APIS".into(),
             link: "https://mentorship.lfx.linuxfoundation.org/project/x".into(),
-            summary: "Hyphae · 期次 SPRING 2027".into(),
+            summary: "Hyphae · 期次 SPRING 2027\n带换行的简介\r\n第二行".into(),
             published: "2026-10-27".into(),
         };
         let out = render(None, &[item], NaiveDate::from_ymd_opt(2026, 10, 27).unwrap());
         assert!(out.contains("[Hyphae APIS](https://mentorship.lfx.linuxfoundation.org/project/x)"));
         assert!(out.contains("共 1 个开放项目"));
+        // 换行必须被压平，否则 markdown 表格会破。
+        assert!(out.contains("带换行的简介 第二行"), "{out}");
+        assert!(!out.contains("带换行的简介\n"), "{out}");
         assert!(out.contains("当季项目未公布或未激活"), "{out}");
 
         let empty = render(None, &[], NaiveDate::from_ymd_opt(2026, 10, 27).unwrap());
