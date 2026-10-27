@@ -49,8 +49,10 @@ if [[ "${PUSH:-0}" == "1" ]]; then
   TARBALL="$(mktemp /tmp/ru41-modules-XXXXXX.tgz)"
   tar czf "$TARBALL" -C "$BUILD_DIR/src/modules" .
   python3 "$HOME/bin/ru41-scp.py" "$TARBALL" /tmp/ru41-modules.tgz
+  # 同步后重建 $CODEX_HOME/skills 软链：codex 原生技能发现只看这个目录
+  # （run_dir/.agents/skills 的 materialize 对 codex 不可见，2026-10-27 实证）。
   python3 "$HOME/bin/ru41-ssh-run2.py" \
-    'tar xzf /tmp/ru41-modules.tgz -C /home/windy2/ru41-mimo-smoke/modules && docker restart ru41-mimo-worker'
+    'tar xzf /tmp/ru41-modules.tgz -C /home/windy2/ru41-mimo-smoke/modules && mkdir -p /home/windy2/ru41-mimo-smoke/data/codex/skills && cd /home/windy2/ru41-mimo-smoke/data/codex/skills && for d in /home/windy2/ru41-mimo-smoke/modules/*/skills/*/; do name=$(basename "$d"); ln -sfn "/etc/ru41/modules/$(basename $(dirname $(dirname $d)))/skills/$name" "$name"; done && docker restart ru41-mimo-worker'
   rm -f "$TARBALL"
 fi
 echo "ru41:local ready ($COMMIT)"

@@ -204,7 +204,7 @@ impl CodexAgent {
         let mut stdin = child.stdin.take().context("missing Codex stdin")?;
         let stdout = child.stdout.take().context("missing Codex stdout")?;
         let stderr = child.stderr.take().context("missing Codex stderr")?;
-        let prompt = request.prompt;
+        let prompt = crate::skills::skills_index_prefix(skills) + &request.prompt;
         let events_path = request.run_dir.join("events.jsonl");
         let stderr_path = request.run_dir.join("stderr.log");
         let ((), status, events, _) = tokio::try_join!(
