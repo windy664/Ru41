@@ -93,27 +93,30 @@ impl JobsService {
         })
         .await??;
 
-        // JD 补全：只补没试过的，单轮限 15 条，失败也标记 jd_tried 不再重试。
+        // JD/链接补全：只补没试过的，单轮限 15 条，失败也标记不再重试。
+        // JD 命中时会一并带回官方岗位页链接。
         let http = crate::util::http_client();
         let mut jd_filled = 0usize;
         let pending: Vec<String> = state
             .entries
             .iter()
-            .filter(|(_, e)| !e.jd_tried)
+            .filter(|(_, e)| !e.jd_tried || !e.link_tried)
             .map(|(k, _)| k.clone())
             .take(15)
             .collect();
         for key in pending {
             let entry = state.entries.get(&key).expect("pending key").clone();
             let platform = entry.platform.clone().unwrap_or_default();
-            let jd = crate::adapters::sources::jobs::jd::fetch_jd(
+            let hit = crate::adapters::sources::jobs::jd::fetch_jd(
                 &http, &platform, &entry.company, &entry.role,
             )
             .await;
             let slot = state.entries.get_mut(&key).expect("pending key");
             slot.jd_tried = true;
-            if let Some(text) = jd {
-                slot.jd = Some(text);
+            slot.link_tried = true;
+            if let Some(hit) = hit {
+                slot.jd = Some(hit.text);
+                slot.link = hit.url.or(slot.link.take());
                 jd_filled += 1;
             }
         }

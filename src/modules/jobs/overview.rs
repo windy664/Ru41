@@ -28,7 +28,10 @@ pub fn render(entries: &[JobEntry], today: chrono::NaiveDate) -> String {
         out.push_str(&format!("\n## JD 详情（{} 条）\n\n", with_jd.len()));
         out.push_str("> 面灵条目回源官方招聘站公开 API 抓取（ashby / greenhouse / smartrecruiters）；BOSS 条目由 sidecar 详情接口直接带全文；其余国内平台（飞书招聘/美团/腾讯/京东）接口待适配，暂缺。\n\n");
         for e in with_jd {
-            out.push_str(&format!("### {} · {}\n\n", e.company, e.role));
+            match &e.link {
+                Some(link) => out.push_str(&format!("### [{} · {}]({link})\n\n", e.company, e.role)),
+                None => out.push_str(&format!("### {} · {}\n\n", e.company, e.role)),
+            }
             out.push_str(&format!(
                 "{} · {} · 发布 {}\n\n{}\n\n",
                 e.kind,
@@ -50,9 +53,17 @@ fn render_table(out: &mut String, rows: &[&&JobEntry]) {
         } else {
             e.city.clone()
         };
+        let role = match &e.link {
+            Some(link) => format!("[{}]({link})", e.role.replace('|', "\\|")),
+            None => e.role.replace('|', "\\|"),
+        };
         out.push_str(&format!(
             "| {} | {} | {} | {} | {} |\n",
-            e.posted, e.company, e.role, city, e.audience
+            e.posted,
+            e.company.replace('|', "\\|"),
+            role,
+            city.replace('|', "\\|"),
+            e.audience.replace('|', "\\|")
         ));
     }
 }
@@ -74,6 +85,8 @@ mod tests {
                 platform: Some("feishu-hire".into()),
                 jd: None,
                 jd_tried: true,
+                link: None,
+                link_tried: true,
             },
             JobEntry {
                 company: "美团".into(),
@@ -85,6 +98,8 @@ mod tests {
                 platform: Some("meituan".into()),
                 jd: Some("负责数据平台研发……".into()),
                 jd_tried: true,
+                link: Some("https://jobs.meituan.com/example".into()),
+                link_tried: true,
             },
         ];
         let md = render(&entries, chrono::NaiveDate::from_ymd_opt(2026, 10, 26).unwrap());
@@ -94,6 +109,8 @@ mod tests {
         assert!(md.contains("| 10月24日 | 字节跳动 |"));
         assert!(md.contains("| 10月25日 | 美团 |"));
         assert!(md.contains("## JD 详情（1 条）"));
-        assert!(md.contains("### 美团 · 数据开发工程师"));
+        // 有链接的条目：表格岗位列与 JD 标题都可点击。
+        assert!(md.contains("[美团 · 数据开发工程师](https://jobs.meituan.com/example)"));
+        assert!(md.contains("| 10月25日 | 美团 | [数据开发工程师](https://jobs.meituan.com/example) |"));
     }
 }

@@ -6,13 +6,19 @@
 
 use anyhow::Result;
 
+/// JD 命中：纯文本 + 官方岗位页链接（链接用于总览可点击跳转）。
+pub struct JdHit {
+    pub text: String,
+    pub url: Option<String>,
+}
+
 /// 抓某岗位的 JD 纯文本（截断到 ~1500 字符）。不支持的平台/匹配失败返回 None。
 pub async fn fetch_jd(
     http: &reqwest::Client,
     platform: &str,
     company: &str,
     title: &str,
-) -> Option<String> {
+) -> Option<JdHit> {
     let slug = guess_slug(company);
     let result = match platform {
         "ashby" => ashby(http, &slug, title).await,
@@ -73,16 +79,19 @@ async fn get_json<T: serde::de::DeserializeOwned>(
 }
 
 /// https://api.ashbyhq.com/posting-api/job-board/{slug}（全量 board，含 descriptionHtml）。
-async fn ashby(http: &reqwest::Client, slug: &str, title: &str) -> Result<Option<String>> {
+async fn ashby(http: &reqwest::Client, slug: &str, title: &str) -> Result<Option<JdHit>> {
     #[derive(serde::Deserialize)]
     struct Board {
         jobs: Vec<Job>,
     }
     #[derive(serde::Deserialize)]
     struct Job {
+        id: String,
         title: String,
         #[serde(rename = "descriptionHtml")]
         description_html: String,
+        #[serde(rename = "jobUrl", default)]
+        job_url: Option<String>,
     }
     let board: Board = get_json(
         http,
@@ -93,11 +102,18 @@ async fn ashby(http: &reqwest::Client, slug: &str, title: &str) -> Result<Option
         .jobs
         .into_iter()
         .find(|job| title_matches(&job.title, title))
-        .map(|job| html_to_text(&job.description_html)))
+        .map(|job| JdHit {
+            text: html_to_text(&job.description_html),
+            // 官方岗位页：优先 API 自带 jobUrl，缺省按 id 构造。
+            url: job.job_url.filter(|u| !u.is_empty()).or(Some(format!(
+                "https://jobs.ashbyhq.com/{slug}/{}",
+                job.id
+            ))),
+        }))
 }
 
 /// https://boards-api.greenhouse.io/v1/boards/{slug}/jobs → 匹配 id → /jobs/{id} 取 content。
-async fn greenhouse(http: &reqwest::Client, slug: &str, title: &str) -> Result<Option<String>> {
+async fn greenhouse(http: &reqwest::Client, slug: &str, title: &str) -> Result<Option<JdHit>> {
     #[derive(serde::Deserialize)]
     struct List {
         jobs: Vec<ListJob>,
@@ -124,7 +140,10 @@ async fn greenhouse(http: &reqwest::Client, slug: &str, title: &str) -> Result<O
         &format!("https://boards-api.greenhouse.io/v1/boards/{slug}/jobs/{}", job.id),
     )
     .await?;
-    Ok(Some(html_to_text(&detail.content)))
+    Ok(Some(JdHit {
+        text: html_to_text(&detail.content),
+        url: Some(format!("https://boards.greenhouse.io/{slug}/jobs/{}", job.id)),
+    }))
 }
 
 /// https://api.smartrecruiters.com/v1/companies/{slug}/postings → 匹配 id → /postings/{id}。
@@ -132,7 +151,7 @@ async fn smartrecruiters(
     http: &reqwest::Client,
     slug: &str,
     title: &str,
-) -> Result<Option<String>> {
+) -> Result<Option<JdHit>> {
     #[derive(serde::Deserialize)]
     struct List {
         content: Vec<ListItem>,
@@ -171,6 +190,7 @@ async fn smartrecruiters(
     else {
         return Ok(None);
     };
+    let item_id = item.id.clone();
     let detail: Detail = get_json(
         http,
         &format!(
@@ -192,7 +212,13 @@ async fn smartrecruiters(
                     .join(" "),
             )
         });
-    Ok(text.filter(|t| !t.is_empty()))
+    Ok(text.filter(|t| !t.is_empty()).map(|text| JdHit {
+        text,
+        url: Some(format!(
+            "https://jobs.smartrecruiters.com/{slug}/{}",
+            item_id
+        )),
+    }))
 }
 
 #[cfg(test)]

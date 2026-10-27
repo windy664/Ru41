@@ -56,6 +56,8 @@ pub fn filter_jobs(jobs: Vec<MianlingJob>) -> Vec<JobEntry> {
                 platform: job.platform,
                 jd: None,
                 jd_tried: false,
+                link: None,
+                link_tried: false,
             })
             .collect(),
     )
@@ -69,6 +71,11 @@ pub fn merge(state: &mut JobsState, fresh: Vec<JobEntry>, today_md: (u32, u32)) 
         if let Some(old) = state.entries.get(&key) {
             entry.jd = old.jd.clone();
             entry.jd_tried = old.jd_tried;
+            // 链接同理：新抓的条目没有就继承旧的（BOSS 条目自带，面灵条目靠 JD 回源补）。
+            if entry.link.is_none() {
+                entry.link = old.link.clone();
+            }
+            entry.link_tried = old.link_tried || entry.link.is_some();
         }
         state.entries.insert(key, entry);
     }
