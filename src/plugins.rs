@@ -1,25 +1,38 @@
 //! 动态插件（Pumpkin/bevy 式 cdylib）：宿主启动时扫描插件目录，
-//! libloading 加载 `.so`、握手 ABI 版本、注册外部 ModuleDef 并入统一调度。
+//! libloading 加载 `.so`、握手、注册外部 ModuleDef 并入统一调度。
 //!
-//! ## 插件 ABI（插件与宿主必须同一 rustc + 同一 ru41 版本编译）
+//! 边界类型（PluginEntry/握手常量/bridge）定义在 ru41-plugin-api，
+//! 本文件持有宿主侧加载机器（libloading 只在宿主链接）。
 //!
-//! 插件是 `crate-type = ["cdylib"]` 的独立 crate，静态链接**同一 git 版本**的
-//! ru41 lib，并导出一个入口符号：
+//! ## 插件 ABI
+//!
+//! 插件是 `crate-type = ["cdylib"]` 的独立 crate，静态链接 ru41 lib（其
+//! re-export ru41-plugin-api 的边界类型），并导出一个入口符号：
 //!
 //! ```ignore
 //! #[unsafe(no_mangle)]
 //! pub extern "C" fn ru41_plugin_entry() -> ru41::plugins::PluginEntry {
-//!     ru41::plugins::PluginEntry::new::<MyModule>()
+//!     ru41::plugins::PluginEntry::new("my-module", || DEF)
 //! }
 //! ```
 //!
+//! ## 握手硬门（任一不匹配拒绝加载）
+//!
+//! 1. magic + 入口结构版本；
+//! 2. **ru41-plugin-api crate 版本完全一致**——边界闭包（ModuleDef/ports/
+//!    domain/Config）全部住在该 crate，版本一致即布局一致；
+//! 3. **deps stamp 一致**——tokio/serde 等 ABI 相关外部依赖在 Cargo.lock
+//!    的解析版本摘要（api crate build.rs 生成；插件 lockfile 由部署脚本
+//!    从仓库根同步，保证双方解析到同一组版本）。
+//!
+//! 宿主业务代码（app/adapters/ingress/main）变更不再触发插件重编与拒载；
+//! git commit 仅作诊断日志。仍需同一 rustc（Rust 无稳定 ABI）。
+//!
 //! ## 约束（与 Pumpkin 同款，不可协商）
 //!
-//! - **版本锁**：rustc、ru41 crate 版本、依赖锁三者必须一致，否则
-//!   类型布局/vtable 可能漂移（UB 而非报错）。握手查 magic + API 版本 +
-//!   ru41 版本，不匹配拒绝加载。
-//! - **无进程隔离**：插件 panic 可带崩宿主进程（cdylib 本质是同进程）。
-//!   爆炸半径靠容器模型兜底（每模块独立容器）。
+//! - **无进程隔离**：插件 panic 可带崩宿主进程（cdylib 本质是同进程），
+//!   爆炸半径靠容器模型兜底（每模块独立容器）；async 入口过 bridge 后
+//!   panic 降级为 Err。
 //! - **永不卸载**：Library 加载后 mem::forget，运行中不 dlclose
 //!   （卸载持有运行中任务的代码是 UB）。热更新 = 重启对应容器。
 //! - 插件不用 linkme 自注册（dylib 有独立 section，宿主 slice 看不到），
@@ -30,39 +43,11 @@ use anyhow::{Context, Result};
 use std::path::{Path, PathBuf};
 use std::sync::OnceLock;
 
-/// 插件入口符号名。
-pub const PLUGIN_ENTRY_SYMBOL: &[u8] = b"ru41_plugin_entry";
-/// ABI 魔数：防把无关 .so 当 ru41 插件。
-pub const PLUGIN_API_MAGIC: u64 = 0x7275_3431_5f70_6c75;
-/// ABI 版本：ModuleDef/trait 签名/关键依赖（tokio/serde）破坏性变更时 +1。
-pub const PLUGIN_API_VERSION: u32 = 1;
-
-/// 插件入口返回的元信息。`&'static str` 等 Rust 原生布局依赖
-/// "同一 rustc 编译"前提，握手失败即拒绝加载，不做跨编译器兼容。
-pub struct PluginEntry {
-    pub magic: u64,
-    pub api_version: u32,
-    pub ru41_version: &'static str,
-    /// 编译插件时 ru41 crate 的 git commit；pkg 版本不变时布局仍可能漂移，
-    /// 双方都有 git 元数据时要求完全一致，任一方 unknown 降级为告警放行。
-    pub git_hash: &'static str,
-    pub name: &'static str,
-    pub register: fn() -> ModuleDef,
-}
-
-impl PluginEntry {
-    /// 插件侧构造入口：版本字段自动取编译时环境。
-    pub fn new(name: &'static str, register: fn() -> ModuleDef) -> Self {
-        Self {
-            magic: PLUGIN_API_MAGIC,
-            api_version: PLUGIN_API_VERSION,
-            ru41_version: env!("CARGO_PKG_VERSION"),
-            git_hash: env!("RU41_GIT_HASH"),
-            name,
-            register,
-        }
-    }
-}
+pub use ru41_plugin_api::bridge::bridge;
+pub use ru41_plugin_api::entry::{
+    API_CRATE_VERSION, DEPS_STAMP, PLUGIN_API_MAGIC, PLUGIN_API_VERSION, PLUGIN_ENTRY_SYMBOL,
+    PluginEntry,
+};
 
 /// 已加载插件：Library 句柄必须活得和 defs 一样久（进程生命周期）。
 struct LoadedPlugins {
@@ -72,40 +57,6 @@ struct LoadedPlugins {
 }
 
 static LOADED: OnceLock<LoadedPlugins> = OnceLock::new();
-
-/// 插件 async 边界桥：**dylib 各静态链接一份 tokio，宿主的 reactor 对插件
-/// 代码不可见**——插件里的 reqwest/tokio 调用若被宿主 runtime 驱动，
-/// 直接 panic "no reactor running" 并 abort 整个进程（2026-10-27 实测）。
-///
-/// 插件的 PollJob::poll_json / QQ handler 等返回 future 的入口，必须把
-/// 真实工作经此桥交给**插件自己的 runtime**（本函数被插件静态链接后，
-/// 实例化的就是插件副本的 tokio），宿主只等一个无 reactor 依赖的 oneshot。
-/// 桥内 catch_unwind：插件 panic 降级为 Err，不带崩宿主进程。
-pub fn bridge<F, T>(
-    fut: F,
-) -> std::pin::Pin<Box<dyn std::future::Future<Output = Result<T>> + Send>>
-where
-    F: std::future::Future<Output = Result<T>> + Send + 'static,
-    T: Send + 'static,
-{
-    use futures_util::FutureExt;
-    static PLUGIN_RT: OnceLock<tokio::runtime::Runtime> = OnceLock::new();
-    let rt =
-        PLUGIN_RT.get_or_init(|| tokio::runtime::Runtime::new().expect("plugin tokio runtime"));
-    let (tx, rx) = tokio::sync::oneshot::channel();
-    rt.spawn(async move {
-        let result = std::panic::AssertUnwindSafe(fut).catch_unwind().await;
-        let out = match result {
-            Ok(value) => value,
-            Err(_) => Err(anyhow::anyhow!("plugin task panicked")),
-        };
-        let _ = tx.send(out);
-    });
-    Box::pin(async move {
-        rx.await
-            .unwrap_or_else(|_| Err(anyhow::anyhow!("plugin task aborted")))
-    })
-}
 
 /// 已加载插件的 DEF 列表；未初始化（未跑 load_all）视为空。
 pub fn external_defs() -> &'static [&'static ModuleDef] {
@@ -145,7 +96,7 @@ pub fn load_all(dir: &Path) -> Result<usize> {
 }
 
 fn load_one(path: &Path) -> Result<(libloading::Library, &'static ModuleDef)> {
-    // Safety：插件与宿主同一 rustc/ru41 版本（入口握手校验），
+    // Safety：插件与宿主同一 rustc + 同一 ru41-plugin-api 版本（下方握手校验），
     // 且 Library 永不卸载（调用方 mem::forget 语义持有）。
     let lib = unsafe { libloading::Library::new(path) }
         .with_context(|| format!("dlopen {}", path.display()))?;
@@ -158,38 +109,29 @@ fn load_one(path: &Path) -> Result<(libloading::Library, &'static ModuleDef)> {
     );
     anyhow::ensure!(
         meta.api_version == PLUGIN_API_VERSION,
-        "ABI 版本不匹配：插件 v{} / 宿主 v{}",
+        "入口结构版本不匹配：插件 v{} / 宿主 v{}",
         meta.api_version,
         PLUGIN_API_VERSION
     );
     anyhow::ensure!(
-        meta.ru41_version == env!("CARGO_PKG_VERSION"),
-        "ru41 版本不匹配：插件 {} / 宿主 {}（插件需用同一版本 ru41 crate 重编）",
-        meta.ru41_version,
-        env!("CARGO_PKG_VERSION")
+        meta.api_crate_version == API_CRATE_VERSION,
+        "ru41-plugin-api 版本不匹配：插件 {} / 宿主 {}（边界类型已变更，需重编插件）",
+        meta.api_crate_version,
+        API_CRATE_VERSION
+    );
+    anyhow::ensure!(
+        meta.deps_stamp == DEPS_STAMP,
+        "依赖版本不匹配：插件 {} / 宿主 {}（tokio/serde 等解析版本漂移，需同步 lockfile 重编）",
+        meta.deps_stamp,
+        DEPS_STAMP
     );
     let host_hash = env!("RU41_GIT_HASH");
     if meta.git_hash != host_hash {
-        // 双方都有 hash 且不同：布局可能已漂移，硬拒。
-        // 插件 unknown 而宿主有 hash：插件没按规范编（缺 OVERRIDE），硬拒。
-        // 仅宿主 unknown（无 git 元数据的非常规构建）才降级告警放行。
-        if host_hash == "unknown" {
-            eprintln!(
-                "[plugins] 警告：宿主无 git 元数据，无法校验 {}（插件 {}），按版本号放行",
-                meta.name, meta.git_hash
-            );
-        } else if meta.git_hash == "unknown" {
-            anyhow::bail!(
-                "插件 {} 未嵌入 git commit（需用 RU41_GIT_HASH_OVERRIDE 重编）",
-                meta.name
-            );
-        } else {
-            anyhow::bail!(
-                "git commit 不匹配：插件 {} / 宿主 {}（pkg 版本相同但布局可能已漂移，需重编插件）",
-                meta.git_hash,
-                host_hash
-            );
-        }
+        // 业务代码差异不影响 ABI（边界由 api crate 版本把守），只记诊断日志。
+        eprintln!(
+            "[plugins] 提示：{} 与宿主 git commit 不同（插件 {} / 宿主 {}），api 版本一致按放行处理",
+            meta.name, meta.git_hash, host_hash
+        );
     }
     // DEF 泄漏为 'static：与宿主内建模块同生命周期，永不回收（不卸载原则）。
     let def: &'static ModuleDef = Box::leak(Box::new((meta.register)()));

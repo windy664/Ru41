@@ -6,25 +6,56 @@ ru41 支持 Pumpkin/bevy 式动态插件：独立 crate 编译成 `.so`，扔进
 适合：模块多团队并行开发、第三方贡献、快速试错。
 不适合替代容器隔离：插件与宿主同进程，panic 可带崩宿主。
 
+## 边界架构（ru41-plugin-api）
+
+宿主↔插件之间允许跨边界的类型**全部**定义在 `crates/ru41-plugin-api`：
+`ModuleDef`/`PluginEntry`/`bridge`、`ports`（TaskStore/CommandHandler 等）、
+`domain`（Task/NotifyRoute 等）、`Config` 整棵树。宿主在原路径
+re-export（`ru41::plugins::*`、`ru41::modules::*`、`ru41::ports::*` 等），
+插件照常 `ru41 = { path = ... }` 依赖即可，拿到的是同一份定义。
+
+判别规则（新代码归哪边）：
+
+- **跨边界**（出现在 ModuleDef 函数签名、trait 对象方法、或宿主分配的
+  Config 字段里）→ 必须进 api crate，变更要 bump 版本。
+- **不跨边界**（只是插件内部复用的便利代码，如 adapters/util/业务工具）
+  → 留在宿主，插件经 `ru41` 依赖照常使用；宿主改这些**不影响**插件。
+- 拿不准就问一句："这个类型的值会在宿主和插件之间传递吗？"会 → api；
+  不会 → 宿主。
+
 ## 快速开始
 
 ```bash
-cp -r templates/plugin-hello /your/workspace/ru41-plugin-foo
-cd ru41-plugin-foo
+cp -r templates/plugin-hello plugins/ru41-plugin-foo   # 或 plugins/ 下新目录
+cd plugins/foo
 # 编辑 Cargo.toml 的 name 与 src/lib.rs 的模块名
 
 # 插件必须在与运行时镜像相同 glibc 的环境里编译（本机 glibc 比容器新会
 # dlopen 失败：version `GLIBC_X.XX' not found）。用净室容器编译：
 docker run --rm -v <ru41仓库路径>:/build \
-  -e CARGO_TARGET_DIR=/build/templates/plugin-foo/target-docker \
-  -e RU41_GIT_HASH_OVERRIDE=$(git -C <ru41仓库路径> rev-parse HEAD) \
-  -w /build/templates/plugin-foo rust:1.98-trixie cargo build --release --features plugin-entry --features plugin-entry
+  -e CARGO_TARGET_DIR=/build/plugins/foo/target-docker \
+  -w /build/plugins/foo rust:1.98-trixie \
+  cargo build --release --features plugin-entry
 
 cp target-docker/release/libru41_plugin_foo.so <服务器>:/etc/ru41/plugins/
 # 重启需要它的容器（poll/run 类重启模块容器；QQ 命令类重启 qq 容器）
 ```
 
 验证：`ru41 schedule list` 出现模块名；`ru41 <name> poll` 输出 JSON。
+
+## 握手（加载时校验，任一不匹配拒绝加载并给出原因）
+
+1. **magic + 入口结构版本**：防误载/协议变更。
+2. **ru41-plugin-api crate 版本一致**：边界闭包全部住在该 crate，版本一致
+   即布局一致。改 api crate 任何公开项 → bump `crates/ru41-plugin-api/
+   Cargo.toml` 的 version → 全部插件重编。**宿主业务代码（app/adapters/
+   ingress/main）变更不需要重编插件，旧 .so 照常加载。**
+3. **deps stamp 一致**：tokio/serde/chrono 等 ABI 相关外部依赖在 Cargo.lock
+   中解析版本的摘要（api crate build.rs 自动生成，从仓库根 lock 提取）。
+   各插件的 `Cargo.lock` 必须与根同步（deploy 脚本已自动 cp）。
+
+`git commit` 只作诊断日志，不再是加载门槛。仍需**同一 rustc**
+（Rust 无稳定 ABI；容器构建统一 rust:1.98-trixie）。
 
 ## 硬约束（违反 = ABI 未定义行为，不是报错）
 
@@ -41,21 +72,16 @@ cp target-docker/release/libru41_plugin_foo.so <服务器>:/etc/ru41/plugins/
    桥内 catch_unwind，插件 panic 降级为 Err 不带崩宿主。
 
 1. **同一 rustc**：插件和宿主用同一个 Rust 工具链编译。
-2. **同一 ru41 版本**：Cargo.toml 里 `ru41 = { git = "...", rev = "<宿主部署的 commit>" }`，
-   宿主升级后插件必须改 rev 重编。入口握手双重校验：`CARGO_PKG_VERSION` 必须相等；
-   双方都有 git 元数据时还要求 commit hash 一致（pkg 版本不变但布局可能已漂移）。
-   注意：worktree 的 .git 是指针文件，容器内构建解析不到真 gitdir——
-   必须用 RU41_GIT_HASH_OVERRIDE 从宿主机显式注入（build-fast.sh 已内置），
-   否则两边都是 unknown，握手退化为仅版本号校验。
-3. **同一依赖锁**：tokio/serde 等共享依赖版本必须与宿主一致——
-   把主仓库的 `Cargo.lock` 复制进插件仓库最稳妥。
+2. **api crate 版本一致**：见上"握手"第 2 条；宿主业务变更不再牵连插件。
+3. **lockfile 与根同步**：deps stamp 不一致即拒载（deploy 脚本已自动
+   `cp Cargo.lock plugins/*/Cargo.lock`；手工构建插件时照做）。
 
 ## 现有插件
 
 | 插件 | 目录 | 说明 |
 |---|---|---|
 | hello | `templates/plugin-hello/` | 最小模板 |
-| competitions | `plugins/competitions/` | 竞赛日程总览（从内建模块迁出的首个真实插件，带配置 + vault + 多源抓取） |
+| competitions 等 13 个 | `plugins/*/` | 业务附属全部插件化（详见 src/plugins.rs 与部署文档） |
 
 ## 插件形态
 
@@ -72,6 +98,8 @@ static DEF: ru41::modules::ModuleDef = ru41::modules::ModuleDef {
     schedule: |config| { /* JobSchedule 清单 */ },
     tracker: |config, store, name| { /* 命中才构造 */ },
     qq_handlers: |config, backend| { /* QQ 命令 */ },
+    image_consumers: ru41::modules::no_image_consumers,
+    cli: ru41::modules::no_cli,
 };
 ```
 
@@ -103,5 +131,6 @@ volumes:
 | 崩溃隔离 | 无（同进程） | 无（同进程） |
 | 适合 | 核心团队维护的常驻能力 | 并行/第三方/试验性附属 |
 
-ABI 破坏性变更（ModuleDef 字段、trait 签名、tokio/serde 大版本）时
-`src/plugins.rs` 的 `PLUGIN_API_VERSION` +1，全部插件需重编。
+ABI 破坏性变更（ru41-plugin-api 任何公开项、tokio/serde 大版本）时
+bump `crates/ru41-plugin-api/Cargo.toml` 的 version，全部插件需重编；
+`PluginEntry` 自身布局/握手协议变更时 `entry.rs` 的 `PLUGIN_API_VERSION` +1。

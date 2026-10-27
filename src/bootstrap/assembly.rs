@@ -4,6 +4,7 @@
 
 use crate::{
     adapters::vault::GitVault,
+    app::obsidian::ObsidianSectionExt,
     bootstrap::config::Config,
     channels::{
         feishu::{self, FeishuWebhookNotifier},

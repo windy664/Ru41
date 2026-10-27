@@ -5,6 +5,7 @@ mod service;
 
 pub use config::PagewatchSection;
 pub use service::{PagewatchConfig, PagewatchReport, PagewatchTracker, WatchedPage};
+use ru41::app::obsidian::ObsidianSectionExt;
 
 /// 注册表定义：pagewatch 轮询 job。无 QQ 命令（只看不回话）。
 pub static DEF: ru41::modules::ModuleDef = ru41::modules::ModuleDef {

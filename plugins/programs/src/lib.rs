@@ -6,6 +6,7 @@
 
 mod overview;
 
+use ru41::app::obsidian::ObsidianSectionExt;
 use ru41::ports::vault::Vault;
 use anyhow::Result;
 use serde::Deserialize;
