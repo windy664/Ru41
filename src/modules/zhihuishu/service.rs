@@ -1,7 +1,7 @@
 use crate::{
     app::todo::TodoService,
     domain::todo::{TodoInput, TodoItem, TodoOptions, TodoPriority, TodoSource},
-    modules::homework::work_common,
+    app::homework_work,
     ports::{channel::NotifyChannel, storage::TaskStore, vault::Vault},
 };
 use anyhow::Result;
@@ -426,7 +426,7 @@ impl ZhihuishuTracker {
             let Ok(data) = std::fs::read(&source) else {
                 continue;
             };
-            let name = work_common::sanitize_title(&att.name);
+            let name = homework_work::sanitize_title(&att.name);
             vault.write_bytes(&format!("{dest_base}/{name}"), &data)?;
             copied += 1;
         }
@@ -499,7 +499,7 @@ fn render_course_note(
     open.sort_by(|a, b| a.end_at.cmp(&b.end_at));
     done.sort_by(|a, b| b.end_at.cmp(&a.end_at));
 
-    let stamp = work_common::local_stamp(now, offset_seconds);
+    let stamp = homework_work::local_stamp(now, offset_seconds);
     let mut out = String::new();
     out.push_str("---\n");
     out.push_str(&format!("course: {}\n", course.title));
@@ -568,7 +568,7 @@ fn is_substantive(task: &ZhihuishuTask) -> bool {
 /// 任务文件夹名：`YYYY.MM.DD_作业名`（日期取布置日，缺省用截止日，都没有则只留作业名）。
 /// 同时替换文件系统不友好字符。
 fn task_folder_name(task: &ZhihuishuTask) -> String {
-    work_common::work_folder_name(
+    homework_work::work_folder_name(
         &task.title,
         task.start_at.as_deref().or(task.end_at.as_deref()),
         None,
@@ -610,7 +610,7 @@ fn render_task_note(
     ));
     out.push_str(&format!(
         "updated: {}\n",
-        work_common::local_stamp(now, offset_seconds)
+        homework_work::local_stamp(now, offset_seconds)
     ));
     out.push_str("tags:\n  - 课程\n  - 智慧树\n  - 作业\n---\n\n");
     out.push_str(&format!("# {}\n\n", task.title));

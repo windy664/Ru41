@@ -256,7 +256,7 @@ fn field(value: &serde_json::Value, key: &str) -> String {
 
 /// 平台时间串（北京时间）→ 时间戳；兼容带/不带秒两种格式。
 fn parse_beijing(raw: &str) -> Option<i64> {
-    super::work_common::platform_ts(
+    crate::app::homework_work::platform_ts(
         raw,
         BEIJING_OFFSET,
         &["%Y-%m-%d %H:%M:%S", "%Y-%m-%d %H:%M"],

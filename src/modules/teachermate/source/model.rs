@@ -72,11 +72,7 @@ pub fn homework_status_label(status: i64) -> &'static str {
     }
 }
 
-/// 需要动作的作业状态：1 未完成 / 2 被打回 / 7 补交中。
-/// 其余（已超时/已提交/评分中/已公布/已批阅）视为收敛。
-pub fn homework_status_open(status: i64) -> bool {
-    matches!(status, 1 | 2 | 7)
-}
+pub use crate::app::homework_work::homework_status_open;
 
 /// 作业条目（`/v1/homework?courseId=` 的 homeworkList 元素）。
 /// 平台响应 schema 未完整实测（字段名来自前端 chunk），宽容提取：
