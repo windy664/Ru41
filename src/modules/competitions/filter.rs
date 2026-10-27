@@ -300,6 +300,57 @@ pub fn collect_hack123(ev: &Hack123Event) -> Option<CompetitionRow> {
     keep(row, geo, k12)
 }
 
+/// 从 FeedItem.summary 的 "键 值 · 键 值" 段里取值。
+fn summary_field<'a>(summary: &'a str, key: &str) -> Option<&'a str> {
+    summary
+        .split('·')
+        .map(str::trim)
+        .find_map(|seg| seg.strip_prefix(key).map(str::trim))
+        .filter(|v| !v.is_empty())
+}
+
+/// 讯飞 AI 开发者大赛（国内，线上为主）：summary 含 "奖金 ￥X · 报名截止 YYYY-MM-DD"，
+/// published 即报名截止日；无独立详情页，link 是列表页。
+pub fn collect_xfyun(item: &crate::adapters::sources::feed::FeedItem) -> Option<CompetitionRow> {
+    let prize = summary_field(&item.summary, "奖金").unwrap_or("");
+    let category = summary_field(&item.summary, "#").map(String::from);
+    let row = CompetitionRow {
+        deadline: NaiveDate::parse_from_str(&item.published, "%Y-%m-%d").ok(),
+        name: item.title.clone(),
+        place: "线上".to_owned(),
+        prize: prize.chars().take(40).collect(),
+        start: None,
+        link: item.link.clone(),
+        source: "讯飞",
+        themes: category.into_iter().collect(),
+        gba: false,
+    };
+    keep(row, Geo::Online, is_k12(&item.title, ""))
+}
+
+/// DataFountain（国内 CCF 系数据赛，线上）：summary 含
+/// "赛期 YYYY.MM.DD - YYYY.MM.DD · 奖金 ￥X"，截止取赛期结束日。
+pub fn collect_datafountain(
+    item: &crate::adapters::sources::feed::FeedItem,
+) -> Option<CompetitionRow> {
+    let prize = summary_field(&item.summary, "奖金").unwrap_or("");
+    let deadline = summary_field(&item.summary, "赛期")
+        .and_then(|s| s.rsplit("- ").next())
+        .and_then(|s| NaiveDate::parse_from_str(s.trim(), "%Y.%m.%d").ok());
+    let row = CompetitionRow {
+        deadline,
+        name: item.title.clone(),
+        place: "线上".to_owned(),
+        prize: prize.chars().take(40).collect(),
+        start: None,
+        link: item.link.clone(),
+        source: "DataFountain",
+        themes: vec![],
+        gba: false,
+    };
+    keep(row, Geo::Online, is_k12(&item.title, ""))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -365,6 +416,39 @@ mod tests {
             wqai_deadline("2026-10-30", today),
             NaiveDate::from_ymd_opt(2026, 10, 30)
         );
+    }
+
+    #[test]
+    fn xfyun_and_datafountain_collectors_parse_summary_fields() {
+        let xf = crate::adapters::sources::feed::FeedItem {
+            id: "xfyun-1".into(),
+            title: "Spark-X2.5端侧模型创新挑战赛".into(),
+            link: "https://challenge.xfyun.cn/competition".into(),
+            summary: "举办方 词元星火 · 奖金 ￥100000 · #大模型技术 · 报名截止 2026-11-10 · 状态 火热报名中".into(),
+            published: "2026-11-10".into(),
+        };
+        let row = collect_xfyun(&xf).expect("讯飞条目应保留");
+        assert_eq!(row.deadline, NaiveDate::from_ymd_opt(2026, 11, 10));
+        assert_eq!(row.prize, "￥100000");
+        assert_eq!(row.themes, vec!["大模型技术".to_string()]);
+
+        let df = crate::adapters::sources::feed::FeedItem {
+            id: "df-1169".into(),
+            title: "AI新睿人才星探计划".into(),
+            link: "https://www.datafountain.cn/competitions/1169".into(),
+            summary: "主办 睿创微纳 · 赛期 2026.04.07 - 2026.08.31 · 奖金 ￥90,000".into(),
+            published: String::new(),
+        };
+        let row = collect_datafountain(&df).expect("DF 条目应保留");
+        assert_eq!(row.deadline, NaiveDate::from_ymd_opt(2026, 8, 31));
+        assert_eq!(row.prize, "￥90,000");
+
+        // 无奖金字段的条目被口径丢弃
+        let no_prize = crate::adapters::sources::feed::FeedItem {
+            summary: "举办方 某单位 · 报名截止 2026-11-10".into(),
+            ..xf.clone()
+        };
+        assert!(collect_xfyun(&no_prize).is_none());
     }
 
     #[test]
