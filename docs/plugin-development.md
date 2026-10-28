@@ -72,6 +72,7 @@ static DEF: ru41::modules::ModuleDef = ru41::modules::ModuleDef {
     schedule: |config| { /* JobSchedule 清单 */ },
     tracker: |config, store, name| { /* 命中才构造 */ },
     qq_handlers: |config, backend| { /* QQ 命令 */ },
+    qq_image_consumers: |config| { /* QQ 图片消费者，无则空 Vec */ },
 };
 ```
 
