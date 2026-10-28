@@ -35,6 +35,9 @@ else
   echo "[build-fast] building HEAD=$COMMIT in $BUILD_DIR"
 fi
 
+# local-embed：生产 RAG 需要 fastembed（默认关是给 musl 静态构建让路）。
+# 警告：docker run 的 \ 续行链里禁止插注释行——bash 续行遇注释即终结，
+# cargo 会变成独立命令在宿主机裸跑（2026-10-28 GLIBC_2.43 全群崩溃根因）。
 docker run --name "$BUILDER" \
   -v "$BUILD_DIR":/build \
   -v "$HOME/.cargo/registry:/usr/local/cargo/registry" \
@@ -42,7 +45,6 @@ docker run --name "$BUILDER" \
   -e RU41_GIT_HASH_OVERRIDE="$COMMIT" \
   -e CARGO_TARGET_DIR=/build/target \
   -w /build rust:1.98-trixie \
-  # local-embed：生产 RAG 需要 fastembed（默认关是给 musl 静态构建让路）。
   cargo build --locked --release --bin ru41 --features local-embed
 
 # 守卫：target/ 若被宿主机 cargo 污染（宿主机 glibc 比 trixie 运行时新），
