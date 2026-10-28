@@ -41,7 +41,12 @@ quick-xml = "0.42.0"
 chrono = { version = "0.4", default-features = false, features = ["std", "clock"] }
 rqrr = "0.11.0"
 image = { version = "0.25.10", default-features = false, features = ["png", "jpeg"] }
-fastembed = "7.5.0"
+fastembed = { version = "7.5.0", optional = true }
+
+[features]
+# 本地 embedding（fastembed/ONNX）拖 native-tls(openssl) 与 ort 运行时，
+# musl 静态构建带不动：默认关闭，RAG 开发用 --features local-embed。
+local-embed = ["dep:fastembed"]
 
 [target.'cfg(unix)'.dependencies]
 libc = "0.2"
