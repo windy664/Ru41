@@ -56,9 +56,11 @@ if [ -n "$BIN_GLIBC" ] && [ "$(printf '%s\n%s\n' "$RT_GLIBC" "${BIN_GLIBC#GLIBC_
   exit 1
 fi
 
-# 插件净室编译；输出到 plugins/*/target-docker，Dockerfile.patch 打进
-  # /etc/ru41/plugins。握手 v2 硬门是 ru41-plugin-api 版本 + deps stamp
+# 插件净室编译；全部插件共用一个 target（.target-docker-shared），
+  # 依赖树只编一次——曾按插件各开 target-docker，13 份重复依赖占 40G。
+  # 握手 v2 硬门是 ru41-plugin-api 版本 + deps stamp
   # （不是 git commit），lockfile 从根同步保证两侧解析同一组依赖版本。
+  PLUGINS_TARGET=/build/plugins/.target-docker-shared
   for dir in "$BUILD_DIR"/plugins/*/; do
     [ -f "$dir/Cargo.toml" ] || continue
     name="$(basename "$dir")"
@@ -67,21 +69,20 @@ fi
       -v "$BUILD_DIR":/build \
       -v "$HOME/.cargo/registry:/usr/local/cargo/registry" \
   -v "$HOME/.cache/ort.pyke.io:/root/.cache/ort.pyke.io" \
-      -e CARGO_TARGET_DIR="/build/plugins/$name/target-docker" \
+      -e CARGO_TARGET_DIR="$PLUGINS_TARGET" \
       -e RU41_GIT_HASH_OVERRIDE="$COMMIT" \
       -w "/build/plugins/$name" rust:1.98-trixie \
       cargo build --release --features plugin-entry
   done
   # 汇集 .so 到独立目录：Dockerfile.patch 只 COPY 这个目录，
-  # 避免把 plugins/ 的 target-docker（数 GB）带进构建上下文。
+  # 避免把共享 target（数 GB）带进构建上下文。
   rm -rf "$BUILD_DIR/.plugins-dist"
   mkdir -p "$BUILD_DIR/.plugins-dist"
-  # 只收各插件自己 target-docker/release 下的 .so——插件间依赖会在
-  # 对方 deps/ 里产出一份无入口符号的副本（homework→zhihuishu 实证），
-  # 用 find 全扫会被覆盖。
+  # 按精确文件名收 .so——插件作为对方依赖编译时只在 deps/ 产 rlib，
+  # 不会覆盖 release/ 顶层的 cdylib；deps/ 里的中间产物一律不收。
   for dir in "$BUILD_DIR"/plugins/*/; do
     name="$(basename "$dir")"
-    so="$dir/target-docker/release/libru41_plugin_$name.so"
+    so="$BUILD_DIR/plugins/.target-docker-shared/release/libru41_plugin_$name.so"
     [ -f "$so" ] || { echo "[build-fast] FATAL: 插件产物缺失 $so"; exit 1; }
     cp "$so" "$BUILD_DIR/.plugins-dist/"
   done
