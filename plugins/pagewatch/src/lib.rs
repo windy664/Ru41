@@ -4,8 +4,8 @@ mod config;
 mod service;
 
 pub use config::PagewatchSection;
-pub use service::{PagewatchConfig, PagewatchReport, PagewatchTracker, WatchedPage};
 use ru41::app::obsidian::ObsidianSectionExt;
+pub use service::{PagewatchConfig, PagewatchReport, PagewatchTracker, WatchedPage};
 
 /// 注册表定义：pagewatch 轮询 job。无 QQ 命令（只看不回话）。
 pub static DEF: ru41::modules::ModuleDef = ru41::modules::ModuleDef {
@@ -29,9 +29,7 @@ pub static DEF: ru41::modules::ModuleDef = ru41::modules::ModuleDef {
         if name != "pagewatch" {
             return Ok(None);
         }
-        let section = config
-            .sources
-            .get::<crate::PagewatchSection>("pagewatch")?;
+        let section = config.sources.get::<crate::PagewatchSection>("pagewatch")?;
         let route = ru41::bootstrap::assembly::source_notify(config, section.notify)?;
         let notifier = match &route {
             Some(route) => Some(ru41::bootstrap::assembly::default_notifier(

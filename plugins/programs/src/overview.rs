@@ -1,9 +1,9 @@
 //! 项目计划总览 markdown 渲染：GSoC 当季时间线（近 7 天 ~ 未来 120 天）/
 //! LFX 当前开放申请项目 / OSPP 静态卡；纯函数便于测试。
 
+use chrono::NaiveDate;
 use ru41::adapters::sources::competition::gsoc::{GsocProgram, Milestone, format_cn};
 use ru41::adapters::sources::feed::FeedItem;
-use chrono::NaiveDate;
 
 /// 时间线窗口：刚过去 7 天内的节点保留作上下文，120 天外的等临近再列。
 const PAST_SECS: i64 = 7 * 86_400;

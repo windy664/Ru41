@@ -1,8 +1,8 @@
+use anyhow::{Context, Result};
 use ru41::{
     adapters::vault::EMPTY_TREE,
     ports::{channel::NotifyChannel, storage::TaskStore, vault::Vault},
 };
-use anyhow::{Context, Result};
 use serde::Serialize;
 use std::path::PathBuf;
 use std::sync::Arc;

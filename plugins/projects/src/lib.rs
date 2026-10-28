@@ -4,9 +4,9 @@ pub mod service;
 pub use config::ProjectsSection;
 pub use service::{ProjectsConfig, ProjectsSyncReport, ProjectsTracker};
 
+use anyhow::Context as _;
 /// 注册表定义：projects 的调度清单、tracker 构造都在本模块内闭环。
 use ru41::app::obsidian::ObsidianSectionExt;
-use anyhow::Context as _;
 
 pub static DEF: ru41::modules::ModuleDef = ru41::modules::ModuleDef {
     name: "projects",

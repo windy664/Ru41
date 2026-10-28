@@ -2,11 +2,11 @@
 //! 抓取 → 规范化 → 内容指纹比对，变化即通知。首次抓取只建基线不打扰。
 //! 与 RSS 模块互补：RSS 管有 feed 的信息流，pagewatch 管"只在官网悄悄更新"的页面。
 
+use anyhow::{Context, Result};
 use ru41::{
     domain::NotifyRoute,
     ports::{channel::NotifyChannel, storage::TaskStore},
 };
-use anyhow::{Context, Result};
 use serde::Serialize;
 use std::sync::Arc;
 

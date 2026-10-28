@@ -1,10 +1,10 @@
+use anyhow::Result;
 use ru41::{
     app::homework_work,
     app::todo::TodoService,
     domain::todo::{TodoInput, TodoItem, TodoOptions, TodoPriority, TodoSource},
     ports::{channel::NotifyChannel, storage::TaskStore, vault::Vault},
 };
-use anyhow::Result;
 use serde::Serialize;
 use std::{collections::BTreeMap, path::PathBuf, sync::Arc};
 
@@ -702,12 +702,10 @@ mod tests {
             late_submit: None,
             content: content.map(str::to_owned),
             attachments: if attachments > 0 {
-                Some(vec![
-                    crate::source::ZhihuishuAttachment {
-                        name: "a.docx".into(),
-                        file: "attachments/x/a.docx".into(),
-                    },
-                ])
+                Some(vec![crate::source::ZhihuishuAttachment {
+                    name: "a.docx".into(),
+                    file: "attachments/x/a.docx".into(),
+                }])
             } else {
                 None
             },

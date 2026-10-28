@@ -1,3 +1,4 @@
+use anyhow::Result;
 use ru41::{
     app::task::TaskService,
     domain::records::Document,
@@ -6,7 +7,6 @@ use ru41::{
         storage::TaskStore,
     },
 };
-use anyhow::Result;
 use std::{future::Future, pin::Pin, sync::Arc};
 
 /// QQ 水电查询命令；读数 schema 与权限语义都留在 ecard 模块内。
