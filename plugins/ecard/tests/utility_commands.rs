@@ -26,7 +26,11 @@ fn fixture() -> Fixture {
             "qq:msg:g1",
             "群里的分析请求",
             "codex",
-            &NotifyRoute { channel: "qq".into(), target: "group:G1".into(), msg_id: Some("m1".into()) },
+            &NotifyRoute {
+                channel: "qq".into(),
+                target: "group:G1".into(),
+                msg_id: Some("m1".into()),
+            },
         )
         .unwrap();
     service
@@ -34,7 +38,11 @@ fn fixture() -> Fixture {
             "qq:msg:u1",
             "单聊的分析请求",
             "codex",
-            &NotifyRoute { channel: "qq".into(), target: "user:U1".into(), msg_id: Some("m2".into()) },
+            &NotifyRoute {
+                channel: "qq".into(),
+                target: "user:U1".into(),
+                msg_id: Some("m2".into()),
+            },
         )
         .unwrap();
     Fixture { store, _dir: dir }
@@ -247,4 +255,3 @@ async fn utility_natural_language_keeps_privacy_boundary() {
     assert!(group.text.contains("单聊"));
     assert_eq!(fixture.store.list(10).unwrap().len(), 2);
 }
-

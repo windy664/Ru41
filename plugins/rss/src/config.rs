@@ -1,5 +1,5 @@
-use ru41::domain::NotifyRoute;
 use anyhow::{Context, Result};
+use ru41::domain::NotifyRoute;
 use serde::Deserialize;
 
 use crate::service::RssConfig;

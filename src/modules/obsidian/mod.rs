@@ -3,8 +3,8 @@
 
 pub mod qq_command;
 
-pub use qq_command::ObsidianQqCommand;
 use crate::app::obsidian::ObsidianSectionExt;
+pub use qq_command::ObsidianQqCommand;
 
 /// 注册表定义：obsidian 同步服务（含知识库索引挂载）与 /记一下 命令闭环。
 #[linkme::distributed_slice(super::MODULES)]

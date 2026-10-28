@@ -1,9 +1,9 @@
+use anyhow::Result;
 use ru41::{
     adapters::sources::feed::{FeedClient, FeedItem},
     domain::NotifyRoute,
     ports::storage::TaskStore,
 };
-use anyhow::Result;
 use serde::Serialize;
 use std::sync::Arc;
 

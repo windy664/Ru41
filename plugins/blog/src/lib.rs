@@ -8,8 +8,8 @@ pub mod config;
 pub mod service;
 
 pub use config::BlogSection;
-pub use service::{BlogConfig, BlogPollReport, BlogPublishTracker};
 use ru41::app::obsidian::ObsidianSectionExt;
+pub use service::{BlogConfig, BlogPollReport, BlogPublishTracker};
 
 /// 注册表定义：blog 发布管线的调度清单与 tracker 闭环。
 pub static DEF: ru41::modules::ModuleDef = ru41::modules::ModuleDef {
@@ -17,9 +17,7 @@ pub static DEF: ru41::modules::ModuleDef = ru41::modules::ModuleDef {
     priority: ru41::modules::DEFAULT_PRIORITY,
     config_key: Some("blog"),
     schedule: |config| {
-        let blog = config
-            .sources
-            .get_or_default::<crate::BlogSection>("blog");
+        let blog = config.sources.get_or_default::<crate::BlogSection>("blog");
         let ready = blog.is_ready() && config.obsidian.is_ready();
         vec![ru41::modules::JobSchedule::simple(
             "blog",
@@ -38,9 +36,7 @@ pub static DEF: ru41::modules::ModuleDef = ru41::modules::ModuleDef {
         if name != "blog" {
             return Ok(None);
         }
-        let blog = config
-            .sources
-            .get::<crate::BlogSection>("blog")?;
+        let blog = config.sources.get::<crate::BlogSection>("blog")?;
         anyhow::ensure!(
             config.obsidian.is_ready(),
             "sources.blog requires obsidian.vault_path (posts live in the vault repo)"

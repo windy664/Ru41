@@ -10,9 +10,7 @@ pub static DEF: ru41::modules::ModuleDef = ru41::modules::ModuleDef {
     priority: ru41::modules::DEFAULT_PRIORITY,
     config_key: Some("rss"),
     schedule: |config| {
-        let rss = config
-            .sources
-            .get_or_default::<crate::RssSection>("rss");
+        let rss = config.sources.get_or_default::<crate::RssSection>("rss");
         let ready = rss.feeds.as_ref().is_some_and(|f| !f.is_empty());
         vec![ru41::modules::JobSchedule::simple(
             "rss",
@@ -26,9 +24,7 @@ pub static DEF: ru41::modules::ModuleDef = ru41::modules::ModuleDef {
         if name != "rss" {
             return Ok(None);
         }
-        let rss = config
-            .sources
-            .get::<crate::RssSection>("rss")?;
+        let rss = config.sources.get::<crate::RssSection>("rss")?;
         let tracker = RssTracker::new(
             store,
             ru41::adapters::sources::feed::FeedClient::new(),

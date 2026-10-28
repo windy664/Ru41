@@ -47,7 +47,10 @@ fn boss_entries_merge_and_render_with_mianling() {
     assert_eq!(state.entries.len(), 2);
 
     let rows: Vec<JobEntry> = state.entries.values().cloned().collect();
-    let md = render(&rows, chrono::NaiveDate::from_ymd_opt(2026, 10, 26).unwrap());
+    let md = render(
+        &rows,
+        chrono::NaiveDate::from_ymd_opt(2026, 10, 26).unwrap(),
+    );
     assert!(md.contains("## 实习（1 条）"));
     assert!(md.contains("## 校招（1 条）"));
     assert!(md.contains("⭐ 深圳"));

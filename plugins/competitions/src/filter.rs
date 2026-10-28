@@ -2,11 +2,11 @@
 //! 必须有奖（现金/奖品/权益，纯证书不要）× 地理只留大湾区线下/国内线上/国外线上；
 //! 剔除中小学生赛与已截止；同名跨源去重（保留信息更全的）。
 
+use chrono::{Datelike, NaiveDate};
 use ru41::adapters::sources::competition::devpost::{DevpostHackathon, parse_submission_end};
 use ru41::adapters::sources::competition::hack123::Hack123Event;
 use ru41::adapters::sources::competition::hackertrip::HackertripEvent;
 use ru41::adapters::sources::competition::wqai::WqaiRace;
-use chrono::{Datelike, NaiveDate};
 
 /// 总览表格的一行。
 #[derive(Debug, Clone)]
