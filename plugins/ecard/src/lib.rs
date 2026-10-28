@@ -33,9 +33,7 @@ pub static DEF: ru41::modules::ModuleDef = ru41::modules::ModuleDef {
         if name != "ecard" {
             return Ok(None);
         }
-        let ecard = config
-            .sources
-            .get::<crate::EcardSection>("ecard")?;
+        let ecard = config.sources.get::<crate::EcardSection>("ecard")?;
         let base_url = ecard
             .base_url
             .clone()

@@ -34,9 +34,7 @@ pub static DEF: ru41::modules::ModuleDef = ru41::modules::ModuleDef {
         if name != "zhihuishu" {
             return Ok(None);
         }
-        let zhihuishu = config
-            .sources
-            .get::<crate::ZhihuishuSection>("zhihuishu")?;
+        let zhihuishu = config.sources.get::<crate::ZhihuishuSection>("zhihuishu")?;
         let (notifier, notify_target) =
             ru41::bootstrap::assembly::notify_pair(config, zhihuishu.notify)?;
         let vault = ru41::bootstrap::assembly::vault_if_ready(

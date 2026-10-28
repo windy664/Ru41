@@ -6,9 +6,9 @@
 
 mod overview;
 
+use anyhow::Result;
 use ru41::app::obsidian::ObsidianSectionExt;
 use ru41::ports::vault::Vault;
-use anyhow::Result;
 use serde::Deserialize;
 use std::sync::Arc;
 

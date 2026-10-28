@@ -1,6 +1,5 @@
 use ru41::{
-    adapters::database::sqlite::SqliteTaskStore,
-    ports::channel::NotifyChannel,
+    adapters::database::sqlite::SqliteTaskStore, ports::channel::NotifyChannel,
     ports::storage::TaskStore,
 };
 use std::{

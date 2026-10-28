@@ -5,9 +5,9 @@
 //! 经 `Vault` 端口（单一写入者，git 闭环）。项目笔记是人写的，机器只拥有
 //! `Repo-GitHub.md` 一个文件。
 
+use anyhow::Result;
 use ru41::adapters::sources::github::{GithubClient, GithubRepoMeta};
 use ru41::ports::vault::Vault;
-use anyhow::Result;
 use serde::Serialize;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
