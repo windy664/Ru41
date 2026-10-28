@@ -130,8 +130,29 @@ QQ 侧另有查询命令（装配层自动注册）：单聊发送 `/作业` 或
 - 报告文件缺失或 JSON 损坏：当轮 `poll` 报错退出（cron 场景下次日自愈），不影响 records 中已有状态。
 - `end_at` 按本机时区解析（服务器应为 Asia/Shanghai）；平台只提供分钟级时间。
 - 任务完成状态来自 sidecar 抓取时刻；交作业后到下次采集之间仍会收到当日提醒，属预期。
-- 老平台（wenda）课程目前只登记课程与平台标记，任务列表未结构化解析（sidecar 产出 `tasks: []`）；现有三门老平台课均无作业，暂无影响，出现作业时优先补 sidecar 解析。
+- 老平台（wenda）课程任务已于 2026-10-26 补齐结构化解析（sidecar 点「作业考试」读 `examStu/NowExamList` + `homeworkUser/List`；字段名防御式映射，首个真实条目原文留档 `wenda_raw.jsonl` 校准）。
 - `late_submit`（是否允许迟交）来自详情页 `isDelay` 字段（文本兜底）；**未完成且非考试式任务**才访问详情页，考试式任务红线跳过、绝不进入答题页（只读文本与网络响应，不点任何提交入口）。
 - 详情抓取幂等：`attachments/{task_id}/` 已存在直接复用（删目录强制刷新）；单任务失败只降级，不破坏整轮。
 - `content_published` 由 sidecar 点击「我的学习」解析「共 N 个学习资源」得出；wenda 平台与特殊版式（如图谱课）返回 null，宁缺毋滥。首轮部署时已发布的课程会各播报一次，属预期。
 - QQ 自然语言拦截刻意保守：须同时含「作业/截止」类词与疑问色彩才应答，其余落 Agent；`/作业` 带参数时不拦截。
+
+## 签到监测（预留章节，进行中）
+
+> 状态：**等手机抓包**（2026-10-26 起）。本节先占位，端点配方抓到后回填。
+
+**目标**：上课时段检测到课堂开放即 QQ 推送「课堂已开放，注意知到 App 签到」。
+**红线**：只监测 + 推送，**绝不代签**（不伪造位置/照片、不抢签到码）。
+
+已实测的底子：
+
+- 网页端无签到面：课堂开放窗口内网页零签到 API/零弹窗，签到是知到 App 侧行为。
+- `GET https://cloudapi.polymas.com/student-course/lesson/live/list?courseId=<id>&term=20271`
+  + `authorization: <JWT>` 头（非 cookie）→ 200；`data` 数组非空 = 有开放课堂
+  （载荷含 lessonId/classIds/teacherName）。配方存 sidecar `data/req_headers.json`。
+- 2026-10-21 实测：国安教育开放课堂被该信号正确捕获。
+
+路线（已定）：手机 mitm 抓知到 App → 定位签到状态端点 → 上课时段直连轮询（60s）→ 推送。
+mitm 环境已就绪：`.223` `mitm-zhs.service`（0.0.0.0:8888，捕获插件只记 zhihuishu/polymas 域），
+产出 `sidecar/data/app_traffic.jsonl`。
+
+**待回填**：签到端点路径、请求签名/JWT 刷新方式、上课时段判定（课表已由 jwxt 模块提供）。
