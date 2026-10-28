@@ -21,6 +21,7 @@
 # cookie_path = ".ru41/chaoxing/cookies.json"
 # interval_secs = 60           # 轮询间隔；签到窗口常为 1-2 分钟，太疏会漏
 # notify = true                # 待签活动经 [notify] 默认出口推送
+# enc_sample_path = "/data/chaoxing/enc-samples.jsonl"  # enc 科研线样本库；置 null 关闭
 ```
 
 ## 运行
@@ -98,8 +99,36 @@ ru41 chaoxing work     # 采集一轮作业并按需提醒/同步（cron 友好�
 
 - 位置/二维码：`default_lat` / `default_lon` / `default_addr`（宿舍坐标与地址文本）；
 - 拍照：`photo_path` 指定的本地照片；都没配时用内置兜底照片（一张已在平台验证过的图片）。
-- 二维码 enc 没有缺省——它每分钟刷新、只存在于现场二维码里，物理上必须现场获取
-  （扫一眼或让同学拍给你），过期重扫即可。
+- 二维码 enc 没有缺省——它由服务端生成、只随二维码图片分发，物理上必须现场获取。
+
+## 二维码照片签到（图片驱动）
+
+**enc 的来源与有效性**（2026-10-23 生产实测修正）：平台**会**校验 enc 真实性，
+伪造值得到「签到失败，请重新扫描。」（社区流传的「不校验」结论已被证伪，
+相关代码已删除）。但窗口内任意一个**历史** enc 始终有效——二维码 10 秒轮换
+不影响旧 token（这也是学生扫同学几分钟前截图能成功的原因）。
+
+因此自动签 QR 的正道是**图片驱动**：把二维码拍照/截图/转发给机器人（QQ 单聊），
+机器人自动下载图片 → rqrr 解码出 `activeId` + `enc` → 以真实 enc 签到 →
+✅/❌ 回执。识别不出签到码的图片照常走 agent 通道，无误触发。
+
+注册方式：`ModuleDef.qq_image_consumers`（ModuleDef 第 4 闭包，与 qq_handlers
+同构的数据驱动注册）；实现 `ports::commands::ImageConsumer`，渠道不感知业务。
+ Cookie 与签到轮询各一份（`cookies.qr.json`），避免两进程争写同一会话文件。
+
+## enc 科研线（B 探测 + C 采样）
+
+目标：判定 enc 是否可推导（若可推导则 QR 无需照片即完全自动）。
+
+- **C 被动采样**：照片解码出的每个 enc 都落 JSONL（`enc_sample_path` 配置，
+  缺省 `/data/chaoxing/enc-samples.jsonl`，持久卷）；成败都记，平台拒绝原文是
+  token 有效期分析的关键数据。多进程追加写，任何 I/O 失败静默（永不影响签到）。
+- **B 窗口探测**：tracker 见 QR 待签即后台抓学生端详情页 HTML + preSign 响应体，
+  正则抽 enc 候选入库（`source=probe`）；原始工件落 `样本库目录/probe/{活动id}/`。
+  若平台把当前 enc 泄漏给学生可见接口 → 完全自动化的钥匙（8 年无公开先例，
+  探测成本≈0）。
+- **离线分析**：`scripts/enc-analysis.py`（字符集/长度分布、相邻样本差异位、
+  base32/base36 嵌入 epoch 探测）。
 
 ## 自动签到（auto_sign）
 
@@ -111,7 +140,7 @@ ru41 chaoxing work     # 采集一轮作业并按需提醒/同步（cron 友好�
 | 普通/手势/签到码 | 直接签，✅ 回执 |
 | 位置 | 用默认位置（default_lat/lon/addr）自动签 |
 | 拍照 | 用 photo_path 或内置照片自动签 |
-| 二维码 | 物理不可自动（enc 每分钟刷新、只存在于现场）→ ⏰ 提醒等 `--enc` |
+| 二维码 | enc 只在二维码图片里 → ⏰ 提醒 + **照片发给机器人即签**（见上节） |
 
 失败语义（防风控的核心设计）：
 

@@ -3,7 +3,7 @@ WORKDIR /build
 COPY Cargo.toml Cargo.lock ./
 COPY src ./src
 COPY migrations ./migrations
-RUN cargo build --locked --release --bin ru41
+RUN cargo build --locked --release --bin ru41 --features local-embed
 
 FROM node:22-trixie-slim
 ARG CODEX_VERSION=0.163.0

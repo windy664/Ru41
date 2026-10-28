@@ -32,6 +32,7 @@ static DEF: ModuleDef = ModuleDef {
         Ok((name == "hello").then(|| -> Box<dyn PollJob> { Box::new(HelloJob) }))
     },
     qq_handlers: |_, _| Ok(Vec::new()),
+    qq_image_consumers: |_| Ok(Vec::new()),
 };
 
 struct HelloJob;
