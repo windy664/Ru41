@@ -650,8 +650,8 @@ fn _route_type_check(_r: NotifyRoute) {}
 // ---------- QQ「作业」命令 ----------
 
 use ru41::app::identity::IdentityService;
-use ru41_plugin_zhihuishu::ZhihuishuQqCommand;
 use ru41::ports::commands::{CommandContext, CommandHandler};
+use ru41_plugin_zhihuishu::ZhihuishuQqCommand;
 
 struct CtxFixture {
     _dir: tempfile::TempDir,

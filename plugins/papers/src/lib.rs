@@ -31,9 +31,7 @@ pub static DEF: ru41::modules::ModuleDef = ru41::modules::ModuleDef {
         if name != "papers" {
             return Ok(None);
         }
-        let arxiv = config
-            .sources
-            .get::<crate::ArxivSection>("arxiv")?;
+        let arxiv = config.sources.get::<crate::ArxivSection>("arxiv")?;
         Ok(Some(Box::new(PaperTracker::new(
             store,
             ArxivClient::new(),

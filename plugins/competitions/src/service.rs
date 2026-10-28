@@ -3,12 +3,11 @@
 //! 每天生成 `05-Opportunities-机会/Competitions-竞赛/日程总览.md` 写进 vault，
 //! 变更以 [ru41] 前缀自提交（obsidian 闭环会自认，不触发整理任务）。
 
-
 pub use crate::filter::{CompetitionRow, build_rows};
 
+use anyhow::Result;
 use ru41::app::obsidian::ObsidianSectionExt;
 use ru41::ports::vault::Vault;
-use anyhow::Result;
 use serde::Deserialize;
 use std::sync::Arc;
 
@@ -99,7 +98,11 @@ impl CompetitionsService {
             .fetch_events("https://hackertrip.space/api/hackathons")
             .await
         {
-            Ok(events) => all.extend(events.into_iter().filter_map(crate::filter::collect_hackertrip)),
+            Ok(events) => all.extend(
+                events
+                    .into_iter()
+                    .filter_map(crate::filter::collect_hackertrip),
+            ),
             Err(error) => eprintln!("[competitions] hackertrip fetch failed: {error:#}"),
         }
 
@@ -182,5 +185,4 @@ impl ru41::ingress::schedule::PollJob for CompetitionsService {
         let owned = self.clone();
         ru41::plugins::bridge(async move { owned.poll_once().await })
     }
-
 }

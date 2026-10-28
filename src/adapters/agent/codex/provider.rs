@@ -4,10 +4,10 @@
 //! 加 `model_provider = "<id>"` 选择；`exec` 与 `app-server` 均支持 `-c` 覆盖。
 //! 密钥经 `env_key` 指定的环境变量由 codex 子进程自读，宿主不接触密钥值。
 
+use anyhow::{Result, ensure};
 /// 类型定义在 ru41-plugin-api::config（CodexSection 字段，属于插件边界）；
 /// 本模块保持原路径并持有翻译逻辑。
 pub use ru41_plugin_api::config::CodexProviderSection;
-use anyhow::{Result, ensure};
 
 /// 校验并生成 `-c` 覆盖参数列表。
 pub fn overrides(provider: &CodexProviderSection) -> Result<Vec<String>> {
