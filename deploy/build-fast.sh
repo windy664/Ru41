@@ -42,7 +42,8 @@ docker run --name "$BUILDER" \
   -e RU41_GIT_HASH_OVERRIDE="$COMMIT" \
   -e CARGO_TARGET_DIR=/build/target \
   -w /build rust:1.98-trixie \
-  cargo build --locked --release --bin ru41
+  # local-embed：生产 RAG 需要 fastembed（默认关是给 musl 静态构建让路）。
+  cargo build --locked --release --bin ru41 --features local-embed
 
 # 插件净室编译；输出到 plugins/*/target-docker，Dockerfile.patch 打进
   # /etc/ru41/plugins。握手 v2 硬门是 ru41-plugin-api 版本 + deps stamp
