@@ -102,6 +102,26 @@ pub static DEF: super::ModuleDef = super::ModuleDef {
         _ => Ok(None),
     },
     qq_handlers: |_, _| Ok(Vec::new()),
-    image_consumers: super::no_image_consumers,
+    image_consumers: |config| {
+        // QQ 图片消费者：把二维码照片发给机器人即签（enc 只在二维码图片里）。
+        // 与签到轮询各用一份 cookie 文件，避免两进程争写同一会话文件。
+        let section = config
+            .sources
+            .get::<crate::modules::chaoxing::ChaoxingSection>("chaoxing")?;
+        if !section.is_ready() {
+            return Ok(Vec::new());
+        }
+        let cfg = section.resolved(String::new())?;
+        let client = ChaoxingClient::new(
+            cfg.phone.clone(),
+            cfg.password.clone(),
+            cfg.cookie_path.with_extension("qr.json"),
+        );
+        Ok(vec![std::sync::Arc::new(ChaoxingQrSigner::new(
+            client,
+            cfg.default_location.clone(),
+            cfg.enc_sample_path.clone(),
+        ))])
+    },
     cli: super::no_cli,
 };
