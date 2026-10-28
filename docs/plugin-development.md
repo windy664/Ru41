@@ -135,12 +135,12 @@ ABI 破坏性变更（ru41-plugin-api 任何公开项、tokio/serde 大版本）
 bump `crates/ru41-plugin-api/Cargo.toml` 的 version，全部插件需重编；
 `PluginEntry` 自身布局/握手协议变更时 `entry.rs` 的 `PLUGIN_API_VERSION` +1。
 
-> **分叉账目（2026-10-28，合并 exp/plugin-api ↔ main 时必读）**：
-> 整体插件化（13 模块迁 cdylib）在 `exp/plugin-api`（0d9aff5，已上生产），
-> main 同期落在 ModuleDef 上加了第 5 字段 `qq_image_consumers`（e9373fd，
-> ImageConsumer 注册数据驱动化）并 bump `PLUGIN_API_VERSION` 1→2。
-> 合并时：main 的 5 字段形状为准；exp 侧 6 个留守 in-repo 模块与全部 13 个
-> 插件字面量补 `qq_image_consumers: |_| Ok(Vec::new()),`（chaoxing 例外，
-> 它有真实照片签到消费者，闭包体从 main 的 src/modules/chaoxing/mod.rs 搬），
-> 然后**全部 .so 必须重编**——main 的 ABI=2 与 exp 旧 .so（ABI=1）不兼容，
-> 握手失败是启动日志"跳过"而非报错，漏编=模块静默消失。
+> **合并后账目（2026-10-28，exp/plugin-api 已并入 main）**：
+> bfc2a69 把整体插件化合入 main，`ModuleDef` 正典移到 `crates/ru41-plugin-api`
+> （5 字段含 `image_consumers`，`PLUGIN_API_VERSION` = 2）。注意两点：
+> - 线上在跑的 13 个 `.so` 是 v1 握手——合并后的宿主首次部署前必须
+>   `./deploy/plugins-build-all.sh PUSH=1` 全量重编插件，否则握手失败、
+>   模块**静默消失**（启动日志只是"跳过"，不是报错）。
+> - 模块级接线（DEF 字面量里的闭包）是合并/重构最易被扫成 noop 的位置，
+>   chaoxing 照片签到曾因此断线——`tests/chaoxing_sources.rs` 的
+>   `def_image_consumers_wires_qr_signer_when_ready` 已钉住，同类接线照此加测试。
