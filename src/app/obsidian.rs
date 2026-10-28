@@ -40,8 +40,14 @@ impl ObsidianSectionExt for crate::bootstrap::config::ObsidianSection {
             .context("obsidian.vault_path required")?;
         Ok(ObsidianConfig {
             vault_path: PathBuf::from(vault_path),
-            remote: self.remote.clone().unwrap_or_else(|| S::DEFAULT_REMOTE.into()),
-            branch: self.branch.clone().unwrap_or_else(|| S::DEFAULT_BRANCH.into()),
+            remote: self
+                .remote
+                .clone()
+                .unwrap_or_else(|| S::DEFAULT_REMOTE.into()),
+            branch: self
+                .branch
+                .clone()
+                .unwrap_or_else(|| S::DEFAULT_BRANCH.into()),
             inbox_dir: self
                 .inbox_dir
                 .clone()
