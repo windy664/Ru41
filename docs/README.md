@@ -9,7 +9,8 @@
 - [产品设计](product-design.md)：产品目标、业务场景与总体设计
 - [开发路线](roadmap.md)：已完成能力与后续阶段
 - [核心宿主状态](core-status.md)：核心边界、并行开发约定和未完成项
-- [附属模块开发指南](module-development.md)：垂直模块目录、静态装配、QQ 命令与测试清单
+- [动态插件开发指南](plugin-development.md)：新附属的默认路线——cdylib 热插拔、ru41-plugin-api 边界与握手纪律
+- [内建模块开发指南](module-development.md)：仅常驻核心能力（obsidian/planner/jwxt 等）的静态装配约定
 - [Docker 部署](../deploy/README.md)：单镜像多进程、持久化数据、备份恢复与重依赖扩展
 
 ## Agent 与核心运行时
@@ -40,4 +41,4 @@
 1. 根目录 README：快速开始、配置与整体架构
 2. 核心宿主状态：确认哪些能力尚未完成
 3. 对应渠道或来源文档：搭建并运行一个真实闭环
-4. 附属模块开发指南：在不修改核心的前提下扩展新业务
+4. 动态插件开发指南：在不修改核心的前提下扩展新业务（独立 crate 热插拔）
