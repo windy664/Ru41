@@ -21,7 +21,7 @@ pub mod zhihuishu;
 /// tracker 装配、QQ 命令注册全部数据驱动，不再碰 main.rs/assembly.rs。
 use crate::bootstrap::config::Config;
 use crate::ingress::schedule::{PollJob, ScheduledJob};
-use crate::ports::commands::CommandHandler;
+use crate::ports::commands::{CommandHandler, ImageConsumer};
 use crate::ports::storage::TaskStore;
 use anyhow::Result;
 use std::sync::Arc;
@@ -95,12 +95,15 @@ pub struct ModuleDef {
     pub tracker: TrackerFn,
     /// QQ 扩展命令；无命令返回空 Vec。
     pub qq_handlers: QqHandlersFn,
+    /// QQ 图片消费者（如学习通二维码照片签到）；无则返回空 Vec。
+    pub qq_image_consumers: QqImageConsumersFn,
 }
 
 /// ModuleDef 的三个装配入口签名（抽类型别名压平复杂度）。
 pub type ScheduleFn = fn(&Config) -> Vec<JobSchedule>;
 pub type TrackerFn = fn(&Config, Arc<dyn TaskStore>, &str) -> Result<Option<Box<dyn PollJob>>>;
 pub type QqHandlersFn = fn(&Config, &str) -> Result<Vec<Arc<dyn CommandHandler>>>;
+pub type QqImageConsumersFn = fn(&Config) -> Result<Vec<Arc<dyn ImageConsumer>>>;
 
 /// 绝大多数模块的注册顺序：不显式关心 first-match-wins 语义时用此值。
 pub const DEFAULT_PRIORITY: u8 = 100;

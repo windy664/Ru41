@@ -55,4 +55,5 @@ pub static DEF: super::ModuleDef = super::ModuleDef {
             backend.to_owned(),
         ))])
     },
+    qq_image_consumers: |_| Ok(Vec::new()),
 };

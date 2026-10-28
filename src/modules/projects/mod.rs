@@ -42,4 +42,5 @@ pub static DEF: super::ModuleDef = super::ModuleDef {
         ))))
     },
     qq_handlers: |_, _| Ok(Vec::new()),
+    qq_image_consumers: |_| Ok(Vec::new()),
 };

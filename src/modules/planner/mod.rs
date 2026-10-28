@@ -33,4 +33,5 @@ pub static DEF: super::ModuleDef = super::ModuleDef {
             config.todo.options()?,
         ))])
     },
+    qq_image_consumers: |_| Ok(Vec::new()),
 };

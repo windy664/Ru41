@@ -66,4 +66,5 @@ pub static DEF: super::ModuleDef = super::ModuleDef {
             config.todo.options()?.offset_seconds,
         ))])
     },
+    qq_image_consumers: |_| Ok(Vec::new()),
 };
