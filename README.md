@@ -148,17 +148,19 @@ Worker 会真实调用 Agent 并消耗对应额度。`--once` 最多领取一个
 
 ## 参与开发
 
-业务模块与核心能力分开组织。新增功能优先放入 `modules/`；新增渠道放入 `channels/`；接入新的 Agent 或数据库则实现对应端口。
+业务模块与核心能力分开组织。**新增附属功能一律做动态插件**（`plugins/` 下独立 cdylib crate，编译成 `.so` 扔进插件目录即上线，不碰主仓库）；新增渠道放入 `channels/`；接入新的 Agent 或数据库则实现对应端口。
 
 | 目录 | 职责 |
 | :--- | :--- |
+| [`crates/ru41-plugin-api/`](crates/ru41-plugin-api/) | 宿主↔插件稳定边界（ModuleDef/ports/domain/Config，semver 握手） |
 | [`src/domain/`](src/domain/) · [`src/app/`](src/app/) | 领域规则与公共用例 |
 | [`src/ports/`](src/ports/) · [`src/adapters/`](src/adapters/) | 能力接口与 Agent、数据库、来源适配 |
 | [`src/runtime/`](src/runtime/) · [`src/privacy/`](src/privacy/) | 执行机制、通知派发、脱敏与回填 |
-| [`src/modules/`](src/modules/) · [`src/channels/`](src/channels/) | 论文、RSS、水电业务与消息渠道 |
+| [`plugins/`](plugins/) | 13 个业务附属（竞赛/论文/RSS/水电/实习等），独立编译热插拔 |
+| [`src/modules/`](src/modules/) · [`src/channels/`](src/channels/) | 保留内建的核心模块（obsidian/planner/jwxt 等）与消息渠道 |
 | [`src/ingress/`](src/ingress/) · [`src/bootstrap/`](src/bootstrap/) | 入口、配置与装配 |
 
-当前采用**编译期静态装配 + linkme 分布式注册**。模块在自己的 `mod.rs` 里自注册（`#[distributed_slice]`），新增附属只写自己目录 + 一行 `pub mod`，不编辑 cli.rs/main.rs/config.rs。仍是编译期模块，不是放入目录就能动态加载的插件。
+宿主架构是**动态插件（cdylib）+ 内建模块混合**：内建模块用 linkme 分布式注册随主二进制编译；插件编为 `.so` 由宿主启动时 dlopen 加载。边界类型统一住在 `ru41-plugin-api` crate（semver + 依赖 stamp 握手），宿主改业务代码不再要求插件重编。
 
 ```bash
 cargo fmt --all -- --check
@@ -166,7 +168,7 @@ cargo clippy --locked --all-targets -- -D warnings
 cargo test --locked
 ```
 
-测试使用模拟 Agent 或本地假进程，不调用付费模型。新增模块的目录约定、注册步骤与测试要求见[模块开发指南](docs/module-development.md)。
+测试使用模拟 Agent 或本地假进程，不调用付费模型。新增附属功能的目录约定与注册步骤见[插件开发指南](docs/plugin-development.md)（推荐）；少数常驻核心能力才走[内建模块指南](docs/module-development.md)。
 
 ## 继续阅读
 
