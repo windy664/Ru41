@@ -1258,3 +1258,23 @@ fn today() -> String {
     let dt = chrono::Utc::now();
     format!("{:04}-{:02}-{:02}", dt.year(), dt.month(), dt.day())
 }
+
+/// 钉住 DEF.image_consumers 接线：合并/重构最容易把它静默扫成 noop
+/// （bfc2a69 曾把照片签到断线而测试全绿）。配置齐 → 恰好 1 个消费者。
+#[test]
+fn def_image_consumers_wires_qr_signer_when_ready() {
+    let config: ru41::bootstrap::config::Config = toml::from_str(
+        r#"
+[sources.chaoxing]
+phone = "10000000000"
+password = "pw"
+"#,
+    )
+    .unwrap();
+    let consumers = ru41::bootstrap::assembly::qq_image_consumers(&config).unwrap();
+    assert_eq!(
+        consumers.len(),
+        1,
+        "[sources.chaoxing] 配置齐时必须接上二维码照片签到消费者"
+    );
+}

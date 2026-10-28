@@ -54,7 +54,10 @@ fn deps_stamp() -> String {
     }
     pinned.sort();
     let mut hash: u64 = 0xcbf2_9ce4_8422_2325;
-    for byte in pinned.iter().flat_map(|(n, v)| format!("{n}={v};").into_bytes()) {
+    for byte in pinned
+        .iter()
+        .flat_map(|(n, v)| format!("{n}={v};").into_bytes())
+    {
         hash ^= u64::from(byte);
         hash = hash.wrapping_mul(0x0000_0100_0000_01b3);
     }
