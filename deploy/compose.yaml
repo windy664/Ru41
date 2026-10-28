@@ -14,6 +14,8 @@ x-ru41: &ru41-common
 x-ru41-volumes: &ru41-volumes
   - ../ru41.toml:/etc/ru41/ru41.toml:ro
   - ../.ru41:/data
+  # 动态插件目录（plugins-build-all.sh 的产物或自建 .so 放这里；空目录=无插件）
+  - ../.ru41/plugins:/etc/ru41/plugins:ro
 
 services:
   worker:
@@ -21,6 +23,7 @@ services:
     volumes:
       - ../ru41.toml:/etc/ru41/ru41.toml:ro
       - ../.ru41:/data
+      - ../.ru41/plugins:/etc/ru41/plugins:ro
       - ${RU41_CODEX_HOME:-../.ru41/codex-home}:/home/node/.codex
     # CODEX_HOME 默认在镜像里指向 /data/codex（.ru41/codex 由容器以 root 创建，
     # 部署用户的 uid 写不进去）；改挂部署用户持有的 codex-home（config.toml + auth.json）。
@@ -146,6 +149,7 @@ services:
       - ../ru41.toml:/etc/ru41/ru41.toml:ro
       - ../.ru41:/data
       - ${RU41_VAULT_PATH:?set RU41_VAULT_PATH to the vault clone dir}:/vault
+      - ../.ru41/plugins:/etc/ru41/plugins:ro
     command: ["--config", "/etc/ru41/ru41.toml", "--db", "/data/state.db", "obsidian", "run"]
 
   # 博客发布管线：Vault 待发布目录 → 校验 → 博客仓库 _posts → 推送。
@@ -157,6 +161,7 @@ services:
       - ../ru41.toml:/etc/ru41/ru41.toml:ro
       - ../.ru41:/data
       - ${RU41_VAULT_PATH:?set RU41_VAULT_PATH to the vault clone dir}:/vault
+      - ../.ru41/plugins:/etc/ru41/plugins:ro
       - ${RU41_BLOG_PATH:?set RU41_BLOG_PATH to the blog repo clone dir}:/blog
     command: ["--config", "/etc/ru41/ru41.toml", "--db", "/data/state.db", "blog", "run"]
 
@@ -185,6 +190,7 @@ services:
       - ../ru41.toml:/etc/ru41/ru41.toml:ro
       - ../.ru41:/data
       - ${RU41_VAULT_PATH:?set RU41_VAULT_PATH to the vault clone dir}:/vault
+      - ../.ru41/plugins:/etc/ru41/plugins:ro
     command: ["--config", "/etc/ru41/ru41.toml", "--db", "/data/state.db", "jobs", "run"]
 
   # 项目计划总览：GSoC 时间线 / LFX 开放项目 / OSPP 节奏卡 → vault 项目总览.md，
@@ -196,6 +202,7 @@ services:
       - ../ru41.toml:/etc/ru41/ru41.toml:ro
       - ../.ru41:/data
       - ${RU41_VAULT_PATH:?set RU41_VAULT_PATH to the vault clone dir}:/vault
+      - ../.ru41/plugins:/etc/ru41/plugins:ro
     command: ["--config", "/etc/ru41/ru41.toml", "--db", "/data/state.db", "programs", "run"]
 
   # 科研机会总览：Mitacs/港校暑研/中科院科创等窗口倒计时 → vault 科研总览.md。
@@ -206,8 +213,46 @@ services:
     volumes:
       - ../ru41.toml:/etc/ru41/ru41.toml:ro
       - ../.ru41:/data
+      - ../.ru41/plugins:/etc/ru41/plugins:ro
       - ${RU41_VAULT_PATH:?set RU41_VAULT_PATH to the vault clone dir}:/vault
     command: ["--config", "/etc/ru41/ru41.toml", "--db", "/data/state.db", "research", "run"]
+
+  # 竞赛日程总览：多源赛事筛选（有奖+大湾区+线上）→ vault 日程总览.md，
+  # [ru41] 自提交，需挂载 Vault。
+  competitions:
+    <<: *ru41-common
+    profiles: [competitions]
+    volumes:
+      - ../ru41.toml:/etc/ru41/ru41.toml:ro
+      - ../.ru41:/data
+      - ../.ru41/plugins:/etc/ru41/plugins:ro
+      - ${RU41_VAULT_PATH:?set RU41_VAULT_PATH to the vault clone dir}:/vault
+    command: ["--config", "/etc/ru41/ru41.toml", "--db", "/data/state.db", "competitions", "run"]
+
+  # GitHub 项目卡片：拉 README 生成项目笔记，超期未动自动归档 → vault，需挂载 Vault。
+  projects:
+    <<: *ru41-common
+    profiles: [projects]
+    volumes:
+      - ../ru41.toml:/etc/ru41/ru41.toml:ro
+      - ../.ru41:/data
+      - ../.ru41/plugins:/etc/ru41/plugins:ro
+      - ${RU41_VAULT_PATH:?set RU41_VAULT_PATH to the vault clone dir}:/vault
+    command: ["--config", "/etc/ru41/ru41.toml", "--db", "/data/state.db", "projects", "run"]
+
+  # 作业聚合：汇总各课程平台（超星/智慧树/微助教）作业状态，QQ 命令与提醒。
+  homework:
+    <<: *ru41-common
+    profiles: [homework]
+    volumes: *ru41-volumes
+    command: ["--config", "/etc/ru41/ru41.toml", "--db", "/data/state.db", "homework", "run"]
+
+  # 页面监控：盯没有 RSS 的机会源头页面（赛事官网/公告页），内容变更即通知。
+  pagewatch:
+    <<: *ru41-common
+    profiles: [pagewatch]
+    volumes: *ru41-volumes
+    command: ["--config", "/etc/ru41/ru41.toml", "--db", "/data/state.db", "pagewatch", "run"]
 
   # BOSS 直聘爬取 sidecar：独立 Python 镜像（DrissionPage + chromium），
   # 结果写 /data/boss_jobs.json 供 jobs 模块读取（[sources.jobs] boss_path）。

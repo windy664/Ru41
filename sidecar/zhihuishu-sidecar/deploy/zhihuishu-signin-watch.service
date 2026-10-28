@@ -1,0 +1,17 @@
+[Unit]
+Description=zhihuishu 课堂签到值守(单轮 25 分钟轮转巡课, 只读监听)
+After=docker.service
+
+[Service]
+Type=oneshot
+# 用户级单元: 放 ~/.config/systemd/user/, 账号需在 docker 组
+WorkingDirectory=%h/Project/zhihuishu-sidecar
+ExecStart=/usr/bin/docker run --rm \
+  -v %h/Project/zhihuishu-sidecar/config.ini:/app/config.ini:ro \
+  -v %h/Project/zhihuishu-sidecar/data:/app/data \
+  -v %h/Project/zhihuishu-sidecar/scripts:/scripts:ro \
+  zhihuishu-sidecar:local \
+  sh -c 'Xvfb :98 -screen 0 1600x900x24 -nolisten tcp & XPID=$!; sleep 1.5; DISPLAY=:98 python -u /scripts/signin_watch.py 25; kill $XPID 2>/dev/null'
+# 25 分钟会话 + 登录抖动余量
+TimeoutStartSec=2100
+RemainAfterExit=no

@@ -55,6 +55,19 @@ Worker 会实际执行队列任务并消耗模型额度，首次启动前请确�
 
 附属服务使用 Compose profiles，未配置的功能不会因 `docker compose up` 被全部拉起。
 
+**插件先行**：papers/rss/ecard/competitions 等业务附属是 cdylib 动态插件，
+compose 已把 `../.ru41/plugins/` 挂到 `/etc/ru41/plugins`，但要先构建插件：
+
+```bash
+./deploy/plugins-build-all.sh   # 净室编译全部插件（glibc 与镜像一致）
+mkdir -p .ru41/plugins
+cp plugins/*/target-docker/release/*.so .ru41/plugins/
+```
+
+插件与宿主的握手规则（api 版本 + 依赖 stamp）见
+[插件开发指南](../docs/plugin-development.md)；宿主升级镜像后一般无需重编插件，
+被拒载时日志会给出明确原因。
+
 ```bash
 # QQ 网关（内含通知派发，不要再同时运行 notify）
 docker compose -f deploy/compose.yaml --profile qq up -d worker qq
@@ -77,6 +90,13 @@ RU41_COMPSHARE_COOKIE='完整的 .compshare.cn Cookie' \
 
 # 教务课表（CAS 自动登录、变更提醒、明日课表、日程同步；需先配置 [sources.jwxt]）
 docker compose -f deploy/compose.yaml --profile jwxt up -d jwxt
+
+# 竞赛日程总览 / 实习岗位总览 / 项目计划总览 / 科研机会总览（写 vault，需 RU41_VAULT_PATH）
+RU41_VAULT_PATH=<vault 克隆目录> docker compose -f deploy/compose.yaml \
+  --profile competitions --profile jobs --profile programs --profile research up -d
+
+# 作业聚合 / 项目卡片 / 页面监控
+docker compose -f deploy/compose.yaml --profile homework --profile projects --profile pagewatch up -d
 
 # 私人待办到点提醒（需要设置 QQ 单聊目标）
 RU41_TODO_NOTIFY_TARGET="user:<openid>" docker compose -f deploy/compose.yaml --profile todo up -d todo
@@ -122,6 +142,14 @@ docker compose -f deploy/compose.yaml up -d worker
 
 不要在任何 Ru41 服务仍写数据库时替换文件。Docker 的 restart 与 Worker 的租约恢复只能恢复进程和任务执行，不能替代 UPS、文件系统落盘、在线备份和异地副本。
 
-## 5. 后续重依赖扩展
+## 5. 重依赖与 sidecar
 
 首版 Compose 不预置浏览器。某个附属确实需要无头浏览器时，优先增加只供内网访问的 browser sidecar，由该模块通过 CDP/WebSocket/HTTP 调用；不要让核心 Worker 安装浏览器，也不要给 Ru41 挂载 Docker socket。需要 Python 等其他运行时同理，使用独立辅助服务而不是膨胀主镜像。
+
+现有 sidecar 实例（与 Ru41 只用一个 JSON 文件解耦）：
+
+| Sidecar | 运行时 | 产出 |
+|---|---|---|
+| [`sidecar/boss-crawler/`](../sidecar/boss-crawler/) | Python + DrissionPage + Chromium | `boss_jobs.json` → jobs 插件 |
+| [`sidecar/zhihuishu-sidecar/`](../sidecar/zhihuishu-sidecar/) | 上游 Autovisor（Playwright + Xvfb） | `report.json` → zhihuishu 插件 |
+| compose `browser` profile | browserless/chromium | JS 重度页面的统一渲染出口 |
