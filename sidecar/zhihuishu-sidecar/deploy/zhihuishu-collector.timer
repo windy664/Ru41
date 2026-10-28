@@ -1,0 +1,13 @@
+[Unit]
+Description=每晚 23:30 拉起智慧树作业采集器
+
+[Timer]
+# 23:30 采集, Ru41 端 schedule(默认 6h 间隔)最迟次日 05:30 前消费;
+# 赶在多数作业截止日(00:00)前给出当晚提醒
+OnCalendar=*-*-* 23:30:00
+RandomizedDelaySec=300
+# 错过(关机)则开机后补跑一次
+Persistent=true
+
+[Install]
+WantedBy=timers.target

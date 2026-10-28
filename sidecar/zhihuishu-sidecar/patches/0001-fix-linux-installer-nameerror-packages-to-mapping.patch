@@ -1,0 +1,13 @@
+diff --git a/modules/installer.py b/modules/installer.py
+index 3a8387e..2d94dc5 100644
+--- a/modules/installer.py
++++ b/modules/installer.py
+@@ -310,7 +310,7 @@ def start(config_obj=config):
+     if os.name != "nt":
+         modules = []
+         missing = []
+-        for package in packages:
++        for package in mapping:
+             try:
+                 modules.append(import_module(mapping[package]))
+             except ImportError:

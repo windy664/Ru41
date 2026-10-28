@@ -1,0 +1,19 @@
+[Unit]
+Description=zhihuishu sidecar 作业采集器(单轮, 跑完即退)
+After=docker.service
+
+[Service]
+Type=oneshot
+# 用户级单元: 放 ~/.config/systemd/user/, 账号需在 docker 组
+# 工作目录须含 config.ini(账密) / data/ / scripts/ ; 镜像 zhihuishu-sidecar:local 已 build 或 load
+WorkingDirectory=%h/Project/zhihuishu-sidecar
+ExecStart=/usr/bin/docker run --rm \
+  -v %h/Project/zhihuishu-sidecar/config.ini:/app/config.ini:ro \
+  -v %h/Project/zhihuishu-sidecar/data:/app/data \
+  -v %h/Project/zhihuishu-sidecar/scripts:/scripts:ro \
+  zhihuishu-sidecar:local \
+  sh -c 'Xvfb :99 -screen 0 1600x900x24 -nolisten tcp & XPID=$!; sleep 1.5; DISPLAY=:99 python -u /scripts/collector.py; kill $XPID 2>/dev/null'
+# 全量采集实测 ~195s; 放宽到 15 分钟防网络抖动误杀
+TimeoutStartSec=900
+# 失败不重试(当晚 Ru41 端仍消费上一次的有效报告, 空轮询也不会覆盖)
+RemainAfterExit=no

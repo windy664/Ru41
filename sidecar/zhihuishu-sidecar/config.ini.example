@@ -1,0 +1,33 @@
+[user-account]
+;配置账号密码，留空则打开网页后需手动登录
+username =                   # 智慧树手机号
+password =                   # 智慧树密码
+
+[browser-option]
+;容器内使用镜像自带 Chromium（symlink，Dockerfile 里生成）
+driver = Chrome
+EXE_PATH = /usr/local/bin/zhihuishu-chromium
+
+[script-option]
+;是否自动过登录时的滑块验证(默认:True)
+enableAutoCaptcha = True
+;是否自动隐藏浏览器窗口(默认:False) —— Windows 专用，Linux 容器无效
+enableHideWindow = False
+;是否展示赞赏码(默认:True)
+showDonateCode = False
+
+[course-option]
+;限制每门课程刷课时长/min (不限制:0) —— 不 24h 挂机，防人机验证
+limitMaxTime = 30
+;限定播放倍速 (最高:1.8) —— 首跑保持 1.0，稳定后再调 1.25~1.5
+limitSpeed = 1.0
+;设置是否静音播放 (默认:True)
+soundOff = True
+
+[course-url]
+;配置要学习的课程链接,支持(智慧)共享课
+;网页版 zhihuishu.com 进课程后复制浏览器地址栏
+;可继续添加多个课程链接
+;URL1 = https://www.zhihuishu.com  ← 临时占位，仅用于登录测试，正式使用时替换成真实课程页
+URL1 = https://www.zhihuishu.com
+URL2 =

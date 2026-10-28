@@ -1,0 +1,9 @@
+# 上游代码是别人的仓库，只在本目录做 build context，不入本仓库
+Autovisor/
+
+# 含账号密码，绝不入库
+config.ini
+
+# 运行时状态
+data/
+logs/

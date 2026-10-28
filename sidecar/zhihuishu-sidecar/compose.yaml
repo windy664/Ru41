@@ -1,0 +1,11 @@
+services:
+  zhihuishu:
+    build: .
+    image: zhihuishu-sidecar:local
+    init: true
+    volumes:
+      - ./config.ini:/app/config.ini
+      - ./data:/app/data
+      - ./logs:/app/logs
+      # Phase 2：report.json 桥，Ru41 modules/zhihuishu 读取端消费
+      - /home/windy/Project/Ru41/.ru41/zhihuishu:/report

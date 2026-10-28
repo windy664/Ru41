@@ -13,7 +13,7 @@ Rust 编写的个人自动化宿主，接入 Codex / Pi，串联消息、信息�
 ![Agents](https://img.shields.io/badge/Agents-Codex_%2F_Pi-62bda8?style=flat-square)
 ![Storage](https://img.shields.io/badge/Storage-SQLite_%2F_PostgreSQL-779fc5?style=flat-square)
 
-[功能](#能做什么) · [快速开始](#快速开始) · [架构](#如何运转) · [部署与配置](docs/usage.md) · [开发指南](docs/module-development.md)
+[功能](#能做什么) · [快速开始](#快速开始) · [架构](#如何运转) · [部署与配置](docs/usage.md) · [插件开发](docs/plugin-development.md)
 
 </div>
 
@@ -38,10 +38,26 @@ Rust 编写的个人自动化宿主，接入 Codex / Pi，串联消息、信息�
 | **用 YouTube 学英语** | 频道新视频字幕转写、重点词句预习单、带链接推送 | [YouTube 预习](docs/sources-youtube.md) |
 | **关注宿舍水电** | 校园卡平台余额查询、历史读数、低余额提醒 | [水电监控](docs/ecard-waterfee.md) |
 | **盯紧课程表** | 教务系统拉课表、调课停课提醒、明日课表推送、QQ 查课 | [课表监控](docs/sources-jwxt.md) |
+| **机会雷达** | 竞赛/黑客松日程总览（有奖+大湾区+线上筛选）、实习岗位总览、GSoC/LFX 项目计划、科研暑研窗口 | `plugins/`（competitions·jobs·programs·research·pagewatch） |
+| **课程平台作业** | 超星/智慧树/微助教作业聚合适配，截止提醒同步待办 | `plugins/`（homework·zhihuishu·compshare） |
+| **博客发布管线** | Obsidian `Published/` 目录定稿即发布，git 同步触发校验与推送 | `plugins/blog/` |
+| **项目卡片维护** | 拉取 GitHub 仓库 README 生成项目卡片，超期未动自动归档 | `plugins/projects/` |
 | **管理私人待办** | 今日、近期、长期、逾期视图，QQ 单聊命令与 CLI | [使用说明](docs/usage.md#私人待办) |
 | **搭建自己的自动化** | HTTP API、持久化事件、SSE 与可靠事件消费者 | [事件](docs/events.md) · [消费者](docs/event-consumers.md) |
 
 各来源模块按需配置；采集、Worker 与通知进程分别运行。水电模块需要对应平台与房间参数，并非通用的任意学校查询服务。
+
+### 附属形态：插件与 sidecar
+
+业务附属全部是 `plugins/` 下的独立 cdylib 插件——独立 Cargo.toml、独立编译、
+热插拔部署（换 `.so` + 重启对应容器），新增附属不碰宿主核心代码。
+有特殊运行时需求的采集端（真实浏览器、登录态、反爬对抗）走独立 sidecar 进程，
+与 Ru41 只用一个 JSON 文件解耦：
+
+| Sidecar | 职责 | 产出 |
+| :--- | :--- | :--- |
+| [`sidecar/boss-crawler/`](sidecar/boss-crawler/) | BOSS 直聘实习岗爬取（DrissionPage + 持久化登录态） | `boss_jobs.json` → jobs 插件 |
+| [`sidecar/zhihuishu-sidecar/`](sidecar/zhihuishu-sidecar/) | 智慧树作业只读采集（上游 Autovisor 镜像） | `report.json` → zhihuishu 插件 |
 
 ## 快速开始
 
