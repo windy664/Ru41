@@ -45,6 +45,17 @@ docker run --name "$BUILDER" \
   # local-embed：生产 RAG 需要 fastembed（默认关是给 musl 静态构建让路）。
   cargo build --locked --release --bin ru41 --features local-embed
 
+# 守卫：target/ 若被宿主机 cargo 污染（宿主机 glibc 比 trixie 运行时新），
+# cargo 可能误判产物新鲜直接复用——部署后容器内 GLIBC_X.XX not found 起不来
+# （2026-10-28 实证：宿主机 glibc 2.43 二进制进 trixie(glibc 2.41) 镜像全群 CrashLoop）。
+BIN_GLIBC="$(objdump -T "$BUILD_DIR/target/release/ru41" | grep -oE 'GLIBC_[0-9.]+' | sort -Vu | tail -1)"
+RT_GLIBC="$(docker run --rm rust:1.98-trixie ldd --version | head -1 | grep -oE '[0-9]+\.[0-9]+' | head -1)"
+if [ -n "$BIN_GLIBC" ] && [ "$(printf '%s\n%s\n' "$RT_GLIBC" "${BIN_GLIBC#GLIBC_}" | sort -V | tail -1)" != "$RT_GLIBC" ]; then
+  echo "[build-fast] FATAL: 二进制需要 $BIN_GLIBC，超过运行时镜像 glibc $RT_GLIBC" >&2
+  echo "[build-fast] target/ 疑似被宿主机 cargo 污染——rm -rf $BUILD_DIR/target/release 后重跑" >&2
+  exit 1
+fi
+
 # 插件净室编译；输出到 plugins/*/target-docker，Dockerfile.patch 打进
   # /etc/ru41/plugins。握手 v2 硬门是 ru41-plugin-api 版本 + deps stamp
   # （不是 git commit），lockfile 从根同步保证两侧解析同一组依赖版本。
