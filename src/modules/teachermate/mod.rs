@@ -105,4 +105,5 @@ pub static DEF: super::ModuleDef = super::ModuleDef {
             ),
         )])
     },
+    qq_image_consumers: |_| Ok(Vec::new()),
 };

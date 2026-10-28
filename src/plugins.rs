@@ -35,7 +35,7 @@ pub const PLUGIN_ENTRY_SYMBOL: &[u8] = b"ru41_plugin_entry";
 /// ABI 魔数：防把无关 .so 当 ru41 插件。
 pub const PLUGIN_API_MAGIC: u64 = 0x7275_3431_5f70_6c75;
 /// ABI 版本：ModuleDef/trait 签名/关键依赖（tokio/serde）破坏性变更时 +1。
-pub const PLUGIN_API_VERSION: u32 = 1;
+pub const PLUGIN_API_VERSION: u32 = 2;
 
 /// 插件入口返回的元信息。`&'static str` 等 Rust 原生布局依赖
 /// "同一 rustc 编译"前提，握手失败即拒绝加载，不做跨编译器兼容。
