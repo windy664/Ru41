@@ -24,6 +24,10 @@ impl SqliteTaskStore {
         }
         let mut connection = Connection::open(path).context("cannot open task database")?;
         connection.pragma_update(None, "foreign_keys", "ON")?;
+        // WAL：多容器共享同一库文件时读写不互斥（delete 模式下 21 个容器
+        // 抢全库写锁，busy 等待曾把轮询循环卡死数小时，2026-10-29 实证）。
+        connection.pragma_update(None, "journal_mode", "WAL")?;
+        connection.pragma_update(None, "synchronous", "NORMAL")?;
         connection.busy_timeout(Duration::from_secs(5))?;
         // 在读取版本号前，先与其他进程串行化启动迁移。
         let tx = connection.transaction_with_behavior(TransactionBehavior::Immediate)?;
@@ -440,7 +444,9 @@ impl TaskStore for SqliteTaskStore {
 }
 
 fn task_from_row(row: &Row<'_>) -> rusqlite::Result<Task> {
-    let raw_status: String = row.get(3)?;
+    // 一律按列名取：002 迁移重建过 tasks 表，列序由迁移历史决定，
+    // 位置索引在后续迁移加列时会静默错位（postgres 侧早已全命名）。
+    let raw_status: String = row.get("status")?;
     let status = raw_status.parse().map_err(|error: String| {
         rusqlite::Error::FromSqlConversionFailure(
             3,
@@ -449,13 +455,13 @@ fn task_from_row(row: &Row<'_>) -> rusqlite::Result<Task> {
         )
     })?;
     Ok(Task {
-        id: row.get(0)?,
-        request_key: row.get(1)?,
+        id: row.get("id")?,
+        request_key: row.get("request_key")?,
         backend_id: row.get("backend_id")?,
         contract: contract_column(row)?,
-        prompt: row.get(2)?,
+        prompt: row.get("prompt")?,
         status,
-        created_at: row.get(4)?,
+        created_at: row.get("created_at")?,
         updated_at: row.get("updated_at")?,
         attempt_count: row.get("attempt_count")?,
         max_attempts: row.get("max_attempts")?,
