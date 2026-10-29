@@ -3,7 +3,26 @@ WORKDIR /build
 COPY Cargo.toml Cargo.lock ./
 COPY src ./src
 COPY migrations ./migrations
+ARG RU41_GIT_HASH_OVERRIDE=unknown
+ENV RU41_GIT_HASH_OVERRIDE=$RU41_GIT_HASH_OVERRIDE
 RUN cargo build --locked --release --bin ru41 --features local-embed
+
+# 插件构建：与宿主同一源码树同一锁文件，握手（api 版本 + deps stamp）才一致。
+# 产物打进镜像 /etc/ru41/plugins，镜像即完整交付物。
+FROM rust:1.98-trixie AS plugins
+WORKDIR /build
+COPY Cargo.toml Cargo.lock build.rs ./
+COPY src ./src
+COPY crates ./crates
+COPY migrations ./migrations
+COPY plugins ./plugins
+ARG RU41_GIT_HASH_OVERRIDE=unknown
+ENV RU41_GIT_HASH_OVERRIDE=$RU41_GIT_HASH_OVERRIDE
+ENV CARGO_TARGET_DIR=/build/.plugins-target
+RUN set -e; for d in plugins/*/; do cp Cargo.lock "$d/Cargo.lock"; done \
+ && for d in plugins/*/; do (cd "$d" && cargo build --release --features plugin-entry); done \
+ && mkdir -p /plugins-dist \
+ && for d in plugins/*/; do n=$(basename "$d"); cp ".plugins-target/release/libru41_plugin_$n.so" /plugins-dist/; done
 
 FROM node:22-trixie-slim
 # 智谱 GLM coding plan 只有 chat 兼容端点，codex ≥0.16x 移除了 wire_api="chat"
@@ -28,6 +47,7 @@ RUN mkdir -p /data/codex /etc/ru41 \
     && ln -snf /usr/share/zoneinfo/Asia/Shanghai /etc/localtime \
     && echo "Asia/Shanghai" > /etc/timezone
 COPY --from=builder /build/target/release/ru41 /usr/local/bin/ru41
+COPY --from=plugins /plugins-dist/ /etc/ru41/plugins/
 COPY src/modules /etc/ru41/modules
 USER node
 ENV HOME=/home/node
