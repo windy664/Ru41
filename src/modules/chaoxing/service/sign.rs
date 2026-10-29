@@ -28,10 +28,14 @@ pub(super) fn sign_response_ok(response: &str) -> bool {
     text.contains("success") || response.contains("签到成功") || response.contains("已签到")
 }
 
+/// 课表窗口向前后各延伸的秒数（覆盖提前签到与拖堂后补签）。
+const CLASS_WINDOW_EXTEND_SECS: i64 = 15 * 60;
+/// 课表窗口外的兜底实轮询间隔（防课表外的临时签到漏检，同时压住请求量）。
+const OFF_WINDOW_POLL_SECS: i64 = 30 * 60;
+
 /// 一轮轮询的报告。
 #[derive(Debug, Serialize)]
-pub struct ChaoxingPollReport {
-    pub login_ok: bool,
+pub struct ChaoxingPollReport {    pub login_ok: bool,
     pub realname: Option<String>,
     pub courses: usize,
     pub sign_activities: usize,
@@ -45,6 +49,8 @@ pub struct ChaoxingPollReport {
     pub signed: usize,
     /// 本轮检测到「已结束仍未签」的活动数。
     pub missed: usize,
+    /// 本轮是否因不在课表窗口而跳过（未发任何网络请求）。
+    pub window_skipped: bool,
     /// 活动列表拉取失败的课程数（限流/接口变更时 >0）；>0 说明监控部分或全部失明。
     pub course_errors: usize,
     pub notified: bool,
@@ -98,6 +104,39 @@ impl ChaoxingTracker {
     /// 供 sign 子命令直接拿到已登录的客户端。
     pub fn client(&self) -> &ChaoxingClient {
         &self.client
+    }
+
+    /// 当前是否处于课表窗口内（某节课 前 15 分钟 ~ 下课 后 15 分钟）。
+    /// 课表来自 jwxt 同步落库的 event 记录（每节课一条独立实例，无 recurrence）。
+    fn in_class_window(&self, now: i64) -> Result<bool> {
+        let mut windows = Vec::new();
+        for doc in self.store.documents("event", 10_000)? {
+            let Ok(item) =
+                serde_json::from_value::<crate::domain::schedule::EventItem>(doc.value.clone())
+            else {
+                continue;
+            };
+            if item.status != crate::domain::schedule::EventStatus::Active {
+                continue;
+            }
+            if item.source.as_ref().map(|s| s.channel.as_str()) != Some("jwxt") {
+                continue;
+            }
+            windows.push((
+                item.starts_at - CLASS_WINDOW_EXTEND_SECS,
+                item.ends_at + CLASS_WINDOW_EXTEND_SECS,
+            ));
+        }
+        Ok(in_any_window(now, &windows))
+    }
+
+    /// 窗口外每 30 分钟允许一轮实轮询（以进入实轮询记账，失败也占用配额）。
+    fn off_window_poll_due(&self, now: i64) -> Result<bool> {
+        let last = self
+            .store
+            .document("chaoxing_meta", "last_full_poll")?
+            .and_then(|d| d.value.get("ts").and_then(serde_json::Value::as_i64));
+        Ok(last.is_none_or(|ts| now - ts >= OFF_WINDOW_POLL_SECS))
     }
 
     /// 手动签到：按活动 ID 在全部课程中找到活动，按类型自动选择签到方式：
@@ -379,10 +418,39 @@ impl ChaoxingTracker {
                 auto_signed: 0,
                 signed: 0,
                 missed: 0,
+                window_skipped: false,
                 course_errors: 0,
                 notified: alerted,
             });
         }
+
+        // 课表窗口自适应轮询（2026-10-29 限流教训：activelist 全天候 60s 轮询
+        // 会被平台「请勿频繁操作」掐死，且失败被静默跳过导致整天失明）。
+        // 窗口 = 当天课表每节课 前后各 15 分钟；窗口内正常轮询；窗口外完全不发
+        // 网络请求，仅每 30 分钟兜底一轮，防课表外的临时签到漏检。
+        if !self.in_class_window(now)? && !self.off_window_poll_due(now)? {
+            return Ok(ChaoxingPollReport {
+                login_ok: true,
+                realname: None,
+                courses: 0,
+                sign_activities: 0,
+                pending: 0,
+                new_activities: 0,
+                auto_signed: 0,
+                signed: 0,
+                missed: 0,
+                window_skipped: true,
+                course_errors: 0,
+                notified: false,
+            });
+        }
+        // 进入实轮询即记账：失败也占用兜底配额，限流时不会每 30 分钟反复撞。
+        self.store.put_document(
+            "chaoxing_meta",
+            "last_full_poll",
+            None,
+            &serde_json::json!({ "ts": now }),
+        )?;
 
         let courses = self.client.course_list().await?;
         let mut sign_activities = 0usize;
@@ -594,6 +662,7 @@ impl ChaoxingTracker {
             auto_signed,
             signed,
             missed,
+            window_skipped: false,
             course_errors,
             notified,
         })
@@ -619,5 +688,27 @@ impl crate::ingress::schedule::PollJob for ChaoxingTracker {
         Box<dyn std::future::Future<Output = anyhow::Result<serde_json::Value>> + Send + '_>,
     > {
         Box::pin(async move { Ok(serde_json::to_value(self.poll_once().await?)?) })
+    }
+}
+
+/// 纯函数窗口判定（边界含端点），抽出来便于单测。
+fn in_any_window(now: i64, windows: &[(i64, i64)]) -> bool {
+    windows.iter().any(|(start, end)| *start <= now && now <= *end)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::in_any_window;
+
+    #[test]
+    fn class_window_boundaries() {
+        let windows = [(1000, 2000)];
+        assert!(!in_any_window(999, &windows));
+        assert!(in_any_window(1000, &windows));
+        assert!(in_any_window(1500, &windows));
+        assert!(in_any_window(2000, &windows));
+        assert!(!in_any_window(2001, &windows));
+        assert!(!in_any_window(1500, &[]));
+        assert!(in_any_window(1500, &[(3000, 4000), (1000, 2000)]));
     }
 }
