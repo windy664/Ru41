@@ -35,7 +35,8 @@ const OFF_WINDOW_POLL_SECS: i64 = 30 * 60;
 
 /// 一轮轮询的报告。
 #[derive(Debug, Serialize)]
-pub struct ChaoxingPollReport {    pub login_ok: bool,
+pub struct ChaoxingPollReport {
+    pub login_ok: bool,
     pub realname: Option<String>,
     pub courses: usize,
     pub sign_activities: usize,
@@ -693,7 +694,9 @@ impl crate::ingress::schedule::PollJob for ChaoxingTracker {
 
 /// 纯函数窗口判定（边界含端点），抽出来便于单测。
 fn in_any_window(now: i64, windows: &[(i64, i64)]) -> bool {
-    windows.iter().any(|(start, end)| *start <= now && now <= *end)
+    windows
+        .iter()
+        .any(|(start, end)| *start <= now && now <= *end)
 }
 
 #[cfg(test)]
