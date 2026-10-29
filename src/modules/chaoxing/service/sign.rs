@@ -109,7 +109,11 @@ impl ChaoxingTracker {
 
     /// 当前是否处于课表窗口内（某节课 前 15 分钟 ~ 下课 后 15 分钟）。
     /// 课表来自 jwxt 同步落库的 event 记录（每节课一条独立实例，无 recurrence）。
+    /// 窗口再按学习通课程名单模糊过滤（jwxt「大学英语I(综合基础)」≈ 学习通
+    /// 「大学英语新视野」）：学习通没有这门课时窗口不开，进一步压请求量。
+    /// 无缓存名单时回退到全部窗口（冷启动保底）。
     fn in_class_window(&self, now: i64) -> Result<bool> {
+        let titles = self.chaoxing_course_titles()?;
         let mut windows = Vec::new();
         for doc in self.store.documents("event", 10_000)? {
             let Ok(item) =
@@ -123,12 +127,29 @@ impl ChaoxingTracker {
             if item.source.as_ref().map(|s| s.channel.as_str()) != Some("jwxt") {
                 continue;
             }
+            if !titles.is_empty() && !titles.iter().any(|t| course_title_match(t, &item.title)) {
+                continue;
+            }
             windows.push((
                 item.starts_at - CLASS_WINDOW_EXTEND_SECS,
                 item.ends_at + CLASS_WINDOW_EXTEND_SECS,
             ));
         }
         Ok(in_any_window(now, &windows))
+    }
+
+    /// 最近一次成功拉取的学习通课程名单（实轮询时刷新）。
+    fn chaoxing_course_titles(&self) -> Result<Vec<String>> {
+        let titles = self
+            .store
+            .document("chaoxing_meta", "course_titles")?
+            .and_then(|d| {
+                d.value
+                    .get("titles")
+                    .and_then(|v| serde_json::from_value::<Vec<String>>(v.clone()).ok())
+            })
+            .unwrap_or_default();
+        Ok(titles)
     }
 
     /// 窗口外每 30 分钟允许一轮实轮询（以进入实轮询记账，失败也占用配额）。
@@ -454,6 +475,18 @@ impl ChaoxingTracker {
         )?;
 
         let courses = self.client.course_list().await?;
+        // 缓存学习通课程名单供课表窗口模糊过滤；空名单不写（异常响应不清空缓存）。
+        if !courses.is_empty() {
+            self.store.put_document(
+                "chaoxing_meta",
+                "course_titles",
+                None,
+                &serde_json::json!({
+                    "ts": now,
+                    "titles": courses.iter().map(|c| c.title.clone()).collect::<Vec<_>>(),
+                }),
+            )?;
+        }
         let mut sign_activities = 0usize;
         let mut new_activities = 0usize;
         let mut pending = 0usize;
@@ -699,9 +732,32 @@ fn in_any_window(now: i64, windows: &[(i64, i64)]) -> bool {
         .any(|(start, end)| *start <= now && now <= *end)
 }
 
+/// 课表课程名 ⇄ 学习通课程名的模糊匹配：去括号内容与空白后，最长公共前缀
+/// ≥ 4 字符（「大学英语I(综合基础)」≈「大学英语新视野」），或一方包含另一方
+/// （短课名如「体育」）。刻意保守：误开窗口的代价只是多几轮请求。
+fn course_title_match(a: &str, b: &str) -> bool {
+    let normalize = |s: &str| -> String {
+        s.split(['（', '('])
+            .next()
+            .unwrap_or(s)
+            .chars()
+            .filter(|c| !c.is_whitespace())
+            .collect()
+    };
+    let (a, b) = (normalize(a), normalize(b));
+    if a.is_empty() || b.is_empty() {
+        return false;
+    }
+    if a.contains(&b) || b.contains(&a) {
+        return true;
+    }
+    let common = a.chars().zip(b.chars()).take_while(|(x, y)| x == y).count();
+    common >= 4
+}
+
 #[cfg(test)]
 mod tests {
-    use super::in_any_window;
+    use super::{course_title_match, in_any_window};
 
     #[test]
     fn class_window_boundaries() {
@@ -713,5 +769,14 @@ mod tests {
         assert!(!in_any_window(2001, &windows));
         assert!(!in_any_window(1500, &[]));
         assert!(in_any_window(1500, &[(3000, 4000), (1000, 2000)]));
+    }
+
+    #[test]
+    fn course_title_fuzzy_match() {
+        assert!(course_title_match("大学英语I(综合基础)", "大学英语新视野"));
+        assert!(course_title_match("体育", "体育俱乐部"));
+        assert!(!course_title_match("高等数学I(理)", "大学英语新视野"));
+        assert!(!course_title_match("思想道德与法治", "大学英语新视野"));
+        assert!(!course_title_match("心理健康", ""));
     }
 }

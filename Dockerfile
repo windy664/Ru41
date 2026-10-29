@@ -1,7 +1,8 @@
 FROM rust:1.98-trixie AS builder
 WORKDIR /build
-COPY Cargo.toml Cargo.lock ./
+COPY Cargo.toml Cargo.lock build.rs ./
 COPY src ./src
+COPY crates ./crates
 COPY migrations ./migrations
 ARG RU41_GIT_HASH_OVERRIDE=unknown
 ENV RU41_GIT_HASH_OVERRIDE=$RU41_GIT_HASH_OVERRIDE
