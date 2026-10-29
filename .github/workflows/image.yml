@@ -1,0 +1,41 @@
+name: image
+
+# 构建完整镜像（二进制 + 13 插件）推到 GHCR，服务器只需 docker pull。
+# 只在代码/依赖变更时跑；文档类提交不浪费 40 分钟构建。
+on:
+  push:
+    branches: [main]
+    paths-ignore:
+      - 'docs/**'
+      - '**.md'
+      - 'sidecar/**'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  packages: write
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: docker/setup-buildx-action@v3
+
+      - uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - uses: docker/build-push-action@v6
+        with:
+          context: .
+          build-args: RU41_GIT_HASH_OVERRIDE=${{ github.sha }}
+          tags: |
+            ghcr.io/windy664/ru41:latest
+            ghcr.io/windy664/ru41:${{ github.sha }}
+          push: true
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
