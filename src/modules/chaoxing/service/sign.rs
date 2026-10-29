@@ -45,6 +45,8 @@ pub struct ChaoxingPollReport {
     pub signed: usize,
     /// 本轮检测到「已结束仍未签」的活动数。
     pub missed: usize,
+    /// 活动列表拉取失败的课程数（限流/接口变更时 >0）；>0 说明监控部分或全部失明。
+    pub course_errors: usize,
     pub notified: bool,
 }
 
@@ -377,6 +379,7 @@ impl ChaoxingTracker {
                 auto_signed: 0,
                 signed: 0,
                 missed: 0,
+                course_errors: 0,
                 notified: alerted,
             });
         }
@@ -390,11 +393,19 @@ impl ChaoxingTracker {
         let mut missed = 0usize;
         let mut pending_lines: Vec<String> = Vec::new();
         let mut outcome_lines: Vec<String> = Vec::new();
+        let mut course_errors = 0usize;
+        let mut last_course_error: Option<String> = None;
 
         for course in &courses {
-            let Ok(activities) = self.client.activity_list(course).await else {
-                // 单门课程活动列表失败只影响本轮该课程，不破坏整体轮询
-                continue;
+            let activities = match self.client.activity_list(course).await {
+                Ok(activities) => activities,
+                Err(err) => {
+                    // 单门课程失败只影响本轮该课程，但必须计数 surfaced 到报告：
+                    // 全部失败（如平台限流「请勿频繁操作」）时监控等同失明，不能静默。
+                    course_errors += 1;
+                    last_course_error = Some(format!("{err:#}"));
+                    continue;
+                }
             };
             for activity in activities.into_iter().filter(|a| a.is_sign()) {
                 sign_activities += 1;
@@ -523,6 +534,33 @@ impl ChaoxingTracker {
         }
 
         let mut notified = false;
+        // 全部课程活动列表都拉取失败（登录态却正常）：签到监控处于失明状态，
+        // 典型诱因是平台限流（「请勿频繁操作」）或接口变更。每日最多告警一次。
+        if !courses.is_empty() && course_errors == courses.len() {
+            let key = format!("activity_fail:{today}");
+            if self.store.document("chaoxing_alert", &key)?.is_none()
+                && let Some(notifier) = self.notifier.as_ref()
+            {
+                self.store.put_document(
+                    "chaoxing_alert",
+                    &key,
+                    None,
+                    &serde_json::json!({ "ts": now }),
+                )?;
+                notifier
+                    .send(
+                        &self.config.notify_target,
+                        None,
+                        &format!(
+                            "⚠️ 学习通签到监控失明：全部 {} 门课程的活动列表拉取失败（{}）。\n疑似平台限流或接口变更，签到检测当前不可用。",
+                            courses.len(),
+                            last_course_error.as_deref().unwrap_or("未知错误"),
+                        ),
+                    )
+                    .await?;
+                notified = true;
+            }
+        }
         if let Some(notifier) = &self.notifier {
             if !pending_lines.is_empty() {
                 let message = format!(
@@ -556,6 +594,7 @@ impl ChaoxingTracker {
             auto_signed,
             signed,
             missed,
+            course_errors,
             notified,
         })
     }
