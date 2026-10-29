@@ -332,12 +332,39 @@ fn make_tracker_full(
     )
 }
 
+/// 插一条覆盖当前时刻的 jwxt 课表事件：课表窗口轮询默认只在学校时段实轮询，
+/// 测试需要窗口放行才能走到活动枚举。
+fn insert_covering_class_event(store: &SqliteTaskStore) {
+    let now = ru41::util::now();
+    store
+        .put_document(
+            "event",
+            "evt_test_window",
+            None,
+            &serde_json::json!({
+                "id": "evt_test_window",
+                "title": "大学英语新视野",
+                "status": "active",
+                "starts_at": now - 600,
+                "ends_at": now + 3600,
+                "location": null,
+                "recurrence": "none",
+                "reminded_starts": [],
+                "created_at": now,
+                "updated_at": now,
+                "source": {"channel": "jwxt", "source_id": "test"},
+            }),
+        )
+        .unwrap();
+}
+
 #[tokio::test]
 async fn notifies_pending_once_then_idempotent() {
     let state = Arc::new(FixtureState::new(activities_pending_json()));
     let addr = spawn_fixture(state.clone()).await;
     let dir = tempfile::tempdir().unwrap();
     let store = Arc::new(SqliteTaskStore::open(&dir.path().join("state.db")).unwrap());
+    insert_covering_class_event(&store);
     let channel = mock_channel();
     let tracker = make_tracker(
         store.clone(),
@@ -403,6 +430,7 @@ async fn missed_sign_transition_notifies_once() {
     let addr = spawn_fixture(state.clone()).await;
     let dir = tempfile::tempdir().unwrap();
     let store = Arc::new(SqliteTaskStore::open(&dir.path().join("state.db")).unwrap());
+    insert_covering_class_event(&store);
     let channel = mock_channel();
     let tracker = make_tracker(
         store,
@@ -444,6 +472,7 @@ async fn login_failure_alerts_once_per_day() {
     let addr = spawn_fixture(state).await;
     let dir = tempfile::tempdir().unwrap();
     let store = Arc::new(SqliteTaskStore::open(&dir.path().join("state.db")).unwrap());
+    insert_covering_class_event(&store);
     let channel = mock_channel();
     let tracker = make_tracker(
         store.clone(),
@@ -481,6 +510,7 @@ async fn sign_manual_signs_via_presign_and_reports() {
     let addr = spawn_fixture(state.clone()).await;
     let dir = tempfile::tempdir().unwrap();
     let store = Arc::new(SqliteTaskStore::open(&dir.path().join("state.db")).unwrap());
+    insert_covering_class_event(&store);
     let channel = mock_channel();
     let tracker = make_tracker(
         store,
@@ -528,6 +558,7 @@ async fn sign_failure_pushes_failure_receipt() {
     let addr = spawn_fixture(state.clone()).await;
     let dir = tempfile::tempdir().unwrap();
     let store = Arc::new(SqliteTaskStore::open(&dir.path().join("state.db")).unwrap());
+    insert_covering_class_event(&store);
     let channel = mock_channel();
     let tracker = make_tracker(
         store,
