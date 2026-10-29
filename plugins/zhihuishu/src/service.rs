@@ -352,7 +352,6 @@ impl ZhihuishuTracker {
             return Ok((0, None));
         }
         let base = self.config.vault_course_dir.trim_end_matches('/');
-        let offset = self.todos.options().offset_seconds;
         let mut written = 0usize;
         for course in &report.courses {
             let dir = self
@@ -365,7 +364,7 @@ impl ZhihuishuTracker {
             // 课程级索引：未完成/已完成清单，任务行双链到作业文件夹
             vault.write_file(
                 &format!("{course_base}/智慧树作业.md"),
-                &render_course_note(course, now, offset, self.config.vault_task_dirs),
+                &render_course_note(course, now, self.config.vault_task_dirs),
             )?;
             written += 1;
             // 任务级资料夹：{YYYY.MM.DD}_{作业名}/作业说明.md + 平台附件
@@ -380,7 +379,7 @@ impl ZhihuishuTracker {
                 let folder = task_folder_name(task);
                 vault.write_file(
                     &format!("{course_base}/{folder}/作业说明.md"),
-                    &render_task_note(course, task, now, offset),
+                    &render_task_note(course, task),
                 )?;
                 written += 1;
                 written += self.copy_task_attachments(
@@ -484,7 +483,6 @@ fn truncate_err(err: &anyhow::Error) -> String {
 fn render_course_note(
     course: &ZhihuishuCourse,
     now: i64,
-    offset_seconds: i32,
     dirs: ru41::ports::vault::VaultTaskDirs,
 ) -> String {
     let mut open: Vec<&ZhihuishuTask> = Vec::new();
@@ -500,14 +498,14 @@ fn render_course_note(
     open.sort_by(|a, b| a.end_at.cmp(&b.end_at));
     done.sort_by(|a, b| b.end_at.cmp(&a.end_at));
 
-    let stamp = homework_work::local_stamp(now, offset_seconds);
     let mut out = String::new();
     out.push_str("---\n");
     out.push_str(&format!("course: {}\n", course.title));
     if let Some(platform) = &course.platform {
         out.push_str(&format!("platform: {platform}\n"));
     }
-    out.push_str(&format!("updated: {stamp}\n"));
+    // 不写 updated 时间戳：内容须随数据变化而变化，每轮 poll 都变的时间戳
+    // 会让 vault 每轮都产生 diff → commit → 触发「已同步」通知刷屏。
     out.push_str("tags:\n  - 课程\n  - 智慧树\n---\n\n");
     out.push_str(&format!("# {} · 智慧树作业\n\n", course.title));
     out.push_str("> 由 Ru41 每轮轮询自动覆写，请勿手改；截止时间为平台北京时间。\n\n");
@@ -577,12 +575,7 @@ fn task_folder_name(task: &ZhihuishuTask) -> String {
 }
 
 /// 渲染单个作业的「作业说明.md」：元信息 + 平台描述文本。
-fn render_task_note(
-    course: &ZhihuishuCourse,
-    task: &ZhihuishuTask,
-    now: i64,
-    offset_seconds: i32,
-) -> String {
+fn render_task_note(course: &ZhihuishuCourse, task: &ZhihuishuTask) -> String {
     let completed = task.completed.unwrap_or(false);
     let exam = task.exam_duration_minutes.unwrap_or(0) > 0 || task.video_invigilate == Some(true);
     let status = if exam {
@@ -609,10 +602,7 @@ fn render_task_note(
         "status: {}\n",
         if completed { "done" } else { "open" }
     ));
-    out.push_str(&format!(
-        "updated: {}\n",
-        homework_work::local_stamp(now, offset_seconds)
-    ));
+    // 同课程索引：不写 updated 时间戳，避免每轮 poll 产生无意义 diff。
     out.push_str("tags:\n  - 课程\n  - 智慧树\n  - 作业\n---\n\n");
     out.push_str(&format!("# {}\n\n", task.title));
     out.push_str(&format!("- 课程：{}\n", course.title));
