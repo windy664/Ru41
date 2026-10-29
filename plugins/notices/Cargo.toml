@@ -1,0 +1,21 @@
+[package]
+name = "ru41-plugin-notices"
+version = "0.1.0"
+edition = "2024"
+
+[lib]
+crate-type = ["cdylib", "rlib"]
+
+[features]
+plugin-entry = []
+
+[dependencies]
+# 必须与宿主同一版本（ABI 握手校验 api 版本 + deps stamp）。
+ru41 = { path = "../.." }
+anyhow = "1"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+chrono = { version = "0.4", default-features = false, features = ["std", "clock"] }
+
+[dev-dependencies]
+tempfile = "3"
