@@ -140,7 +140,12 @@ fn retry_delay_budget_and_manual_retry_preserve_attempts() {
     }
     assert_eq!(store.get(id).unwrap().unwrap().status, TaskStatus::Failed);
     assert!(store.claim("worker", 500, 30).unwrap().is_none());
+    // 失败通知已发出的任务，手动重试后必须重新可通知（2026-10-29 实证：
+    // digest 重试成功后 notified_at 未清，用户永远收不到结果）。
+    store.mark_notified(id).unwrap();
+    assert!(store.get(id).unwrap().unwrap().notified_at.is_some());
     store.retry(id).unwrap();
+    assert!(store.get(id).unwrap().unwrap().notified_at.is_none());
     let claim = store.claim("worker", 501, 30).unwrap().unwrap();
     assert_eq!(claim.task.attempt_count, 4);
     assert_eq!(store.attempts(id).unwrap().len(), 4);
