@@ -38,8 +38,6 @@ impl CommandHandler for YoutubeQqCommand {
             verb,
             "英语"
                 | "english"
-                | "预习"
-                | "prep"
                 | "复习"
                 | "review"
                 | "定级"
