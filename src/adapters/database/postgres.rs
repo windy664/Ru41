@@ -298,7 +298,7 @@ impl TaskStore for PostgresTaskStore {
 
     fn retry(&self, id: i64) -> Result<Task> {
         outside_runtime(|| {
-            let changed = self.client()?.execute("UPDATE tasks SET status='queued', available_at=0, max_attempts=attempt_count+3, last_error=NULL, updated_at=now() WHERE id=$1 AND status='failed'", &[&id])?;
+            let changed = self.client()?.execute("UPDATE tasks SET status='queued', available_at=0, max_attempts=attempt_count+3, last_error=NULL, notified_at=NULL, updated_at=now() WHERE id=$1 AND status='failed'", &[&id])?;
             anyhow::ensure!(changed == 1, "only a failed task can be retried");
             self.get(id)?.context("task not found")
         })
