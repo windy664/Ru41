@@ -6,7 +6,10 @@ COPY migrations ./migrations
 RUN cargo build --locked --release --bin ru41 --features local-embed
 
 FROM node:22-trixie-slim
-ARG CODEX_VERSION=0.163.0
+# 智谱 GLM coding plan 只有 chat 兼容端点，codex ≥0.16x 移除了 wire_api="chat"
+# 支持（2026-10-29 实证：0.163.0 直接拒绝启动，agent 任务全灭）。钉死 0.80.0；
+# exec.rs 的 CliCaps 探测会按旧版能力条件传参，两边都兼容。
+ARG CODEX_VERSION=0.80.0
 # 容器出国际方向不稳定（宿主机代理不覆盖 docker 桥接），apt 统一走阿里云镜像。
 RUN sed -i 's|deb.debian.org|mirrors.aliyun.com|g; s|security.debian.org|mirrors.aliyun.com|g' \
         /etc/apt/sources.list.d/debian.sources 2>/dev/null \
