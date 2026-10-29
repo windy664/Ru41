@@ -36,7 +36,9 @@ impl CommandHandler for YoutubeQqCommand {
     fn matches(&self, verb: &str) -> bool {
         matches!(
             verb,
-            "预习"
+            "英语"
+                | "english"
+                | "预习"
                 | "prep"
                 | "复习"
                 | "review"
@@ -50,7 +52,7 @@ impl CommandHandler for YoutubeQqCommand {
     }
 
     fn help(&self) -> &'static str {
-        "`/预习 <YouTube链接>`：生成该视频的英语预习单；`/复习 <不会的编号>`（如 /复习 2 4，其余记会；全部都会回 /复习 all）；`/定级`：英语水平测试（3 句翻译），结果用于调整预习难度；`/学习`：最近一期完整预习单（听前自测+看后检测）；`/答案`：最近一期看后检测的答案"
+        "`/英语 <YouTube链接>`：生成该视频的学习单（重点词句，看片前用）；`/复习 <不会的编号>`（如 /复习 2 4，其余记会；全部都会回 /复习 all）；`/定级`：英语水平测试（3 句翻译），结果用于调整难度；`/学习`：最近一期完整学习单（听前自测+看后检测）；`/答案`：最近一期检测的答案"
     }
 
     fn handle_command<'a>(
