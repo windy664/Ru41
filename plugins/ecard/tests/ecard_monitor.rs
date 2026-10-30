@@ -145,7 +145,7 @@ async fn poll_records_reading_and_alerts_below_threshold() {
     assert!(!second.alert_sent);
     assert_eq!(channel.sent.lock().unwrap().len(), 1);
     let text = channel.sent.lock().unwrap()[0].clone();
-    assert!(text.starts_with("default|【水电提醒】"));
+    assert!(text.starts_with("default|## ⚡ 水电提醒"));
     assert!(text.contains("8.50度"));
 }
 
@@ -189,8 +189,8 @@ async fn daily_report_sends_once_per_day_when_enabled() {
     assert!(!report.alert_sent);
     assert!(report.report_sent);
     let text = channel.sent.lock().unwrap()[0].clone();
-    assert!(text.starts_with("default|【水电日报】"));
-    assert!(text.contains("33.50度"));
+    assert!(text.starts_with("default|## ⚡ 水电日报"));
+    assert!(text.contains("33.50 度"));
 
     // 同日第二轮：读数照常更新，日报不重复。
     let again = tracker.poll_once().await.unwrap();
