@@ -99,18 +99,15 @@ impl YtDlpClient {
             "%(id)s\u{1f}%(title)s\u{1f}%(duration)s\u{1f}%(view_count)s\u{1f}%(timestamp)s";
         // playlist-items 用区间语法：裸数字是「只取第 N 条」而非「前 N 条」。
         let items = format!("1:{limit}");
-        let output = Self::spawn_output(
-            self.command()
-                .args([
-                    "--flat-playlist",
-                    "--no-warnings",
-                    "--playlist-items",
-                    &items,
-                    "--print",
-                    template,
-                    channel_videos_url,
-                ]),
-        )
+        let output = Self::spawn_output(self.command().args([
+            "--flat-playlist",
+            "--no-warnings",
+            "--playlist-items",
+            &items,
+            "--print",
+            template,
+            channel_videos_url,
+        ]))
         .await
         .with_context(|| format!("spawn {} list", self.bin))?;
         if !output.status.success() {
@@ -146,17 +143,14 @@ impl YtDlpClient {
     /// 单视频元数据（标题/时长/发布时间），手动点播与轮询新鲜度兜底共用。
     pub async fn video_meta(&self, video_id: &str) -> Result<VideoMeta> {
         let url = format!("https://www.youtube.com/watch?v={video_id}");
-        let output = Self::spawn_output(
-            self.command()
-                .args([
-                    "--skip-download",
-                    "--no-warnings",
-                    "--no-playlist",
-                    "--print",
-                    "%(title)s\u{1f}%(duration)s\u{1f}%(timestamp)s",
-                    &url,
-                ]),
-        )
+        let output = Self::spawn_output(self.command().args([
+            "--skip-download",
+            "--no-warnings",
+            "--no-playlist",
+            "--print",
+            "%(title)s\u{1f}%(duration)s\u{1f}%(timestamp)s",
+            &url,
+        ]))
         .await
         .with_context(|| format!("spawn {} meta", self.bin))?;
         if !output.status.success() {
@@ -210,9 +204,9 @@ impl YtDlpClient {
                 std::time::Duration::from_secs(180),
                 Self::spawn_output(&mut command),
             )
-                    .await
-                    .with_context(|| format!("spawn {} subtitles", self.bin))?
-                    .with_context(|| format!("run {} subtitles", self.bin))?;
+            .await
+            .with_context(|| format!("spawn {} subtitles", self.bin))?
+            .with_context(|| format!("run {} subtitles", self.bin))?;
             if !output.status.success() {
                 bail!("yt-dlp subtitles failed: {}", tail_stderr(&output.stderr));
             }
