@@ -46,7 +46,10 @@ const LIST_OLD: &str = "printf 'vid-old\\037Some AI essay video\\037306\\0379000
 fn write_fake_ytdlp(dir: &Path, marker: &Path, list_lines: &str) -> PathBuf {
     use std::sync::atomic::{AtomicU64, Ordering};
     static SEQ: AtomicU64 = AtomicU64::new(0);
-    let script = dir.join(format!("fake-ytdlp-{}.sh", SEQ.fetch_add(1, Ordering::Relaxed)));
+    let script = dir.join(format!(
+        "fake-ytdlp-{}.sh",
+        SEQ.fetch_add(1, Ordering::Relaxed)
+    ));
     std::fs::write(
         &script,
         format!(
