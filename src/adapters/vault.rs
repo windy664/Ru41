@@ -1,4 +1,4 @@
-use crate::ports::vault::Vault;
+use crate::ports::vault::{InboxMove, Vault};
 use anyhow::{Context, Result, bail};
 use std::fs::File;
 use std::os::unix::io::AsRawFd;
@@ -195,6 +195,64 @@ impl Vault for GitVault {
             std::fs::remove_file(&path)?;
             Ok(true)
         })
+    }
+
+    fn recent_inbox_moves(&self, inbox_dir: &str, days: u32) -> Result<Vec<InboxMove>> {
+        let inbox_prefix = format!("{inbox_dir}/");
+        // -M 开重命名检测：agent 归档是「旧路径删 + 新路径增」，相似内容会被识别为 R。
+        // %x1e 分隔提交记录，避免中文路径/多行提交说明干扰解析。
+        let out = self.git(&[
+            "log",
+            &format!("--since={days}.days"),
+            "--date=short",
+            "--format=%x1e%ad",
+            "--name-status",
+            "-M",
+        ])?;
+        let mut moves: Vec<InboxMove> = Vec::new();
+        for record in out.split('\x1e') {
+            let mut lines = record.lines();
+            let Some(date) = lines.next().map(str::trim).filter(|d| !d.is_empty()) else {
+                continue;
+            };
+            for line in lines {
+                let mut fields = line.split('\t');
+                let status = fields.next().unwrap_or_default().trim();
+                let (source, destination) = if status.starts_with('R') {
+                    match (fields.next(), fields.next()) {
+                        (Some(from), Some(to)) => (from, to.to_owned()),
+                        _ => continue,
+                    }
+                } else if status == "D" {
+                    match fields.next() {
+                        Some(from) => (from, "已删除（可能已转待办或合并进其他笔记）".to_owned()),
+                        None => continue,
+                    }
+                } else {
+                    continue;
+                };
+                let Some(name) = source.strip_prefix(inbox_prefix.as_str()) else {
+                    continue;
+                };
+                // 收件箱内部改名（如 [待分类] 前缀调整）与程序自身文件不算归档。
+                if destination.starts_with(&inbox_prefix)
+                    || name == "快速记录.md"
+                    || name == "整理索引.md"
+                {
+                    continue;
+                }
+                moves.push(InboxMove {
+                    date: date.to_owned(),
+                    name: name.to_owned(),
+                    destination,
+                });
+            }
+        }
+        // 同名文件只留最近一次去向：多次转手时用户只关心最终归宿。
+        moves.sort_by(|a, b| b.date.cmp(&a.date).then_with(|| a.name.cmp(&b.name)));
+        let mut seen = std::collections::HashSet::new();
+        moves.retain(|m| seen.insert(m.name.clone()));
+        Ok(moves)
     }
 
     fn append_inbox_note(

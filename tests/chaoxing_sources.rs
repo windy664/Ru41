@@ -1129,6 +1129,13 @@ impl ru41::ports::vault::Vault for WorkVault {
     ) -> anyhow::Result<String> {
         Ok("fake-inbox.md".into())
     }
+    fn recent_inbox_moves(
+        &self,
+        _inbox_dir: &str,
+        _days: u32,
+    ) -> anyhow::Result<Vec<ru41::ports::vault::InboxMove>> {
+        Ok(Vec::new())
+    }
 }
 
 /// 作业列表 HTML：一条可配置状态 + 一条已提交，详情直链指向 fixture 自身。
