@@ -11,7 +11,7 @@ use tempfile::TempDir;
 
 const OFFSET: i32 = 8 * 3600;
 
-/// 2026-10-20 12:00:00 +0800 的 Unix 秒（测试锚点）。
+/// 2027-01-15 12:00:00 +0800 的 Unix 秒（测试锚点）。
 fn now_anchor() -> i64 {
     1_800_000_000 - (1_800_000_000 + OFFSET as i64).rem_euclid(86400) + 12 * 3600
 }
@@ -162,6 +162,10 @@ fn parse_absolute_dates() {
     assert!(starts > now + 30 * 86400);
     // M月D日
     assert!(parse_event_when("12月1日 14:00-15:00", now, &options()).is_some());
+    // YYYY年M月D日（讲座通知实测格式）：带年份按原样落到指定日期，不落回今天
+    let (starts, ends, _) = parse_event_when("2026年11月3日 15:30", now, &options()).unwrap();
+    assert_eq!(starts, 1_793_691_000, "2026-11-03 15:30 +0800");
+    assert_eq!(ends - starts, 3600);
     // 裸时刻仍是"今天"
     let today_start = parse_event_when("23:00-23:30", now, &options());
     assert!(today_start.is_some());
