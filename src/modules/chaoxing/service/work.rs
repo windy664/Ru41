@@ -334,10 +334,12 @@ impl ChaoxingWorkTracker {
         if !lines.is_empty()
             && let Some(notifier) = self.notifier.as_ref()
         {
-            let mut message = format!("【学习通作业】\n{}", lines.join("\n"));
-            if vault_files > 0 {
-                message.push_str(&format!("\n（已同步 {vault_files} 个笔记到 Obsidian）"));
-            }
+            // 同步成果只进报告与日志，不进推送（噪音）
+            let message = format!(
+                "## 📝 学习通作业（{}）\n\n{}",
+                lines.len(),
+                lines.join("\n")
+            );
             notifier
                 .send(&self.config.notify_target, None, &message)
                 .await?;

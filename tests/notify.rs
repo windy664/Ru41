@@ -223,7 +223,8 @@ async fn dispatches_started_progress_once() {
     assert_eq!(sent.len(), 1);
     assert_eq!(sent[0].1.as_deref(), Some("m1"));
     assert!(sent[0].2.contains("开始执行"), "text: {}", sent[0].2);
-    assert!(sent[0].2.contains("底座 `codex`"), "text: {}", sent[0].2);
+    // 底座/尝试次数属于内部细节，不再进推送
+    assert!(!sent[0].2.contains("底座"), "text: {}", sent[0].2);
     let doc = store
         .document("progress", "run-1-1-started")
         .unwrap()

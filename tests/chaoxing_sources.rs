@@ -1089,7 +1089,8 @@ async fn work_poll_discovers_open_and_syncs_todo_and_vault() {
         let sent = channel.sent.lock().unwrap();
         assert_eq!(sent.len(), 1);
         assert!(sent[0].contains("📝") && sent[0].contains("作业一：函数极限"));
-        assert!(sent[0].contains("已同步 4 个笔记到 Obsidian"));
+        // 同步成果不进推送（噪音），只进报告字段
+        assert!(!sent[0].contains("已同步 4 个笔记到 Obsidian"));
     }
 
     // 快照与待办联动

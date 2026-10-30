@@ -365,7 +365,7 @@ impl TeachermateTracker {
         if let Some(notifier) = &self.notifier {
             if !pending_lines.is_empty() {
                 let message = format!(
-                    "【微助教签到】{} 个进行中的签到活动\n{}\n（openid 失效时用 `teachermate bind <链接>` 重新投喂）",
+                    "## ✍️ 微助教签到（{} 个进行中）\n\n{}\n\n> openid 失效时用 `teachermate bind <链接>` 重新投喂）",
                     signs.len(),
                     pending_lines.join("\n")
                 );
@@ -375,7 +375,7 @@ impl TeachermateTracker {
                 notified = true;
             }
             if !outcome_lines.is_empty() {
-                let message = format!("【微助教签到回执】\n{}", outcome_lines.join("\n"));
+                let message = format!("## ✅ 微助教签到回执\n\n{}", outcome_lines.join("\n"));
                 notifier
                     .send(&self.config.notify_target, None, &message)
                     .await?;

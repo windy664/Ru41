@@ -34,13 +34,12 @@ pub async fn send_due_reminders(
     Ok(serde_json::json!({"due": due.len(), "sent": true}))
 }
 
-/// 主动提醒的 QQ markdown 文本；格式与 `/待办` 列表保持一致。
+/// 主动提醒的 QQ markdown 文本；与 `/待办` 列表保持一致。
 pub fn format_reminder(items: &[TodoItem], now: i64, options: TodoOptions) -> String {
-    let mut lines = vec![format!("## 待办提醒（{}）", items.len())];
+    let mut lines = vec![format!("## 📋 待办提醒（{}）", items.len())];
     for item in items {
         lines.push(format!(
-            "- `{}` **{}** — {}",
-            item.short_id(),
+            "- **{}** — {}",
             item.title,
             due_label(item.due_at, now, options, true)
         ));

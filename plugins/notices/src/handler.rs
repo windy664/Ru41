@@ -99,7 +99,7 @@ impl CommandHandler for NoticeHandler {
             let mut text = String::new();
             if !added.is_empty() {
                 text.push_str(&format!(
-                    "📅 已加入行程（{}）：\n{}",
+                    "## 📅 已加入行程（{}）\n\n{}",
                     added.len(),
                     added.join("\n")
                 ));
@@ -108,9 +108,9 @@ impl CommandHandler for NoticeHandler {
                 if !text.is_empty() {
                     text.push('\n');
                 }
-                text.push_str(&format!("跳过：{}", skipped.join("；")));
+                text.push_str(&format!("\n跳过：{}", skipped.join("；")));
             }
-            text.push_str("\n（识别有误回复「行程」查看后可取消）");
+            text.push_str("\n\n> 识别有误可发 `/日程` 查看后取消");
             Ok(Some(Reply::text(text)))
         })
     }

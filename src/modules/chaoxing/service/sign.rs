@@ -666,9 +666,7 @@ impl ChaoxingTracker {
         if let Some(notifier) = &self.notifier {
             if !pending_lines.is_empty() {
                 let message = format!(
-                    "【学习通签到】{}门课程 {} 个签到活动，{} 个待签\n{}\n（二维码需现场 enc，其余可 `chaoxing sign <id>` 手动签）",
-                    courses.len(),
-                    sign_activities,
+                    "## ✍️ 学习通签到（{} 个待签）\n\n{}\n\n> 二维码需现场 enc，其余可 `chaoxing sign <id>` 手动签",
                     pending,
                     pending_lines.join("\n")
                 );
@@ -678,7 +676,7 @@ impl ChaoxingTracker {
                 notified = true;
             }
             if !outcome_lines.is_empty() {
-                let message = format!("【学习通签到回执】\n{}", outcome_lines.join("\n"));
+                let message = format!("## ✅ 学习通签到回执\n\n{}", outcome_lines.join("\n"));
                 notifier
                     .send(&self.config.notify_target, None, &message)
                     .await?;

@@ -445,7 +445,8 @@ async fn vault_syncs_course_index_and_task_notes() {
     // 首轮：课程索引 + 4 份作业说明 + 1 个附件 = 6 个文件
     let report = tracker.poll_once().await.unwrap();
     assert_eq!(report.vault_files, 6);
-    assert!(channel.sent.lock().unwrap()[0].contains("已同步到 Obsidian"));
+    // 同步成果不进 QQ 推送（噪音），只有任务动态才推送
+    assert!(!channel.sent.lock().unwrap()[0].contains("已同步到 Obsidian"));
 
     // 作用域块：guard 在 await 前释放（clippy::await_holding_lock）
     {
