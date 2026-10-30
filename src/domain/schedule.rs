@@ -378,7 +378,7 @@ fn split_oneoff<'a>(
         .unwrap_or(text.len());
     let head = &text[..head_end];
     if !head.is_empty() && (head.contains('月') || head.contains('年') || head.contains('-')) {
-        let normalized = head.replace('年', "-").replace('月', "-").replace('日', "");
+        let normalized = head.replace(['年', '月'], "-").replace('日', "");
         if let Some(mut date) = parse_month_day(&normalized, today) {
             // 无年份的 M-D（一个连字符）落在过去则滚到明年；带年份的按原样（允许远未来）。
             if date < today && normalized.matches('-').count() == 1 {
