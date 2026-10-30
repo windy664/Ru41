@@ -371,14 +371,14 @@ fn split_oneoff<'a>(
     if let Some(rest) = text.strip_prefix("今晚") {
         return Some((today, Some(20), rest.trim_start_matches([' ', '的'])));
     }
-    // 日期头：开头的数字/连字符/月/日 串（如 "10-25"、"2027-03-15"、"10月25日"）。
-    // 纯时刻（"14:00"）不含 '-'/'月'，落回"今天 + 时刻"路径。
+    // 日期头：开头的数字/连字符/年月日 串（如 "10-25"、"2027-03-15"、"10月25日"、"2026年11月3日"）。
+    // 纯时刻（"14:00"）不含 '-'/'月'/'年'，落回"今天 + 时刻"路径。
     let head_end = text
-        .find(|c: char| !(c.is_ascii_digit() || c == '-' || c == '月' || c == '日'))
+        .find(|c: char| !(c.is_ascii_digit() || c == '-' || c == '月' || c == '日' || c == '年'))
         .unwrap_or(text.len());
     let head = &text[..head_end];
-    if !head.is_empty() && (head.contains('月') || head.contains('-')) {
-        let normalized = head.replace('月', "-").replace('日', "");
+    if !head.is_empty() && (head.contains('月') || head.contains('年') || head.contains('-')) {
+        let normalized = head.replace('年', "-").replace('月', "-").replace('日', "");
         if let Some(mut date) = parse_month_day(&normalized, today) {
             // 无年份的 M-D（一个连字符）落在过去则滚到明年；带年份的按原样（允许远未来）。
             if date < today && normalized.matches('-').count() == 1 {
@@ -428,7 +428,9 @@ fn end_timestamp(
     offset: &FixedOffset,
 ) -> Option<i64> {
     let end_naive = match end {
-        None => return Some(start.and_utc().timestamp() + 3600),
+        // start 是本地墙钟，缺省 +1h 也要走 offset 换算
+        //（and_utc() 会把本地时间当 UTC，东八区差出 8 小时）
+        None => start + Duration::hours(1),
         Some((h, m)) => {
             let naive = start.date().and_hms_opt(h, m, 0)?;
             if naive <= start {

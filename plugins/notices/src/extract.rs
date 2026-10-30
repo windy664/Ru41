@@ -101,15 +101,37 @@ fn looks_like_schedule(text: &str) -> bool {
     has_clock && text.chars().any(|c| c.is_ascii_digit())
 }
 
-/// 标题：时间锚点之前最近的「通知」行；没有则取锚点前最近的非空行。
+/// 标题：时间锚点之前最近的「通知」行；否则最近含《》的行（讲座/活动名常在
+/// 书名号里）；再否则最近的非空、非「1、」式条目行（条目行是字段不是标题）。
 /// 清理：去前导 emoji/符号、去「关于」前缀、去「的通知/补充通知/通知」后缀。
 fn find_title(lines: &[&str], anchor_idx: usize) -> Option<String> {
     let candidates = &lines[..anchor_idx];
+    let is_detail_line = |l: &&str| {
+        let t = l.trim_start();
+        match t.find('、') {
+            // 「1、」「12、」式枚举前缀（序号最多两位）
+            Some(pos) => pos <= 2 && t[..pos].chars().all(|c| c.is_ascii_digit()),
+            None => false,
+        }
+    };
     let pick = candidates
         .iter()
         .rposition(|l| l.contains("通知"))
+        .or_else(|| candidates.iter().rposition(|l| l.contains('《')))
+        .or_else(|| {
+            candidates
+                .iter()
+                .rposition(|l| !l.trim().is_empty() && !is_detail_line(l))
+        })
         .or_else(|| candidates.iter().rposition(|l| !l.trim().is_empty()))?;
     let raw = candidates[pick];
+    // 书名号内容优先作标题（剥掉「（二）xx学院承办的」这类前缀）
+    if let Some(inner) = raw.split('《').nth(1).and_then(|s| s.split('》').next()) {
+        let inner = inner.trim();
+        if !inner.is_empty() {
+            return Some(inner.chars().take(40).collect());
+        }
+    }
     // 前导 emoji/符号剥掉；char::is_alphanumeric 对 CJK 已为真，无需单独判断。
     let stripped: String = raw.chars().skip_while(|c| !c.is_alphanumeric()).collect();
     let stripped = stripped
@@ -186,5 +208,24 @@ mod tests {
         assert!(extract_notices("我下午有没有课").is_empty());
         assert!(extract_notices("今天天气怎么样").is_empty());
         assert!(extract_notices("通知你一下，记得带钥匙").is_empty());
+    }
+
+    /// 回归（2026-10-30 真实漏识别）：讲座通知没有「通知」字样、正文有换行续行，
+    /// 时间带「年」。标题应取《》书名号内容，时间应解析到对应日期。
+    #[test]
+    fn 讲座通知样本() {
+        let msg = "（二）电子信息与控制工程学院承办的《智能时代下，普通信息类本科生的AI技术落地与就业机会》\n\n1、讲座主题：智能时代下，普通信息类本科生的AI技术落地与就\n\n            业机会\n\n2、讲座时间：2026年11月3日（星期二）15:30\n\n3、讲座地点：礼堂一（广州校区）\n\n4、主讲人：赖剑煌";
+        let notices = extract_notices(msg);
+        assert_eq!(notices.len(), 1);
+        let n = &notices[0];
+        assert_eq!(n.title, "智能时代下，普通信息类本科生的AI技术落地与就业机会");
+        assert_eq!(n.when_text, "2026年11月3日 15:30");
+        assert_eq!(n.location.as_deref(), Some("礼堂一（广州校区）"));
+        let parsed = ru41::domain::schedule::parse_event_when(
+            &n.when_text,
+            1793350000,
+            &ru41::domain::todo::TodoOptions::default(),
+        );
+        assert!(parsed.is_some(), "带「年」的日期必须可解析");
     }
 }
