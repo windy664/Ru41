@@ -10,7 +10,8 @@ pub fn fallback_photo_bytes() -> &'static [u8] {
 /// 签到方式：统一走 stuSignajax，类型差异只体现在参数填充上。
 #[derive(Debug, Clone, PartialEq)]
 pub enum SignMethod {
-    /// 普通 / 手势 / 签到码（平台不校验额外参数）。
+    /// 普通 / 手势 / 签到码（历史实测平台不校验额外参数；
+    /// 手势自 2026-10 起被风控封堵见 [ChaoxingActivity::is_gesture]，手动补签仍走此参数）。
     Normal,
     /// 位置签到：经纬度 + 地址文本（address 参数，教师端可见）。
     Location { lat: f64, lon: f64, addr: String },
@@ -162,6 +163,12 @@ impl ChaoxingActivity {
     /// 二维码是唯一不能远程自动签的：enc 是现场二维码内容里的时效 token。
     pub fn is_qr(&self) -> bool {
         self.sign_kind() == ChaoxingSignKind::Qr
+    }
+    /// 手势签到已被平台风控封堵：2026-10-30 实测直发 stuSignajax 稳定返回
+    /// 「签到失败[90002]」（社区同步确认 7.0.1 起直签被 90002+滑块拒绝）。
+    /// 手势窗口常仅约 2 分钟，策略是即发现即强提醒，不再浪费在必然失败的自动签上。
+    pub fn is_gesture(&self) -> bool {
+        self.sign_kind() == ChaoxingSignKind::Gesture
     }
     pub fn type_label(&self) -> String {
         self.name_one.clone().unwrap_or_else(|| {
