@@ -193,8 +193,23 @@ const TIMETABLE_QUESTION_MAX_CHARS: usize = 40;
 /// 通知/公告特征词：命中任意一个就不当作课表提问。
 fn looks_like_notice(text: &str) -> bool {
     [
-        "通知", "宣讲", "讲座", "班会", "大会", "参会", "座位", "报名", "签到", "地点",
-        "时间：", "时间:", "学分", "请同学", "请假", "主讲", "会议要求",
+        "通知",
+        "宣讲",
+        "讲座",
+        "班会",
+        "大会",
+        "参会",
+        "座位",
+        "报名",
+        "签到",
+        "地点",
+        "时间：",
+        "时间:",
+        "学分",
+        "请同学",
+        "请假",
+        "主讲",
+        "会议要求",
     ]
     .iter()
     .any(|k| text.contains(k))
@@ -227,7 +242,9 @@ mod tests {
 
     #[test]
     fn long_text_is_not_a_question() {
-        let long = "老师布置了下周的阅读任务，一共三章内容，另外星期二有几门课要记得提前预习好，别忘记了".repeat(2);
+        let long =
+            "老师布置了下周的阅读任务，一共三章内容，另外星期二有几门课要记得提前预习好，别忘记了"
+                .repeat(2);
         assert!(long.chars().count() > TIMETABLE_QUESTION_MAX_CHARS);
         assert_eq!(looks_like_timetable_question(&long), None);
     }
