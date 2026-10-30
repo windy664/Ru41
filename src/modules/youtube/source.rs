@@ -71,6 +71,23 @@ impl YtDlpClient {
         command
     }
 
+    /// spawn 并对 ETXTBSY 退避重试：多线程进程里 fork 出的子进程会继承其他
+    /// 线程写了一半的可执行文件 fd（CLOEXEC fd 也要等 exec 中期才关闭），
+    /// exec 撞上即 os error 26——测试套件并行跑假 yt-dlp 时曾稳定复现
+    /// （2026-10-30 定位）。生产路径不触发，纯防御。
+    async fn spawn_output(command: &mut Command) -> std::io::Result<std::process::Output> {
+        let mut attempt = 0;
+        loop {
+            match command.output().await {
+                Err(error) if error.raw_os_error() == Some(26) && attempt < 50 => {
+                    attempt += 1;
+                    tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+                }
+                other => return other,
+            }
+        }
+    }
+
     /// 频道最新视频列表（newest first）。失败返回错误，由调用方记入本轮 errors。
     pub async fn list_videos(
         &self,
@@ -82,20 +99,20 @@ impl YtDlpClient {
             "%(id)s\u{1f}%(title)s\u{1f}%(duration)s\u{1f}%(view_count)s\u{1f}%(timestamp)s";
         // playlist-items 用区间语法：裸数字是「只取第 N 条」而非「前 N 条」。
         let items = format!("1:{limit}");
-        let output = self
-            .command()
-            .args([
-                "--flat-playlist",
-                "--no-warnings",
-                "--playlist-items",
-                &items,
-                "--print",
-                template,
-                channel_videos_url,
-            ])
-            .output()
-            .await
-            .with_context(|| format!("spawn {} list", self.bin))?;
+        let output = Self::spawn_output(
+            self.command()
+                .args([
+                    "--flat-playlist",
+                    "--no-warnings",
+                    "--playlist-items",
+                    &items,
+                    "--print",
+                    template,
+                    channel_videos_url,
+                ]),
+        )
+        .await
+        .with_context(|| format!("spawn {} list", self.bin))?;
         if !output.status.success() {
             bail!("yt-dlp list failed: {}", tail_stderr(&output.stderr));
         }
@@ -129,19 +146,19 @@ impl YtDlpClient {
     /// 单视频元数据（标题/时长/发布时间），手动点播与轮询新鲜度兜底共用。
     pub async fn video_meta(&self, video_id: &str) -> Result<VideoMeta> {
         let url = format!("https://www.youtube.com/watch?v={video_id}");
-        let output = self
-            .command()
-            .args([
-                "--skip-download",
-                "--no-warnings",
-                "--no-playlist",
-                "--print",
-                "%(title)s\u{1f}%(duration)s\u{1f}%(timestamp)s",
-                &url,
-            ])
-            .output()
-            .await
-            .with_context(|| format!("spawn {} meta", self.bin))?;
+        let output = Self::spawn_output(
+            self.command()
+                .args([
+                    "--skip-download",
+                    "--no-warnings",
+                    "--no-playlist",
+                    "--print",
+                    "%(title)s\u{1f}%(duration)s\u{1f}%(timestamp)s",
+                    &url,
+                ]),
+        )
+        .await
+        .with_context(|| format!("spawn {} meta", self.bin))?;
         if !output.status.success() {
             bail!("yt-dlp meta failed: {}", tail_stderr(&output.stderr));
         }
@@ -189,8 +206,10 @@ impl YtDlpClient {
                 command.arg("--write-sub");
             }
             command.arg(&url);
-            let output =
-                tokio::time::timeout(std::time::Duration::from_secs(180), command.output())
+            let output = tokio::time::timeout(
+                std::time::Duration::from_secs(180),
+                Self::spawn_output(&mut command),
+            )
                     .await
                     .with_context(|| format!("spawn {} subtitles", self.bin))?
                     .with_context(|| format!("run {} subtitles", self.bin))?;
