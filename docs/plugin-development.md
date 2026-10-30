@@ -81,7 +81,18 @@ cp target-docker/release/libru41_plugin_foo.so <服务器>:/etc/ru41/plugins/
 | 插件 | 目录 | 说明 |
 |---|---|---|
 | hello | `templates/plugin-hello/` | 最小模板 |
-| competitions 等 13 个 | `plugins/*/` | 业务附属全部插件化（详见 src/plugins.rs 与部署文档） |
+| blog / competitions / compshare / ecard / homework / jobs / notices / pagewatch / papers / programs / projects / research / rss / zhihuishu | `plugins/*/` | 业务附属全部插件化（共 14 个，配置与运行细节见 `docs/sources-*.md`） |
+
+## 本地开发与测试
+
+- 插件**不在根 workspace**：根目录的 `cargo test` / `cargo clippy` 跑不到插件，
+  测试要 `cd plugins/<name> && cargo test`（clippy 同理）。
+- 各插件的 `Cargo.lock` 由部署/镜像构建脚本从根 lock 同步覆盖；本地看到
+  插件 lock 大段 diff 属正常（依赖树被根重解析），照根提交即可。
+- 正常发版**不需要手动 build 插件**：镜像 `Dockerfile` 的 `plugins` stage
+  会用与宿主同源同锁的源码树全量重编并打进 `/etc/ru41/plugins`，镜像即
+  完整交付物。`deploy/plugins-build-all.sh` 只在 ABI bump 后的应急场景用
+  （见下方合并后账目）。
 
 ## 插件形态
 
