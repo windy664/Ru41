@@ -5,12 +5,21 @@ use crate::{
     ports::storage::TaskStore,
 };
 use anyhow::{Context, Result, bail};
-use rusqlite::{Connection, OptionalExtension, Row, TransactionBehavior, params};
+use rusqlite::{Connection, ErrorCode, OptionalExtension, Row, TransactionBehavior, params};
 use std::{
     path::Path,
     sync::{Mutex, MutexGuard},
     time::Duration,
 };
+
+/// 是否为 SQLite 锁冲突（SQLITE_BUSY；journal_mode 切换不走 busy handler）。
+fn is_sqlite_busy(err: &anyhow::Error) -> bool {
+    matches!(
+        err.downcast_ref::<rusqlite::Error>(),
+        Some(rusqlite::Error::SqliteFailure(failure, _))
+            if failure.code == ErrorCode::DatabaseBusy
+    )
+}
 
 /// 默认 `TaskStore` 适配器，基于单个 SQLite 数据库文件。
 pub struct SqliteTaskStore {
@@ -22,13 +31,30 @@ impl SqliteTaskStore {
         if let Some(parent) = path.parent().filter(|p| !p.as_os_str().is_empty()) {
             std::fs::create_dir_all(parent).context("cannot create database directory")?;
         }
+        // 全新库文件上多进程同时 open：journal_mode=WAL 的切换不经过 busy
+        // handler，会立刻 SQLITE_BUSY（首启 21 个容器并发的真实场景）。退避重试
+        // 覆盖整个初始化窗口；既有库 WAL 已持久化，基本不会走到重试。
+        let mut attempt = 0;
+        loop {
+            match Self::open_initialized(path) {
+                Ok(store) => return Ok(store),
+                Err(err) if is_sqlite_busy(&err) && attempt < 50 => {
+                    attempt += 1;
+                    std::thread::sleep(Duration::from_millis(100));
+                }
+                Err(err) => return Err(err),
+            }
+        }
+    }
+
+    fn open_initialized(path: &Path) -> Result<Self> {
         let mut connection = Connection::open(path).context("cannot open task database")?;
+        connection.busy_timeout(Duration::from_secs(5))?;
         connection.pragma_update(None, "foreign_keys", "ON")?;
         // WAL：多容器共享同一库文件时读写不互斥（delete 模式下 21 个容器
         // 抢全库写锁，busy 等待曾把轮询循环卡死数小时，2026-10-29 实证）。
         connection.pragma_update(None, "journal_mode", "WAL")?;
         connection.pragma_update(None, "synchronous", "NORMAL")?;
-        connection.busy_timeout(Duration::from_secs(5))?;
         // 在读取版本号前，先与其他进程串行化启动迁移。
         let tx = connection.transaction_with_behavior(TransactionBehavior::Immediate)?;
         let version: i64 = tx.query_row("PRAGMA user_version", [], |row| row.get(0))?;
