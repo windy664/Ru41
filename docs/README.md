@@ -3,6 +3,7 @@
 项目入口与快速开始见根目录 [README](../README.md)。实现状态以代码和[核心宿主状态](core-status.md)为准，规划文档不代表能力已经实现。
 
 - [使用与配置手册](usage.md)：完整命令、配置、部署与 HTTP API 示例
+- [凭证与密钥总览](credentials.md)：cookie/token/key 的注入路径、环境变量清单与更换方法
 
 ## 产品、状态与规划
 
