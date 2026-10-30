@@ -21,12 +21,16 @@ pub struct ObsidianQqCommand {
 }
 
 /// 自然语言捕获的触发前缀；长的在前，避免「记录一下」被「记一下」截断。
-/// 只做整句前缀匹配——闲聊句中路过这三个字不算记录意图。
+/// 只做整句前缀匹配——闲聊句中路过这几个字不算记录意图。
 const TRIGGER_PREFIXES: &[&str] = &[
     "帮我记一下",
     "记录一下",
     "记一下",
     "记住",
+    "别忘了",
+    "别忘记",
+    "提醒我",
+    "记着",
     "note:",
     "remember:",
 ];
@@ -140,6 +144,15 @@ mod tests {
             extract_note("帮我记一下，周三交实验报告").as_deref(),
             Some("周三交实验报告")
         );
+        assert_eq!(
+            extract_note("别忘了明天交作业").as_deref(),
+            Some("明天交作业")
+        );
+        assert_eq!(
+            extract_note("提醒我，下午三点开会").as_deref(),
+            Some("下午三点开会")
+        );
+        assert_eq!(extract_note("记着买火车票").as_deref(), Some("买火车票"));
         assert_eq!(extract_note("Note: buy milk").as_deref(), Some("buy milk"));
     }
 
@@ -148,6 +161,7 @@ mod tests {
         assert_eq!(extract_note("记一下").as_deref(), Some(""));
         // 句子中间出现触发词不捕获
         assert!(extract_note("你帮我记一下好不好").is_none());
+        assert!(extract_note("老师提醒我们下周交报告").is_none());
         assert!(extract_note("今天天气不错").is_none());
         assert!(extract_note("/记一下 显式命令走 handle").is_none());
     }

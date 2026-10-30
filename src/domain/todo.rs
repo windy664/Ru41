@@ -63,6 +63,11 @@ pub struct TodoItem {
     pub source: Option<TodoSource>,
 }
 
+/// 平台作业写入的 channel 集合；与各平台服务创建 TodoSource 时使用的字面量保持一致。
+pub fn is_homework_channel(channel: &str) -> bool {
+    matches!(channel, "chaoxing" | "zhihuishu" | "teachermate")
+}
+
 impl TodoItem {
     pub fn validate(&self) -> Result<()> {
         ensure!(
@@ -92,6 +97,14 @@ impl TodoItem {
 
     pub fn short_id(&self) -> &str {
         self.id.strip_prefix("todo_").unwrap_or(&self.id)
+    }
+
+    /// 平台作业条目（超星/智慧树/学习通等）只走各自平台的作业聚合与提醒，
+    /// 不混入个人待办视图（/待办、overview、到期提醒）。
+    pub fn is_homework(&self) -> bool {
+        self.source
+            .as_ref()
+            .is_some_and(|source| is_homework_channel(&source.channel))
     }
 
     pub fn due_date(&self, options: &TodoOptions) -> Option<String> {
