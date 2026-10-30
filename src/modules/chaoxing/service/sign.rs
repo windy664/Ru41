@@ -1,5 +1,5 @@
-//! 学习通签到监控：轮询活动 → 待签处理（普通/位置/拍照/签到码当场自动签；
-//! 二维码指路图片通道；手势已被平台 90002 封堵，即发现即强提醒手动签）→ 状态变迁回执。
+//! 学习通签到监控：轮询活动 → 待签处理（普通/手势/位置/拍照/签到码当场自动签，
+//! 被 90002 风控拦下时自动过滑块重签；二维码指路图片通道）→ 状态变迁回执。
 
 use crate::modules::chaoxing::config::ChaoxingConfig;
 use crate::modules::chaoxing::source::ChaoxingClient;
@@ -75,9 +75,10 @@ enum AutoSignOutcome {
 /// 新活动落 records 去重 → 待签活动经默认出口提醒。
 ///
 /// 通知策略：
-/// - 待签活动（进行中且未签）首次发现 → auto_sign 开启时当场自动签（两类除外：
-///   二维码的 enc 只在二维码图片里，提醒把照片发给机器人，由 service::qr 消费签入；
-///   手势已被平台风控封堵（90002），改为即发现即 🚨 强提醒手动签——窗口常仅约 2 分钟）；
+/// - 待签活动（进行中且未签）首次发现 → auto_sign 开启时当场自动签（二维码除外：
+///   enc 只在二维码图片里，提醒把照片发给机器人，由 service::qr 消费签入；
+///   手势直签会被平台风控拦（90002），client 层自动过滑块拿 validate 重签，
+///   仍失败则 ❌ 回执指路手动签——手势窗口常仅约 2 分钟）；
 ///   关闭自动签 → 提醒一次（含 activity_id）；
 /// - 已结束/已签活动只入快照，不提醒；
 /// - 登录态失效 → 每日最多提醒一次。
@@ -396,12 +397,17 @@ impl ChaoxingTracker {
                     ))
                 } else {
                     self.mark_auto_attempted(course, activity, response.trim());
+                    // 手势的兜底是手机端手画（窗口常仅约 2 分钟），其余类型指路 CLI 重试
+                    let advice = if activity.is_gesture() {
+                        "→ 滑块重签仍被拒，立即打开学习通手动签！".to_string()
+                    } else {
+                        format!("→ 可 `chaoxing sign {}` 重试", activity.id)
+                    };
                     AutoSignOutcome::Rejected(format!(
-                        "- ❌{}｜{}｜自动签到被平台拒绝（响应：{}）→ 可 `chaoxing sign {}` 重试",
+                        "- ❌{}｜{}｜自动签到被平台拒绝（响应：{}）{advice}",
                         course.title,
                         activity.type_label(),
                         response.trim(),
-                        activity.id
                     ))
                 }
             }
@@ -545,10 +551,9 @@ impl ChaoxingTracker {
                     // 图片里，提醒用户把照片发给机器人，由 service::qr 消费签入）；
                     // 否则推送宿主，短窗口活动靠下一轮状态变迁收敛
                     if activity.is_pending() {
-                        // 手势签到已被平台风控封堵（2026-10-30 实测 90002，社区确认
-                        // 7.0.1 起直签被 90002+滑块拒绝）：不自动签，即发现即强提醒，
-                        // 窗口常仅约 2 分钟，手动签是唯一可靠路径。
-                        if self.config.auto_sign && !activity.is_qr() && !activity.is_gesture() {
+                        // 二维码除外（enc 只在二维码图片里）；手势直签虽被平台风控
+                        // 拦截（90002），但 client 层会自动过滑块重签，所以照常自动签。
+                        if self.config.auto_sign && !activity.is_qr() {
                             match self.try_auto_sign(course, &activity).await {
                                 AutoSignOutcome::Signed(line) => {
                                     auto_signed += 1;
@@ -563,30 +568,19 @@ impl ChaoxingTracker {
                                 self.spawn_enc_probe(activity.id);
                             }
                             if self.notifier.is_some() {
-                                pending_lines.push(if activity.is_gesture() {
-                                    format!(
-                                        "- 🚨{}｜{}｜进行中，截止 {}｜平台已封堵手势自动签，立即打开学习通手动签！",
-                                        course.title,
-                                        activity.type_label(),
-                                        format_ms(activity.end_time)
-                                            .unwrap_or_else(|| "未知".into()),
-                                    )
-                                } else {
-                                    format!(
-                                        "- ⏰{}｜{}｜进行中，截止 {}｜id={}｜`chaoxing sign {}`{}",
-                                        course.title,
-                                        activity.type_label(),
-                                        format_ms(activity.end_time)
-                                            .unwrap_or_else(|| "未知".into()),
-                                        activity.id,
-                                        activity.id,
-                                        if activity.is_qr() {
-                                            "（把二维码照片发给机器人即可代签）"
-                                        } else {
-                                            ""
-                                        },
-                                    )
-                                });
+                                pending_lines.push(format!(
+                                    "- ⏰{}｜{}｜进行中，截止 {}｜id={}｜`chaoxing sign {}`{}",
+                                    course.title,
+                                    activity.type_label(),
+                                    format_ms(activity.end_time).unwrap_or_else(|| "未知".into()),
+                                    activity.id,
+                                    activity.id,
+                                    if activity.is_qr() {
+                                        "（把二维码照片发给机器人即可代签）"
+                                    } else {
+                                        ""
+                                    },
+                                ));
                             }
                         }
                     }
@@ -595,7 +589,7 @@ impl ChaoxingTracker {
 
                 // 已见过：若自动签开启且仍未签、未被打过「已尝试」标记 → 补试一轮
                 // （覆盖上次网络瞬时错误的自然重试；平台已拒绝的不会进来。
-                // 二维码缺 enc、手势被 90002 封堵，都是确定性失败，不补试）
+                // 二维码缺 enc 是确定性失败，不补试）
                 let snapshot_user = doc
                     .value
                     .get("user_status")
@@ -603,7 +597,6 @@ impl ChaoxingTracker {
                 if self.config.auto_sign
                     && activity.is_pending()
                     && !activity.is_qr()
-                    && !activity.is_gesture()
                     && snapshot_user == Some(1)
                     && doc.value.get("auto_attempted").is_none()
                 {

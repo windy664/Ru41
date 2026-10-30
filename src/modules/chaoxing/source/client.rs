@@ -30,6 +30,7 @@ const MOOC_BASE: &str = "https://mooc2-ans.chaoxing.com";
 const MOBILELEARN_BASE: &str = "https://mobilelearn.chaoxing.com";
 const PAN_BASE: &str = "https://pan-yz.chaoxing.com";
 const MOOC1_BASE: &str = "https://mooc1.chaoxing.com";
+const CAPTCHA_BASE: &str = "https://captcha.chaoxing.com";
 
 #[derive(Debug, Deserialize)]
 struct LoginResponse {
@@ -139,6 +140,8 @@ pub struct ChaoxingClient {
     pan_base: String,
     /// 作业链路域（stucoursemiddle / mooc2/work/list / work 详情）。
     mooc1_base: String,
+    /// 滑块验证码域（90002 风控破局，captcha.chaoxing.com）。
+    captcha_base: String,
 }
 
 impl ChaoxingClient {
@@ -156,10 +159,11 @@ impl ChaoxingClient {
             MOBILELEARN_BASE.into(),
             PAN_BASE.into(),
             MOOC1_BASE.into(),
+            CAPTCHA_BASE.into(),
         )
     }
 
-    /// 测试用：五个域基址可指向本地 fixture 服务。
+    /// 测试用：六个域基址可指向本地 fixture 服务。
     #[allow(clippy::too_many_arguments)]
     pub fn with_base_urls(
         phone: impl Into<String>,
@@ -170,6 +174,7 @@ impl ChaoxingClient {
         mobilelearn_base: String,
         pan_base: String,
         mooc1_base: String,
+        captcha_base: String,
     ) -> Self {
         let jar = std::sync::Arc::new(CookieJar::default());
         let http = reqwest::Client::builder()
@@ -189,6 +194,7 @@ impl ChaoxingClient {
             mobilelearn_base,
             pan_base,
             mooc1_base,
+            captcha_base,
         }
     }
 
@@ -364,6 +370,7 @@ impl ChaoxingClient {
 
     /// 手动签到（全类型）。统一端点 stuSignajax，差异仅在参数填充；
     /// 参数形状对齐社区长期在用的实现（preSign 仅普通类需要）。
+    /// 被风控拦下（响应 90002 或 validate*）时自动过滑块拿 validate 重签。
     pub async fn sign(
         &self,
         course: &ChaoxingCourse,
@@ -384,7 +391,7 @@ impl ChaoxingClient {
         }
 
         let mut params: Vec<(String, String)> = vec![
-            ("activeId".into(), activity_id),
+            ("activeId".into(), activity_id.clone()),
             ("uid".into(), uid.clone()),
             ("fid".into(), self.fid()),
             ("clientip".into(), String::new()),
@@ -428,17 +435,144 @@ impl ChaoxingClient {
             }
         }
 
-        let text = self
-            .http
+        let text = self.send_sign(&params).await?;
+        if !sign_needs_captcha(&text) {
+            return Ok(text);
+        }
+        // 风控拦截（2026-10-30 实测手势直签稳定 90002；社区记录 validate_* 形态）：
+        // validate_ 前缀会带回 enc2，重签时一并捎上；滑块最多换图试两次，
+        // 仍失败则把原始拒绝响应交回上层（手势会落到 🚨 手动签提醒）。
+        if let Some(enc2) = text
+            .strip_prefix("validate_")
+            .filter(|s| !s.is_empty())
+            .map(str::to_owned)
+        {
+            params.push(("enc2".into(), enc2));
+        }
+        let referer = self.pre_sign_url(course, &activity_id, &uid);
+        for _ in 0..2 {
+            let Ok(validate) = self.solve_slider_captcha(&referer).await else {
+                break;
+            };
+            let mut retry = params.clone();
+            retry.push(("validate".into(), validate));
+            let retry_text = self.send_sign(&retry).await?;
+            if !sign_needs_captcha(&retry_text) {
+                return Ok(retry_text);
+            }
+        }
+        Ok(text)
+    }
+
+    /// stuSignajax 请求发送（签到主路径与滑块重签共用）。
+    async fn send_sign(&self, params: &[(String, String)]) -> Result<String> {
+        self.http
             .get(format!("{}{SIGN_PATH}", self.mobilelearn_base))
-            .query(&params)
+            .query(params)
             .send()
             .await
             .context("签到请求失败")?
             .text()
             .await
-            .context("签到响应读取失败")?;
-        Ok(text)
+            .context("签到响应读取失败")
+    }
+
+    /// 滑块验证全流程：conf 拿服务端时间戳 → 本地 md5 构造 image 参数 →
+    /// 拉底图/拼块图 → 模板匹配识别缺口 x → check 拿 validate。
+    /// 方案对齐社区 ChaoxingSignFaker 的纯 HTTP 实现（无 WebView 依赖）。
+    pub async fn solve_slider_captcha(&self, referer: &str) -> Result<String> {
+        use super::captcha;
+        let now = crate::util::now();
+        let conf = self
+            .http
+            .get(format!("{}/captcha/get/conf", self.captcha_base))
+            .query(&[
+                ("callback", "cx_captcha_function"),
+                ("captchaId", captcha::CAPTCHA_ID),
+                ("_", &now.to_string()),
+            ])
+            .send()
+            .await
+            .context("captcha conf 请求失败")?
+            .text()
+            .await
+            .context("captcha conf 响应读取失败")?;
+        let t = captcha::parse_conf_t(&conf)?;
+
+        let (captcha_key, iv, image_token) = captcha::image_params(t, crate::util::now());
+        let image = self
+            .http
+            .get(format!(
+                "{}/captcha/get/verification/image",
+                self.captcha_base
+            ))
+            .query(&[
+                ("callback", "cx_captcha_function"),
+                ("captchaId", captcha::CAPTCHA_ID),
+                ("type", "slide"),
+                ("version", captcha::CAPTCHA_VERSION),
+                ("captchaKey", captcha_key.as_str()),
+                ("token", image_token.as_str()),
+                ("referer", referer),
+                ("iv", iv.as_str()),
+                ("_", &crate::util::now().to_string()),
+            ])
+            .send()
+            .await
+            .context("captcha image 请求失败")?
+            .text()
+            .await
+            .context("captcha image 响应读取失败")?;
+        let (server_token, shade_url, cutout_url) = captcha::parse_image_response(&image)?;
+
+        let shade = self
+            .http
+            .get(&shade_url)
+            .send()
+            .await
+            .context("滑块底图下载失败")?
+            .bytes()
+            .await
+            .context("滑块底图读取失败")?;
+        let cutout = self
+            .http
+            .get(&cutout_url)
+            .send()
+            .await
+            .context("滑块拼块图下载失败")?
+            .bytes()
+            .await
+            .context("滑块拼块图读取失败")?;
+        let x = captcha::slider_gap_x(&shade, &cutout).context("滑块缺口识别失败")?;
+
+        let click_arr = format!("[{{\"x\":{x}}}]");
+        let check = self
+            .http
+            .get(format!(
+                "{}/captcha/check/verification/result",
+                self.captcha_base
+            ))
+            .query(&[
+                ("callback", "cx_captcha_function"),
+                ("captchaId", captcha::CAPTCHA_ID),
+                ("type", "slide"),
+                ("token", server_token.as_str()),
+                ("textClickArr", click_arr.as_str()),
+                ("coordinate", "[]"),
+                ("runEnv", "10"),
+                ("version", captcha::CAPTCHA_VERSION),
+                ("t", "a"),
+                ("iv", iv.as_str()),
+                ("_", &crate::util::now().to_string()),
+            ])
+            .header("Referer", referer)
+            .send()
+            .await
+            .context("captcha check 请求失败")?
+            .text()
+            .await
+            .context("captcha check 响应读取失败")?;
+        captcha::parse_check_validate(&check)?.context("滑块位置被拒绝")
     }
 
     /// preSign 预签（普通类签到的平台流程前置）。
@@ -446,6 +580,14 @@ impl ChaoxingClient {
         self.pre_sign_body(course, activity_id, uid)
             .await
             .map(|_| ())
+    }
+
+    /// preSign 完整 URL（滑块 check 的 Referer 用，平台按它核对来源场景）。
+    fn pre_sign_url(&self, course: &ChaoxingCourse, activity_id: &str, uid: &str) -> String {
+        format!(
+            "{}{PRE_SIGN_PATH}?general=1&sys=1&ls=1&appType=15&tid=&ut=s&uid={}&activePrimaryId={}&courseId={}&classId={}",
+            self.mobilelearn_base, uid, activity_id, course.course_id, course.clazz_id
+        )
     }
 
     /// preSign 响应体（科研线：窗口探测用它找 enc 泄漏）。
@@ -650,6 +792,12 @@ fn cx_encrypt(plaintext: &str) -> String {
         Aes128CbcEnc::new(AES_KEY.into(), AES_KEY.into())
             .encrypt_padded_vec_mut::<cbc::cipher::block_padding::Pkcs7>(plaintext.as_bytes());
     base64::engine::general_purpose::STANDARD.encode(encrypted)
+}
+
+/// 签到响应是否命中风控、需要先过滑块：90002（2026-10-30 手势实测）
+/// 或 validate_*（社区记录的另一形态，validate_ 前缀会带回 enc2）。
+fn sign_needs_captcha(response: &str) -> bool {
+    response.starts_with("validate") || response.contains("90002")
 }
 
 /// 解析 courselistdata 返回的课程列表 HTML。

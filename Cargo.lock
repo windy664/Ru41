@@ -3031,6 +3031,7 @@ dependencies = [
  "libc",
  "libloading",
  "linkme",
+ "md-5",
  "num-bigint",
  "num-traits",
  "png 0.17.16",

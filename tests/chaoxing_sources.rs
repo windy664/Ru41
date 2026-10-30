@@ -76,6 +76,18 @@ struct FixtureState {
     work_list_hits: Mutex<usize>,
     /// stuSignajax 返回体（默认 success，可注入失败文本）。
     sign_response: Mutex<String>,
+    /// 风控模式：开启后 stuSignajax 无 validate 参数一律回 90002，带 validate 才放行。
+    captcha_mode: Mutex<bool>,
+    /// captcha check 是否放行（false 模拟识别位置被拒）。
+    captcha_pass: Mutex<bool>,
+    /// captcha check 收到的 x 坐标（识别正确性断言用）。
+    last_captcha_x: Mutex<Option<String>>,
+    /// fixture 自身基址（captcha image 响应里的图片 URL 用，spawn 时注入）。
+    base_url: Mutex<String>,
+    /// 滑块底图 PNG（notch 在 GAP_X/GAP_Y）。
+    shade_png: Mutex<Vec<u8>>,
+    /// 滑块拼块 PNG（整幅透明画布，拼块在缺口同位置）。
+    cutout_png: Mutex<Vec<u8>>,
 }
 
 impl FixtureState {
@@ -92,8 +104,53 @@ impl FixtureState {
             work_detail_html: Mutex::new(String::new()),
             work_list_hits: Mutex::new(0),
             sign_response: Mutex::new("success".into()),
+            captcha_mode: Mutex::new(false),
+            captcha_pass: Mutex::new(true),
+            last_captcha_x: Mutex::new(None),
+            base_url: Mutex::new(String::new()),
+            shade_png: Mutex::new(Vec::new()),
+            cutout_png: Mutex::new(Vec::new()),
         }
     }
+}
+
+/// 滑块图缺口位置（captcha fixture 合成图用）。
+const GAP_X: u32 = 120;
+const GAP_Y: u32 = 30;
+
+/// 合成滑块素材：底图在 (GAP_X, GAP_Y) 有 40x40 缺口（暗化+亮边）；
+/// 拼块图是整幅透明画布、拼块画在缺口同位置（学习通真实形态）。
+fn captcha_images() -> (Vec<u8>, Vec<u8>) {
+    use image::{ImageBuffer, Luma, Rgba, RgbaImage};
+    let (w, h, size) = (200u32, 100u32, 40u32);
+    let mut shade: ImageBuffer<Luma<u8>, Vec<u8>> = ImageBuffer::from_pixel(w, h, Luma([200]));
+    for y in GAP_Y..GAP_Y + size {
+        for x in GAP_X..GAP_X + size {
+            let border = x == GAP_X || y == GAP_Y || x == GAP_X + size - 1 || y == GAP_Y + size - 1;
+            shade.put_pixel(x, y, Luma([if border { 255 } else { 60 }]));
+        }
+    }
+    let mut cutout: RgbaImage = ImageBuffer::from_pixel(w, h, Rgba([0, 0, 0, 0]));
+    for y in GAP_Y..GAP_Y + size {
+        for x in GAP_X..GAP_X + size {
+            cutout.put_pixel(x, y, Rgba([120, 120, 120, 255]));
+        }
+    }
+    let mut shade_png = Vec::new();
+    image::DynamicImage::ImageLuma8(shade)
+        .write_to(
+            &mut std::io::Cursor::new(&mut shade_png),
+            image::ImageFormat::Png,
+        )
+        .unwrap();
+    let mut cutout_png = Vec::new();
+    image::DynamicImage::ImageRgba8(cutout)
+        .write_to(
+            &mut std::io::Cursor::new(&mut cutout_png),
+            image::ImageFormat::Png,
+        )
+        .unwrap();
+    (shade_png, cutout_png)
 }
 
 const COURSE_HTML: &str = r#"<div class="course clearfix  learnCourse stu_157361070" info="157361070_593022622" roleId="stu_157361070" id="c_268129408" >
@@ -203,6 +260,14 @@ async fn spawn_fixture(state: Arc<FixtureState>) -> SocketAddr {
                     ));
                     *state.last_query.lock().unwrap() = query.clone();
                     *state.sign_hits.lock().unwrap() += 1;
+                    // 风控模式：无 validate 一律 90002；带上滑块换来的 validate 才放行
+                    if *state.captcha_mode.lock().unwrap() {
+                        return if get("validate").as_deref() == Some("v-token-1") {
+                            "success".to_string()
+                        } else {
+                            "签到失败[90002]".to_string()
+                        };
+                    }
                     state.sign_response.lock().unwrap().clone()
                 },
             ),
@@ -253,9 +318,59 @@ async fn spawn_fixture(state: Arc<FixtureState>) -> SocketAddr {
                 state.work_detail_html.lock().unwrap().clone()
             }),
         )
-        .with_state(state);
+        // 滑块验证三段：conf 拿 t → image 拿图 → check 换 validate
+        .route(
+            "/captcha/get/conf",
+            get(|| async { r#"cx_captcha_function({"t":1793350000,"code":0})"# }),
+        )
+        .route(
+            "/captcha/get/verification/image",
+            get(|State(state): State<Arc<FixtureState>>| async move {
+                let base = state.base_url.lock().unwrap().clone();
+                format!(
+                    r#"cx_captcha_function({{"token":"srv-token-1","imageVerificationVo":{{"shadeImage":"{base}/img/shade.png","cutoutImage":"{base}/img/cut.png"}}}})"#
+                )
+            }),
+        )
+        .route(
+            "/img/shade.png",
+            get(|State(state): State<Arc<FixtureState>>| async move {
+                state.shade_png.lock().unwrap().clone()
+            }),
+        )
+        .route(
+            "/img/cut.png",
+            get(|State(state): State<Arc<FixtureState>>| async move {
+                state.cutout_png.lock().unwrap().clone()
+            }),
+        )
+        .route(
+            "/captcha/check/verification/result",
+            get(
+                |State(state): State<Arc<FixtureState>>, RawQuery(raw): RawQuery| async move {
+                    let query = raw.unwrap_or_default();
+                    let x = query
+                        .split('&')
+                        .find_map(|pair| pair.strip_prefix("textClickArr=%5B%7B%22x%22%3A"))
+                        .and_then(|rest| rest.split('%').next().map(str::to_owned));
+                    *state.last_captcha_x.lock().unwrap() = x;
+                    if *state.captcha_pass.lock().unwrap() {
+                        r#"cx_captcha_function({"error":0,"result":true,"extraData":"{\"validate\":\"v-token-1\"}"})"#
+                            .to_string()
+                    } else {
+                        r#"cx_captcha_function({"error":0,"result":false})"#.to_string()
+                    }
+                },
+            ),
+        )
+        .with_state(state.clone());
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
     let addr = listener.local_addr().unwrap();
+    // captcha image 响应要指回 fixture 自身；素材一次性合成注入
+    *state.base_url.lock().unwrap() = format!("http://{addr}");
+    let (shade, cutout) = captcha_images();
+    *state.shade_png.lock().unwrap() = shade;
+    *state.cutout_png.lock().unwrap() = cutout;
     tokio::spawn(async move { axum::serve(listener, app).await.unwrap() });
     addr
 }
@@ -301,6 +416,7 @@ fn make_tracker_full(
         "10000000000",
         "pw",
         cookie_path.clone(),
+        base.to_owned(),
         base.to_owned(),
         base.to_owned(),
         base.to_owned(),
@@ -847,11 +963,12 @@ async fn auto_sign_skips_qr_and_reminds_photo() {
 
 /// 回归（2026-10-22 真实漏签）：activelist 的 type 字段恒为 2（=签到类），
 /// 种类只在 nameOne 文案里。手势签到曾是「type=2 被当二维码跳过」的死代码。
-/// 2026-10-30 起手势被平台风控封堵（直签稳定 90002），改为即发现即强提醒。
+/// 2026-10-30 手势直签实测被平台风控拦（90002）——client 层自动过滑块重签。
 #[tokio::test]
-async fn gesture_sign_alerts_immediately_without_auto_attempt() {
-    // 真实形状：type=2 + nameOne=手势签到（今早 07:29 实际漏掉的那个）
+async fn gesture_sign_90002_solved_by_slider_captcha() {
+    // 真实形状：type=2 + nameOne=手势签到；平台风控：无 validate 一律 90002
     let state = Arc::new(FixtureState::new(pending_of_type(2, "手势签到")));
+    *state.captcha_mode.lock().unwrap() = true;
     let addr = spawn_fixture(state.clone()).await;
     let dir = tempfile::tempdir().unwrap();
     let store = Arc::new(SqliteTaskStore::open(&dir.path().join("state.db")).unwrap());
@@ -866,18 +983,59 @@ async fn gesture_sign_alerts_immediately_without_auto_attempt() {
         true,
     );
 
-    // 手势不自动签（90002 确定性失败）：不发 sign 请求、不打「已尝试」标记，
-    // 推送 🚨 强提醒指路手动签；下一轮活动仍待签也不补试、不重复推送
-    for _ in 0..2 {
-        let report = tracker.poll_once().await.unwrap();
-        assert_eq!(report.auto_signed, 0);
-        assert_eq!(*state.presign_hits.lock().unwrap(), 0);
-        assert_eq!(*state.sign_hits.lock().unwrap(), 0);
-    }
+    // 直签 90002 → 自动过滑块 → 带 validate 重签成功，当场 ✅
+    let report = tracker.poll_once().await.unwrap();
+    assert_eq!(report.auto_signed, 1);
+    assert_eq!(*state.sign_hits.lock().unwrap(), 2);
+    assert!(
+        state
+            .last_query
+            .lock()
+            .unwrap()
+            .contains("validate=v-token-1")
+    );
+    // 滑块缺口识别命中合成图的缺口左缘
+    assert_eq!(
+        state.last_captcha_x.lock().unwrap().as_deref(),
+        Some(GAP_X.to_string().as_str())
+    );
     let sent = channel.sent.lock().unwrap();
-    assert_eq!(sent.len(), 1);
     assert!(sent[0].contains("手势签到"));
-    assert!(sent[0].contains("手动签"));
+    assert!(sent[0].contains("自动签到成功"));
+}
+
+/// 滑块重签仍被拒（识别失败/平台继续拦）→ ❌ 回执指路手动签，手势窗口只有约 2 分钟。
+#[tokio::test]
+async fn gesture_sign_captcha_failure_falls_back_to_manual_advice() {
+    let state = Arc::new(FixtureState::new(pending_of_type(2, "手势签到")));
+    *state.captcha_mode.lock().unwrap() = true;
+    *state.captcha_pass.lock().unwrap() = false;
+    let addr = spawn_fixture(state.clone()).await;
+    let dir = tempfile::tempdir().unwrap();
+    let store = Arc::new(SqliteTaskStore::open(&dir.path().join("state.db")).unwrap());
+    let channel = mock_channel();
+    let tracker = make_tracker_full(
+        store,
+        &format!("http://{addr}"),
+        dir.path().join("cookies.json"),
+        Some(channel.clone()),
+        None,
+        None,
+        true,
+    );
+
+    let report = tracker.poll_once().await.unwrap();
+    assert_eq!(report.auto_signed, 0);
+    {
+        let sent = channel.sent.lock().unwrap();
+        assert_eq!(sent.len(), 1);
+        assert!(sent[0].contains("手势签到"));
+        assert!(sent[0].contains("手动签"));
+    }
+    // 打过「已尝试」标记，下一轮不重复撞（窗口外兜底轮询已记账，本轮跳过实轮询）
+    let report = tracker.poll_once().await.unwrap();
+    assert_eq!(report.auto_signed, 0);
+    assert_eq!(channel.sent.lock().unwrap().len(), 1);
 }
 
 /// 种类识别以 nameOne 文案为准，type 字段不可信。
@@ -1011,6 +1169,7 @@ fn make_work_tracker(
         "10000000000",
         "pw",
         cookie_path.clone(),
+        base.to_owned(),
         base.to_owned(),
         base.to_owned(),
         base.to_owned(),
