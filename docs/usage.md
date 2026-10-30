@@ -206,7 +206,7 @@ long_term_days = 14
 | [宿舍水电](ecard-waterfee.md) | 校园卡平台 → 余额历史与阈值提醒 | `ecard poll/run` |
 | [智慧树作业提醒](sources-zhihuishu.md) | sidecar 报告 → 新作业 / 临近截止 / 考试式提醒 | `zhihuishu poll/run` |
 | [学习通签到监控](sources-chaoxing.md) | 协议端直连 → 待签活动提醒 / 手动签到 | `chaoxing poll/run/sign` |
-| Obsidian Vault 闭环 | Inbox Git 新提交 → Agent 归档整理 → 提交推送（核心服务 `app::obsidian` + `ports::vault`，附属仅 QQ 命令与 skill） | `obsidian poll/run` |
+| Obsidian Vault 闭环 | Inbox Git 新提交 → Agent 归档整理 → 提交推送（核心服务 `app::obsidian` + `ports::vault`，附属仅 QQ 命令与 skill）；整理后自动生成 `00-Inbox-收件箱/整理索引.md`：近 7 天归档文件去向（git 历史推导，程序生成，agent 不可改） | `obsidian poll/run` |
 | 博客发布管线 | 定稿移入 Vault `Published-已发布/` 并同步 → 校验 → 博客仓库 `_posts/` → 推送 Pages（文件原地归档，无队列目录） | `blog poll/run` |
 | 私人待办 | 今日、近期、长期与逾期行动项 → 持久化 Todo 列表 | `todo ...` / QQ `/待办` |
 | 行程（日程事件） | 课表、会议、约会等时间占用（一次性 / 每周重复）→ 展开、冲突检测、到点提醒 | `event ...` / QQ `/日程` |

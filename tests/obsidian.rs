@@ -218,14 +218,66 @@ async fn succeeded_task_commits_and_pushes() {
     let report = tracker.poll_once().await.unwrap();
     assert_eq!(report.action, "committed");
     assert!(report.committed);
-    // 远端已收到 Ru41 的整理提交。
+    // 远端已收到 Ru41 的整理提交（后一条是自动更新的整理索引）。
     git(&fx.seed, &["fetch", "origin"]);
-    let log = git(&fx.seed, &["log", "--format=%an %s", "origin/master", "-1"]);
+    let log = git(&fx.seed, &["log", "--format=%s", "origin/master", "-2"]);
     assert!(log.contains("[ru41] organize inbox"), "{log}");
+    // 整理索引已生成并推送：记录本次归档去向。
+    let index = git(
+        &fx.seed,
+        &["show", "origin/master:00-Inbox-收件箱/整理索引.md"],
+    );
+    assert!(index.contains("整理索引"), "{index}");
+    assert!(index.contains("新想法.md"), "{index}");
+    assert!(index.contains("03-Knowledge-知识/新想法.md"), "{index}");
     // 游标推进后再次轮询：ru41 自己的提交只走 self-commit。
     let report = tracker.poll_once().await.unwrap();
     assert_eq!(report.action, "self-commit");
     assert!(fx.store.list(10).unwrap().len() == 1);
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn recent_inbox_moves_reports_archives_and_deletes() {
+    let fx = RepoFixture::new();
+    let vault = fx.vault();
+    // 两份收件箱文件：一份将被归档（改名移动），一份将被删除（转待办场景）。
+    fx.push_change("00-Inbox-收件箱/讲座笔记.md", "笔记", "add a");
+    fx.push_change("00-Inbox-收件箱/一句话待办.md", "待办", "add b");
+    vault.fetch().unwrap();
+    vault.checkout_hard(&vault.remote_head().unwrap()).unwrap();
+
+    // 模拟 agent 归档：移动 + 删除，按生产路径 commit_all（[ru41] 提交）。
+    std::fs::create_dir_all(
+        fx.vault_path
+            .join("05-Opportunities-机会/Competitions-竞赛"),
+    )
+    .unwrap();
+    std::fs::rename(
+        fx.vault_path.join("00-Inbox-收件箱/讲座笔记.md"),
+        fx.vault_path
+            .join("05-Opportunities-机会/Competitions-竞赛/讲座笔记.md"),
+    )
+    .unwrap();
+    std::fs::remove_file(fx.vault_path.join("00-Inbox-收件箱/一句话待办.md")).unwrap();
+    assert!(vault.commit_all("[ru41] organize inbox test").unwrap());
+
+    let moves = vault.recent_inbox_moves("00-Inbox-收件箱", 7).unwrap();
+    assert_eq!(moves.len(), 2, "{moves:?}");
+    let archived = moves
+        .iter()
+        .find(|m| m.name == "讲座笔记.md")
+        .expect("archived file recorded");
+    assert_eq!(
+        archived.destination,
+        "05-Opportunities-机会/Competitions-竞赛/讲座笔记.md"
+    );
+    let deleted = moves
+        .iter()
+        .find(|m| m.name == "一句话待办.md")
+        .expect("deleted file recorded");
+    assert!(deleted.destination.contains("已删除"), "{deleted:?}");
+    // 程序自身的索引文件永远不会出现在记录里。
+    assert!(moves.iter().all(|m| m.name != "整理索引.md"));
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]

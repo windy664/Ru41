@@ -23,6 +23,17 @@ impl VaultTaskDirs {
     }
 }
 
+/// 一条收件箱整理去向记录（整理索引用）。
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct InboxMove {
+    /// 归档日期（yyyy-mm-dd，取提交日期）。
+    pub date: String,
+    /// 原文件名（不含目录）。
+    pub name: String,
+    /// 去向：Vault 内相对路径；删除则为说明文字。
+    pub destination: String,
+}
+
 /// Vault 写入服务的端口：所有附属（digest 落 Vault、周报、博客管线等）经它读写
 /// Vault，保证「单一写入服务」的串行与幂等。实现当前为 git 工作副本（adapters::vault）。
 ///
@@ -66,4 +77,7 @@ pub trait Vault: Send + Sync {
         now: i64,
         offset_seconds: i32,
     ) -> Result<String>;
+    /// 近 N 天从 Inbox 移出/删除的文件记录，按日期倒序、同名去重（只留最终去向）。
+    /// 供收件箱整理索引生成。
+    fn recent_inbox_moves(&self, inbox_dir: &str, days: u32) -> Result<Vec<InboxMove>>;
 }

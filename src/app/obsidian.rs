@@ -9,6 +9,42 @@ use serde::Serialize;
 use std::path::PathBuf;
 use std::sync::Arc;
 
+/// 收件箱整理索引笔记（收件箱目录内，程序自动生成，agent 不得改动）。
+pub const ORGANIZE_INDEX_FILE: &str = "整理索引.md";
+/// 整理索引回溯的时间窗（天）。
+const ORGANIZE_INDEX_DAYS: u32 = 7;
+
+/// 由去向记录渲染索引 markdown；没有记录时也生成占位，让用户知道这页是活的。
+fn organize_index_markdown(moves: &[crate::ports::vault::InboxMove], today: &str) -> String {
+    let header = format!(
+        "# 收件箱整理索引\n\n\
+         > 程序自动生成（{today}）：近 {ORGANIZE_INDEX_DAYS} 天从收件箱归档的文件去向。\n"
+    );
+    if moves.is_empty() {
+        return format!("{header}\n近 {ORGANIZE_INDEX_DAYS} 天没有从收件箱归档的文件。\n");
+    }
+    let mut rows = String::from("\n| 日期 | 文件 | 去向 |\n|---|---|---|\n");
+    for m in moves {
+        rows.push_str(&format!(
+            "| {} | {} | {} |\n",
+            m.date, m.name, m.destination
+        ));
+    }
+    format!("{header}{rows}")
+}
+
+/// 整理提交后重建索引笔记并并入本次推送；失败只记日志，不阻断整理闭环。
+fn update_organize_index(vault: &dyn Vault, inbox_dir: &str) -> Result<()> {
+    let moves = vault.recent_inbox_moves(inbox_dir, ORGANIZE_INDEX_DAYS)?;
+    let today = chrono::Local::now().format("%Y-%m-%d").to_string();
+    vault.write_file(
+        &format!("{inbox_dir}/{ORGANIZE_INDEX_FILE}"),
+        &organize_index_markdown(&moves, &today),
+    )?;
+    vault.commit_all(&format!("[ru41] update {ORGANIZE_INDEX_FILE}"))?;
+    Ok(())
+}
+
 /// Obsidian 闭环运行时配置（由 ObsidianSection::resolved 产出）。
 #[derive(Debug, Clone)]
 pub struct ObsidianConfig {
@@ -383,6 +419,7 @@ impl ObsidianService {
             TaskStatus::Succeeded => {
                 // 提交前再确认远端没动；动了说明人工又推了提交，放弃本次整理下轮重做。
                 let vault = self.vault.clone();
+                let inbox_dir = self.config.inbox_dir.clone();
                 let expected = pending.target_sha.clone();
                 let outcome = tokio::task::spawn_blocking(move || -> Result<String> {
                     vault.fetch()?;
@@ -396,6 +433,10 @@ impl ObsidianService {
                         &expected[..expected.len().min(7)]
                     ))?;
                     if committed {
+                        // 近 7 天整理去向索引：失败不影响整理产物推送。
+                        if let Err(error) = update_organize_index(vault.as_ref(), &inbox_dir) {
+                            eprintln!("[obsidian] organize index update failed: {error:#}");
+                        }
                         vault.push()?;
                         Ok("committed".into())
                     } else {
