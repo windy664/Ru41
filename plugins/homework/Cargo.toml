@@ -10,7 +10,6 @@ crate-type = ["cdylib", "rlib"]
 plugin-entry = []
 
 [dependencies]
-ru41-plugin-zhihuishu = { path = "../zhihuishu" }
 # 必须与宿主同一版本（ABI 握手校验 git commit + pkg 版本）。
 ru41 = { path = "../.." }
 anyhow = "1"

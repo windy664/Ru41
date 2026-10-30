@@ -3,24 +3,22 @@ use ru41::ports::{
     commands::{CommandContext, CommandHandler, Reply},
     storage::TaskStore,
 };
-use std::{future::Future, path::PathBuf, pin::Pin};
-
-use ru41_plugin_zhihuishu::load_report;
+use std::{future::Future, pin::Pin};
 
 /// 临期窗口（天）：与各平台推送提醒的 deadline_days 默认对齐。
 const DUE_SOON_DAYS: i64 = 3;
 /// 平台时间均为北京时间（UTC+8）。
 const BEIJING_OFFSET: i32 = 28_800;
 
-/// 跨平台 `/作业` 命令：学习通（records 快照）+ 智慧树（sidecar 报告）聚合成一张清单。
+/// 跨平台 `/作业` 命令：学习通（chaoxing_work records）+ 智慧树（zhihuishu_task
+/// records）聚合成一张清单。两平台都走共享数据库快照，不读 sidecar 文件——
+/// 文件挂载在容器间不共享，曾导致智慧树整列静默缺失。
 /// 权限语义与 ecard/zhihuishu 一致：先身份绑定，再限定单聊。
-pub struct HomeworkQqCommand {
-    report_path: PathBuf,
-}
+pub struct HomeworkQqCommand;
 
 impl HomeworkQqCommand {
-    pub fn new(report_path: PathBuf) -> Self {
-        Self { report_path }
+    pub fn new() -> Self {
+        Self
     }
 }
 
@@ -47,7 +45,7 @@ impl CommandHandler for HomeworkQqCommand {
             {
                 return Ok(Some(Reply::text(reply)));
             }
-            Ok(Some(Reply::text(render(ctx.store, &self.report_path))))
+            Ok(Some(Reply::text(render(ctx.store))))
         })
     }
 
@@ -64,7 +62,7 @@ impl CommandHandler for HomeworkQqCommand {
             {
                 return Ok(Some(Reply::text(reply)));
             }
-            Ok(Some(Reply::text(render(ctx.store, &self.report_path))))
+            Ok(Some(Reply::text(render(ctx.store))))
         })
     }
 }
@@ -107,9 +105,9 @@ struct Row {
 }
 
 /// 聚合渲染（纯函数，可测）：未交按截止升序分桶，完成只计数。
-fn render(store: &dyn TaskStore, report_path: &std::path::Path) -> String {
+fn render(store: &dyn TaskStore) -> String {
     let now = ru41::util::now();
-    let (open, done) = collect_rows(store, report_path);
+    let (open, done) = collect_rows(store);
     if open.is_empty() && done == 0 {
         return "## 暂无作业数据\n\n两个平台都还没有采集到作业；等下一轮轮询后再问吧。".to_owned();
     }
@@ -189,7 +187,7 @@ fn render(store: &dyn TaskStore, report_path: &std::path::Path) -> String {
 }
 
 /// 收集两平台的开放/完成行：新平台接入时在此追加。
-fn collect_rows(store: &dyn TaskStore, report_path: &std::path::Path) -> (Vec<Row>, usize) {
+fn collect_rows(store: &dyn TaskStore) -> (Vec<Row>, usize) {
     let mut open = Vec::new();
     let mut done = 0usize;
 
@@ -219,27 +217,31 @@ fn collect_rows(store: &dyn TaskStore, report_path: &std::path::Path) -> (Vec<Ro
         }
     }
 
-    // 智慧树：sidecar 报告（同 zhihuishu 命令的数据源，保持新鲜度一致）
-    if let Ok(report) = load_report(report_path) {
-        for course in &report.courses {
-            for task in &course.tasks {
-                let exam_style = task.exam_duration_minutes.unwrap_or(0) > 0
-                    || task.video_invigilate == Some(true);
-                let row = Row {
-                    platform: "智慧树",
-                    course: course.title.clone(),
-                    title: task.title.clone(),
-                    end_ts: task
-                        .end_at
-                        .as_deref()
-                        .and_then(ru41_plugin_zhihuishu::parse_platform_time),
-                    exam_style,
-                };
-                if task.completed.unwrap_or(false) {
-                    done += 1;
-                } else {
-                    open.push(row);
-                }
+    // 智慧树：records 快照（zhihuishu 轮询写入 zhihuishu_task）
+    if let Ok(docs) = store.documents("zhihuishu_task", 500) {
+        for doc in docs {
+            let value = &doc.value;
+            let row = Row {
+                platform: "智慧树",
+                course: field(value, "course"),
+                title: field(value, "title"),
+                end_ts: value
+                    .get("end_at")
+                    .and_then(serde_json::Value::as_str)
+                    .and_then(parse_beijing),
+                exam_style: value
+                    .get("exam_style")
+                    .and_then(serde_json::Value::as_bool)
+                    .unwrap_or(false),
+            };
+            if value
+                .get("completed")
+                .and_then(serde_json::Value::as_bool)
+                .unwrap_or(false)
+            {
+                done += 1;
+            } else {
+                open.push(row);
             }
         }
     }
@@ -302,6 +304,35 @@ mod tests {
                 &json!({"course": "大学英语新视野", "title": "作业二", "status": "已提交"}),
             )
             .unwrap();
+        // 智慧树：一条未交（远期）+ 一条已完成（考试式）
+        store
+            .put_document(
+                "zhihuishu_task",
+                "职业生涯规划#T1",
+                None,
+                &json!({
+                    "course": "职业生涯规划",
+                    "title": "第五节课 课前测",
+                    "end_at": beijing_days_from_now(30),
+                    "completed": false,
+                    "exam_style": false,
+                }),
+            )
+            .unwrap();
+        store
+            .put_document(
+                "zhihuishu_task",
+                "职业生涯规划#T2",
+                None,
+                &json!({
+                    "course": "职业生涯规划",
+                    "title": "期末考模拟",
+                    "end_at": beijing_days_from_now(60),
+                    "completed": true,
+                    "exam_style": true,
+                }),
+            )
+            .unwrap();
         store
     }
 
@@ -317,33 +348,11 @@ mod tests {
             .to_string()
     }
 
-    fn sample_report(path: &std::path::Path) {
-        let report = json!({
-            "generated_at": "2026-10-20 12:00:00",
-            "login_ok": true,
-            "courses": [{
-                "title": "职业生涯规划",
-                "tasks": [
-                    {"activity_task_id": "T1", "title": "第五节课 课前测",
-                     "end_at": "2099-01-01 00:00:00", "completed": false},
-                    {"activity_task_id": "T2", "title": "期末考模拟",
-                     "end_at": "2099-06-01 00:00:00", "completed": true,
-                     "exam_duration_minutes": 30},
-                ]
-            }]
-        });
-        std::fs::write(path, serde_json::to_string(&report).unwrap()).unwrap();
-    }
-
     #[test]
     fn render_aggregates_both_platforms() {
         let store = seed_store();
-        let dir = std::env::temp_dir().join(format!("ru41-hw-rpt-{}", ru41::util::now()));
-        std::fs::create_dir_all(&dir).unwrap();
-        let report_path = dir.join("report.json");
-        sample_report(&report_path);
 
-        let text = render(&store, &report_path);
+        let text = render(&store);
         // 两个平台同屏
         assert!(text.contains("学习通｜大学英语新视野｜作业一：函数极限"));
         assert!(text.contains("智慧树｜职业生涯规划｜第五节课 课前测"));
@@ -361,7 +370,7 @@ mod tests {
         std::fs::create_dir_all(&dir).unwrap();
         let store_path = dir.join("s.db");
         let store = ru41::adapters::database::sqlite::SqliteTaskStore::open(&store_path).unwrap();
-        let text = render(&store, &dir.join("missing.json"));
+        let text = render(&store);
         assert!(text.contains("暂无作业数据"));
     }
 

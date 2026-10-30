@@ -17,15 +17,7 @@ pub static DEF: ru41::modules::ModuleDef = ru41::modules::ModuleDef {
     config_key: None,
     schedule: |_| Vec::new(),
     tracker: |_, _, _| Ok(None),
-    qq_handlers: |config, _| {
-        Ok(vec![std::sync::Arc::new(HomeworkQqCommand::new(
-            config
-                .sources
-                .get::<ru41_plugin_zhihuishu::ZhihuishuSection>("zhihuishu")?
-                .resolved(String::new())?
-                .report_path,
-        ))])
-    },
+    qq_handlers: |_, _| Ok(vec![std::sync::Arc::new(HomeworkQqCommand::new())]),
     image_consumers: ru41::modules::no_image_consumers,
     cli: ru41::modules::no_cli,
 };
