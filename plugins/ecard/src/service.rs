@@ -130,13 +130,17 @@ impl EcardTracker {
             // 同日已提醒过就不重复打扰。
             let alerted = self.store.document("ecard_alert", &today)?.is_some();
             if !alerted && let Some(notifier) = &self.notifier {
+                let items = low
+                    .iter()
+                    .map(|item| format!("- {item}"))
+                    .collect::<Vec<_>>()
+                    .join("\n");
                 notifier
                     .send(
                         &self.config.notify_target,
                         None,
                         &format!(
-                            "【水电提醒】{room_label}：{}。查询时间 {today}。",
-                            alert_reason.as_deref().unwrap_or("")
+                            "## ⚡ 水电提醒\n\n- 房间：{room_label}\n{items}\n- 查询时间：{today}"
                         ),
                     )
                     .await?;
@@ -162,9 +166,9 @@ impl EcardTracker {
                     &self.config.notify_target,
                     None,
                     &format!(
-                        "【水电日报】{room_label}：电 {} / 水 {}（{today}）。低于阈值（电{:.0}度/水{:.0}吨）会单独提醒。",
-                        power.map_or("--".into(), |p| format!("{p:.2}度")),
-                        water.map_or("--".into(), |w| format!("{w:.2}吨")),
+                        "## ⚡ 水电日报\n\n- 房间：{room_label}\n- 电 {} / 水 {}\n- 日期：{today}\n\n> 低于阈值（电 {:.0} 度 / 水 {:.0} 吨）会单独提醒",
+                        power.map_or("--".into(), |p| format!("{p:.2} 度")),
+                        water.map_or("--".into(), |w| format!("{w:.2} 吨")),
                         self.config.power_threshold,
                         self.config.water_threshold,
                     ),
