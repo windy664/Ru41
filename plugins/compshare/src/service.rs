@@ -170,7 +170,7 @@ impl CompshareTracker {
                     &self.config.notify_target,
                     None,
                     &format!(
-                        "【恒源云库存监控】登录会话已过期，暂时无法查询 {} 的 {} 库存。请重新登录后更新 RU41_COMPSHARE_COOKIE。",
+                        "## ⚠️ 恒源云登录态失效\n\n暂时无法查询 {} 的 {} 库存。请重新登录后更新 RU41_COMPSHARE_COOKIE。",
                         self.config.zone, self.config.gpu_type
                     ),
                 )
@@ -195,18 +195,17 @@ impl CompshareTracker {
 }
 
 fn available_message(config: &CompshareConfig, specs: &[CapacitySpec]) -> String {
-    let mut message = format!(
-        "【恒源云 GPU】{} 的 {} 有资源了。可创建规格：{}",
+    format!(
+        "## 🎮 恒源云 GPU 有货\n\n- 机房：{}\n- 显卡：{}\n- 可创建规格：{}\n\n创建页：{}",
         config.zone,
         config.gpu_type,
         specs
             .iter()
             .map(|spec| format!("{}×GPU / {}C / {}GB", spec.gpu, spec.cpu, spec.mem))
             .collect::<Vec<_>>()
-            .join("，")
-    );
-    message.push_str(&format!("\n创建页：{}", config.page_url()));
-    message
+            .join("，"),
+        config.page_url(),
+    )
 }
 
 impl ru41::ingress::schedule::PollJob for CompshareTracker {

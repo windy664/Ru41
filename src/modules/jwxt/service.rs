@@ -748,11 +748,16 @@ impl JwxtTracker {
         if !changes.is_empty()
             && let Some(notifier) = &self.notifier
         {
+            let items = changes
+                .iter()
+                .map(|line| format!("- {line}"))
+                .collect::<Vec<_>>()
+                .join("\n");
             notifier
                 .send(
                     &self.config.notify_target,
                     None,
-                    &format!("【课表变更】{xnm}-{xqm} 学期\n{}", changes.join("\n")),
+                    &format!("## 📅 课表变更（{xnm}-{xqm} 学期）\n\n{items}"),
                 )
                 .await?;
         }

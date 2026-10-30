@@ -128,7 +128,7 @@ async fn first_available_poll_sends_detailed_notification_once() {
     assert!(!second.notified);
     assert_eq!(channel.sent.lock().unwrap().len(), 1);
     let text = &channel.sent.lock().unwrap()[0];
-    assert!(text.starts_with("user:U1|【恒源云 GPU】cn-wlcb-01 的 P40"));
+    assert!(text.starts_with("user:U1|## 🎮 恒源云 GPU 有货"));
     assert!(text.contains("1×GPU / 8C / 64GB"));
     assert!(text.contains("compshareImage-1t1vuerl80np"));
 
