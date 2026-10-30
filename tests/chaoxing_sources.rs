@@ -847,8 +847,9 @@ async fn auto_sign_skips_qr_and_reminds_photo() {
 
 /// 回归（2026-10-22 真实漏签）：activelist 的 type 字段恒为 2（=签到类），
 /// 种类只在 nameOne 文案里。手势签到曾是「type=2 被当二维码跳过」的死代码。
+/// 2026-10-30 起手势被平台风控封堵（直签稳定 90002），改为即发现即强提醒。
 #[tokio::test]
-async fn auto_sign_handles_gesture_with_real_payload_shape() {
+async fn gesture_sign_alerts_immediately_without_auto_attempt() {
     // 真实形状：type=2 + nameOne=手势签到（今早 07:29 实际漏掉的那个）
     let state = Arc::new(FixtureState::new(pending_of_type(2, "手势签到")));
     let addr = spawn_fixture(state.clone()).await;
@@ -865,13 +866,18 @@ async fn auto_sign_handles_gesture_with_real_payload_shape() {
         true,
     );
 
-    // 手势按普通参数自动签（平台不校验额外参数），当场 ✅
-    let report = tracker.poll_once().await.unwrap();
-    assert_eq!(report.auto_signed, 1);
-    assert_eq!(*state.presign_hits.lock().unwrap(), 1);
-    assert_eq!(*state.upload_hits.lock().unwrap(), 0);
-    assert!(channel.sent.lock().unwrap()[0].contains("手势签到"));
-    assert!(channel.sent.lock().unwrap()[0].contains("自动签到成功"));
+    // 手势不自动签（90002 确定性失败）：不发 sign 请求、不打「已尝试」标记，
+    // 推送 🚨 强提醒指路手动签；下一轮活动仍待签也不补试、不重复推送
+    for _ in 0..2 {
+        let report = tracker.poll_once().await.unwrap();
+        assert_eq!(report.auto_signed, 0);
+        assert_eq!(*state.presign_hits.lock().unwrap(), 0);
+        assert_eq!(*state.sign_hits.lock().unwrap(), 0);
+    }
+    let sent = channel.sent.lock().unwrap();
+    assert_eq!(sent.len(), 1);
+    assert!(sent[0].contains("手势签到"));
+    assert!(sent[0].contains("手动签"));
 }
 
 /// 种类识别以 nameOne 文案为准，type 字段不可信。
