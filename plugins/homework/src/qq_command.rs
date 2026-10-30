@@ -112,7 +112,7 @@ fn render(store: &dyn TaskStore) -> String {
         return "## 暂无作业数据\n\n两个平台都还没有采集到作业；等下一轮轮询后再问吧。".to_owned();
     }
     if open.is_empty() {
-        return format!("## 作业清单\n\n当前没有未完成作业 🎉（已完成 {done} 条）");
+        return format!("## 📚 作业清单\n\n当前没有未完成作业 🎉（已完成 {done} 条）");
     }
 
     let urgent = DUE_SOON_DAYS * 86_400;
@@ -136,52 +136,52 @@ fn render(store: &dyn TaskStore) -> String {
     due_soon.sort_by(by_end);
     later.sort_by(by_end);
 
-    let mut out = String::from("## 作业清单\n\n");
-    let push_row = |out: &mut String, row: &Row| {
-        let exam = if row.exam_style { " 🔒考试式" } else { "" };
+    let mut out = String::from("## 📚 作业清单\n\n");
+    // 每条一行：课程｜标题（截止时间+剩余）；平台不同才标来源，全同源时省略降噪。
+    let platforms: std::collections::HashSet<_> = open.iter().map(|r| r.platform).collect();
+    let multi_platform = platforms.len() > 1;
+    let push_row = |out: &mut String, index: usize, row: &Row| {
+        let exam = if row.exam_style { " 🔒" } else { "" };
+        let source = if multi_platform {
+            format!("【{}】", row.platform)
+        } else {
+            String::new()
+        };
         let end = row
             .end_ts
             .map(|ts| {
                 let remain = ts - now;
-                let tail = if remain < 0 {
-                    "已过期".to_owned()
+                if remain < 0 {
+                    format!("{} 截止", fmt_mmdd_hhmm(ts))
                 } else if remain < 86_400 {
-                    format!("剩 {} 小时", remain.div_euclid(3600).max(1))
+                    format!("{} 截止，剩 {} 小时", fmt_mmdd_hhmm(ts), remain.div_euclid(3600).max(1))
                 } else {
-                    format!("剩 {} 天", remain.div_euclid(86_400))
-                };
-                format!("{}（{tail}）", fmt_mmdd_hhmm(ts))
+                    format!("{} 截止，剩 {} 天", fmt_mmdd_hhmm(ts), remain.div_euclid(86_400))
+                }
             })
-            .unwrap_or_else(|| "未知".to_owned());
+            .unwrap_or_else(|| "截止未知".to_owned());
         out.push_str(&format!(
-            "- {}｜{}｜{}{} 📅 {end}\n",
-            row.platform, row.course, row.title, exam
+            "{index}. {source}{}｜{}{exam}（{end}）\n",
+            row.course, row.title
         ));
     };
-    if !overdue.is_empty() {
-        out.push_str(&format!("### ⚠️ 已过期（{}）\n\n", overdue.len()));
-        for row in &overdue {
-            push_row(&mut out, row);
+    let mut push_section = |out: &mut String, title: String, rows: &[&Row]| {
+        if rows.is_empty() {
+            return;
+        }
+        out.push_str(&format!("**{title}**\n"));
+        for (index, row) in rows.iter().enumerate() {
+            push_row(out, index + 1, row);
         }
         out.push('\n');
-    }
-    if !due_soon.is_empty() {
-        out.push_str(&format!(
-            "### ⏰ {DUE_SOON_DAYS} 天内截止（{}）\n\n",
-            due_soon.len()
-        ));
-        for row in &due_soon {
-            push_row(&mut out, row);
-        }
-        out.push('\n');
-    }
-    if !later.is_empty() {
-        out.push_str(&format!("### 📝 其他未交（{}）\n\n", later.len()));
-        for row in &later {
-            push_row(&mut out, row);
-        }
-        out.push('\n');
-    }
+    };
+    push_section(&mut out, format!("⚠️ 已过期（{}）", overdue.len()), &overdue);
+    push_section(
+        &mut out,
+        format!("⏰ {DUE_SOON_DAYS} 天内截止（{}）", due_soon.len()),
+        &due_soon,
+    );
+    push_section(&mut out, format!("📝 其他未交（{}）", later.len()), &later);
     out.push_str(&format!("—— 已完成 {done} 条；清单见 Obsidian「作业总表」"));
     out
 }
@@ -353,12 +353,12 @@ mod tests {
         let store = seed_store();
 
         let text = render(&store);
-        // 两个平台同屏
-        assert!(text.contains("学习通｜大学英语新视野｜作业一：函数极限"));
-        assert!(text.contains("智慧树｜职业生涯规划｜第五节课 课前测"));
+        // 两个平台同屏（多平台时带来源标注）
+        assert!(text.contains("【学习通】大学英语新视野｜作业一：函数极限"), "{text}");
+        assert!(text.contains("【智慧树】职业生涯规划｜第五节课 课前测"), "{text}");
         // 分桶：学习通临期在「3 天内截止」，智慧树远期在「其他未交」
-        assert!(text.contains("### ⏰ 3 天内截止（1）"));
-        assert!(text.contains("### 📝 其他未交（1）"));
+        assert!(text.contains("⏰ 3 天内截止（1）"), "{text}");
+        assert!(text.contains("📝 其他未交（1）"), "{text}");
         // 完成计数跨平台合并
         assert!(text.contains("已完成 2 条"));
         assert!(text.contains("作业总表"));
