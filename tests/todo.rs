@@ -2,7 +2,9 @@ use chrono::{FixedOffset, TimeZone};
 use ru41::{
     adapters::database::sqlite::SqliteTaskStore,
     app::todo::TodoService,
-    domain::todo::{TodoInput, TodoOptions, TodoPriority, TodoStatus, TodoView, parse_due},
+    domain::todo::{
+        TodoInput, TodoOptions, TodoPriority, TodoSource, TodoStatus, TodoView, parse_due,
+    },
     ports::storage::TaskStore,
 };
 use std::sync::Arc;
@@ -40,6 +42,33 @@ fn add(
                 due_at: due_text.map(|text| parse_due(text, now, options).unwrap()),
                 remind_at: None,
                 source: None,
+            },
+            now,
+        )
+        .unwrap()
+}
+
+fn add_homework(
+    service: &TodoService,
+    title: &str,
+    due_text: Option<&str>,
+    now: i64,
+    options: &TodoOptions,
+    channel: &str,
+) -> ru41::domain::todo::TodoItem {
+    service
+        .add(
+            TodoInput {
+                title: title.into(),
+                priority: TodoPriority::Normal,
+                labels: Vec::new(),
+                due_at: due_text.map(|text| parse_due(text, now, options).unwrap()),
+                // 作业条目到期即提醒，验证到期提醒过滤有实际意义。
+                remind_at: due_text.map(|text| parse_due(text, now, options).unwrap()),
+                source: Some(TodoSource {
+                    channel: channel.into(),
+                    source_id: None,
+                }),
             },
             now,
         )
@@ -243,4 +272,64 @@ fn due_parser_supports_iso_and_common_relative_dates() {
         "2026-10-22"
     );
     assert!(parse_due("不是时间", now, &options).is_err());
+}
+
+#[test]
+fn homework_items_are_hidden_from_personal_todo_views() {
+    let (_dir, store, options, now) = fixture();
+    let service = TodoService::new(store, options);
+    let due = parse_due("2026-10-18 10:00", now, &options).unwrap();
+    let personal = service
+        .add(
+            TodoInput {
+                title: "个人事项".into(),
+                priority: TodoPriority::Normal,
+                labels: Vec::new(),
+                due_at: Some(due),
+                remind_at: Some(due),
+                source: None,
+            },
+            now,
+        )
+        .unwrap();
+    let homework = add_homework(
+        &service,
+        "超星作业",
+        Some("2026-10-18 10:00"),
+        now,
+        &options,
+        "chaoxing",
+    );
+    let _zhihuishu = add_homework(&service, "智慧树作业", None, now, &options, "zhihuishu");
+    let _teachermate = add_homework(&service, "学习通作业", None, now, &options, "teachermate");
+
+    assert!(homework.is_homework());
+    assert!(!personal.is_homework());
+
+    for view in [
+        TodoView::All,
+        TodoView::Today,
+        TodoView::Recent,
+        TodoView::LongTerm,
+        TodoView::Overdue,
+        TodoView::Inbox,
+    ] {
+        let items = service.list(view, now, 100).unwrap();
+        assert!(
+            items.iter().all(|item| !item.is_homework()),
+            "view {view:?} leaked homework items"
+        );
+        if view == TodoView::All {
+            assert_eq!(items.len(), 1);
+            assert_eq!(items[0].id, personal.id);
+        }
+    }
+
+    let overview = service.overview(now, 100).unwrap();
+    assert_eq!(overview.active_count(), 1);
+    assert_eq!(overview.overdue[0].id, personal.id);
+
+    let due = service.due_reminders(now, 100).unwrap();
+    assert_eq!(due.len(), 1);
+    assert_eq!(due[0].id, personal.id);
 }

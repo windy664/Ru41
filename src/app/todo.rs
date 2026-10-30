@@ -102,6 +102,10 @@ impl TodoService {
         );
         let mut items = Vec::new();
         for (_, item) in self.entries()? {
+            // 平台作业不进个人待办视图，作业走 /作业 聚合与平台自有提醒。
+            if item.is_homework() {
+                continue;
+            }
             let include = match view {
                 TodoView::All => true,
                 TodoView::Today => self.bucket(&item, now) == Some(TodoBucket::Today),
@@ -123,6 +127,10 @@ impl TodoService {
     pub fn overview(&self, now: i64, limit: usize) -> Result<TodoOverview> {
         let mut overview = TodoOverview::default();
         for (_, item) in self.entries()? {
+            // 与 list 一致：平台作业不进个人待办概览。
+            if item.is_homework() {
+                continue;
+            }
             match self.bucket(&item, now) {
                 Some(TodoBucket::Overdue) => overview.overdue.push(item),
                 Some(TodoBucket::Today) => overview.today.push(item),
@@ -196,7 +204,9 @@ impl TodoService {
             .into_iter()
             .map(|(_, item)| item)
             .filter(|item| {
-                item.status == TodoStatus::Active
+                // 平台作业的临期提醒由各自平台服务负责，todo-remind 只管个人待办。
+                !item.is_homework()
+                    && item.status == TodoStatus::Active
                     && item.remind_at.is_some_and(|remind_at| remind_at <= now)
                     && item.last_reminded_at.unwrap_or(0) < item.remind_at.unwrap_or(0)
             })

@@ -142,6 +142,8 @@ cargo run --locked -- qq send --qq-app-id <APP_ID> --qq-app-secret <SECRET> --gr
 
 Todo 是长期个人行动项，不等同于 Agent 执行队列里的 `Task`。数据持久化在同一数据库的通用 `todo_item` 记录中；“今日、近期、长期、逾期”由读取时的本地日期计算，不把会过期的分类写死到数据里。
 
+平台作业（超星/智慧树/学习通）虽然也写 `todo_item`，但带平台来源标记：`/待办`、概览与到期提醒只展示个人待办，作业统一走 `/作业` 聚合与各平台自己的临期提醒，两套视图互不混入。
+
 ```bash
 # 添加；日期支持 YYYY-MM-DD、YYYY-MM-DD HH:MM、今天、明天、后天、N天后
 cargo run --locked -- todo add --title "写项目周报" --due "明天下午3点" --label project,weekly
