@@ -41,8 +41,12 @@ const LIST_OLD: &str = "printf 'vid-old\\037Some AI essay video\\037306\\0379000
 /// 假 yt-dlp：按参数判模式——`--flat-playlist` 输出 LIST_LINES；`--sub-langs` 为字幕模式
 /// （MARKER 存在时失败，验证转写重试与放弃路径）；否则为 meta 模式（vid-old 固定老时间戳，
 /// 其余返回当前时间）。
+/// 每次调用写一个新文件，不复用路径：避免「改写下轮列表内容」与
+/// 「上一轮脚本仍在被执行」在并行测试里相互干扰。
 fn write_fake_ytdlp(dir: &Path, marker: &Path, list_lines: &str) -> PathBuf {
-    let script = dir.join("fake-ytdlp.sh");
+    use std::sync::atomic::{AtomicU64, Ordering};
+    static SEQ: AtomicU64 = AtomicU64::new(0);
+    let script = dir.join(format!("fake-ytdlp-{}.sh", SEQ.fetch_add(1, Ordering::Relaxed)));
     std::fs::write(
         &script,
         format!(
