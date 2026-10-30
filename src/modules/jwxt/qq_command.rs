@@ -143,8 +143,13 @@ fn day_body(describe_output: &str) -> &str {
 
 /// 自然语言："明天有什么课" / "今天课多吗" / "周三有什么课"。
 /// 返回 Some(目标日期) 表示拦截；保守匹配，只认「课」+ 明确时间词。
+/// 转发的通知/公告常带「课」（如“第二课堂学分”）和「今天/周X」（如“10月27日（今天）”）
+/// 字样，长文本或含通知特征词的一律不拦截，交给下游 notices 抽取或 agent。
 fn looks_like_timetable_question(content: &str) -> Option<NaiveDate> {
     let text = content.trim();
+    if text.chars().count() > TIMETABLE_QUESTION_MAX_CHARS || looks_like_notice(text) {
+        return None;
+    }
     if !text.contains('课') {
         return None;
     }
@@ -179,4 +184,56 @@ fn looks_like_timetable_question(content: &str) -> Option<NaiveDate> {
         }
     }
     None
+}
+
+/// 课表提问的长度闸：真实提问都是短句（“明天有什么课”7 字），
+/// 转发的通知动辄上百字，超过阈值直接不拦。
+const TIMETABLE_QUESTION_MAX_CHARS: usize = 40;
+
+/// 通知/公告特征词：命中任意一个就不当作课表提问。
+fn looks_like_notice(text: &str) -> bool {
+    [
+        "通知", "宣讲", "讲座", "班会", "大会", "参会", "座位", "报名", "签到", "地点",
+        "时间：", "时间:", "学分", "请同学", "请假", "主讲", "会议要求",
+    ]
+    .iter()
+    .any(|k| text.contains(k))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn short_questions_still_match() {
+        let today = chrono::Local::now().date_naive();
+        assert_eq!(
+            looks_like_timetable_question("明天有什么课"),
+            Some(today + Duration::days(1))
+        );
+        assert_eq!(looks_like_timetable_question("今天课多吗"), Some(today));
+    }
+
+    #[test]
+    fn notice_with_ke_and_today_is_not_a_question() {
+        // 真实案例：表彰大会通知同时含「第二课堂学分」和「（今天）」，
+        // 曾经被拦成“今天课表”回复，导致通知没进行程。
+        let notice = "📣通知：为树立优秀学习模范，我院将于10月27日举行学风表彰大会暨优秀学子宣讲会。\n\
+                      ⏰时间：10月27日（今天）下午13:30-15:00\n\
+                      🏠地点：学术报告厅\n\
+                      ⚠️该会议后面可以算第二课堂学分，新生班级有事可以跟学习委员请假";
+        assert_eq!(looks_like_timetable_question(notice), None);
+    }
+
+    #[test]
+    fn long_text_is_not_a_question() {
+        let long = "老师布置了下周的阅读任务，一共三章内容，另外星期二有几门课要记得提前预习好，别忘记了".repeat(2);
+        assert!(long.chars().count() > TIMETABLE_QUESTION_MAX_CHARS);
+        assert_eq!(looks_like_timetable_question(&long), None);
+    }
+
+    #[test]
+    fn non_questions_still_do_not_match() {
+        assert_eq!(looks_like_timetable_question("帮我订个外卖"), None);
+    }
 }
