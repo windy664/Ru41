@@ -300,11 +300,12 @@ impl ZhihuishuTracker {
             }
         }
 
-        // Obsidian 课程目录同步：失败只降级为一条提示，不影响任务与待办
+        // Obsidian 课程目录同步：结果只进报告与日志，不进 QQ 推送（噪音）；
+        // 失败才降级为一条提示，不影响任务与待办。
         let vault = match self.sync_vault(&report, now) {
-            Ok((count, line)) => {
+            Ok((count, _)) => {
                 vault_files = count;
-                line
+                None
             }
             Err(err) => Some(format!("- ⚠️ Obsidian 同步失败: {}", truncate_err(&err))),
         };
@@ -316,12 +317,7 @@ impl ZhihuishuTracker {
         if !lines.is_empty()
             && let Some(notifier) = &self.notifier
         {
-            let message = format!(
-                "【作业提醒】{}门课程 {} 个任务\n{}",
-                report.courses.len(),
-                tasks,
-                lines.join("\n")
-            );
+            let message = format!("## 📚 作业提醒（{}）\n\n{}", lines.len(), lines.join("\n"));
             notifier
                 .send(&self.config.notify_target, None, &message)
                 .await?;

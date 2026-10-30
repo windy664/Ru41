@@ -265,20 +265,15 @@ impl NotifyDispatcher {
 /// 进度通知文本。
 fn progress_text(doc: &crate::domain::records::Document, task: &Task) -> String {
     if doc.value["kind"] == "retry" {
+        // 错误原文可能很长（堆栈/HTTP body），只带首行摘要，详情进任务记录查。
+        let error = doc.value["error"].as_str().unwrap_or("未知错误");
+        let brief = crate::util::truncate_chars(error.lines().next().unwrap_or("未知错误"), 80);
         format!(
-            "## ⚠️ 任务 `#{}` 首次执行失败\n\n已自动安排重试，结果出来会通知你。\n\n错误：\n{}",
-            task.id,
-            doc.value["error"].as_str().unwrap_or("未知错误")
+            "## ⚠️ 任务 `#{}` 首次执行失败\n\n已自动安排重试，结果出来会通知你。\n\n> {brief}",
+            task.id
         )
     } else {
-        let attempt = doc.value["attempt"]
-            .as_i64()
-            .or_else(|| doc.value["attempt_id"].as_i64())
-            .unwrap_or(1);
-        format!(
-            "▶️ 任务 `#{}` 开始执行（第 {} 次尝试 · 底座 `{}`）",
-            task.id, attempt, task.backend_id
-        )
+        format!("▶️ 任务 `#{}` 开始执行", task.id)
     }
 }
 

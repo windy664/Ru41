@@ -272,12 +272,12 @@ impl ScheduleService {
 
 /// 行程到点提醒的 QQ markdown 文本；与待办提醒同一风格。
 pub fn format_event_reminder(items: &[EventOccurrence], options: TodoOptions) -> String {
-    let mut lines = vec![format!("## 行程提醒（{}）", items.len())];
+    let mut lines = vec![format!("## ⏰ 行程提醒（{}）", items.len())];
     for item in items {
         let mut line = format!(
             "- **{}** — {}",
             item.title,
-            event_time_label(item.starts_at, item.recurring, options.offset_seconds)
+            reminder_time_label(item.starts_at, item.recurring, options.offset_seconds)
         );
         if let Some(location) = &item.location {
             line.push_str(&format!(" @ {location}"));
@@ -285,6 +285,35 @@ pub fn format_event_reminder(items: &[EventOccurrence], options: TodoOptions) ->
         lines.push(line);
     }
     lines.join("\n")
+}
+
+/// 提醒专用时间标签：今天/明天只给时刻，一周内给周X，更远给完整日期；
+/// 周期事件保持「每周X HH:MM」。
+fn reminder_time_label(starts_at: i64, recurring: bool, offset_seconds: i32) -> String {
+    if recurring {
+        return event_time_label(starts_at, true, offset_seconds);
+    }
+    let Some(offset) = chrono::FixedOffset::east_opt(offset_seconds) else {
+        return event_time_label(starts_at, false, offset_seconds);
+    };
+    let to_local =
+        |ts: i64| chrono::DateTime::from_timestamp(ts, 0).map(|utc| utc.with_timezone(&offset));
+    let (Some(now), Some(start)) = (to_local(crate::util::now()), to_local(starts_at)) else {
+        return event_time_label(starts_at, false, offset_seconds);
+    };
+    let days = (start.date_naive() - now.date_naive()).num_days();
+    let time = start.format("%H:%M");
+    match days {
+        0 => format!("今天 {time}"),
+        1 => format!("明天 {time}"),
+        2..=6 => {
+            let weekdays = ["周一", "周二", "周三", "周四", "周五", "周六", "周日"];
+            let weekday =
+                weekdays[(chrono::Datelike::weekday(&start).number_from_monday() - 1) as usize];
+            format!("{weekday} {time}")
+        }
+        _ => event_time_label(starts_at, false, offset_seconds),
+    }
 }
 
 /// 启动后补发错过的课程提醒：合并成一条消息发出，逐条标记。
@@ -321,7 +350,7 @@ fn format_missed_reminder(items: &[EventOccurrence], options: TodoOptions) -> St
         let mut line = format!(
             "- **{}** — {}",
             item.title,
-            event_time_label(item.starts_at, item.recurring, options.offset_seconds)
+            reminder_time_label(item.starts_at, item.recurring, options.offset_seconds)
         );
         if let Some(location) = &item.location {
             line.push_str(&format!(" @ {location}"));
