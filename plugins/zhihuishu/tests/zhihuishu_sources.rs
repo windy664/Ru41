@@ -203,8 +203,17 @@ impl ru41::ports::vault::Vault for FakeVault {
     fn push(&self) -> anyhow::Result<()> {
         Ok(())
     }
-    fn sync(&self) -> anyhow::Result<bool> {
-        Ok(false)
+    fn sync(&self) -> anyhow::Result<ru41::ports::vault::SyncOutcome> {
+        Ok(ru41::ports::vault::SyncOutcome::Clean)
+    }
+    fn resolve_conflict(&self, _relative: &str, _merged: &str) -> anyhow::Result<()> {
+        Ok(())
+    }
+    fn rebase_continue(&self) -> anyhow::Result<Vec<String>> {
+        Ok(vec![])
+    }
+    fn rebase_abort(&self) -> anyhow::Result<()> {
+        Ok(())
     }
     fn read_file(&self, relative: &str) -> anyhow::Result<Option<String>> {
         Ok(self.files.lock().unwrap().get(relative).cloned())

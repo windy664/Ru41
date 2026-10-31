@@ -350,12 +350,15 @@ impl ZhihuishuTracker {
         let base = self.config.vault_course_dir.trim_end_matches('/');
         let mut written = 0usize;
         for course in &report.courses {
+            // 平台课名带学期后缀，先归一化成课表短名再查映射/建目录，
+            // 保证与 jwxt 课表、lecture 课堂笔记落进同一目录。
+            let normalized = normalize_course_name(&course.title);
             let dir = self
                 .config
                 .vault_courses
-                .get(course.title.as_str())
+                .get(normalized.as_str())
                 .cloned()
-                .unwrap_or_else(|| course.title.clone());
+                .unwrap_or(normalized);
             let course_base = format!("{base}/{dir}");
             // 课程级索引：未完成/已完成清单，任务行双链到作业文件夹
             vault.write_file(
@@ -560,6 +563,82 @@ fn is_substantive(task: &ZhihuishuTask) -> bool {
         || task.attachments.as_ref().is_some_and(|a| !a.is_empty())
 }
 
+/// 课程名归一化：剥掉学校平台挂在课名尾部的学期后缀，统一到课表短名，
+/// 让课表、课堂笔记、智慧树作业落进同一个 vault 目录。
+/// 例：`高等数学I(理)2026年秋冬学期` → `高等数学I(理)`；
+/// `大学英语（2025-2026学年第二学期）` → `大学英语`。无后缀原样返回。
+fn normalize_course_name(raw: &str) -> String {
+    let original = raw.trim();
+    let mut name = original;
+    // 整段括号包住的学期后缀：`（2025-2026学年第二学期）`
+    for (open, close) in [('（', '）'), ('(', ')')] {
+        if name.ends_with(close)
+            && let Some(idx) = name.rfind(open)
+            && term_like(&name[idx + open.len_utf8()..name.len() - close.len_utf8()])
+        {
+            name = name[..idx].trim_end();
+        }
+    }
+    // 裸后缀（以「学期」结尾）：`2026年秋冬学期` / `2025-2026学年第二学期`。
+    // 注意不剥尾部括号——如 `高等数学I(理)2026年秋冬学期` 的 `)` 属于课名本身。
+    if name.ends_with("学期")
+        && let Some(pos) = bare_term_suffix_start(&name[..name.len() - "学期".len()])
+        && !name[..pos].trim_end().is_empty()
+    {
+        name = name[..pos].trim_end();
+    }
+    name.to_string()
+}
+
+/// 识别「学期」之前的裸学期段起点，返回剥完后的课名边界。
+/// 形态一 `2026年秋冬`（年份+季节）；形态二 `2025-2026学年第二`（年份对+学年+第N）。
+fn bare_term_suffix_start(t: &str) -> Option<usize> {
+    if let Some(pos) = trailing_run_start(t, |c| {
+        c.is_ascii_digit()
+            || matches!(c, '-' | '~' | '～' | '—' | '/' | '年' | '月' | '春' | '夏' | '秋' | '冬')
+    })
+    && t[pos..].chars().any(|c| c.is_ascii_digit())
+    {
+        return Some(pos);
+    }
+    let j = t.rfind("学年")?;
+    let after = &t[j + "学年".len()..];
+    if !(after.len() > "第".len()
+        && after.starts_with('第')
+        && after["第".len()..]
+            .chars()
+            .all(|c| "一二三四五六七八九十0123456789".contains(c)))
+    {
+        return None;
+    }
+    let before = &t[..j];
+    let pos = trailing_run_start(before, |c| {
+        c.is_ascii_digit() || matches!(c, '-' | '/' | '~' | '～' | '—' | ' ')
+    })?;
+    before[pos..]
+        .chars()
+        .any(|c| c.is_ascii_digit())
+        .then_some(pos)
+}
+
+/// 尾部连续满足 pred 的字符段的起点；空段返回 None。
+fn trailing_run_start(s: &str, pred: impl Fn(char) -> bool) -> Option<usize> {
+    let mut start = s.len();
+    for (i, c) in s.char_indices().rev() {
+        if pred(c) {
+            start = i;
+        } else {
+            break;
+        }
+    }
+    (start < s.len()).then_some(start)
+}
+
+/// 是否是「学期/学年」描述（含数字才认，避免把普通短语当学期段）。
+fn term_like(s: &str) -> bool {
+    s.chars().any(|c| c.is_ascii_digit()) && (s.contains("学期") || s.contains("学年"))
+}
+
 /// 任务文件夹名：`YYYY.MM.DD_作业名`（日期取布置日，缺省用截止日，都没有则只留作业名）。
 /// 同时替换文件系统不友好字符。
 fn task_folder_name(task: &ZhihuishuTask) -> String {
@@ -671,7 +750,7 @@ impl ru41::ingress::schedule::PollJob for ZhihuishuTracker {
 
 #[cfg(test)]
 mod tests {
-    use super::{ZhihuishuTask, is_substantive};
+    use super::{ZhihuishuTask, is_substantive, normalize_course_name};
     use ru41::ports::vault::VaultTaskDirs;
 
     fn task(content: Option<&str>, attachments: usize) -> ZhihuishuTask {
@@ -736,5 +815,37 @@ mod tests {
             VaultTaskDirs::Substantive
         );
         assert!(VaultTaskDirs::parse(Some("bogus")).is_err());
+    }
+
+    #[test]
+    fn course_name_strips_term_suffix() {
+        // 平台长名 → 课表短名
+        assert_eq!(
+            normalize_course_name("高等数学I(理)2026年秋冬学期"),
+            "高等数学I(理)"
+        );
+        // 括号整段后缀
+        assert_eq!(
+            normalize_course_name("大学英语（2025-2026学年第二学期）"),
+            "大学英语"
+        );
+        assert_eq!(
+            normalize_course_name("大学英语(2025-2026学年第二学期)"),
+            "大学英语"
+        );
+        // 裸学年段
+        assert_eq!(
+            normalize_course_name("大学英语2025-2026学年第二学期"),
+            "大学英语"
+        );
+        // 无后缀原样返回
+        assert_eq!(normalize_course_name("军事理论"), "军事理论");
+        assert_eq!(
+            normalize_course_name("形势与政策-2026-2027-1"),
+            "形势与政策-2026-2027-1"
+        );
+        assert_eq!(normalize_course_name("  思想道德与法治  "), "思想道德与法治");
+        // 整个名字就是学期段时不动
+        assert_eq!(normalize_course_name("2026年秋冬学期"), "2026年秋冬学期");
     }
 }
