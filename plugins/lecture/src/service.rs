@@ -98,7 +98,8 @@ impl LectureWorker {
             &self.config.base_url,
             &self.config.api_key,
             &self.config.model,
-        );
+            &self.config.api,
+        )?;
         let mut parts = Vec::new();
         for (index, slice) in slices.iter().enumerate() {
             let text = asr
