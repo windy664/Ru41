@@ -187,6 +187,126 @@ impl QqApiClient {
         .await
     }
 
+    /// 单聊发送富媒体（msg_type 7）：先上传拿 file_info，再发消息。
+    pub async fn send_c2c_media(
+        &self,
+        user_openid: &str,
+        caption: &str,
+        media: &crate::ports::channel::MediaRef,
+        msg_id: Option<&str>,
+        msg_seq: i64,
+    ) -> Result<serde_json::Value> {
+        let file_info = self.upload_media("users", user_openid, media).await?;
+        self.post_media(
+            &format!("{}/v2/users/{user_openid}/messages", self.api_base),
+            caption,
+            &file_info,
+            msg_id,
+            msg_seq,
+        )
+        .await
+    }
+
+    /// 群聊发送富媒体（msg_type 7）。
+    pub async fn send_group_media(
+        &self,
+        group_openid: &str,
+        caption: &str,
+        media: &crate::ports::channel::MediaRef,
+        msg_id: Option<&str>,
+        msg_seq: i64,
+    ) -> Result<serde_json::Value> {
+        let file_info = self.upload_media("groups", group_openid, media).await?;
+        self.post_media(
+            &format!("{}/v2/groups/{group_openid}/messages", self.api_base),
+            caption,
+            &file_info,
+            msg_id,
+            msg_seq,
+        )
+        .await
+    }
+
+    /// 富媒体上传：URL 直接引用；本地文件读字节 base64 上传。
+    /// file_type: 1 图片 / 2 视频 / 3 语音 / 4 文件。返回用于发消息的 file_info。
+    async fn upload_media(
+        &self,
+        scope: &str,
+        openid: &str,
+        media: &crate::ports::channel::MediaRef,
+    ) -> Result<String> {
+        use crate::ports::channel::MediaKind;
+        let file_type = match media.kind {
+            MediaKind::Image => 1,
+            MediaKind::Video => 2,
+            MediaKind::Voice => 3,
+            MediaKind::File => 4,
+        };
+        let mut body = serde_json::json!({
+            "file_type": file_type,
+            "srv_send_msg": false,
+        });
+        if media.is_remote() {
+            body["url"] = serde_json::Value::String(media.source.clone());
+        } else {
+            let bytes = tokio::fs::read(&media.source)
+                .await
+                .with_context(|| format!("cannot read media file {}", media.source))?;
+            use base64::Engine;
+            body["file_data"] =
+                serde_json::Value::String(base64::engine::general_purpose::STANDARD.encode(bytes));
+            body["file_name"] = serde_json::Value::String(media.display_name().to_owned());
+        }
+        let response = self
+            .authorized(
+                self.http
+                    .post(format!("{}/v2/{scope}/{openid}/files", self.api_base)),
+            )
+            .await?
+            .json(&body)
+            .send()
+            .await
+            .context("cannot upload QQ media")?;
+        let status = response.status();
+        let body: serde_json::Value = response.json().await.unwrap_or_default();
+        if !status.is_success() {
+            bail!("QQ media upload failed with {status}: {body}");
+        }
+        body.get("file_info")
+            .and_then(|v| v.as_str())
+            .map(str::to_owned)
+            .with_context(|| format!("QQ media upload response missing file_info: {body}"))
+    }
+
+    async fn post_media(
+        &self,
+        url: &str,
+        caption: &str,
+        file_info: &str,
+        msg_id: Option<&str>,
+        msg_seq: i64,
+    ) -> Result<serde_json::Value> {
+        let body = media_body(caption, file_info, msg_id, msg_seq);
+        let response = self
+            .authorized(self.http.post(url))
+            .await?
+            .json(&body)
+            .send()
+            .await
+            .context("cannot send QQ media message")?;
+        let status = response.status();
+        let body: serde_json::Value = response.json().await.unwrap_or_default();
+        eprintln!(
+            "[qq.send] {} media=true status={status} err={}",
+            url.rsplit('/').nth(2).unwrap_or(url),
+            body.get("code").and_then(|c| c.as_i64()).unwrap_or(0),
+        );
+        if !status.is_success() {
+            bail!("QQ send media failed with {status}: {body}");
+        }
+        Ok(body)
+    }
+
     async fn post_message(
         &self,
         url: &str,
@@ -239,6 +359,28 @@ impl QqApiClient {
             format!("QQBot {}", self.access_token().await?),
         ))
     }
+}
+
+/// 富媒体消息体（msg_type 7）：media.file_info 来自上传接口；
+/// 配文走 content，被动回复带 msg_id/msg_seq。
+fn media_body(
+    caption: &str,
+    file_info: &str,
+    msg_id: Option<&str>,
+    msg_seq: i64,
+) -> serde_json::Value {
+    let mut body = serde_json::json!({
+        "msg_type": 7,
+        "media": { "file_info": file_info },
+    });
+    if !caption.is_empty() {
+        body["content"] = serde_json::Value::String(caption.to_owned());
+    }
+    if let Some(msg_id) = msg_id {
+        body["msg_id"] = serde_json::Value::String(msg_id.to_owned());
+        body["msg_seq"] = serde_json::json!(msg_seq);
+    }
+    body
 }
 
 fn message_body(
@@ -310,6 +452,20 @@ pub type SharedQqApi = Arc<QqApiClient>;
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn media_payload_uses_msg_type_seven() {
+        let body = media_body("看这张图", "file-info-abc", Some("msg-9"), 3);
+        assert_eq!(body["msg_type"], 7);
+        assert_eq!(body["media"]["file_info"], "file-info-abc");
+        assert_eq!(body["content"], "看这张图");
+        assert_eq!(body["msg_id"], "msg-9");
+        assert_eq!(body["msg_seq"], 3);
+        // 无配文不带 content；主动消息不带 msg_id
+        let body = media_body("", "fi", None, 1);
+        assert!(body.get("content").is_none());
+        assert!(body.get("msg_id").is_none());
+    }
 
     #[test]
     fn markdown_payload_has_no_conflicting_content_field() {

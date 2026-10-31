@@ -325,14 +325,25 @@ pub enum QqCommand {
         #[arg(long, env = "RU41_QQ_BIND_SECRET")]
         bind_secret: Option<String>,
     },
-    /// 手动向群发送一条主动文本消息（用于测试连通性）。
+    /// 手动发送一条消息（用于测试连通性）；支持文本与富媒体（图片/视频/语音/文件）。
     Send {
         #[command(flatten)]
         credentials: QqCredentials,
+        /// 群 openid；与 --user-openid 二选一。
         #[arg(long)]
-        group_openid: String,
+        group_openid: Option<String>,
+        /// 单聊用户 openid；与 --group-openid 二选一。
         #[arg(long)]
+        user_openid: Option<String>,
+        /// 文本内容；富媒体时作为配文（可空）。
+        #[arg(long, default_value = "")]
         text: String,
+        /// 富媒体：本地文件路径或 http(s) URL。
+        #[arg(long)]
+        media: Option<String>,
+        /// 显式媒体类型 image|video|voice|file；缺省按扩展名猜测，猜不中按文件。
+        #[arg(long)]
+        kind: Option<String>,
     },
     /// 检查 QQ 凭证和 gateway；不连接 WebSocket、不发送消息。
     Doctor {

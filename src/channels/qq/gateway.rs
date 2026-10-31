@@ -70,6 +70,7 @@ pub struct MessageAttachment {
 pub enum AttachmentKind {
     Image,
     Voice,
+    Video,
     File,
 }
 
@@ -95,6 +96,8 @@ fn parse_attachments(d: &Value) -> Vec<MessageAttachment> {
                     .and_then(Value::as_str)
                     .or_else(|| a.get("url").and_then(Value::as_str)),
             )
+        } else if content_type == "video" || content_type.starts_with("video/") {
+            (AttachmentKind::Video, a.get("url").and_then(Value::as_str))
         } else if content_type == "file" {
             (AttachmentKind::File, a.get("url").and_then(Value::as_str))
         } else {
@@ -340,5 +343,29 @@ pub async fn run(
                 }
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn parses_image_voice_video_and_skips_unknown() {
+        let d = serde_json::json!({
+            "attachments": [
+                {"content_type": "video/mp4", "url": "https://cdn.example.com/v.mp4", "filename": "v.mp4", "size": 1024},
+                {"content_type": "voice", "voice_wav_url": "https://cdn.example.com/a.wav", "asr_refer_text": "你好"},
+                {"content_type": "image/jpeg", "url": "https://cdn.example.com/i.jpg"},
+                {"content_type": "application/octet-stream", "url": "https://cdn.example.com/x.bin"}
+            ]
+        });
+        let atts = parse_attachments(&d);
+        assert_eq!(atts.len(), 3, "不识别的类型应跳过");
+        assert_eq!(atts[0].kind, AttachmentKind::Video);
+        assert_eq!(atts[0].url, "cdn.example.com/v.mp4");
+        assert_eq!(atts[1].kind, AttachmentKind::Voice);
+        assert_eq!(atts[1].asr_text.as_deref(), Some("你好"));
+        assert_eq!(atts[2].kind, AttachmentKind::Image);
     }
 }
