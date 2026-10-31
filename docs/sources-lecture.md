@@ -14,6 +14,8 @@ tags: [Ru41, lecture, asr, plugin]
 
 1. **handler（即时）**：`handle_message` 拦截带音频扩展名文件附件的单聊消息（m4a/mp3/wav/aac/amr/ogg/flac/wma/opus/3gp/aiff/mp2）→ `require_private`（绑定 + 单聊双闸）→ **立即下载**（QQ CDN 链接有时效，不能攒）到 `{workspace}/{msg_id}/raw/` → 写 `lecture.pending` 文档（含回话路由）→ 即时回执。
 2. **worker（`schedule run lecture`，默认 60s 一轮）**：取最旧一条 pending → `ffmpeg` 切单声道 16k mp3 片（默认 600s/片，切片目录已有产物则跳过，支持中断续跑）→ ASR 逐片转写拼接 → 按收到时刻匹配当天课表（含该时刻的课优先，否则 2 小时窗内最近一节，匹配不到进 fallback 课程）→ Vault 写 `{vault_dir}/{课程}/转写/{日期} {文件名}.md` → `enqueue_with_notify` 入队 agent 整理笔记（幂等键 `lecture:notes:{msg_id}`，终态通知回原会话）→ 状态机 pending → transcribed → done；failed 终态不自动重试（改完删文档重投）。
+done 后立即删除该条目的原始录音与切片（素材已固化在 vault，原始文件手机上还有），
+避免 `/data/lecture` 随学期膨胀。
 
 ## 配置（ru41.toml）
 

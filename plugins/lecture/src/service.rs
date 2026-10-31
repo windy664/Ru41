@@ -66,6 +66,12 @@ impl LectureWorker {
                     v.status = "done".into();
                     v.error = None;
                 })?;
+                // 处理完的原始录音与切片清理掉（一节课几十 MB，不清理一学期吃十几个 GB）；
+                // 素材已固化在 vault 的转写/笔记里，手机上也还有原件。failed 保留以便重投。
+                let work = self.config.workspace.join(&item.msg_id);
+                if let Err(error) = std::fs::remove_dir_all(&work) {
+                    eprintln!("[lecture] 清理工作目录失败（不影响流程）：{error:#}");
+                }
                 Ok(serde_json::json!({
                     "processed": item.msg_id,
                     "course": course,
