@@ -15,7 +15,10 @@ pub struct LectureSection {
     pub api_key: Option<String>,
     /// ASR API key 的环境变量名；没有 api_key 时使用。默认 ZHIPU_API_KEY。
     pub api_key_env: Option<String>,
-    /// ASR base URL（OpenAI 兼容，不含 /audio/transcriptions）。
+    /// ASR 接口风格：`openai`（默认，OpenAI 兼容 /audio/transcriptions）
+    /// 或 `whispercpp`（whisper.cpp server 原生 /inference）。
+    pub asr_api: Option<String>,
+    /// ASR base URL（OpenAI 兼容时不含 /audio/transcriptions）。
     /// 默认 https://open.bigmodel.cn/api/paas/v4，可换 Groq 等兼容服务。
     pub asr_base_url: Option<String>,
     /// ASR 模型名，默认 glm-asr-2512。
@@ -33,6 +36,7 @@ pub struct LectureSection {
 
 impl LectureSection {
     pub const DEFAULT_API_KEY_ENV: &str = "ZHIPU_API_KEY";
+    pub const DEFAULT_ASR_API: &str = "openai";
     pub const DEFAULT_ASR_BASE_URL: &str = "https://open.bigmodel.cn/api/paas/v4";
     pub const DEFAULT_ASR_MODEL: &str = "glm-asr-2512";
     pub const DEFAULT_SLICE_SECS: u64 = 600;
@@ -100,6 +104,11 @@ impl LectureSection {
             .unwrap_or_else(|| Self::DEFAULT_WORKSPACE.into());
         Ok(LectureConfig {
             api_key,
+            api: self
+                .asr_api
+                .clone()
+                .filter(|a| !a.trim().is_empty())
+                .unwrap_or_else(|| Self::DEFAULT_ASR_API.into()),
             base_url: self
                 .asr_base_url
                 .clone()
@@ -135,6 +144,7 @@ impl LectureSection {
 #[derive(Debug, Clone)]
 pub struct LectureConfig {
     pub api_key: String,
+    pub api: String,
     pub base_url: String,
     pub model: String,
     pub slice_secs: u64,
