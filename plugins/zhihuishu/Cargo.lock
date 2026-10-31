@@ -1877,6 +1877,7 @@ dependencies = [
  "libc",
  "libloading",
  "linkme",
+ "md-5",
  "num-bigint",
  "num-traits",
  "png 0.17.16",
@@ -1903,7 +1904,7 @@ dependencies = [
 
 [[package]]
 name = "ru41-plugin-api"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "anyhow",
  "chrono",
