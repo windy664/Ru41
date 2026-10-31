@@ -34,6 +34,18 @@ pub struct InboxMove {
     pub destination: String,
 }
 
+/// 同步结果：`sync` 的返回值。
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum SyncOutcome {
+    /// 无领先提交，未推送。
+    Clean,
+    /// rebase 成功（若有分歧）且推送完成。
+    Pushed,
+    /// rebase 冲突：现场保留（未 abort），附冲突文件列表，
+    /// 由调用方逐文件解决后 `resolve_conflict` + `rebase_continue`。
+    Conflict(Vec<String>),
+}
+
 /// Vault 写入服务的端口：所有附属（digest 落 Vault、周报、博客管线等）经它读写
 /// Vault，保证「单一写入服务」的串行与幂等。实现当前为 git 工作副本（adapters::vault）。
 ///
@@ -58,9 +70,18 @@ pub trait Vault: Send + Sync {
     /// 推送到远端分支。
     fn push(&self) -> Result<()>;
     /// 本地与远端对齐：`pull --rebase` 把本地未推提交重放到远端之上，
-    /// 再把仍领先的提交推上去；返回是否有提交被推送。
-    /// rebase 冲突时中止并返回错误（工作区恢复原状），由调用方决定告警。
-    fn sync(&self) -> Result<bool>;
+    /// 再把仍领先的提交推上去。
+    /// rebase 冲突时**保留现场**返回 `Conflict(文件列表)`，调用方用
+    /// `resolve_conflict` 逐文件写入合并结果，再 `rebase_continue` 推进；
+    /// 放弃则 `rebase_abort` 恢复原状。非冲突类失败照常报错（已 abort）。
+    fn sync(&self) -> Result<SyncOutcome>;
+    /// 把某冲突文件的合并结果写入工作区并 `git add`（仅在 Conflict 现场中调用）。
+    fn resolve_conflict(&self, relative: &str, merged: &str) -> Result<()>;
+    /// 推进 rebase：返回仍冲突的文件列表，空列表表示 rebase 完成。
+    /// 合并后与上游一致的提交自动 `--skip`。
+    fn rebase_continue(&self) -> Result<Vec<String>>;
+    /// 中止 rebase，工作区恢复原状。
+    fn rebase_abort(&self) -> Result<()>;
     /// 指定提交下某前缀目录的全部文件（递归，相对路径）；用于对账而非增量 diff。
     fn list_files(&self, at: &str, prefix: &str) -> Result<Vec<String>>;
     /// 读取指定提交下的文件内容；不存在返回 None。不动工作区。

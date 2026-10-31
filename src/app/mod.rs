@@ -3,6 +3,7 @@ pub mod homework_work;
 pub mod identity;
 pub mod interactions;
 pub mod knowledge;
+pub mod merge;
 pub mod obsidian;
 pub mod schedule;
 pub mod task;

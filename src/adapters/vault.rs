@@ -1,4 +1,4 @@
-use crate::ports::vault::{InboxMove, Vault};
+use crate::ports::vault::{InboxMove, SyncOutcome, Vault};
 use anyhow::{Context, Result, bail};
 use std::fs::File;
 use std::os::unix::io::AsRawFd;
@@ -55,6 +55,17 @@ impl GitVault {
             );
         }
         Ok(String::from_utf8_lossy(&output.stdout).trim().to_owned())
+    }
+
+    /// rebase 冲突中的文件列表（UU/AA 等未解决路径）。
+    fn conflict_files(&self) -> Result<Vec<String>> {
+        let out = self.git(&["diff", "--name-only", "--diff-filter=U"])?;
+        Ok(out
+            .lines()
+            .map(str::trim)
+            .filter(|l| !l.is_empty())
+            .map(str::to_owned)
+            .collect())
     }
 
     /// 对仓库级写操作取排他文件锁（flock，跨进程，同文件系统有效）。
@@ -160,12 +171,17 @@ impl Vault for GitVault {
         })
     }
 
-    fn sync(&self) -> Result<bool> {
+    fn sync(&self) -> Result<SyncOutcome> {
         self.locked(|vault| {
             if let Err(error) = vault.git(&["pull", "--rebase", &vault.remote, &vault.branch]) {
-                // 冲突等失败一律中止 rebase，恢复原状等人来处理。
-                let _ = vault.git(&["rebase", "--abort"]);
-                return Err(error).context("vault sync rebase failed (aborted)");
+                let conflicts = vault.conflict_files().unwrap_or_default();
+                if conflicts.is_empty() {
+                    // 非冲突失败（网络、认证等）：中止 rebase，恢复原状。
+                    let _ = vault.git(&["rebase", "--abort"]);
+                    return Err(error).context("vault sync rebase failed (aborted)");
+                }
+                // 冲突现场保留，交给调用方（AI 合并）处理。
+                return Ok(SyncOutcome::Conflict(conflicts));
             }
             let ahead = vault.git(&[
                 "rev-list",
@@ -173,11 +189,48 @@ impl Vault for GitVault {
                 &format!("{}/{}..HEAD", vault.remote, vault.branch),
             ])?;
             if ahead.trim() == "0" {
-                return Ok(false);
+                return Ok(SyncOutcome::Clean);
             }
             vault.git(&["push", &vault.remote, &format!("HEAD:{}", vault.branch)])?;
-            Ok(true)
+            Ok(SyncOutcome::Pushed)
         })
+    }
+
+    fn resolve_conflict(&self, relative: &str, merged: &str) -> Result<()> {
+        self.locked(|vault| {
+            let path = vault.path.join(relative);
+            std::fs::write(&path, merged)
+                .with_context(|| format!("cannot write {}", path.display()))?;
+            vault.git(&["add", "--", relative])?;
+            Ok(())
+        })
+    }
+
+    fn rebase_continue(&self) -> Result<Vec<String>> {
+        self.locked(|vault| {
+            // core.editor=true：合并提交信息沿用原文，不弹编辑器。
+            match vault.git(&["-c", "core.editor=true", "rebase", "--continue"]) {
+                Ok(_) => Ok(Vec::new()),
+                Err(error) => {
+                    let conflicts = vault.conflict_files().unwrap_or_default();
+                    if !conflicts.is_empty() {
+                        // 下一个提交又冲突：返回新的冲突清单继续解。
+                        return Ok(conflicts);
+                    }
+                    let msg = format!("{error:#}");
+                    if msg.contains("No changes") || msg.contains("nothing to commit") {
+                        // 合并结果与上游一致，该提交为空：跳过。
+                        vault.git(&["rebase", "--skip"])?;
+                        return Ok(Vec::new());
+                    }
+                    Err(error.context("vault rebase --continue failed"))
+                }
+            }
+        })
+    }
+
+    fn rebase_abort(&self) -> Result<()> {
+        self.locked(|vault| vault.git(&["rebase", "--abort"]).map(|_| ()))
     }
 
     fn read_file(&self, relative: &str) -> Result<Option<String>> {
