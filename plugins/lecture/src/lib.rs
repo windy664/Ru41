@@ -1,5 +1,5 @@
-//! 课堂录音附属：QQ 单聊收录音 → ffmpeg 切片 → ASR 转写 → Vault 存档
-//! → agent 整理结构化课堂笔记（期末复习周 RAG 素材）。
+//! 课堂录音附属：QQ 单聊收录音 → ffmpeg 切片 → ASR 转写（临时产物）
+//! → 转写内联进 agent prompt → 结构化课堂笔记写 Vault（唯一沉淀）。
 //! handler 只负责即时下载与排队（QQ CDN 链接有时效），重活在 worker 轮询里做。
 
 pub mod asr;
@@ -8,7 +8,6 @@ pub mod handler;
 pub mod pending;
 pub mod service;
 
-use ru41::app::obsidian::ObsidianSectionExt;
 
 pub use config::{LectureConfig, LectureSection};
 pub use handler::LectureHandler;
@@ -23,18 +22,12 @@ pub static DEF: ModuleDef = ModuleDef {
     config_key: Some("lecture"),
     schedule: |config| {
         let lecture = config.sources.get_or_default::<LectureSection>("lecture");
-        let vault_ready = config.obsidian.is_ready();
-        let ready = lecture.is_ready() && vault_ready;
+        let ready = lecture.is_ready();
         vec![JobSchedule::simple(
             "lecture",
             LectureSection::DEFAULT_INTERVAL_SECS,
             ready,
-            lecture
-                .not_ready_reason()
-                .or_else(|| {
-                    (!vault_ready)
-                        .then(|| "依赖 obsidian.vault_path（转写与笔记存 Vault）".to_string())
-                }),
+            lecture.not_ready_reason(),
         )]
     },
     tracker: |config, store, name| {
@@ -46,14 +39,8 @@ pub static DEF: ModuleDef = ModuleDef {
             lecture.is_ready(),
             "sources.lecture requires ASR api_key"
         );
-        anyhow::ensure!(
-            config.obsidian.is_ready(),
-            "sources.lecture requires obsidian.vault_path"
-        );
-        let vault_cfg = config.obsidian.resolved(None)?;
         Ok(Some(Box::new(LectureWorker::new(
             store,
-            ru41::bootstrap::assembly::vault_client(&vault_cfg),
             config.todo.options()?,
             lecture.resolved()?,
         ))))
