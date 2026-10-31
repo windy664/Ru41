@@ -149,6 +149,14 @@ pub struct ObsidianSection {
     pub backend: Option<String>,
     /// 整理完成后是否经默认通知出口推送（[notify] channel）；默认 true。
     pub notify: Option<bool>,
+    /// rebase 冲突时用 LLM 语义合并；默认 true（无 key 时降级为保留现场+通知）。
+    pub merge_ai: Option<bool>,
+    /// 合并用 chat 端点；默认 GLM coding（与 agent.codex.provider 一致）。
+    pub merge_base_url: Option<String>,
+    /// 合并用模型；默认 glm-4.6。
+    pub merge_model: Option<String>,
+    /// 合并 key 的环境变量名；默认 ZHIPU_API_KEY。
+    pub merge_api_key_env: Option<String>,
 }
 
 impl ObsidianSection {
@@ -157,6 +165,9 @@ impl ObsidianSection {
     pub const DEFAULT_REMOTE: &str = "origin";
     pub const DEFAULT_BRANCH: &str = "master";
     pub const DEFAULT_INBOX_DIR: &str = "00-Inbox-收件箱";
+    pub const DEFAULT_MERGE_BASE_URL: &str = "https://open.bigmodel.cn/api/coding/paas/v4";
+    pub const DEFAULT_MERGE_MODEL: &str = "glm-4.6";
+    pub const DEFAULT_MERGE_KEY_ENV: &str = "ZHIPU_API_KEY";
 
     /// 配置是否已齐（schedule list 的 enabled 判定与装配共用同一套检查）。
     pub fn is_ready(&self) -> bool {

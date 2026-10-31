@@ -87,6 +87,7 @@ impl RepoFixture {
                 interval_secs: 300,
                 backend: "codex".into(),
                 notify: Some(route),
+                merge: None,
             },
         )
     }
@@ -117,6 +118,7 @@ impl RepoFixture {
                 interval_secs: 300,
                 backend: "codex".into(),
                 notify: Some(route),
+                merge: None,
             },
         )
     }
@@ -394,4 +396,78 @@ async fn failure_notifies_once_retries_then_abandons() {
     let report = tracker.poll_once().await.unwrap();
     assert_eq!(report.action, "abandoned");
     assert_eq!(sends(), 2);
+}
+
+#[test]
+fn vault_sync_conflict_resolve_continue_flow() {
+    use ru41::ports::vault::SyncOutcome;
+    let fx = RepoFixture::new();
+
+    // 基线文件推到远端，vault 同步对齐。
+    std::fs::write(fx.seed.join("note.md"), "行1\n行2\n行3\n").unwrap();
+    git(&fx.seed, &["add", "-A"]);
+    git(&fx.seed, &["commit", "-m", "base"]);
+    git(&fx.seed, &["push", "origin", "master"]);
+    assert_eq!(fx.vault().sync().unwrap(), SyncOutcome::Clean);
+
+    // 双侧改同一行制造冲突：vault 本地提交，seed 推远端。
+    std::fs::write(fx.vault_path.join("note.md"), "行1\n本地改\n行3\n").unwrap();
+    fx.vault().commit_all("[ru41] 本地改").unwrap();
+    std::fs::write(fx.seed.join("note.md"), "行1\n远端改\n行3\n").unwrap();
+    git(&fx.seed, &["add", "-A"]);
+    git(&fx.seed, &["commit", "-m", "[local] 远端改"]);
+    git(&fx.seed, &["push", "origin", "master"]);
+
+    // sync 应保留冲突现场而非 abort。
+    match fx.vault().sync().unwrap() {
+        SyncOutcome::Conflict(files) => assert_eq!(files, vec!["note.md".to_string()]),
+        other => panic!("expected Conflict, got {other:?}"),
+    }
+    // 冲突文件带标记。
+    let conflicted = std::fs::read_to_string(fx.vault_path.join("note.md")).unwrap();
+    assert!(conflicted.contains("<<<<<<<"));
+
+    // 模拟 AI 合并结果写入 → continue → rebase 完成 → push。
+    fx.vault()
+        .resolve_conflict("note.md", "行1\n本地改+远端改\n行3\n")
+        .unwrap();
+    assert!(fx.vault().rebase_continue().unwrap().is_empty());
+    fx.vault().push().unwrap();
+
+    // 远端拿到合并结果；工作区干净。
+    git(&fx.seed, &["pull", "-q", "origin", "master"]);
+    assert_eq!(
+        std::fs::read_to_string(fx.seed.join("note.md")).unwrap(),
+        "行1\n本地改+远端改\n行3\n"
+    );
+    assert_eq!(fx.vault().sync().unwrap(), SyncOutcome::Clean);
+}
+
+#[test]
+fn vault_sync_conflict_abort_restores() {
+    use ru41::ports::vault::SyncOutcome;
+    let fx = RepoFixture::new();
+    std::fs::write(fx.seed.join("note.md"), "原文\n").unwrap();
+    git(&fx.seed, &["add", "-A"]);
+    git(&fx.seed, &["commit", "-m", "base"]);
+    git(&fx.seed, &["push", "origin", "master"]);
+    fx.vault().sync().unwrap();
+
+    std::fs::write(fx.vault_path.join("note.md"), "本地\n").unwrap();
+    fx.vault().commit_all("[ru41] 本地").unwrap();
+    std::fs::write(fx.seed.join("note.md"), "远端\n").unwrap();
+    git(&fx.seed, &["add", "-A"]);
+    git(&fx.seed, &["commit", "-m", "[local] 远端"]);
+    git(&fx.seed, &["push", "origin", "master"]);
+
+    assert!(matches!(
+        fx.vault().sync().unwrap(),
+        SyncOutcome::Conflict(_)
+    ));
+    fx.vault().rebase_abort().unwrap();
+    // abort 后本地提交还在（只是没 rebase 上去），工作区无冲突标记。
+    assert_eq!(
+        std::fs::read_to_string(fx.vault_path.join("note.md")).unwrap(),
+        "本地\n"
+    );
 }

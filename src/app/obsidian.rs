@@ -57,6 +57,8 @@ pub struct ObsidianConfig {
     pub backend: String,
     /// 整理完成通知路由；None 时只整理不推送。
     pub notify: Option<NotifyRoute>,
+    /// rebase 冲突 AI 合并设置；None = 关闭或无 key（冲突降级为通知人工）。
+    pub merge: Option<crate::app::merge::MergeSettings>,
 }
 
 /// 由 [obsidian] 配置段解析运行时配置。ObsidianSection 数据类型住在
@@ -91,8 +93,38 @@ impl ObsidianSectionExt for crate::bootstrap::config::ObsidianSection {
             interval_secs: self.interval_secs.unwrap_or(S::DEFAULT_INTERVAL_SECS),
             backend: self.backend.clone().unwrap_or_else(|| "codex".into()),
             notify,
+            merge: resolve_merge(self),
         })
     }
+}
+
+/// AI 合并设置：显式 merge_ai=false 关闭；其余情况 key 就位即启用，
+/// key 缺失不阻断启动（冲突时降级为通知人工）。
+fn resolve_merge(section: &crate::bootstrap::config::ObsidianSection) -> Option<crate::app::merge::MergeSettings> {
+    use crate::bootstrap::config::ObsidianSection as S;
+    if section.merge_ai == Some(false) {
+        return None;
+    }
+    let env = section
+        .merge_api_key_env
+        .clone()
+        .unwrap_or_else(|| S::DEFAULT_MERGE_KEY_ENV.into());
+    let api_key = std::env::var(&env)
+        .ok()
+        .filter(|v| !v.trim().is_empty())?;
+    Some(crate::app::merge::MergeSettings {
+        base_url: section
+            .merge_base_url
+            .clone()
+            .filter(|u| !u.trim().is_empty())
+            .unwrap_or_else(|| S::DEFAULT_MERGE_BASE_URL.into()),
+        model: section
+            .merge_model
+            .clone()
+            .filter(|m| !m.trim().is_empty())
+            .unwrap_or_else(|| S::DEFAULT_MERGE_MODEL.into()),
+        api_key,
+    })
 }
 
 /// 一轮轮询的结果报告。
@@ -235,7 +267,18 @@ impl ObsidianService {
         if state.pending.is_none() {
             let vault = self.vault.clone();
             match tokio::task::spawn_blocking(move || vault.sync()).await? {
-                Ok(_) => {}
+                Ok(crate::ports::vault::SyncOutcome::Clean)
+                | Ok(crate::ports::vault::SyncOutcome::Pushed) => {}
+                Ok(crate::ports::vault::SyncOutcome::Conflict(files)) => {
+                    // 冲突现场还在：AI 语义合并；失败一律 abort 还原 + 通知人工。
+                    if let Err(error) = self.merge_conflicts(&files).await {
+                        eprintln!("[obsidian] vault conflict ai-merge failed: {error:#}");
+                        let vault = self.vault.clone();
+                        let _ =
+                            tokio::task::spawn_blocking(move || vault.rebase_abort()).await;
+                        self.notify_merge_failed(&files, &error).await?;
+                    }
+                }
                 Err(error) => eprintln!("[obsidian] vault sync failed: {error:#}"),
             }
         }
@@ -609,6 +652,95 @@ impl ObsidianService {
                 None,
                 &format!(
                     "## Obsidian 整理失败\n\n提交 `{sha}` 的整理任务失败，已自动重试。{error}"
+                ),
+            )
+            .await?;
+        Ok(())
+    }
+
+    /// rebase 冲突现场 → AI 逐文件语义合并 → continue → push → QQ 告知。
+    /// 任何一步失败都 Err，由调用方 abort 现场并通知人工。
+    async fn merge_conflicts(&self, files: &[String]) -> Result<()> {
+        let settings = self
+            .config
+            .merge
+            .clone()
+            .context("AI 合并未启用或无 key（obsidian.merge_* / ZHIPU_API_KEY）")?;
+        if let Some(bad) = files.iter().find(|f| !crate::app::merge::is_mergeable_path(f)) {
+            bail!("含非文本冲突文件 {bad}，交人工处理");
+        }
+        let resolver = crate::app::merge::MergeResolver::new(
+            &settings.base_url,
+            &settings.model,
+            &settings.api_key,
+        );
+        let mut pending: Vec<String> = files.to_vec();
+        // 一批解完 continue 后，下一个提交可能再冲突；封顶 8 批防死循环。
+        for _ in 0..8 {
+            for file in &pending {
+                let vault = self.vault.clone();
+                let path = file.clone();
+                let conflicted = tokio::task::spawn_blocking(move || vault.read_file(&path))
+                    .await??
+                    .with_context(|| format!("冲突文件读取失败 {file}"))?;
+                let merged = resolver.resolve(file, &conflicted).await?;
+                let vault = self.vault.clone();
+                let path = file.clone();
+                tokio::task::spawn_blocking(move || vault.resolve_conflict(&path, &merged))
+                    .await??;
+            }
+            let vault = self.vault.clone();
+            pending = tokio::task::spawn_blocking(move || vault.rebase_continue()).await??;
+            if pending.is_empty() {
+                let vault = self.vault.clone();
+                tokio::task::spawn_blocking(move || vault.push()).await??;
+                self.notify_merged(files).await?;
+                return Ok(());
+            }
+        }
+        bail!("冲突批次数超过上限（8），交人工处理")
+    }
+
+    /// AI 合并成功通知：合并质量需用户抽查，附上文件清单。
+    async fn notify_merged(&self, files: &[String]) -> Result<()> {
+        let Some(notifier) = &self.notifier else {
+            return Ok(());
+        };
+        let list = files
+            .iter()
+            .map(|f| format!("- {f}"))
+            .collect::<Vec<_>>()
+            .join("\n");
+        notifier
+            .send(
+                &self.notify_target,
+                None,
+                &format!(
+                    "## Vault 同步冲突已自动合并\n\n{} 个冲突文件已由 AI 语义合并并推送：\n{list}\n\n> 请抽空过目合并质量；如有误合可直接在 vault 里改，下一轮同步会带走。",
+                    files.len()
+                ),
+            )
+            .await?;
+        Ok(())
+    }
+
+    /// AI 合并失败通知：现场已 abort 还原，需人工处理。
+    async fn notify_merge_failed(&self, files: &[String], error: &anyhow::Error) -> Result<()> {
+        let Some(notifier) = &self.notifier else {
+            return Ok(());
+        };
+        let list = files
+            .iter()
+            .map(|f| format!("- {f}"))
+            .collect::<Vec<_>>()
+            .join("\n");
+        notifier
+            .send(
+                &self.notify_target,
+                None,
+                &format!(
+                    "## Vault 同步冲突需人工处理\n\nAI 自动合并失败：{}\n\n冲突文件：\n{list}\n\n> 同步现场已回滚，可手动进 vault 仓库 `git pull --rebase` 处理。",
+                    crate::util::truncate_chars(&format!("{error:#}"), 300)
                 ),
             )
             .await?;
