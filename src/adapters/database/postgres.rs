@@ -476,7 +476,8 @@ impl TaskStore for PostgresTaskStore {
             let error = crate::util::truncate_chars(error, crate::util::ERROR_MAX_CHARS);
             let mut client = self.client()?;
             let mut tx = client.transaction()?;
-            let changed = tx.execute("UPDATE tasks SET status=CASE WHEN $6 AND attempt_count<max_attempts THEN 'retry_scheduled' ELSE 'failed' END, available_at=$3, last_error=$4, active_attempt_id=NULL, lease_until=NULL, updated_at=now() WHERE id=$1 AND active_attempt_id=$2 AND status='running' AND lease_until>$5", &[&claim.task.id,&claim.attempt_id,&(now+delay_secs),&error,&now,&retryable])?;
+            // 与 sqlite 一致：interrupted 不算真实失败，无条件重排（16 次上限）。
+            let changed = tx.execute("UPDATE tasks SET status=CASE WHEN ($6 AND attempt_count<max_attempts) OR ($7 AND attempt_count<16) THEN 'retry_scheduled' ELSE 'failed' END, available_at=$3, last_error=$4, active_attempt_id=NULL, lease_until=NULL, updated_at=now() WHERE id=$1 AND active_attempt_id=$2 AND status='running' AND lease_until>$5", &[&claim.task.id,&claim.attempt_id,&(now+delay_secs),&error,&now,&retryable,&interrupted])?;
             if changed == 1 {
                 tx.execute(
                     "UPDATE attempts SET status=$2, error=$3, finished_at=$4 WHERE id=$1",

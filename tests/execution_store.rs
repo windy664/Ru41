@@ -152,6 +152,37 @@ fn retry_delay_budget_and_manual_retry_preserve_attempts() {
 }
 
 #[test]
+fn interrupted_fail_requeues_beyond_retry_budget() {
+    let dir = tempfile::tempdir().unwrap();
+    let store = SqliteTaskStore::open(&dir.path().join("state.db")).unwrap();
+    let id = store.enqueue("event", "hello").unwrap().task.id;
+    for i in 0..3 {
+        let now = 100 + i * 20;
+        let claim = store.claim("worker", now, 30).unwrap().unwrap();
+        store
+            .fail(&claim, "offline", now + 1, 0, false, true)
+            .unwrap();
+    }
+    assert_eq!(store.get(id).unwrap().unwrap().status, TaskStatus::Failed);
+    store.retry(id).unwrap();
+    let claim = store.claim("worker", 500, 30).unwrap().unwrap();
+    // 部署/重启打断不算真实失败：预算耗尽、retryable=false 也必须重排。
+    store
+        .fail(&claim, "worker shutting down", 501, 30, true, false)
+        .unwrap();
+    assert_eq!(
+        store.get(id).unwrap().unwrap().status,
+        TaskStatus::RetryScheduled
+    );
+    assert_eq!(
+        store.attempts(id).unwrap().last().unwrap().status,
+        "interrupted"
+    );
+    // 重排后可被再次认领。
+    assert!(store.claim("worker", 532, 30).unwrap().is_some());
+}
+
+#[test]
 fn notify_route_is_enqueued_once_and_marked_after_terminal_state() {
     let dir = tempfile::tempdir().unwrap();
     let store = SqliteTaskStore::open(&dir.path().join("state.db")).unwrap();

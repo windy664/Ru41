@@ -262,6 +262,12 @@ impl NotifyDispatcher {
     }
 }
 
+/// 通知里的任务标题：prompt 首行截断，让用户一眼认出失败的是哪件事。
+fn task_brief(task: &Task) -> String {
+    let first = task.prompt.lines().next().unwrap_or("").trim();
+    crate::util::truncate_chars(first, 40)
+}
+
 /// 进度通知文本。
 fn progress_text(doc: &crate::domain::records::Document, task: &Task) -> String {
     if doc.value["kind"] == "retry" {
@@ -269,8 +275,9 @@ fn progress_text(doc: &crate::domain::records::Document, task: &Task) -> String 
         let error = doc.value["error"].as_str().unwrap_or("未知错误");
         let brief = crate::util::truncate_chars(error.lines().next().unwrap_or("未知错误"), 80);
         format!(
-            "## ⚠️ 任务 `#{}` 首次执行失败\n\n已自动安排重试，结果出来会通知你。\n\n> {brief}",
-            task.id
+            "## ⚠️ 任务 `#{}` 首次执行失败\n\n{}\n\n已自动安排重试，结果出来会通知你。\n\n> {brief}",
+            task.id,
+            task_brief(task),
         )
     } else {
         format!("▶️ 任务 `#{}` 开始执行", task.id)
@@ -290,7 +297,8 @@ fn notify_text(task: &Task) -> String {
     match &task.result {
         Some(result) => result.summary.clone(),
         None => format!(
-            "## 任务失败\n\n{}",
+            "## 任务失败\n\n{}\n\n> {}",
+            task_brief(task),
             task.last_error.as_deref().unwrap_or("未知错误")
         ),
     }

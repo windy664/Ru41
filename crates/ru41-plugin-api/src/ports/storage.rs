@@ -64,6 +64,8 @@ pub trait TaskStore: super::consumers::ConsumerStore {
         now: i64,
     ) -> Result<bool>;
     /// 终态写入失败记录；`retryable=false` 时跳过重试预算直接 failed。
+    /// `interrupted=true`（进程被关停打断）不算真实失败：无条件重排
+    /// （实现侧带 sanity 上限），不消耗 max_attempts 的公平预算。
     fn fail(
         &self,
         claim: &Claim,
