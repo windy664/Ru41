@@ -38,11 +38,16 @@ RUN sed -i 's|deb.debian.org|mirrors.aliyun.com|g; s|security.debian.org|mirrors
 RUN apt-get update \
     && apt-get install -y --no-install-recommends ca-certificates sqlite3 git \
         python3 python3-pip curl jq \
-        ripgrep zip unzip ffmpeg pandoc imagemagick \
-    && rm -rf /var/lib/apt/lists/* \
+        ripgrep zip unzip ffmpeg \
     && pip3 install --break-system-packages --no-cache-dir requests beautifulsoup4 lxml yt-dlp \
+    && apt-get purge -y python3-pip python3-setuptools python3-wheel \
+    && apt-get autoremove -y --purge \
+    && rm -rf /var/lib/apt/lists/* /root/.cache \
     && npm install -g "@openai/codex@${CODEX_VERSION}" \
-    && npm cache clean --force
+    && npm cache clean --force \
+    && cd /usr/local/lib/node_modules/@openai/codex/vendor \
+    && ls | grep -v '^x86_64-unknown-linux-musl$' | xargs rm -rf \
+    && cd /
 RUN mkdir -p /data/codex /etc/ru41 \
     && chown -R node:node /data /etc/ru41 /home/node \
     && ln -snf /usr/share/zoneinfo/Asia/Shanghai /etc/localtime \
