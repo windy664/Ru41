@@ -2,7 +2,6 @@
 
 use ru41::{
     adapters::database::sqlite::SqliteTaskStore,
-    adapters::vault::GitVault,
     app::schedule::ScheduleService,
     domain::{schedule::EventInput, schedule::EventRecurrence, todo::TodoOptions},
     ports::channel::{MediaKind, MediaRef},
@@ -88,7 +87,6 @@ fn audio_attachment(url: &str) -> Vec<MediaRef> {
 fn worker(store: Arc<dyn TaskStore>, tmp: &tempfile::TempDir) -> LectureWorker {
     LectureWorker::new(
         store.clone(),
-        Arc::new(GitVault::new(tmp.path().join("vault"), "origin", "master")),
         TodoOptions::default(),
         config(tmp.path().to_path_buf()),
     )

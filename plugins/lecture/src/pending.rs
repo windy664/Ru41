@@ -1,7 +1,7 @@
 //! 待转写队列：handler 下载落盘后写入 `lecture.pending` 文档，
-//! worker 逐条消费（转写 → Vault 存档 → 入队 agent 整理 → 标记 done）。
-//! 状态机：缺省/pending → transcribed（已存档）→ done（已入队 agent）；
-//! failed 终态不自动重试（错误会通过 report 暴露，人工排查后删文档重投）。
+//! worker 逐条消费（切片转写 → 内联 prompt 入队 agent 整理笔记 → 清理工作区）。
+//! 状态机：pending → done；failed 终态不自动重试（错误会通过 report 暴露，
+//! 人工排查后删文档重投）。vault 只沉淀笔记，转写与音频均为临时产物。
 
 use anyhow::{Context, Result};
 use ru41::domain::records::Document;
@@ -26,8 +26,6 @@ pub struct PendingItem {
     pub status: String,
     #[serde(default)]
     pub error: Option<String>,
-    #[serde(default)]
-    pub transcript_path: Option<String>,
     #[serde(default)]
     pub course: Option<String>,
 }

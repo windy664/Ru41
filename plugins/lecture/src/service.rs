@@ -1,5 +1,6 @@
 //! 转写 worker：单轮 poll 消费一条 pending 录音。
-//! ffmpeg 切片（单声道 16k mp3）→ ASR 逐片转写 → Vault 存档 → 入队 agent 整理笔记。
+//! ffmpeg 切片（单声道 16k mp3）→ ASR 逐片转写 → 转写内联进 agent prompt
+//! → agent 把结构化笔记写进 Vault。vault 里只沉淀笔记；转写与音频都是临时产物。
 
 use crate::asr::AsrClient;
 use crate::config::LectureConfig;
@@ -9,28 +10,20 @@ use chrono::{Local, TimeZone};
 use ru41::app::schedule::ScheduleService;
 use ru41::domain::todo::TodoOptions;
 use ru41::ports::storage::TaskStore;
-use ru41::ports::vault::Vault;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::time::Duration;
 
 pub struct LectureWorker {
     store: Arc<dyn TaskStore>,
-    vault: Arc<dyn Vault>,
     options: TodoOptions,
     config: LectureConfig,
 }
 
 impl LectureWorker {
-    pub fn new(
-        store: Arc<dyn TaskStore>,
-        vault: Arc<dyn Vault>,
-        options: TodoOptions,
-        config: LectureConfig,
-    ) -> Self {
+    pub fn new(store: Arc<dyn TaskStore>, options: TodoOptions, config: LectureConfig) -> Self {
         Self {
             store,
-            vault,
             options,
             config,
         }
@@ -53,21 +46,17 @@ impl LectureWorker {
         };
         let item = PendingItem::from_document(&doc)?;
         let course = self.course_at(item.received_at);
-        match self.process(&item, &course).await {
-            Ok(transcript_path) => {
-                self.update(&doc.revision, &item, |v| {
-                    v.status = "transcribed".into();
-                    v.transcript_path = Some(transcript_path.clone());
-                    v.course = Some(course.clone());
-                })?;
-                // 已转写未入队（上次中断）也走这里：幂等 request_key 保证只入队一次。
-                let enqueued = self.enqueue_agent(&item, &course, &transcript_path)?;
+        match self.transcribe(&item).await {
+            Ok(transcript) => {
+                // 转写只存在于内存与 agent prompt，不落 vault。
+                let enqueued = self.enqueue_agent(&item, &course, &transcript)?;
                 self.update(&doc.revision, &item, |v| {
                     v.status = "done".into();
+                    v.course = Some(course.clone());
                     v.error = None;
                 })?;
-                // 处理完的原始录音与切片清理掉（一节课几十 MB，不清理一学期吃十几个 GB）；
-                // 素材已固化在 vault 的转写/笔记里，手机上也还有原件。failed 保留以便重投。
+                // 入队成功后立即清理：转写已在 prompt 里，音频素材已无用。
+                // 一节课的原始文件+切片几十 MB，不清理一学期吃十几个 GB。
                 let work = self.config.workspace.join(&item.msg_id);
                 if let Err(error) = std::fs::remove_dir_all(&work) {
                     eprintln!("[lecture] 清理工作目录失败（不影响流程）：{error:#}");
@@ -75,7 +64,7 @@ impl LectureWorker {
                 Ok(serde_json::json!({
                     "processed": item.msg_id,
                     "course": course,
-                    "transcript": transcript_path,
+                    "transcript_chars": transcript.chars().count(),
                     "task_id": enqueued.task.id,
                 }))
             }
@@ -92,8 +81,9 @@ impl LectureWorker {
         }
     }
 
-    /// 转写管线：切片 → ASR → vault 存档。返回 vault 内转写路径。
-    async fn process(&self, item: &PendingItem, course: &str) -> Result<String> {
+    /// 切片 → ASR 逐片转写拼接。中断重跑时切片已有产物直接复用，
+    /// 转写本身不落盘（失败重投会重调 ASR，费用可控）。
+    async fn transcribe(&self, item: &PendingItem) -> Result<String> {
         let work = self.config.workspace.join(&item.msg_id);
         let slices_dir = work.join("slices");
         std::fs::create_dir_all(&slices_dir)
@@ -117,21 +107,7 @@ impl LectureWorker {
                 .with_context(|| format!("转写第 {}/{} 片失败", index + 1, slices.len()))?;
             parts.push(text);
         }
-        let transcript = parts.join("\n\n");
-        let (date, stem) = archive_name(item);
-        let relative = format!(
-            "{}/{}/转写/{date} {stem}.md",
-            self.config.vault_dir.trim_end_matches('/'),
-            course
-        );
-        self.vault
-            .write_file(&relative, &transcript_markdown(item, course, &date, &transcript))
-            .with_context(|| format!("写入 Vault 失败：{relative}"))?;
-        if let Err(error) = self.vault.commit_all(&format!("[lecture] 课堂录音转写 {course} {date}"))
-        {
-            eprintln!("[lecture] vault commit 失败（转写已在工作区，不影响）：{error:#}");
-        }
-        Ok(relative)
+        Ok(parts.join("\n\n"))
     }
 
     /// 原始文件切片；已有切片则跳过（中断续跑不重复转码）。
@@ -195,7 +171,7 @@ impl LectureWorker {
     /// 日程里没有匹配则回退 fallback_course。公开供集成测试。
     pub fn course_at(&self, received_at: i64) -> String {
         let window = 2 * 3600;
-        let service = ScheduleService::new(self.store.clone(), self.options.clone());
+        let service = ScheduleService::new(self.store.clone(), self.options);
         let Ok(occurrences) =
             service.occurrences_between(received_at - window, received_at + window, 20)
         else {
@@ -214,12 +190,13 @@ impl LectureWorker {
             .unwrap_or_else(|| self.config.fallback_course.clone())
     }
 
-    /// 入队 agent 整理结构化笔记；request_key 幂等，重复 poll 不会重复建任务。
+    /// 入队 agent 整理结构化笔记；转写全量内联进 prompt，agent 只写笔记进 Vault。
+    /// request_key 幂等，重复 poll 不会重复建任务。
     fn enqueue_agent(
         &self,
         item: &PendingItem,
         course: &str,
-        transcript_path: &str,
+        transcript: &str,
     ) -> Result<ru41::domain::EnqueueResult> {
         let (date, stem) = archive_name(item);
         let note_path = format!(
@@ -228,15 +205,14 @@ impl LectureWorker {
             course
         );
         let prompt = format!(
-            "请把课堂录音转写整理成结构化课堂笔记。\n\
+            "请把课堂录音转写整理成结构化课堂笔记，写入 Vault：{note_path}\n\
              - 课程：{course}\n\
              - 日期：{date}\n\
-             - 转写原文（已在 Vault）：{transcript_path}\n\
              要求：\n\
-             1. 读取转写原文，提炼整理为课堂笔记，写入 Vault：{note_path}\n\
-             2. 笔记结构：## 本课概览、## 核心概念、## 详细笔记、## 重点与考点、## 复习清单。\n\
-             3. 转写中的口语冗余、重复内容直接舍弃，专有名词与术语要准确。\n\
-             4. 完成后简单汇报笔记要点（不超过 10 行），不要复述全文。",
+             1. 笔记结构：## 本课概览、## 核心概念、## 详细笔记、## 重点与考点、## 复习清单。\n\
+             2. 转写中的口语冗余、重复内容直接舍弃，专有名词与术语要准确。\n\
+             3. 完成后简单汇报笔记要点（不超过 10 行），不要复述全文。\n\n\
+             以下是转写原文：\n\n{transcript}",
         );
         self.store.enqueue_with_notify(
             &format!("lecture:notes:{}", item.msg_id),
@@ -297,15 +273,4 @@ fn archive_name(item: &PendingItem) -> (String, String) {
         .filter(|s| !s.is_empty())
         .unwrap_or_else(|| format!("课堂录音 {}", item.msg_id));
     (date, stem)
-}
-
-fn transcript_markdown(item: &PendingItem, course: &str, date: &str, transcript: &str) -> String {
-    format!(
-        "---\ncourse: {course}\ndate: {date}\ntype: 转写\nsource: {}\n---\n\n\
-         # 课堂录音转写（{date} · {course}）\n\n\
-         > 原始文件：{}（{:.1} MB）；本文件为 ASR 原文，结构化笔记见同课程「笔记」目录。\n\n{transcript}\n",
-        item.filename,
-        item.filename,
-        item.size as f64 / 1024.0 / 1024.0,
-    )
 }

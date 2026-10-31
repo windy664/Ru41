@@ -51,7 +51,6 @@ impl LectureHandler {
             received_at: ru41::util::now(),
             status: "pending".into(),
             error: None,
-            transcript_path: None,
             course: None,
         };
         // put_document(None) insert-or-ignore：同 msg_id 重复投递不覆盖（幂等）。
@@ -66,7 +65,7 @@ impl LectureHandler {
             .unwrap_or_default();
         Ok(Some(Reply::text(format!(
             "## 课堂录音已接收\n\n《{}》（{:.1} MB）\n已下载并排队转写，每 {} 分钟一片逐段识别；\
-             完成后会按当天课表归入对应课程，自动整理成课堂笔记并通知你。{hint}",
+             完成后会按当天课表归入对应课程，自动整理成课堂笔记存进 vault 并通知你。{hint}",
             audio.display_name(),
             size as f64 / 1024.0 / 1024.0,
             self.config.slice_secs / 60,
