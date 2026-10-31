@@ -7,7 +7,7 @@ path = ".ru41/state.db"         # sqlite 数据库文件
 # url = "postgres://user:pass@localhost:5432/ru41"  # postgres 连接串，也可用 RU41_PG_URL
 
 [worker]
-timeout_secs = 300
+timeout_secs = 300            # 日报/精读等重任务建议 900；超时任务自动重试
 runs_dir = ".ru41/runs"
 sanitize = true                 # Agent 调用前的信息脱敏
 
