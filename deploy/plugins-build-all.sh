@@ -31,6 +31,7 @@ PLUGINS=(
   "plugins/compshare:libru41_plugin_compshare.so"
   "plugins/blog:libru41_plugin_blog.so"
   "plugins/projects:libru41_plugin_projects.so"
+  "plugins/lecture:libru41_plugin_lecture.so"
 )
 
 for entry in "${PLUGINS[@]}"; do
