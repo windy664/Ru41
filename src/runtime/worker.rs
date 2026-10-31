@@ -139,7 +139,12 @@ impl Worker {
             // 永久失败不消耗重试预算；未知错误默认瞬态。
             let kind = classify(&error);
             let multiplier = 1_i64 << (claim.task.attempt_count - 1).clamp(0, 10);
-            let delay = (self.config.retry_delay_secs * multiplier).min(86400);
+            // 部署/重启打断的任务尽快重排，不走指数退避（它没消耗公平预算）。
+            let delay = if interrupted {
+                30
+            } else {
+                (self.config.retry_delay_secs * multiplier).min(86400)
+            };
             eprintln!(
                 "[worker] task {} attempt {} failed ({kind:?}): {error:#}",
                 claim.task.id, claim.attempt_id
@@ -154,12 +159,13 @@ impl Worker {
                 kind == FailureKind::Transient,
             )?;
             // 首次失败进入重试时留一条进度通知，避免用户在重试窗口里完全看不到动静。
+            // 被部署/重启打断（interrupted）是基础设施噪音，不发通知，任务会静默重排。
             let retrying = self
                 .store
                 .get(claim.task.id)?
                 .map(|task| task.status == TaskStatus::RetryScheduled)
                 .unwrap_or(false);
-            if retrying && claim.task.attempt_count == 1 {
+            if retrying && !interrupted && claim.task.attempt_count == 1 {
                 let mut reason = format!("{error:#}");
                 reason.truncate(300);
                 if let Err(doc_error) = self.store.put_document(
