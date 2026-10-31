@@ -8,6 +8,7 @@ use ru41::ports::channel::MediaKind;
 use ru41::ports::commands::{CommandContext, CommandHandler, Reply};
 use std::{future::Future, pin::Pin, time::Duration};
 
+#[derive(Clone)]
 pub struct LectureHandler {
     config: LectureConfig,
     http: reqwest::Client,
@@ -24,52 +25,37 @@ impl LectureHandler {
         }
     }
 
-    async fn intercept(&self, content: &str, ctx: &CommandContext<'_>) -> Result<Option<Reply>> {
-        let audio = ctx
-            .attachments
-            .iter()
-            .find(|m| m.kind == MediaKind::File && is_audio_filename(m.display_name()));
-        let Some(audio) = audio else {
-            return Ok(None);
-        };
-        if let Some(note) = ctx.require_private("转写课堂录音", "课堂录音属于个人学习资料")? {
-            return Ok(Some(Reply::text(note)));
-        }
-        let filename = sanitize_name(audio.display_name());
-        let raw_dir = self.config.workspace.join(ctx.msg_id).join("raw");
+    /// 下载 + 入库（插件自己的 runtime 里跑，见 handle_message 的 bridge 说明）。
+    async fn run_job(
+        &self,
+        store: std::sync::Arc<dyn ru41::ports::storage::TaskStore>,
+        source: String,
+        display_name: String,
+        channel: String,
+        target: String,
+        msg_id: String,
+    ) -> Result<u64> {
+        let filename = sanitize_name(&display_name);
+        let raw_dir = self.config.workspace.join(&msg_id).join("raw");
         std::fs::create_dir_all(&raw_dir)?;
         let dest = raw_dir.join(&filename);
         // QQ CDN 链接有时效，必须当场下载完。
-        let size = self.download(&audio.source, &dest).await?;
+        let size = self.download(&source, &dest).await?;
         let item = PendingItem {
             file: dest.display().to_string(),
-            filename: audio.display_name().to_owned(),
+            filename: display_name,
             size,
-            channel: ctx.reply_channel.to_owned(),
-            target: ctx.target.to_owned(),
-            msg_id: ctx.msg_id.to_owned(),
+            channel,
+            target,
+            msg_id: msg_id.clone(),
             received_at: ru41::util::now(),
             status: "pending".into(),
             error: None,
             course: None,
         };
         // put_document(None) insert-or-ignore：同 msg_id 重复投递不覆盖（幂等）。
-        ctx.store.put_document(
-            PENDING_KIND,
-            ctx.msg_id,
-            None,
-            &serde_json::to_value(&item)?,
-        )?;
-        let hint = (!content.trim().is_empty())
-            .then(|| format!("\n\n> 附言：{}", content.trim()))
-            .unwrap_or_default();
-        Ok(Some(Reply::text(format!(
-            "## 课堂录音已接收\n\n《{}》（{:.1} MB）\n已下载并排队转写，每 {} 分钟一片逐段识别；\
-             完成后会按当天课表归入对应课程，自动整理成课堂笔记存进 vault 并通知你。{hint}",
-            audio.display_name(),
-            size as f64 / 1024.0 / 1024.0,
-            self.config.slice_secs / 60,
-        ))))
+        store.put_document(PENDING_KIND, &msg_id, None, &serde_json::to_value(&item)?)?;
+        Ok(size)
     }
 
     /// 流式落盘，避免大文件整读进内存。
@@ -121,6 +107,43 @@ impl CommandHandler for LectureHandler {
         content: &'a str,
         ctx: &'a CommandContext<'a>,
     ) -> Pin<Box<dyn Future<Output = Result<Option<Reply>>> + Send + 'a>> {
-        Box::pin(async move { self.intercept(content, ctx).await })
+        Box::pin(async move {
+            let audio = ctx
+                .attachments
+                .iter()
+                .find(|m| m.kind == MediaKind::File && is_audio_filename(m.display_name()))
+                .cloned();
+            let Some(audio) = audio else {
+                return Ok(None);
+            };
+            if let Some(note) = ctx.require_private("转写课堂录音", "课堂录音属于个人学习资料")? {
+                return Ok(Some(Reply::text(note)));
+            }
+            // bridge：插件 cdylib 带独立 tokio 副本，reqwest 的 reactor TLS 跨不过
+            // .so 边界，网络下载必须放进插件自己的 runtime；入参全部物化为 owned。
+            let worker = self.clone();
+            let store = ctx.store.clone();
+            let source = audio.source.clone();
+            let display_name = audio.display_name().to_owned();
+            let channel = ctx.reply_channel.to_owned();
+            let target = ctx.target.to_owned();
+            let msg_id = ctx.msg_id.to_owned();
+            let size = ru41::plugins::bridge(async move {
+                worker
+                    .run_job(store, source, display_name, channel, target, msg_id)
+                    .await
+            })
+            .await?;
+            let hint = (!content.trim().is_empty())
+                .then(|| format!("\n\n> 附言：{}", content.trim()))
+                .unwrap_or_default();
+            Ok(Some(Reply::text(format!(
+                "## 课堂录音已接收\n\n《{}》（{:.1} MB）\n已下载并排队转写，每 {} 分钟一片逐段识别；\
+                 完成后会按当天课表归入对应课程，自动整理成课堂笔记存进 vault 并通知你。{hint}",
+                audio.display_name(),
+                size as f64 / 1024.0 / 1024.0,
+                self.config.slice_secs / 60,
+            ))))
+        })
     }
 }
