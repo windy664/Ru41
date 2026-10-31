@@ -249,6 +249,20 @@ impl QqBot {
             ),
             _ => return Ok(DispatchOutcome::Ingested),
         };
+        // 附件透传给插件命令（如课堂录音拦截）；gateway 里的 URL 去过协议前缀，这里补回。
+        let media: Vec<crate::ports::channel::MediaRef> = event_attachments(event)
+            .iter()
+            .map(|a| crate::ports::channel::MediaRef {
+                kind: match a.kind {
+                    gateway::AttachmentKind::Image => crate::ports::channel::MediaKind::Image,
+                    gateway::AttachmentKind::Voice => crate::ports::channel::MediaKind::Voice,
+                    gateway::AttachmentKind::Video => crate::ports::channel::MediaKind::Video,
+                    gateway::AttachmentKind::File => crate::ports::channel::MediaKind::File,
+                },
+                source: format!("https://{}", a.url),
+                filename: a.filename.clone(),
+            })
+            .collect();
         let ctx = crate::ports::commands::CommandContext {
             store: &self.store,
             bind_secret: self.bind_secret.as_deref(),
@@ -257,6 +271,7 @@ impl QqBot {
             author_openid,
             is_c2c,
             image_url,
+            attachments: &media,
             reply_channel: "qq",
         };
         // 图片独立通道：模块消费者优先（如二维码照片签到）。都不认的图片
@@ -486,6 +501,16 @@ impl QqBot {
             interrupted,
             ahead,
         })
+    }
+}
+
+/// 取消息事件携带的附件列表；非消息事件返回空。
+fn event_attachments(event: &GatewayEvent) -> &[gateway::MessageAttachment] {
+    match event {
+        GatewayEvent::GroupMessage { attachments, .. } | GatewayEvent::C2cMessage { attachments, .. } => {
+            attachments
+        }
+        _ => &[],
     }
 }
 

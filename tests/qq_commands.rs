@@ -106,6 +106,7 @@ fn ctx<'a>(
         is_c2c,
         reply_channel: "qq",
         image_url: None,
+        attachments: &[],
     }
 }
 

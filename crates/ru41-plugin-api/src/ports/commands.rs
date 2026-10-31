@@ -143,6 +143,9 @@ pub struct CommandContext<'a> {
     pub is_c2c: bool,
     /// 消息里的图片附件 URL（如二维码照片）；纯文本消息为 None。
     pub image_url: Option<&'a str>,
+    /// 消息携带的全部附件（含图片/视频/语音/文件）；纯文本消息为空切片。
+    /// 文件类附件的 URL 有时效，需要落盘的插件应在 handler 里立即下载。
+    pub attachments: &'a [crate::ports::media::MediaRef],
     /// 渠道标识（如 "qq"），由渠道适配器注入，模块内不得手写。
     pub reply_channel: &'a str,
 }
