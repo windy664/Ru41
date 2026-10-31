@@ -221,10 +221,22 @@ async fn main() -> Result<()> {
             QqCommand::Send {
                 credentials,
                 group_openid,
+                user_openid,
                 text,
+                media,
+                kind,
             } => {
                 let api = qq_api(&credentials, &config)?;
-                serde_json::to_value(api.send_group_text(&group_openid, &text, None, 1).await?)?
+                let value = match (group_openid, user_openid, media) {
+                    (Some(group), None, media) => {
+                        qq_send(&api, SendTarget::Group(&group), &text, media, kind).await?
+                    }
+                    (None, Some(user), media) => {
+                        qq_send(&api, SendTarget::User(&user), &text, media, kind).await?
+                    }
+                    _ => anyhow::bail!("--group-openid 与 --user-openid 必须二选一"),
+                };
+                serde_json::to_value(value)?
             }
             QqCommand::Doctor { .. } | QqCommand::Onboard => unreachable!("handled by cli_ops"),
         },
@@ -704,4 +716,56 @@ fn shutdown_channel() -> Result<watch::Receiver<bool>> {
         Ok::<_, std::io::Error>(())
     });
     Ok(receiver)
+}
+
+/// `qq send` 的目标端。
+enum SendTarget<'a> {
+    Group(&'a str),
+    User(&'a str),
+}
+
+/// 文本或富媒体发送；媒体类型显式指定优先，否则按扩展名猜，猜不中按文件。
+async fn qq_send(
+    api: &ru41::channels::qq::api::QqApiClient,
+    target: SendTarget<'_>,
+    text: &str,
+    media: Option<String>,
+    kind: Option<String>,
+) -> Result<serde_json::Value> {
+    use ru41::ports::channel::{MediaKind, MediaRef};
+    if let Some(source) = media {
+        let kind = match kind.as_deref().map(str::to_lowercase).as_deref() {
+            Some("image") => MediaKind::Image,
+            Some("video") => MediaKind::Video,
+            Some("voice") => MediaKind::Voice,
+            Some("file") => MediaKind::File,
+            Some(other) => anyhow::bail!("未知媒体类型 {other}（可选 image|video|voice|file）"),
+            None => guess_media_kind(&source),
+        };
+        let media = MediaRef::new(kind, source);
+        return Ok(match target {
+            SendTarget::Group(group) => api.send_group_media(group, text, &media, None, 1).await?,
+            SendTarget::User(user) => api.send_c2c_media(user, text, &media, None, 1).await?,
+        });
+    }
+    anyhow::ensure!(!text.trim().is_empty(), "文本与 --media 至少给一样");
+    Ok(match target {
+        SendTarget::Group(group) => api.send_group_text(group, text, None, 1).await?,
+        SendTarget::User(user) => api.send_c2c_text(user, text, None, 1).await?,
+    })
+}
+
+fn guess_media_kind(source: &str) -> ru41::ports::channel::MediaKind {
+    use ru41::ports::channel::MediaKind;
+    let ext = source
+        .rsplit(['/', '.'])
+        .next()
+        .unwrap_or("")
+        .to_lowercase();
+    match ext.as_str() {
+        "png" | "jpg" | "jpeg" | "gif" | "webp" | "bmp" => MediaKind::Image,
+        "mp4" | "mov" | "avi" | "mkv" | "webm" => MediaKind::Video,
+        "silk" | "amr" | "mp3" | "wav" | "m4a" | "ogg" => MediaKind::Voice,
+        _ => MediaKind::File,
+    }
 }

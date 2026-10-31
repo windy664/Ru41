@@ -85,6 +85,31 @@ impl NotifyChannel for QqNotifier {
             Ok(())
         })
     }
+
+    fn send_media<'a>(
+        &'a self,
+        target: &'a str,
+        msg_id: Option<&'a str>,
+        caption: &'a str,
+        media: &'a crate::ports::channel::MediaRef,
+    ) -> Pin<Box<dyn Future<Output = Result<()>> + Send + 'a>> {
+        Box::pin(async move {
+            let key = msg_id.unwrap_or_default();
+            let seq = self.sequencer.next(key);
+            if let Some(group) = target.strip_prefix(TARGET_GROUP_PREFIX) {
+                self.api
+                    .send_group_media(group, caption, media, msg_id, seq)
+                    .await?;
+            } else if let Some(user) = target.strip_prefix(TARGET_C2C_PREFIX) {
+                self.api
+                    .send_c2c_media(user, caption, media, msg_id, seq)
+                    .await?;
+            } else {
+                bail!("unknown qq notify target: {target}");
+            }
+            Ok(())
+        })
+    }
 }
 
 /// QQ 网关：收消息幂等入队任务；固定命令立即回复，终态回复由 runtime::dispatcher 统一负责。
@@ -374,6 +399,13 @@ impl QqBot {
                         .unwrap_or_default();
                     prompt.push_str(&format!(
                         "[文件] {name}{size}\n下载地址（有时效，请尽快下载）：https://{}\n请下载后按我的要求处理。\n",
+                        attachment.url
+                    ));
+                }
+                gateway::AttachmentKind::Video => {
+                    let name = attachment.filename.as_deref().unwrap_or("未命名视频");
+                    prompt.push_str(&format!(
+                        "[视频] {name}\n下载地址（有时效，请尽快下载）：https://{}\n",
                         attachment.url
                     ));
                 }
