@@ -2,7 +2,7 @@
 name = "ru41-plugin-api"
 # 版本即握手硬门：本 crate 任何公开类型/trait/函数签名变更都必须 bump，
 # 宿主与插件按本版本号完全一致才允许加载（替代旧的 git commit 硬门）。
-version = "0.1.0"
+version = "0.2.0"
 edition = "2024"
 description = "ru41 宿主与动态插件（cdylib）之间的稳定边界：ModuleDef/ports/domain/config"
 publish = false
