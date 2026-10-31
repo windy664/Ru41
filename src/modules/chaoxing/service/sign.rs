@@ -33,6 +33,8 @@ pub(super) fn sign_response_ok(response: &str) -> bool {
 const CLASS_WINDOW_EXTEND_SECS: i64 = 15 * 60;
 /// 课表窗口外的兜底实轮询间隔（防课表外的临时签到漏检，同时压住请求量）。
 const OFF_WINDOW_POLL_SECS: i64 = 30 * 60;
+/// 命中「请勿频繁操作」后窗口外轮询的冷却时长；窗口内不受影响（签到时效优先）。
+const RATE_LIMIT_COOLDOWN_SECS: i64 = 2 * 3600;
 
 /// 一轮轮询的报告。
 #[derive(Debug, Serialize)]
@@ -158,8 +160,17 @@ impl ChaoxingTracker {
         Ok(titles)
     }
 
-    /// 窗口外每 30 分钟允许一轮实轮询（以进入实轮询记账，失败也占用配额）。
+    /// 窗口外每 30 分钟允许一轮实轮询（以进入实轮询记账，失败也占用配额）；
+    /// 命中平台限流后进入冷却期，冷却未过不允许窗口外轮询，给账号喘息。
     fn off_window_poll_due(&self, now: i64) -> Result<bool> {
+        let cooling = self
+            .store
+            .document("chaoxing_meta", "rate_limited_until")?
+            .and_then(|d| d.value.get("ts").and_then(serde_json::Value::as_i64))
+            .is_some_and(|ts| now < ts);
+        if cooling {
+            return Ok(false);
+        }
         let last = self
             .store
             .document("chaoxing_meta", "last_full_poll")?
@@ -463,7 +474,8 @@ impl ChaoxingTracker {
         // 会被平台「请勿频繁操作」掐死，且失败被静默跳过导致整天失明）。
         // 窗口 = 当天课表每节课 前后各 15 分钟；窗口内正常轮询；窗口外完全不发
         // 网络请求，仅每 30 分钟兜底一轮，防课表外的临时签到漏检。
-        if !self.in_class_window(now)? && !self.off_window_poll_due(now)? {
+        let in_window = self.in_class_window(now)?;
+        if !in_window && !self.off_window_poll_due(now)? {
             return Ok(ChaoxingPollReport {
                 login_ok: true,
                 realname: None,
@@ -511,6 +523,7 @@ impl ChaoxingTracker {
         let mut outcome_lines: Vec<String> = Vec::new();
         let mut course_errors = 0usize;
         let mut last_course_error: Option<String> = None;
+        let mut rate_limited = false;
 
         for course in &courses {
             let activities = match self.client.activity_list(course).await {
@@ -519,7 +532,11 @@ impl ChaoxingTracker {
                     // 单门课程失败只影响本轮该课程，但必须计数 surfaced 到报告：
                     // 全部失败（如平台限流「请勿频繁操作」）时监控等同失明，不能静默。
                     course_errors += 1;
-                    last_course_error = Some(format!("{err:#}"));
+                    let message = format!("{err:#}");
+                    if message.contains("请勿频繁操作") {
+                        rate_limited = true;
+                    }
+                    last_course_error = Some(message);
                     continue;
                 }
             };
@@ -654,9 +671,20 @@ impl ChaoxingTracker {
         }
 
         let mut notified = false;
+        // 命中平台限流：窗口外轮询进入冷却期，降低请求压力给账号喘息。
+        if rate_limited {
+            self.store.put_document(
+                "chaoxing_meta",
+                "rate_limited_until",
+                None,
+                &serde_json::json!({ "ts": now + RATE_LIMIT_COOLDOWN_SECS }),
+            )?;
+        }
         // 全部课程活动列表都拉取失败（登录态却正常）：签到监控处于失明状态，
-        // 典型诱因是平台限流（「请勿频繁操作」）或接口变更。每日最多告警一次。
-        if !courses.is_empty() && course_errors == courses.len() {
+        // 典型诱因是平台限流（「请勿频繁操作」）或接口变更。
+        // 只在课表窗口内告警（失明的代价是错过签到）；窗口外兜底轮询失败
+        // 不影响任何课程，记报告不打扰。每日最多告警一次。
+        if in_window && !courses.is_empty() && course_errors == courses.len() {
             let key = format!("activity_fail:{today}");
             if self.store.document("chaoxing_alert", &key)?.is_none()
                 && let Some(notifier) = self.notifier.as_ref()
@@ -774,7 +802,13 @@ fn course_title_match(a: &str, b: &str) -> bool {
 
 #[cfg(test)]
 mod tests {
-    use super::{course_title_match, in_any_window};
+    use super::{ChaoxingTracker, course_title_match, in_any_window};
+    use crate::adapters::database::sqlite::SqliteTaskStore;
+    use crate::modules::chaoxing::config::ChaoxingSection;
+    use crate::modules::chaoxing::source::ChaoxingClient;
+    use crate::ports::storage::TaskStore;
+    use anyhow::Result;
+    use std::sync::Arc;
 
     #[test]
     fn class_window_boundaries() {
@@ -795,5 +829,45 @@ mod tests {
         assert!(!course_title_match("高等数学I(理)", "大学英语新视野"));
         assert!(!course_title_match("思想道德与法治", "大学英语新视野"));
         assert!(!course_title_match("心理健康", ""));
+    }
+
+    #[test]
+    fn off_window_poll_respects_rate_limit_cooldown() -> Result<()> {
+        let dir = tempfile::tempdir()?;
+        let store: Arc<dyn TaskStore> =
+            Arc::new(SqliteTaskStore::open(&dir.path().join("state.db"))?);
+        let section = ChaoxingSection {
+            phone: Some("test".into()),
+            password: Some("test".into()),
+            ..Default::default()
+        };
+        let config = section.resolved("user:test".into())?;
+        let client = ChaoxingClient::new("test", "test", dir.path().join("cookies.json"));
+        let tracker = ChaoxingTracker::new(store.clone(), client, None, config);
+
+        let now = 1_000_000;
+        // 冷启动允许兜底轮询
+        assert!(tracker.off_window_poll_due(now)?);
+        store.put_document(
+            "chaoxing_meta",
+            "last_full_poll",
+            None,
+            &serde_json::json!({ "ts": now }),
+        )?;
+        // 30 分钟配额内不允许
+        assert!(!tracker.off_window_poll_due(now + 60)?);
+        assert!(tracker.off_window_poll_due(now + 1800)?);
+        // 命中限流冷却：即使过了 30 分钟也不允许
+        store.put_document(
+            "chaoxing_meta",
+            "rate_limited_until",
+            None,
+            &serde_json::json!({ "ts": now + 7200 }),
+        )?;
+        assert!(!tracker.off_window_poll_due(now + 1800)?);
+        assert!(!tracker.off_window_poll_due(now + 7199)?);
+        // 冷却结束后恢复（同时满足 30 分钟配额）
+        assert!(tracker.off_window_poll_due(now + 7201)?);
+        Ok(())
     }
 }

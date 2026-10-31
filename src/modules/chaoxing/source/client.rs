@@ -41,6 +41,7 @@ struct LoginResponse {
 }
 
 #[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
 struct ActivityListResponse {
     #[serde(default)]
     result: Option<i64>,
@@ -829,5 +830,17 @@ mod tests {
             .unwrap();
         let header = jar.cookies(&other).unwrap();
         assert!(header.to_str().unwrap().contains("_uid=487480814"));
+    }
+
+    #[test]
+    fn activity_list_response_parses_camel_case_error_msg() {
+        let raw = r#"{"result":0,"msg":null,"data":null,"errorMsg":"请勿频繁操作"}"#;
+        let response: ActivityListResponse = serde_json::from_str(raw).unwrap();
+        assert_eq!(response.result, Some(0));
+        assert_eq!(response.error_msg.as_deref(), Some("请勿频繁操作"));
+        let raw = r#"{"result":1,"data":{"activeList":[]}}"#;
+        let response: ActivityListResponse = serde_json::from_str(raw).unwrap();
+        assert_eq!(response.result, Some(1));
+        assert!(response.error_msg.is_none());
     }
 }
