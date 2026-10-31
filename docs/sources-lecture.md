@@ -13,9 +13,9 @@ tags: [Ru41, lecture, asr, plugin]
 ## 数据流
 
 1. **handler（即时）**：`handle_message` 拦截带音频扩展名文件附件的单聊消息（m4a/mp3/wav/aac/amr/ogg/flac/wma/opus/3gp/aiff/mp2）→ `require_private`（绑定 + 单聊双闸）→ **立即下载**（QQ CDN 链接有时效，不能攒）到 `{workspace}/{msg_id}/raw/` → 写 `lecture.pending` 文档（含回话路由）→ 即时回执。
-2. **worker（`schedule run lecture`，默认 60s 一轮）**：取最旧一条 pending → `ffmpeg` 切单声道 16k mp3 片（默认 600s/片，切片目录已有产物则跳过，支持中断续跑）→ ASR 逐片转写拼接 → 按收到时刻匹配当天课表（含该时刻的课优先，否则 2 小时窗内最近一节，匹配不到进 fallback 课程）→ **转写全量内联进 agent prompt**（不落盘、不进 Vault）→ `enqueue_with_notify` 入队 agent 整理笔记写 `{vault_dir}/{课程}/笔记/{日期} {文件名}.md`（幂等键 `lecture:notes:{msg_id}`，终态通知回原会话）→ 立即清理工作区（原始录音+切片删除）→ 状态机 pending → done；failed 终态不自动重试（改完删文档重投）。
-**只沉淀整理后的笔记**：转写与音频都是临时产物，Vault 里只有 `笔记/` 目录。
-原始文件手机上还有，需要复盘重录即可。
+2. **worker（`schedule run lecture`，默认 60s 一轮）**：取最旧一条 pending → `ffmpeg` 切单声道 16k mp3 片（默认 600s/片，切片目录已有产物则跳过，支持中断续跑）→ ASR 逐片转写拼接 → 按收到时刻匹配当天课表（含该时刻的课优先，否则 2 小时窗内最近一节，匹配不到进 fallback 课程）→ **转写全量内联进 agent prompt**（不落盘、不进 Vault）→ `enqueue_with_notify` 入队 agent 整理笔记（幂等键 `lecture:notes:{msg_id}`，终态通知回原会话）——**一门课一份连续笔记** `{vault_dir}/{课程}/课堂笔记.md`，每次课按 `## 日期 主题` 章节追加在末尾，已有内容不动→ 立即清理工作区（原始录音+切片删除）→ 状态机 pending → done；failed 终态不自动重试（改完删文档重投）。
+**只沉淀整理后的笔记**：转写与音频都是临时产物，Vault 里每门课只有一份连续
+`课堂笔记.md`（章节即时间线），不散落成碎片文件。原始文件手机上还有，需要复盘重录即可。
 
 ## 配置（ru41.toml）
 

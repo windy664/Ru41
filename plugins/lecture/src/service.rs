@@ -191,6 +191,7 @@ impl LectureWorker {
     }
 
     /// 入队 agent 整理结构化笔记；转写全量内联进 prompt，agent 只写笔记进 Vault。
+    /// 一门课一份连续笔记（课堂笔记.md），每次课按日期章节追加在末尾。
     /// request_key 幂等，重复 poll 不会重复建任务。
     fn enqueue_agent(
         &self,
@@ -200,19 +201,21 @@ impl LectureWorker {
     ) -> Result<ru41::domain::EnqueueResult> {
         let (date, stem) = archive_name(item);
         let note_path = format!(
-            "{}/{}/笔记/{date} {stem}.md",
+            "{}/{}/课堂笔记.md",
             self.config.vault_dir.trim_end_matches('/'),
             course
         );
         let prompt = format!(
-            "请把课堂录音转写整理成结构化课堂笔记，写入 Vault：{note_path}\n\
+            "请把课堂录音转写整理成结构化课堂笔记。\n\
              - 课程：{course}\n\
              - 日期：{date}\n\
+             - 目标文件（Vault）：{note_path}\n\
              要求：\n\
-             1. 笔记结构：## 本课概览、## 核心概念、## 详细笔记、## 重点与考点、## 复习清单。\n\
-             2. 转写中的口语冗余、重复内容直接舍弃，专有名词与术语要准确。\n\
-             3. 完成后简单汇报笔记要点（不超过 10 行），不要复述全文。\n\n\
-             以下是转写原文：\n\n{transcript}",
+             1. 目标文件不存在就创建（带 # {course} 课堂笔记 标题）；已存在就读取后**在末尾追加**新章节，已有内容一字不动。\n\
+             2. 新章节格式：`## {date} {stem}`，下设 ### 本课概览、### 核心概念、### 详细笔记、### 重点与考点、### 复习清单。\n\
+             3. 转写中的口语冗余、重复内容直接舍弃，专有名词与术语要准确；章节间上下文连贯的可与之前章节互相引用（如「延续 11-03 的积分法」）。\n\
+             4. 完成后简单汇报本次笔记要点（不超过 10 行），不要复述全文。\n\n\
+             以下是本次转写原文：\n\n{transcript}",
         );
         self.store.enqueue_with_notify(
             &format!("lecture:notes:{}", item.msg_id),
