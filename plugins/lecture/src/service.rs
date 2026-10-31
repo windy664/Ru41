@@ -20,6 +20,16 @@ pub struct LectureWorker {
     config: LectureConfig,
 }
 
+impl Clone for LectureWorker {
+    fn clone(&self) -> Self {
+        Self {
+            store: self.store.clone(),
+            options: self.options,
+            config: self.config.clone(),
+        }
+    }
+}
+
 impl LectureWorker {
     pub fn new(store: Arc<dyn TaskStore>, options: TodoOptions, config: LectureConfig) -> Self {
         Self {
@@ -260,7 +270,10 @@ impl ru41::ingress::schedule::PollJob for LectureWorker {
     fn poll_json(
         &self,
     ) -> std::pin::Pin<Box<dyn Future<Output = Result<serde_json::Value>> + Send + '_>> {
-        Box::pin(async { self.poll_once().await })
+        // bridge：插件 cdylib 带独立 tokio 副本，网络 I/O 必须跑在插件自己的
+        // runtime 里（宿主 runtime 的 reactor TLS 跨不过 .so 边界）。
+        let owned = self.clone();
+        ru41::plugins::bridge(async move { owned.poll_once().await })
     }
 }
 
