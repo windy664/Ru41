@@ -293,3 +293,63 @@ async fn failed_push_retries_next_poll() {
     let report = tracker.poll_once().await.unwrap();
     assert_eq!(report.action, "failed");
 }
+
+/// 游标漂移自愈：processed_sha 已指向 HEAD，但已发布目录里有从未发布的文章
+/// （历史改写/目录整理/手工提交绕过 diff），对账应补发。
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn reconcile_publishes_when_cursor_skipped_ahead() {
+    let fx = Fx::new();
+    fx.push_published("对账补发文章.md", POST);
+    git(&fx.vault_path, &["fetch", "origin"]);
+    let head = git(&fx.vault_path, &["rev-parse", "origin/master"]);
+    fx.store
+        .put_document(
+            "blog_publish_state",
+            "main",
+            None,
+            &serde_json::json!({
+                "processed_sha": head,
+                "done": [],
+                "published_map": {},
+            }),
+        )
+        .unwrap();
+
+    let report = fx.tracker().poll_once().await.unwrap();
+    assert_eq!(report.action, "published");
+    assert_eq!(report.published, 1);
+    let files = git(&fx.blog_path, &["ls-tree", "-r", "--name-only", "HEAD"]);
+    assert!(files.contains("2026-10-19-对账补发文章.md"), "{files}");
+}
+
+/// 对账按标题匹配而非文件名：历史手工提交用了不同文件名（英文 slug），
+/// 同标题文章不应被当作缺失而重复发布。
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn reconcile_matches_by_title_not_filename() {
+    let fx = Fx::new();
+    fx.push_published("2026-10-19-中文标题.md", POST);
+    // 手工在博客仓库放一篇同标题不同文件名的文章（历史手工发布场景）。
+    std::fs::create_dir_all(fx.blog_path.join("source/_posts")).unwrap();
+    std::fs::write(fx.blog_path.join("source/_posts/english-slug.md"), POST).unwrap();
+    git(&fx.blog_path, &["add", "-A"]);
+    git(&fx.blog_path, &["commit", "-m", "manual post"]);
+    // 游标已在 HEAD：diff 无内容，能否不重复发布全看对账。
+    git(&fx.vault_path, &["fetch", "origin"]);
+    let head = git(&fx.vault_path, &["rev-parse", "origin/master"]);
+    fx.store
+        .put_document(
+            "blog_publish_state",
+            "main",
+            None,
+            &serde_json::json!({
+                "processed_sha": head,
+                "done": [],
+                "published_map": {},
+            }),
+        )
+        .unwrap();
+
+    let report = fx.tracker().poll_once().await.unwrap();
+    assert_eq!(report.action, "idle");
+    assert_eq!(report.published, 0);
+}

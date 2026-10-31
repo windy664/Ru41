@@ -1094,6 +1094,19 @@ impl ru41::ports::vault::Vault for WorkVault {
     fn checkout_hard(&self, _sha: &str) -> anyhow::Result<()> {
         Ok(())
     }
+    fn list_files(&self, _at: &str, prefix: &str) -> anyhow::Result<Vec<String>> {
+        Ok(self
+            .files
+            .lock()
+            .unwrap()
+            .keys()
+            .filter(|k| k.starts_with(prefix))
+            .cloned()
+            .collect())
+    }
+    fn read_file_at(&self, _at: &str, relative: &str) -> anyhow::Result<Option<String>> {
+        Ok(self.files.lock().unwrap().get(relative).cloned())
+    }
     fn commit_all(&self, _message: &str) -> anyhow::Result<bool> {
         Ok(std::mem::take(&mut *self.dirty.lock().unwrap()))
     }

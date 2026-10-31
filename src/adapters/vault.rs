@@ -108,6 +108,30 @@ impl Vault for GitVault {
             .collect())
     }
 
+    fn list_files(&self, at: &str, prefix: &str) -> Result<Vec<String>> {
+        let out = self.git(&["ls-tree", "-r", "--name-only", at, "--", prefix])?;
+        Ok(out
+            .lines()
+            .map(str::trim)
+            .filter(|l| !l.is_empty())
+            .map(str::to_owned)
+            .collect())
+    }
+
+    fn read_file_at(&self, at: &str, relative: &str) -> Result<Option<String>> {
+        let output = Command::new("git")
+            .args(["show", &format!("{at}:{relative}")])
+            .current_dir(&self.path)
+            .env("GIT_TERMINAL_PROMPT", "0")
+            .output()
+            .context("cannot run git show")?;
+        if !output.status.success() {
+            // 路径不存在 / 非文件统一按 None；其他错误（仓库损坏等）会在下轮暴露。
+            return Ok(None);
+        }
+        Ok(Some(String::from_utf8_lossy(&output.stdout).into_owned()))
+    }
+
     fn checkout_hard(&self, sha: &str) -> Result<()> {
         self.locked(|vault| vault.git(&["reset", "--hard", sha]).map(|_| ()))
     }

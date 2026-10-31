@@ -158,52 +158,68 @@ impl BlogPublishTracker {
             unpublished: 0,
             notified: false,
         };
-        if head == state.processed_sha {
-            return Ok(report);
-        }
 
         // 找出本轮已发布目录下的新增/修改与删除（--no-renames：移出=删除旧路径）。
+        // 增量 diff 依赖游标与提交历史连续；历史改写/目录整体移动会让游标
+        // 越过实际内容，因此下面另有 reconcile_missing 自愈对账兜底。
         let vault = self.vault.clone();
         let from = state.processed_sha.clone();
         let published_prefix = format!("{}/", self.config.published_dir);
-        let entries = tokio::task::spawn_blocking(move || -> Result<Vec<(String, bool)>> {
-            let base = if from.is_empty() {
-                EMPTY_TREE.to_owned()
-            } else {
-                from
-            };
-            Ok(vault
-                .changed_entries(&base, &head_for_diff)?
-                .into_iter()
-                .filter(|(f, _)| f.starts_with(&published_prefix) && f.ends_with(".md"))
-                .collect())
-        })
-        .await??;
-        let fresh: Vec<String> = entries
-            .iter()
-            .filter(|(_, deleted)| !deleted)
-            .map(|(path, _)| path.clone())
-            .filter(|path| !state.done.contains(&done_key(path)))
-            .collect();
-        // 待下架：优先 published_map 记录的目标；老条目（无映射）从日期前缀文件名推导。
-        let mut unpublish: Vec<(String, String)> = Vec::new();
-        let mut unsolved: Vec<String> = Vec::new();
-        for (path, deleted) in &entries {
-            if !deleted {
-                continue;
+        let (mut fresh, unpublish, unsolved) = if head != state.processed_sha {
+            let entries =
+                tokio::task::spawn_blocking(move || -> Result<Vec<(String, bool)>> {
+                    let base = if from.is_empty() {
+                        EMPTY_TREE.to_owned()
+                    } else {
+                        from
+                    };
+                    Ok(vault
+                        .changed_entries(&base, &head_for_diff)?
+                        .into_iter()
+                        .filter(|(f, _)| f.starts_with(&published_prefix) && f.ends_with(".md"))
+                        .collect())
+                })
+                .await??;
+            let fresh: Vec<String> = entries
+                .iter()
+                .filter(|(_, deleted)| !deleted)
+                .map(|(path, _)| path.clone())
+                .filter(|path| !state.done.contains(&done_key(path)))
+                .collect();
+            // 待下架：优先 published_map 记录的目标；老条目（无映射）从日期前缀文件名推导。
+            let mut unpublish: Vec<(String, String)> = Vec::new();
+            let mut unsolved: Vec<String> = Vec::new();
+            for (path, deleted) in &entries {
+                if !deleted {
+                    continue;
+                }
+                if let Some(target) = state.published_map.get(path) {
+                    unpublish.push((path.clone(), target.clone()));
+                } else if let Some(target) = target_name_from_stem(path) {
+                    unpublish.push((path.clone(), target));
+                } else {
+                    unsolved.push(path.clone());
+                }
             }
-            if let Some(target) = state.published_map.get(path) {
-                unpublish.push((path.clone(), target.clone()));
-            } else if let Some(target) = target_name_from_stem(path) {
-                unpublish.push((path.clone(), target));
-            } else {
-                unsolved.push(path.clone());
+            (fresh, unpublish, unsolved)
+        } else {
+            (Vec::new(), Vec::new(), Vec::new())
+        };
+
+        // 自愈对账：vault 已发布目录与博客仓库实际文章按标题比对，漏发的补上
+        // （游标漂移/目录整理/手工提交绕过 diff 时兜底）。
+        for path in self.reconcile_missing(&head, &state).await? {
+            if !fresh.contains(&path) {
+                fresh.push(path);
             }
         }
+
         if fresh.is_empty() && unpublish.is_empty() {
             // 没有新的待发布/待下架文件：只推进游标（如普通笔记提交）。
-            state.processed_sha = head.clone();
-            self.save_state(&state)?;
+            if head != state.processed_sha {
+                state.processed_sha = head.clone();
+                self.save_state(&state)?;
+            }
             return Ok(report);
         }
 
@@ -332,6 +348,69 @@ impl BlogPublishTracker {
 
     /// 校验 frontmatter 并生成目标文件名与 URL。
     /// 规则对齐 src/content.config.ts：title 必填、categories 限枚举单值、tags ≤ 8。
+    /// 自愈对账：vault 已发布目录（指定提交）与博客仓库实际文章按 frontmatter
+    /// 标题比对，返回博客侧缺失的 vault 路径。标题是内容身份，文件名只是展示层
+    /// （历史上有过手工提交/目录整理，文件名对不上不算缺失）。
+    async fn reconcile_missing(&self, head: &str, state: &BlogPublishState) -> Result<Vec<String>> {
+        let prefix = format!("{}/", self.config.published_dir);
+        let vault = self.vault.clone();
+        let head_owned = head.to_owned();
+        let published =
+            tokio::task::spawn_blocking(move || vault.list_files(&head_owned, &prefix)).await??;
+        let published: Vec<String> = published
+            .into_iter()
+            .filter(|p| p.ends_with(".md") && !state.done.contains(&done_key(p)))
+            .collect();
+        if published.is_empty() {
+            return Ok(Vec::new());
+        }
+
+        // 博客仓库实际已部署文章的标题集合（读 HEAD 提交，不依赖工作区状态）。
+        let blog = self.blog.clone();
+        let posts_prefix = format!("{}/", self.config.posts_dir);
+        let deployed_titles = tokio::task::spawn_blocking(
+            move || -> Result<std::collections::HashSet<String>> {
+                let mut titles = std::collections::HashSet::new();
+                for path in blog
+                    .list_files("HEAD", &posts_prefix)?
+                    .into_iter()
+                    .filter(|p| p.ends_with(".md"))
+                {
+                    if let Some(content) = blog.read_file_at("HEAD", &path)?
+                        && let Some(front) = parse_frontmatter(&content)
+                        && let Some(title) = front.get("title")
+                    {
+                        titles.insert(title.trim().to_owned());
+                    }
+                }
+                Ok(titles)
+            },
+        )
+        .await??;
+
+        let vault = self.vault.clone();
+        let head_owned = head.to_owned();
+        tokio::task::spawn_blocking(move || -> Result<Vec<String>> {
+            let mut missing = Vec::new();
+            for path in published {
+                let Some(content) = vault.read_file_at(&head_owned, &path)? else {
+                    continue;
+                };
+                let Some(front) = parse_frontmatter(&content) else {
+                    continue;
+                };
+                let Some(title) = front.get("title") else {
+                    continue;
+                };
+                if !deployed_titles.contains(title.trim()) {
+                    missing.push(path);
+                }
+            }
+            Ok(missing)
+        })
+        .await?
+    }
+
     fn prepare_post(
         &self,
         published_path: &str,

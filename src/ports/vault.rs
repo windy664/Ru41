@@ -61,6 +61,10 @@ pub trait Vault: Send + Sync {
     /// 再把仍领先的提交推上去；返回是否有提交被推送。
     /// rebase 冲突时中止并返回错误（工作区恢复原状），由调用方决定告警。
     fn sync(&self) -> Result<bool>;
+    /// 指定提交下某前缀目录的全部文件（递归，相对路径）；用于对账而非增量 diff。
+    fn list_files(&self, at: &str, prefix: &str) -> Result<Vec<String>>;
+    /// 读取指定提交下的文件内容；不存在返回 None。不动工作区。
+    fn read_file_at(&self, at: &str, relative: &str) -> Result<Option<String>>;
     /// 读取 Vault 内文件；不存在返回 None。只读不入锁。
     fn read_file(&self, relative: &str) -> Result<Option<String>>;
     /// 写入 Vault 内文件（自动创建父目录）；不写锁外目录，提交推送由调用方负责。
