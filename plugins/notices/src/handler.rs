@@ -48,6 +48,7 @@ impl CommandHandler for NoticeHandler {
             let service = ScheduleService::new(ctx.store.clone(), self.options);
             let mut added = Vec::new();
             let mut skipped = Vec::new();
+            let mut cancel_rows: Vec<Vec<ru41::ports::commands::MarkupButton>> = Vec::new();
             for notice in notices {
                 let Some((starts_at, ends_at, recurrence)) =
                     parse_event_when(&notice.when_text, now, &self.options)
@@ -72,7 +73,7 @@ impl CommandHandler for NoticeHandler {
                     skipped.push(format!("{}（行程里已有）", notice.title));
                     continue;
                 }
-                service.add(
+                let item = service.add(
                     EventInput {
                         title: notice.title.clone(),
                         starts_at,
@@ -92,6 +93,14 @@ impl CommandHandler for NoticeHandler {
                     .map(|l| format!(" @ {l}"))
                     .unwrap_or_default();
                 added.push(format!("- {}｜{}{}", notice.title, notice.when_text, loc));
+                // 回执附快捷取消按钮，误识别点一下就撤，不用手打指令。
+                if cancel_rows.len() < 4 {
+                    let label: String = notice.title.chars().take(12).collect();
+                    cancel_rows.push(vec![ru41::ports::commands::MarkupButton::new(
+                        format!("取消 {label}"),
+                        format!("/取消日程 {}", item.id),
+                    )]);
+                }
             }
             if added.is_empty() && skipped.is_empty() {
                 return Ok(None);
@@ -110,8 +119,16 @@ impl CommandHandler for NoticeHandler {
                 }
                 text.push_str(&format!("\n跳过：{}", skipped.join("；")));
             }
-            text.push_str("\n\n> 识别有误可发 `/日程` 查看后取消");
-            Ok(Some(Reply::text(text)))
+            // 有可取消的行程才挂按钮；没有就保留手打指令的指路。
+            if cancel_rows.is_empty() {
+                text.push_str("\n\n> 识别有误可发 `/日程` 查看后取消");
+                return Ok(Some(Reply::text(text)));
+            }
+            text.push_str("\n\n> 识别有误？点上方按钮取消，或发 `/日程` 查看。");
+            Ok(Some(Reply::with_markup(
+                text,
+                ru41::ports::commands::ReplyMarkup { rows: cancel_rows },
+            )))
         })
     }
 }
