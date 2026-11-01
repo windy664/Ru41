@@ -24,6 +24,10 @@ migrations/    数据库迁移（核心领地）
 
 - 主 crate 是**唯一 workspace 成员**：`cargo build` / `cargo test` 只覆盖 `src/` + `tests/`。
 - 插件**不在 workspace 里**，`cargo test -p <名>` 找不到包；进插件目录单独跑：`cd plugins/zhihuishu && cargo test`。
+- 插件共享 target：`plugins/.cargo/config.toml` 把 target-dir 指到
+  `plugins/target-plugins/` 并启用 lld 链接器——ru41 依赖只编一次，全插件复用。
+  **别在插件目录 `cargo clean`**，会把所有插件的共享产物一起清掉。
+  本地产物路径：`plugins/target-plugins/release/libru41_plugin_<名>.so`（scp 部署用这条）。
 - 插件依赖主 crate 走 path；`ru41::ports::vault::Vault` 等公共 trait 变更会让所有插件的测试 fake 同步失编译（`sync` 返回 `SyncOutcome`，记得有 `resolve_conflict`/`rebase_continue`/`rebase_abort`）。
 - 插件技能包在 `plugins/<名>/skills/<技能>/SKILL.md`，由 `src/skills/` 加载注入 agent prompt。
 

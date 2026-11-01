@@ -135,12 +135,14 @@ impl EcardTracker {
                     .map(|item| format!("- {item}"))
                     .collect::<Vec<_>>()
                     .join("\n");
+                let trend = self.balance_trend(&today);
                 notifier
                     .send(
                         &self.config.notify_target,
                         None,
                         &format!(
-                            "## ⚡ 水电提醒\n\n- 房间：{room_label}\n{items}\n- 查询时间：{today}"
+                            "## ⚡ 水电提醒\n\n- 房间：{room_label}\n{items}\n- 查询时间：{today}\n\n{}",
+                            trend.estimate
                         ),
                     )
                     .await?;
@@ -161,14 +163,15 @@ impl EcardTracker {
             && let Some(notifier) = &self.notifier
             && self.store.document("ecard_report", &today)?.is_none()
         {
+            let trend = self.balance_trend(&today);
             notifier
                 .send(
                     &self.config.notify_target,
                     None,
                     &format!(
-                        "## ⚡ 水电日报\n\n- 房间：{room_label}\n- 电 {} / 水 {}\n- 日期：{today}\n\n> 低于阈值（电 {:.0} 度 / 水 {:.0} 吨）会单独提醒",
-                        power.map_or("--".into(), |p| format!("{p:.2} 度")),
-                        water.map_or("--".into(), |w| format!("{w:.2} 吨")),
+                        "## ⚡ 水电日报\n\n- 房间：{room_label}\n{}\n- 日期：{today}\n\n{}\n> 低于阈值（电 {:.0} 度 / 水 {:.0} 吨）会单独提醒",
+                        trend.lines.join("\n"),
+                        trend.estimate,
                         self.config.power_threshold,
                         self.config.water_threshold,
                     ),
@@ -193,6 +196,108 @@ impl EcardTracker {
             report_sent,
         })
     }
+
+    /// 读数趋势：近 7 天历史 → 较前次变化（↓消耗 / ↑充值）、日均消耗、可用天数。
+    /// 只报日报数字太空洞（2026-11-01 用户反馈）：要有前后变化。
+    fn balance_trend(&self, today: &str) -> BalanceTrend {
+        let mut history: Vec<(String, f64, f64)> = self
+            .store
+            .documents("ecard_reading", 10)
+            .map(|docs| {
+                let mut rows: Vec<(String, f64, f64)> = docs
+                    .into_iter()
+                    .filter_map(|doc| {
+                        let power = doc.value["power"].as_f64()?;
+                        let water = doc.value["water"].as_f64()?;
+                        Some((doc.id, power, water))
+                    })
+                    .collect();
+                rows.sort_by(|a, b| a.0.cmp(&b.0));
+                rows
+            })
+            .unwrap_or_default();
+        history.retain(|(date, _, _)| date.as_str() <= today);
+
+        let fmt_delta = |prev: f64, cur: f64| -> String {
+            let delta = cur - prev;
+            if delta.abs() < 0.005 {
+                "持平".to_owned()
+            } else if delta < 0.0 {
+                format!("↓消耗 {:.2}", -delta)
+            } else {
+                format!("↑充值 {:.2}", delta)
+            }
+        };
+
+        let mut lines = Vec::new();
+        let (cur_power, cur_water) = history
+            .last()
+            .map(|(_, p, w)| (*p, *w))
+            .unwrap_or((0.0, 0.0));
+        match history.len() {
+            0 => {
+                lines.push("- 数据不足，暂无趋势".to_owned());
+            }
+            1 => {
+                lines.push(format!("- 电：{cur_power:.2} 度（首次记录）"));
+                lines.push(format!("- 水：{cur_water:.2} 吨（首次记录）"));
+            }
+            _ => {
+                let (_, prev_power, prev_water) = history[history.len() - 2];
+                lines.push(format!(
+                    "- 电：{cur_power:.2} 度（较昨日 {}）",
+                    fmt_delta(prev_power, cur_power)
+                ));
+                lines.push(format!(
+                    "- 水：{cur_water:.2} 吨（较昨日 {}）",
+                    fmt_delta(prev_water, cur_water)
+                ));
+            }
+        }
+
+        // 日均消耗：相邻读数只计下降段（回升是充值，不是负消耗）。
+        let mut power_used = 0.0;
+        let mut water_used = 0.0;
+        let mut spans = 0;
+        for window in history.windows(2) {
+            let ((d0, p0, w0), (d1, p1, w1)) = (&window[0], &window[1]);
+            if d0 != d1 {
+                power_used += (p0 - p1).max(0.0);
+                water_used += (w0 - w1).max(0.0);
+                spans += 1;
+            }
+        }
+        let estimate = if spans > 0 && power_used > 0.005 {
+            let daily_power = power_used / spans as f64;
+            let daily_water = water_used / spans as f64;
+            let days_left = if daily_power > 0.005 {
+                Some((cur_power / daily_power).round() as i64)
+            } else {
+                None
+            };
+            let water_part = if daily_water > 0.0005 {
+                format!("，水日均 {daily_water:.2} 吨")
+            } else {
+                String::new()
+            };
+            match days_left {
+                Some(days) => format!(
+                    "> 📉 近 {spans} 天：电日均消耗 {daily_power:.2} 度{water_part}，**约还能用 {days} 天**"
+                ),
+                None => format!("> 📉 近 {spans} 天：电日均消耗 {daily_power:.2} 度{water_part}"),
+            }
+        } else {
+            "> 📉 累计天数不足，再观察两天出趋势".to_owned()
+        };
+
+        BalanceTrend { lines, estimate }
+    }
+}
+
+/// 读数趋势排版结果。
+struct BalanceTrend {
+    lines: Vec<String>,
+    estimate: String,
 }
 
 impl ru41::ingress::schedule::PollJob for EcardTracker {

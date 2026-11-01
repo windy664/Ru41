@@ -329,7 +329,7 @@ fn mock_find_api() -> (String, Arc<Mutex<Vec<String>>>) {
                     {"callNo":"TP273/248","barcode":"C0001","locationName":"计算机书库",
                      "curLocationName":"计算机书库","processType":"在架"},
                     {"callNo":"TP273/248","barcode":"C0002","locationName":"计算机书库",
-                     "curLocationName":"借还书区","processType":"借出"},
+                     "curLocationName":"借还书区","processType":"借出-应还日期:2026-11-22"},
                     {"callNo":"TP273/248","barcode":"C0003","locationName":"广州校区样本书库",
                      "curLocationName":"广州校区样本书库","processType":"在架"}
                 ]}"#
@@ -384,6 +384,7 @@ async fn search_books_uses_public_headers_and_parses() {
     assert!(items[0].is_on_shelf());
     assert!(!items[1].is_on_shelf());
     assert_eq!(items[1].cur_location_name.as_deref(), Some("借还书区"));
+    assert_eq!(items[1].due_back().as_deref(), Some("2026-11-22"));
     // 样本库单册：在架但仅供阅览。
     assert!(items[2].is_on_shelf());
     assert!(items[2].is_sample());

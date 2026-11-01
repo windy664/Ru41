@@ -278,6 +278,18 @@ impl LibraryQqCommand {
                             .collect::<Vec<_>>()
                             .join("、");
                         lines.push(format!("　↳ 可借 {loanable} 册｜{detail}"));
+                        // 借出中的册子给最早归还日，方便决定去等还是换书。
+                        let mut due_dates: Vec<String> = items
+                            .iter()
+                            .filter_map(|h| h.due_back())
+                            .collect();
+                        due_dates.sort();
+                        if !due_dates.is_empty() {
+                            lines.push(format!(
+                                "　↳ 借出中，最早 {} 归还",
+                                due_dates[0]
+                            ));
+                        }
                     }
                 }
                 // 封面（独秀 CDN，markdown 图片直接嵌；拿不到就跳过）。
@@ -293,6 +305,7 @@ impl LibraryQqCommand {
                 "\n> 仅显示前 5 条；回复更精确的关键词缩小范围，或上 findgzus.libsp.cn 翻页。"
             ));
         }
+        lines.push("> 🗺️ 架位 = 馆藏地 + 索书号：到对应书库按索书号升序找架（同号段相邻）".into());
         // 前 3 条给追书按钮（点了就是发 /追书 <recordId>）。
         let mut markup = ReplyMarkup::new();
         for book in page.books.iter().take(3) {

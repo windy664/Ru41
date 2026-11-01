@@ -196,7 +196,7 @@ impl CompshareTracker {
 
 fn available_message(config: &CompshareConfig, specs: &[CapacitySpec]) -> String {
     format!(
-        "## 🎮 恒源云 GPU 有货\n\n- 机房：{}\n- 显卡：{}\n- 可创建规格：{}\n\n创建页：{}",
+        "## 🎮 恒源云 GPU 有货\n\n- 机房：**{}**\n- 显卡：**{}**\n- 可创建规格：{}\n\n> [👉 点我创建实例]({})",
         config.zone,
         config.gpu_type,
         specs

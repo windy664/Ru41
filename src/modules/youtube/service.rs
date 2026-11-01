@@ -60,6 +60,10 @@ const SEEN_KIND: &str = "youtube_seen";
 /// 频道首见基线：首次轮询只登记不预习，杜绝历史积压刷屏。
 const BASELINE_KIND: &str = "youtube_baseline";
 const MAX_TRANSCRIPT_ATTEMPTS: u64 = 3;
+/// failed 复活窗口：字幕 429/bot 风控是瞬时的，永久死刑会静默丢视频（2026-11-01
+/// AliAbdaal 视频实测）；24 小时后清 attempts 重新候选。无可救药的视频（真无字幕）
+/// 代价是每天多一次拉取尝试，可接受。
+const FAILED_RETRY_AFTER_SECS: i64 = 86_400;
 
 /// YouTube 英语预习追踪：频道列表 → 去重与粗筛 → 字幕转写 → 逐视频入队预习任务。
 /// 终态推送即 Agent 输出的预习单原文（含视频链接），经 [notify] 默认出口投递。
@@ -222,6 +226,17 @@ impl YoutubeTracker {
                     );
                     Ok(SeenDecision::Skip)
                 }
+                // failed 满 24h 复活：风控是瞬时的，清 attempts 重新候选。
+                Some("failed")
+                    if crate::util::now()
+                        - doc.value["failed_at"]
+                            .as_i64()
+                            .unwrap_or_else(|| doc.value["first_seen"].as_i64().unwrap_or(0))
+                        > FAILED_RETRY_AFTER_SECS =>
+                {
+                    self.mark_seen(channel, &video.id, "pending", 0);
+                    Ok(SeenDecision::Candidate)
+                }
                 _ => Ok(SeenDecision::Skip),
             };
         }
@@ -294,6 +309,12 @@ impl YoutubeTracker {
             let mut value = doc.value.clone();
             value["status"] = status.into();
             value["attempts"] = attempts.into();
+            // failed 落点时间：复活窗口（FAILED_RETRY_AFTER_SECS）的计时起点。
+            if status == "failed" {
+                value["failed_at"] = crate::util::now().into();
+            } else {
+                value.as_object_mut().map(|m| m.remove("failed_at"));
+            }
             let _ = self
                 .store
                 .put_document(SEEN_KIND, &seen_key, Some(doc.revision), &value);
