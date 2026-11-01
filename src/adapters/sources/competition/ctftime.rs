@@ -1,8 +1,10 @@
 //! CTFtime（ctftime.org）官方公开 API：全球 CTF 赛事日历，国内大赛
 //! （强网杯 / TCTF / XCTF 系列 / 网鼎杯等）赛季都会登记在此。
 //! 无需 key，按时间窗拉取即将开始的赛事。CTF 无"报名截止"字段，
-//! 以开赛时间作为行动节点；奖金常为 TBD/TBA，质量用 weight（联赛权重）
-//! 兜底——weight ≥ 20 是公认大赛线（强网杯/TCTF 在 50+）。
+//! 以开赛时间作为行动节点；奖金常为 TBD/TBA。
+//! ⚠️ weight 是**赛后**由参赛队投票累计的联赛权重，未开赛赛事恒 0——
+//! 过滤规则不能只靠 weight（2026-11-01 强网杯资格赛 weight=0 漏报事故），
+//! 插件侧另有顶级赛事按名白名单（filter.rs TOP_TIER_CTF）。
 
 use anyhow::{Context, Result};
 
