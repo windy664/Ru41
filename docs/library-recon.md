@@ -89,6 +89,74 @@ loanDate(借出), normReturnDate(应还日期★催还提醒用), returnDate(已
 locationName(馆藏地如"计算机书库"), barcode/propNo, docCode, libCode
 ```
 
+## 三、PC 统一检索站（findgzus.libsp.cn，2026-11-01 补）
+
+PC 站与移动端同源产品（超星 libsp），但**检索系接口免登录公开**
+（同校系产品同济站实测文档佐证：检索/书目/单册公开，借阅需登录）。
+
+### 鉴权：两个公开头即可，不要 jwt
+
+```
+groupCode: 201550
+mappingPath: gzus        # PC 站是 "gzus"（移动端 SPA 是空串）！
+```
+
+- 不带这两个头 → 9999「系统访问中断」；带 jwt 不带 mappingPath →
+  200 但 numFound 恒 0（静默空结果，最难调试的形态）。
+- PC 站个人中心走另一套 oga 会话（/oga/login、/oga/ssoOpac），
+  与移动端 jwt 不互通；`unify/search` 带旧 SESSION cookie 反而 401「请登录」。
+- 结论：**检索只带 groupCode+mappingPath，不带 jwt、不带 cookie**。
+
+### 实测可用（免登录）
+
+```
+POST /find/unify/search                 统一检索（核心）
+POST /find/unify/advancedSearch         高级检索
+GET  /find/searchResultDetail/getBookDetail?recordId=   MARC 书目详情
+POST /find/physical/groupitems          单册馆藏（索书号/在架状态）
+POST /find/index/getHotLoan             热门借阅榜（{"time":"30",page,rows}）
+POST /find/index/getNewBook             新书通报
+GET  /find/index/spellKeyWord?keyword=  联想词
+POST /find/index/searchAssociative      搜索联想
+POST /find/chaoxing/searchList          超星文献检索（未验）
+```
+
+unify/search 请求体（前端懒加载 chunk 反推 + 实测）：
+
+```json
+{"searchField":"keyWord","searchFieldContent":"Python","matchMode":"2",
+ "page":1,"rows":10,"sortField":"in_date","sortClause":"desc"}
+```
+
+- searchField：keyWord=关键词 subject=主题 title=题名 author=作者
+  publisher=出版社 classNo=分类号 abstract=摘要 callNo=索书号 isbn=ISBN
+  （注意 camelCase：keyWord，不是 keyword）
+- matchMode："2"=模糊；sortField：in_date 为默认（还有 relevance 等）
+- 响应 data：numFound、searchResult[]、facetResult（分类聚合）、hlResult（高亮）
+
+searchResult 条目字段：recordId、title、author、publisher、isbn、publishYear、
+adstract(摘要)、chiClassNo[](中图分类)、callNoOne/callNo[](索书号)、
+physicalCount(馆藏数)、docCode(1=纸质 2=电子)、discode1(校区码)
+
+groupitems 单册字段：callNo、barcode/propNo、locationName(计算机书库等)、
+realLocationName/curLocationName(归属 vs 当前馆藏地)、processType(在架/借出)、
+inDate、listPrice
+
+### 前端产物结构（再逆向备用）
+
+- SPA 壳：`findgzus.libsp.cn/` → static12.libsp.cn/static/js/{manifest,0,20}.js
+- manifest 内含 74 个懒加载 chunk 的 {id:hash20} 映射表，chunk URL 为
+  `static/js/<id>.<hash>.js`；静态站有防盗链，必须带 Referer 站域。
+- 前端为 dva/redux，服务层 `s.post("/find/...", payload)` 在 chunk 20，
+  检索 payload 组装在搜索页组件（chunk 29/22）。
+
+### 社区佐证
+
+- JERRIYHAN/tongji-online `references/library.md`：同济站（webpac.tongji.edu.cn/s12/）
+  检索/详情/单册公开，mappingPath=s12、groupCode=201571
+- 其他同产品实现：BenderBlog/traintime_pda、Jony1026/TCUSTB-Protocol、
+  phphub123/xdyou、AriesHere/GDUTSharp 等（各校找书 bot 均走同款接口）
+
 ## 三、与 CAS 相关的两个坑（已踩实）
 
 1. **PASSERROR 计数**：CAS 密码错满 5 次锁号，自动登录每 poll 烧一次；
@@ -129,5 +197,6 @@ ecarduser 改 .111 与 ecard 容器一致）。`ru41-roll.py` 按 ExtraHosts 原
 
 - P0：到期催还提醒（poll loanList，应还前 3/1/0 天提醒）+ 提醒消息带「续借」
   按钮（复用 ports::commands::ReplyMarkup，点击=以用户身份发 `/续借 书名`）
-- P0.5：`/借阅` 命令；P1：`/找书`（searchList + 馆藏地）；P1.5：站内通知转发
+- P0.5：`/借阅` 命令（已上线）；P1：`/找书`（已上线：unify/search + groupitems，
+  免登录公开检索）；P1.5：站内通知转发
 - 结构：纯 HTTP 轮询即可，无需 sidecar；复用 jwxt 的 captcha/ohdave 组件
