@@ -1,9 +1,19 @@
+# syntax=docker/dockerfile:1
 FROM rust:1.98-trixie AS builder
 WORKDIR /build
+# 依赖层：只放清单 + 空壳源码，把全部外部依赖编进缓存层。
+# 常规代码提交不碰这一层（只有 Cargo.lock / 清单 / crates 变化才重建），
+# 8 分钟的全量编译降到只编 ru41 本体。ARG/ENV 不能放这层——git hash
+# 每次提交都变，会把缓存层顶掉。
 COPY Cargo.toml Cargo.lock build.rs ./
-COPY src ./src
 COPY crates ./crates
 COPY migrations ./migrations
+RUN mkdir -p src \
+    && echo 'fn main() {}' > src/main.rs \
+    && touch src/lib.rs \
+    && cargo build --locked --release --bin ru41 --features local-embed
+# 真源码层：只重编 ru41 本体，依赖全部命中缓存。
+COPY src ./src
 ARG RU41_GIT_HASH_OVERRIDE=unknown
 ENV RU41_GIT_HASH_OVERRIDE=$RU41_GIT_HASH_OVERRIDE
 RUN cargo build --locked --release --bin ru41 --features local-embed
@@ -13,13 +23,21 @@ RUN cargo build --locked --release --bin ru41 --features local-embed
 FROM rust:1.98-trixie AS plugins
 WORKDIR /build
 COPY Cargo.toml Cargo.lock build.rs ./
-COPY src ./src
 COPY crates ./crates
 COPY migrations ./migrations
+# 只拷插件清单（--parents 保持目录结构）：插件源码变化不波及依赖缓存层。
+COPY --parents plugins/*/Cargo.toml ./
+ENV CARGO_TARGET_DIR=/build/.plugins-target
+# 依赖层：ru41 与全部插件用空壳 lib 预编译，外部依赖进缓存。
+RUN set -e \
+ && mkdir -p src && echo 'fn main() {}' > src/main.rs && touch src/lib.rs \
+ && for d in plugins/*/; do cp Cargo.lock "$d/Cargo.lock"; mkdir -p "$d/src"; touch "$d/src/lib.rs"; done \
+ && for d in plugins/*/; do (cd "$d" && cargo build --release --features plugin-entry); done
+# 真源码层：完整 src + 插件源码覆盖空壳，只重编 ru41 与插件本体。
+COPY src ./src
 COPY plugins ./plugins
 ARG RU41_GIT_HASH_OVERRIDE=unknown
 ENV RU41_GIT_HASH_OVERRIDE=$RU41_GIT_HASH_OVERRIDE
-ENV CARGO_TARGET_DIR=/build/.plugins-target
 RUN set -e; for d in plugins/*/; do cp Cargo.lock "$d/Cargo.lock"; done \
  && for d in plugins/*/; do (cd "$d" && cargo build --release --features plugin-entry); done \
  && mkdir -p /plugins-dist \
