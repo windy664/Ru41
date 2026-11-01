@@ -278,6 +278,130 @@ impl QqApiClient {
             .with_context(|| format!("QQ media upload response missing file_info: {body}"))
     }
 
+    /// Markdown 内嵌图片素材上传（prepare → PUT 预签名 → complete），
+    /// 返回 `qqbot-media://` 引用，可直接写进 markdown content 由平台转存渲染。
+    /// 公网 URL 转存走不通的图（如带签名的 CDN，实测 40093007）必须走这条路。
+    pub async fn upload_markdown_image(&self, media: &crate::ports::channel::MediaRef) -> Result<String> {
+        let bytes = if media.is_remote() {
+            self.http
+                .get(&media.source)
+                .send()
+                .await
+                .context("cannot fetch remote image")?
+                .error_for_status()
+                .context("remote image fetch rejected")?
+                .bytes()
+                .await
+                .context("cannot read remote image bytes")?
+                .to_vec()
+        } else {
+            tokio::fs::read(&media.source)
+                .await
+                .with_context(|| format!("cannot read media file {}", media.source))?
+        };
+        let md5 = {
+            use md5::Digest as _;
+            md5::Md5::digest(&bytes)
+                .iter()
+                .map(|b| format!("{b:02x}"))
+                .collect::<String>()
+        };
+        // 素材缓存（md5 → qqbot-media 引用）：平台单机器人上限 100 张，
+        // 90 天滑动过期、每次引用自动续期，命中缓存就不用再传。
+        let cache_path = markdown_image_cache_path();
+        if let Ok(raw) = std::fs::read_to_string(&cache_path)
+            && let Ok(cache) = serde_json::from_str::<std::collections::HashMap<String, String>>(&raw)
+            && let Some(url) = cache.get(&md5)
+        {
+            return Ok(url.clone());
+        }
+        let sha1 = {
+            use sha1::Digest;
+            let mut hasher = sha1::Sha1::new();
+            hasher.update(&bytes);
+            hasher
+                .finalize()
+                .iter()
+                .map(|b| format!("{b:02x}"))
+                .collect::<String>()
+        };
+        let file_name = media.display_name().to_owned();
+        let content_type = match file_name.rsplit('.').next().unwrap_or("") {
+            "png" => "image/png",
+            "gif" => "image/gif",
+            "webp" => "image/webp",
+            _ => "image/jpeg",
+        };
+        let prepare: serde_json::Value = self
+            .authorized(
+                self.http
+                    .post(format!("{}/v2/media-images/prepare", self.api_base)),
+            )
+            .await?
+            .json(&serde_json::json!({
+                "file_name": file_name,
+                "file_size": bytes.len(),
+                "content_type": content_type,
+                "md5": md5,
+                "sha1": sha1,
+            }))
+            .send()
+            .await
+            .context("cannot prepare QQ media image")?
+            .json()
+            .await
+            .context("media-images/prepare response not json")?;
+        let upload_id = prepare
+            .get("upload_id")
+            .and_then(|v| v.as_str())
+            .with_context(|| format!("prepare missing upload_id: {prepare}"))?
+            .to_owned();
+        let presigned = prepare
+            .get("presigned_url")
+            .and_then(|v| v.as_str())
+            .with_context(|| format!("prepare missing presigned_url: {prepare}"))?
+            .to_owned();
+        // 预签名 URL 自带签名，不能再加 Authorization 头（COS 会拒）。
+        let put = self
+            .http
+            .put(&presigned)
+            .header(reqwest::header::CONTENT_TYPE, content_type)
+            .body(bytes)
+            .send()
+            .await
+            .context("cannot PUT image to presigned url")?;
+        if !put.status().is_success() {
+            bail!("presigned image upload failed with {}", put.status());
+        }
+        let complete: serde_json::Value = self
+            .authorized(
+                self.http
+                    .post(format!("{}/v2/media-images/complete", self.api_base)),
+            )
+            .await?
+            .json(&serde_json::json!({ "upload_id": upload_id, "md5": md5 }))
+            .send()
+            .await
+            .context("cannot complete QQ media image")?
+            .json()
+            .await
+            .context("media-images/complete response not json")?;
+        let url = complete
+            .get("url")
+            .and_then(|v| v.as_str())
+            .map(str::to_owned)
+            .with_context(|| format!("complete missing url: {complete}"))?;
+        let mut cache: std::collections::HashMap<String, String> = std::fs::read_to_string(&cache_path)
+            .ok()
+            .and_then(|raw| serde_json::from_str(&raw).ok())
+            .unwrap_or_default();
+        cache.insert(md5, url.clone());
+        if let Ok(json) = serde_json::to_string(&cache) {
+            let _ = std::fs::write(&cache_path, json);
+        }
+        Ok(url)
+    }
+
     async fn post_media(
         &self,
         url: &str,
@@ -358,6 +482,16 @@ impl QqApiClient {
             "Authorization",
             format!("QQBot {}", self.access_token().await?),
         ))
+    }
+}
+
+/// markdown 素材缓存位置：优先 /data（生产容器卷），本地开发退回临时目录。
+fn markdown_image_cache_path() -> std::path::PathBuf {
+    let data = std::path::Path::new("/data");
+    if data.is_dir() {
+        data.join("qq-media-cache.json")
+    } else {
+        std::env::temp_dir().join("qq-media-cache.json")
     }
 }
 
