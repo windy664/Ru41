@@ -86,6 +86,17 @@ impl CommandHandler for LibraryQqCommand {
     }
 }
 
+/// 出版年排序键：取字符串里第一个 4 位年份（"2019.7"→2019），缺失为 0 排最后。
+fn year_key(publish_year: Option<&str>) -> u32 {
+    publish_year
+        .and_then(|s| {
+            s.split(|c: char| !c.is_ascii_digit())
+                .find(|part| part.len() == 4)
+                .and_then(|part| part.parse().ok())
+        })
+        .unwrap_or(0)
+}
+
 impl LibraryQqCommand {
     async fn dispatch(&self, arg: String) -> Result<Option<Reply>> {
         let trimmed = arg.trim();
@@ -182,16 +193,17 @@ impl LibraryQqCommand {
         Ok(Some(Reply::text(lines.join("\n"))))
     }
 
-    /// `/找书 关键词`：公开馆藏检索（免登录），附前几条的在架状态。
-    /// 多词查询整串 keyWord 恒 0（如「rust 清华大学」），自动拆成
-    /// 关键词＋出版社的高级检索降级。
+    /// `/找书 关键词`：公开馆藏检索（免登录）。排序 = 相关度召回 20 条 →
+    /// 滤掉零馆藏 → 候选 8 条内按出版年新→旧展示前 5（API 不支持复合排序，
+    /// 只能客户端二排）。多词查询整串 keyWord 恒 0（如「rust 清华大学」），
+    /// 自动拆成关键词＋出版社的高级检索降级。
     async fn search(&self, query: &str) -> Result<Option<Reply>> {
         if query.is_empty() {
             return Ok(Some(Reply::text(
                 "用法：`/找书 关键词`（书名/作者/主题词均可）".to_owned(),
             )));
         }
-        let mut page = match self.client.search_books(query, 1, 5).await {
+        let mut page = match self.client.search_books(query, 1, 20).await {
             Ok(page) => page,
             Err(err) => {
                 return Ok(Some(Reply::text(format!("## 馆藏检索失败\n\n{err}"))));
@@ -202,7 +214,7 @@ impl LibraryQqCommand {
         if page.books.is_empty() {
             let items = crate::source::build_search_items(query);
             if !items.is_empty()
-                && let Ok(advanced) = self.client.advanced_search(&items, 1, 5).await
+                && let Ok(advanced) = self.client.advanced_search(&items, 1, 20).await
                 && !advanced.books.is_empty()
             {
                 fallback_note = Some(crate::source::describe_search_items(&items));
@@ -214,23 +226,30 @@ impl LibraryQqCommand {
                 "## 馆藏检索\n\n「{query}」没有命中馆藏。\n\n> 换个关键词试试（可用更泛的词，如「深度学习」而非全名）。"
             ))));
         }
-        // 每条都查一次馆藏：零单册的书整条不显示（追了也等不到，看了也没用）。
-        // 馆藏查询失败的不滤（可能是网络抖动），只是没有状态行。
+        // 按相关度顺序逐条查馆藏：零单册的整条滤掉（追了也等不到，看了也没用），
+        // 集齐 8 条候选即停；馆藏查询失败的不滤（可能是网络抖动），只是没有状态行。
         let mut entries: Vec<(&crate::source::SearchBook, Option<Vec<crate::source::HoldingItem>>)> =
             Vec::new();
         let mut filtered = 0usize;
         for book in &page.books {
+            if entries.len() >= 8 {
+                break;
+            }
             match self.client.holdings(book.record_id).await {
                 Ok(items) if items.is_empty() => filtered += 1,
                 Ok(items) => entries.push((book, Some(items))),
                 Err(_) => entries.push((book, None)),
             }
-        }        if entries.is_empty() {
+        }
+        if entries.is_empty() {
             return Ok(Some(Reply::text(format!(
                 "## 馆藏检索\n\n「{query}」命中 {} 条书目，但全都没有单册馆藏记录。\n\n> 这类书馆内查不到也追不了，建议换关键词或走馆际互借/荐购。",
                 page.num_found
             ))));
         }
+        // 候选池内按出版年新→旧（出版年缺失排最后）。
+        entries.sort_by_key(|(book, _)| std::cmp::Reverse(year_key(book.publish_year.as_deref())));
+        entries.truncate(5);
         let mut lines = vec![format!("## 找书「{query}」（共 {} 条）\n", page.num_found)];
         if let Some(note) = fallback_note {
             lines.push(format!("*整串无命中，已自动拆分为 {note} 组合检索*\n"));
@@ -238,7 +257,7 @@ impl LibraryQqCommand {
         if filtered > 0 {
             lines.push(format!("*已隐藏 {filtered} 条无单册馆藏的书目*\n"));
         }
-        // 封面收集为原生图片消息（QQ markdown 不渲染外链图，走媒体上传通道）。
+        // 封面下载到本地后走媒体上传（QQ 服务器拉不动独秀签名 URL，必须字节上传）。
         let mut covers: Vec<ru41::ports::channel::MediaRef> = Vec::new();
         for (index, (book, holdings)) in entries.iter().enumerate() {
             let meta = [
@@ -305,26 +324,37 @@ impl LibraryQqCommand {
                     ));
                 }
             }
-            // 前 3 条附封面：收进 Reply.media，渠道层作为图片消息发送。
+            // 前 3 条附封面：下载到本地临时文件，渠道层按字节上传为图片消息。
             if index < 3
                 && let Ok(info) = self.client.item_info(book.record_id).await
                 && let Some(cover) = info.cover_url
+                && let Ok(path) = self.client.download_cover(&cover, book.record_id).await
             {
-                covers.push(ru41::ports::channel::MediaRef::new(
+                let mut media = ru41::ports::channel::MediaRef::new(
                     ru41::ports::channel::MediaKind::Image,
-                    cover,
-                ));
+                    path,
+                );
+                media.filename = Some(format!("《{}》封面.jpg", book.title));
+                covers.push(media);
             }
         }
         if page.num_found > 5 {
             lines.push(format!(
-                "\n> 仅显示前 5 条；回复更精确的关键词缩小范围，或上 findgzus.libsp.cn 翻页。"
+                "\n> 按相关度召回、出版年新→旧展示前 5 条；更精确的关键词可缩小范围，或上 findgzus.libsp.cn 翻页。"
             ));
         }
         lines.push("> 🗺️ 架位 = 馆藏地 + 索书号：到对应书库按索书号升序找架（同号段相邻）".into());
-        // 前 3 条给追书按钮（点了就是发 /追书 <recordId>）。
+        // 追书按钮只给「有馆藏但暂不可借」的书（样本库仅阅览/全部被借出）；
+        // 当前可借的直接去借，不用追。
         let mut markup = ReplyMarkup::new();
-        for (book, _) in entries.iter().take(3) {
+        for (book, holdings) in entries.iter().take(3) {
+            let worth_tracking = holdings.as_ref().is_some_and(|items| {
+                !items.is_empty()
+                    && items.iter().all(|h| !h.is_on_shelf() || h.is_sample())
+            });
+            if !worth_tracking {
+                continue;
+            }
             let short: String = book.title.chars().take(12).collect();
             markup.push_row(vec![MarkupButton::new(
                 format!("📌追书 {short}"),
@@ -454,6 +484,13 @@ impl LibraryQqCommand {
             .iter()
             .filter(|h| h.is_on_shelf() && !h.is_sample())
             .count() as i64;
+        // 当前可借的不用追：直接去书库借。追书只服务两种情形——
+        // 全在样本库仅供阅览、或全部被借出。
+        if loanable > 0 {
+            return Ok(Some(Reply::text(format!(
+                "## 不用追，现在就能借\n\n《{title}》当前有 {loanable} 册在架可借，按索书号去对应书库拿就好。\n\n> 追书是给「有馆藏但暂不可借」的书用的（样本库仅供阅览 / 全部被借出）。"
+            ))));
+        }
         let call_no = items.iter().find_map(|h| h.call_no.clone());
         if let Err(err) = self.client.add_watch(LibraryWatch {
             record_id,
@@ -466,11 +503,9 @@ impl LibraryQqCommand {
         }) {
             return Ok(Some(Reply::text(format!("## 追书失败\n\n{err}"))));
         }
-        let hint = if loanable > 0 {
-            format!("🟢 当前就有 {loanable} 册可借，直接去借！（已记录基线，不会重复提醒）")
-        } else {
-            "🔴 当前无可借（含样本库仅阅览），到货会第一时间通知你".to_owned()
-        };
+        // 走到这里必然 loanable == 0（>0 已在上面拒收）。
+        let hint =
+            "🔴 当前无可借（样本库仅阅览 / 全部被借出），可借了会第一时间通知你".to_owned();
         Ok(Some(Reply::text(format!(
             "## 📌 已加入追书\n\n- 《{title}》\n- 索书号 {}\n- {hint}\n\n> 每 6 小时自动检查一次馆藏；回复 `/追书 列表` 查看，`/追书 取消 {record_id}` 停止。",
             call_no.as_deref().unwrap_or("见详情页")
