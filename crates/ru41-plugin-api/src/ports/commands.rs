@@ -6,15 +6,19 @@ use crate::identity::IdentityService;
 use anyhow::Result;
 use std::{future::Future, pin::Pin, sync::Arc};
 
+use super::media::MediaRef;
 use super::storage::TaskStore;
 
-/// 命令回复：markdown 文本 + 可选的快捷按钮。
+/// 命令回复：markdown 文本 + 可选的快捷按钮 + 可选的富媒体附件。
 /// 按钮动作统一为「代用户发出一条指令文本」（如 `/任务 3`），
 /// 渠道适配器负责把 markup 翻译成平台键盘格式；不支持键盘的渠道忽略 markup 只发文本。
+/// media 里的 URL/本地文件由渠道适配器上传为平台原生媒体消息（如 QQ 图消息），
+/// 跟在文本之后逐条发送；不支持媒体的渠道忽略。
 #[derive(Clone, Debug)]
 pub struct Reply {
     pub text: String,
     pub markup: Option<ReplyMarkup>,
+    pub media: Vec<MediaRef>,
 }
 
 impl Reply {
@@ -22,6 +26,7 @@ impl Reply {
         Self {
             text: text.into(),
             markup: None,
+            media: Vec::new(),
         }
     }
 
@@ -29,7 +34,13 @@ impl Reply {
         Self {
             text: text.into(),
             markup: Some(markup),
+            media: Vec::new(),
         }
+    }
+
+    pub fn with_media(mut self, media: Vec<MediaRef>) -> Self {
+        self.media = media;
+        self
     }
 }
 
