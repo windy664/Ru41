@@ -23,11 +23,11 @@ impl LibraryQqCommand {
 
 impl CommandHandler for LibraryQqCommand {
     fn matches(&self, verb: &str) -> bool {
-        matches!(verb, "借阅" | "借书" | "图书" | "续借")
+        matches!(verb, "借阅" | "借书" | "图书" | "续借" | "找书" | "查书" | "馆藏")
     }
 
     fn help(&self) -> &'static str {
-        "`/借阅`：查询在借图书与应还日期（可点续借按钮）；`/续借 书名`：续借指定图书"
+        "`/借阅`：查询在借图书与应还日期（可点续借按钮）；`/续借 书名`：续借指定图书；`/找书 关键词`：查馆藏（索书号/在架）"
     }
 
     fn handle<'a>(
@@ -47,7 +47,7 @@ impl CommandHandler for LibraryQqCommand {
             } else {
                 // 「/借阅 xxx」不拦截书名查询以外的东西：交给 Agent。
                 Ok(Some(Reply::text(
-                    "用法：`/借阅` 查看在借清单；`/借阅 历史` 查看最近借阅；`/续借 书名` 续借。",
+                    "用法：`/借阅` 查看在借清单；`/借阅 历史` 查看最近借阅；`/续借 书名` 续借；`/找书 关键词` 查馆藏。",
                 )))
             }
         })
@@ -59,15 +59,16 @@ impl CommandHandler for LibraryQqCommand {
         arg: &'a str,
         ctx: &'a CommandContext<'a>,
     ) -> Pin<Box<dyn Future<Output = Result<Option<Reply>>> + Send + 'a>> {
-        if verb == "续借" {
-            Box::pin(async move {
+        match verb {
+            "续借" => Box::pin(async move {
                 if let Some(reply) = ctx.require_private("续借图书", "借阅记录属于个人数据")? {
                     return Ok(Some(Reply::text(reply)));
                 }
                 self.renew(arg.trim()).await
-            })
-        } else {
-            self.handle(arg, ctx)
+            }),
+            // 找书是公开馆藏检索（无个人数据），无需私聊闸。
+            "找书" | "查书" | "馆藏" => Box::pin(async move { self.search(arg.trim()).await }),
+            _ => self.handle(arg, ctx),
         }
     }
 }
@@ -149,6 +150,75 @@ impl LibraryQqCommand {
                 record.display_title(),
                 record.loan_date.as_deref().unwrap_or("?"),
                 returned
+            ));
+        }
+        Ok(Some(Reply::text(lines.join("\n"))))
+    }
+
+    /// `/找书 关键词`：公开馆藏检索（免登录），附前几条的在架状态。
+    async fn search(&self, query: &str) -> Result<Option<Reply>> {
+        if query.is_empty() {
+            return Ok(Some(Reply::text(
+                "用法：`/找书 关键词`（书名/作者/主题词均可）".to_owned(),
+            )));
+        }
+        let page = match self.client.search_books(query, 1, 5).await {
+            Ok(page) => page,
+            Err(err) => {
+                return Ok(Some(Reply::text(format!("## 馆藏检索失败\n\n{err}"))));
+            }
+        };
+        if page.books.is_empty() {
+            return Ok(Some(Reply::text(format!(
+                "## 馆藏检索\n\n「{query}」没有命中馆藏。\n\n> 换个关键词试试（可用更泛的词，如「深度学习」而非全名）。"
+            ))));
+        }
+        let mut lines = vec![format!("## 找书「{query}」（共 {} 条）\n", page.num_found)];
+        let top = page.books.len().min(3);
+        for (index, book) in page.books.iter().enumerate() {
+            let meta = [
+                book.author.as_deref().unwrap_or(""),
+                book.publisher.as_deref().unwrap_or(""),
+                book.publish_year.as_deref().unwrap_or(""),
+            ]
+            .into_iter()
+            .filter(|s| !s.is_empty())
+            .collect::<Vec<_>>()
+            .join("｜");
+            let call_no = book.call_no.as_deref().unwrap_or("无索书号");
+            lines.push(format!(
+                "{}. 《{}》\n　{}｜索书号 {}",
+                index + 1,
+                book.title,
+                if meta.is_empty() { "未知" } else { &meta },
+                call_no
+            ));
+            // 前 3 条附在架状态。
+            if index < top
+                && let Ok(items) = self.client.holdings(book.record_id).await
+            {
+                if items.is_empty() {
+                    lines.push("　↳ 无单册馆藏记录".into());
+                } else {
+                    let on_shelf = items.iter().filter(|h| h.is_on_shelf()).count();
+                    let locations: Vec<String> = items
+                        .iter()
+                        .filter_map(|h| h.location_name.clone())
+                        .collect::<std::collections::BTreeSet<_>>()
+                        .into_iter()
+                        .collect();
+                    lines.push(format!(
+                        "　↳ 在架 {}/{} 册（{}）",
+                        on_shelf,
+                        items.len(),
+                        locations.join("、")
+                    ));
+                }
+            }
+        }
+        if page.num_found > 5 {
+            lines.push(format!(
+                "\n> 仅显示前 5 条；回复更精确的关键词缩小范围，或上 findgzus.libsp.cn 翻页。"
             ));
         }
         Ok(Some(Reply::text(lines.join("\n"))))

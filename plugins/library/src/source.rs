@@ -60,6 +60,45 @@ pub struct LoanPage {
     pub num_found: Option<i64>,
 }
 
+/// PC 统一检索结果条目（find/unify/search）。
+#[derive(Clone, Debug, Default)]
+pub struct SearchBook {
+    pub record_id: i64,
+    pub title: String,
+    pub author: Option<String>,
+    pub publisher: Option<String>,
+    pub publish_year: Option<String>,
+    pub isbn: Option<String>,
+    /// 索书号（callNoOne，或 callNo[0]）。
+    pub call_no: Option<String>,
+    /// 馆藏数。
+    pub physical_count: i64,
+}
+
+/// 检索结果页。
+pub struct SearchPage {
+    pub num_found: i64,
+    pub books: Vec<SearchBook>,
+}
+
+/// 单册馆藏（find/physical/groupitems）。
+#[derive(Clone, Debug, Default)]
+pub struct HoldingItem {
+    pub call_no: Option<String>,
+    pub barcode: Option<String>,
+    pub location_name: Option<String>,
+    pub cur_location_name: Option<String>,
+    /// 在架 / 借出 等。
+    pub process_type: Option<String>,
+}
+
+impl HoldingItem {
+    /// 是否可借（在架）。
+    pub fn is_on_shelf(&self) -> bool {
+        self.process_type.as_deref() == Some("在架")
+    }
+}
+
 impl LoanRecord {
     /// 提醒与按钮用的去重键：优先 recordId/loanId/barcode，都没有就用书名+应还日。
     pub fn key(&self) -> String {
@@ -215,6 +254,19 @@ fn build_http_noredir(
     builder.build().expect("reqwest client build")
 }
 
+/// find 公开检索专用客户端：不带 cookie jar（带 oga SESSION 会被当登录态 → 401）。
+fn build_http_public(hosts: &[(&str, u16)]) -> reqwest::Client {
+    let mut builder = reqwest::Client::builder()
+        .user_agent(
+            "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/143.0.0.0 Safari/537.36",
+        )
+        .timeout(ru41::util::HTTP_TIMEOUT);
+    for o in ru41::util::dns_fallback_overrides(hosts) {
+        builder = builder.resolve(&o.host, o.addr);
+    }
+    builder.build().expect("reqwest client build")
+}
+
 fn random_uid() -> String {
     let mut rng = rand::rng();
     (0..4).map(|_| format!("{:08x}", rng.random::<u32>())).collect()
@@ -262,6 +314,8 @@ pub struct LibraryClient {
     jar: Arc<CookieJar>,
     http: reqwest::Client,
     http_noredir: reqwest::Client,
+    /// find 公开检索专用：不带 cookie（带 oga SESSION 会被当登录态 → 401）。
+    http_public: reqwest::Client,
     username: String,
     password: String,
     cas_base: String,
@@ -270,6 +324,8 @@ pub struct LibraryClient {
     unified_base: String,
     find_base: String,
     mobile_base: String,
+    /// find 站 mappingPath（"findgzus.libsp.cn" → "gzus"）。
+    find_mapping_path: String,
     group_code: String,
     session_path: std::path::PathBuf,
 }
@@ -309,10 +365,19 @@ impl LibraryClient {
             &jar,
             &hosts,
         );
+        let http_public = build_http_public(&hosts);
+        // findgzus.libsp.cn → gzus；其他 libsp 系（libsp.com/libstar.cn/libsp.net）同理。
+        let find_mapping_path = find_host
+            .strip_prefix("find")
+            .and_then(|rest| rest.split('.').next())
+            .filter(|s| !s.is_empty())
+            .unwrap_or("gzus")
+            .to_owned();
         Self {
             jar,
             http,
             http_noredir,
+            http_public,
             username: username.into(),
             password: password.into(),
             cas_base,
@@ -321,6 +386,7 @@ impl LibraryClient {
             unified_base,
             find_base,
             mobile_base,
+            find_mapping_path,
             group_code,
             session_path,
         }
@@ -733,6 +799,77 @@ impl LibraryClient {
             .unwrap_or("续借成功")
             .to_owned())
     }
+
+    /// PC 公开统一检索（find/unify/search）。免登录，groupCode+mappingPath=gzus
+    /// 两个头即可；**绝不能带 cookie**（带 oga SESSION 会被当登录态校验 → 401），
+    /// 所以走不带 jar 的 http_public 客户端。
+    pub async fn search_books(&self, query: &str, page: u32, rows: u32) -> Result<SearchPage> {
+        let body = serde_json::json!({
+            "searchField": "keyWord",
+            "searchFieldContent": query,
+            "matchMode": "2",
+            "page": page,
+            "rows": rows,
+            "sortField": "in_date",
+            "sortClause": "desc",
+        });
+        let value = self.find_public_post("/find/unify/search", body).await?;
+        let data = value.get("data").cloned().unwrap_or(serde_json::Value::Null);
+        let num_found = data
+            .get("numFound")
+            .and_then(serde_json::Value::as_i64)
+            .unwrap_or(0);
+        let books = data
+            .get("searchResult")
+            .and_then(serde_json::Value::as_array)
+            .map(|list| list.iter().map(parse_search_book).collect())
+            .unwrap_or_default();
+        Ok(SearchPage { num_found, books })
+    }
+
+    /// 单册馆藏（find/physical/groupitems）：索书号、馆藏地、在架状态。同样免登录。
+    pub async fn holdings(&self, record_id: i64) -> Result<Vec<HoldingItem>> {
+        let body = serde_json::json!({ "recordId": record_id, "page": 1, "rows": 20 });
+        let value = self.find_public_post("/find/physical/groupitems", body).await?;
+        Ok(value
+            .get("data")
+            .and_then(serde_json::Value::as_array)
+            .map(|list| list.iter().map(parse_holding).collect())
+            .unwrap_or_default())
+    }
+
+    /// find 公开 API 调用（只有 groupCode + mappingPath 两个头，不带鉴权不带 cookie）。
+    async fn find_public_post(&self, path: &str, body: serde_json::Value) -> Result<serde_json::Value> {
+        let url = format!("{}{path}", self.find_base);
+        let response = self
+            .http_public
+            .post(&url)
+            .header("groupCode", self.group_code.as_str())
+            .header("mappingPath", self.find_mapping_path.as_str())
+            .json(&body)
+            .send()
+            .await
+            .with_context(|| format!("find 公开检索请求失败: {path}"))?;
+        let value: serde_json::Value = response
+            .json()
+            .await
+            .with_context(|| format!("find 公开检索响应不是 JSON: {path}"))?;
+        if value.get("success") != Some(&serde_json::Value::Bool(true)) {
+            bail!(
+                "find 公开检索被拒（{}）：{}",
+                value
+                    .get("errCode")
+                    .and_then(serde_json::Value::as_i64)
+                    .map(|c| c.to_string())
+                    .unwrap_or_else(|| "?".into()),
+                value
+                    .get("message")
+                    .and_then(serde_json::Value::as_str)
+                    .unwrap_or("unknown")
+            );
+        }
+        Ok(value)
+    }
 }
 
 /// 宽容解析一条借阅/历史记录。
@@ -756,6 +893,58 @@ fn parse_record(item: &serde_json::Value) -> LoanRecord {
         prop_no: get("propNo"),
         loan_id: get("loanId"),
         record_id: get("recordId"),
+    }
+}
+
+/// 解析一条统一检索结果。
+fn parse_search_book(item: &serde_json::Value) -> SearchBook {
+    let get = |key: &str| -> Option<String> {
+        item.get(key)
+            .and_then(serde_json::Value::as_str)
+            .map(str::trim)
+            .filter(|s| !s.is_empty())
+            .map(str::to_owned)
+    };
+    let call_no = get("callNoOne").or_else(|| {
+        item.get("callNo")
+            .and_then(serde_json::Value::as_array)
+            .and_then(|list| list.first())
+            .and_then(serde_json::Value::as_str)
+            .map(str::to_owned)
+    });
+    SearchBook {
+        record_id: item
+            .get("recordId")
+            .and_then(serde_json::Value::as_i64)
+            .unwrap_or(0),
+        title: get("title").unwrap_or_default(),
+        author: get("author"),
+        publisher: get("publisher"),
+        publish_year: get("publishYear"),
+        isbn: get("isbn"),
+        call_no,
+        physical_count: item
+            .get("physicalCount")
+            .and_then(serde_json::Value::as_i64)
+            .unwrap_or(0),
+    }
+}
+
+/// 解析一条单册馆藏。
+fn parse_holding(item: &serde_json::Value) -> HoldingItem {
+    let get = |key: &str| -> Option<String> {
+        item.get(key)
+            .and_then(serde_json::Value::as_str)
+            .map(str::trim)
+            .filter(|s| !s.is_empty())
+            .map(str::to_owned)
+    };
+    HoldingItem {
+        call_no: get("callNo"),
+        barcode: get("barcode"),
+        location_name: get("locationName"),
+        cur_location_name: get("curLocationName"),
+        process_type: get("processType"),
     }
 }
 

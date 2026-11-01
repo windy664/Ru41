@@ -266,3 +266,117 @@ async fn expired_jwt_reports_login_failure_daily() {
     assert!(!again.notified);
     assert_eq!(channel.sent.lock().unwrap().len(), 1);
 }
+
+/// 路径分发的 find 公开检索 mock：unify/search 与 groupitems 各回各的，
+/// 记录请求头用于断言 groupCode/mappingPath 两头。
+fn mock_find_api() -> (String, Arc<Mutex<Vec<String>>>) {
+    let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+    let base = format!("http://{}", listener.local_addr().unwrap());
+    let headers = Arc::new(Mutex::new(Vec::new()));
+    let headers_clone = Arc::clone(&headers);
+    std::thread::spawn(move || {
+        for stream in listener.incoming() {
+            let mut stream = stream.unwrap();
+            let mut reader = BufReader::new(stream.try_clone().unwrap());
+            let mut content_length = 0;
+            let mut request_line = String::new();
+            let mut head = String::new();
+            loop {
+                head.clear();
+                if reader.read_line(&mut head).unwrap() == 0 {
+                    break;
+                }
+                if request_line.is_empty() {
+                    request_line = head.trim().to_owned();
+                }
+                let line = head.to_lowercase();
+                if let Some(value) = line.strip_prefix("content-length:") {
+                    content_length = value.trim().parse().unwrap_or(0);
+                }
+                if head.trim().is_empty() {
+                    break;
+                }
+                headers_clone
+                    .lock()
+                    .unwrap()
+                    .push(head.trim().to_owned());
+            }
+            let mut body = vec![0; content_length];
+            reader.read_exact(&mut body).unwrap();
+            let payload = if request_line.contains("unify/search") {
+                r#"{"success":true,"errCode":200,"data":{"numFound":2,"searchResult":[
+                    {"recordId":279213,"title":"深度学习 : 原理与应用实践","author":"张重生著",
+                     "publisher":"电子工业出版社","publishYear":"2016","isbn":"978-7-121-30413-2",
+                     "callNoOne":"TP273/248","physicalCount":3},
+                    {"recordId":287129,"title":"机器人Python极客编程入门与实战","author":"Python极客团队著",
+                     "publisher":"电子工业出版社","publishYear":"2017","isbn":"978-7-121-32292-1",
+                     "callNo":["TP311.56/731"],"physicalCount":1}
+                ]}}"#
+            } else if request_line.contains("groupitems") {
+                r#"{"success":true,"errCode":200,"data":[
+                    {"callNo":"TP273/248","barcode":"C0001","locationName":"计算机书库",
+                     "curLocationName":"计算机书库","processType":"在架"},
+                    {"callNo":"TP273/248","barcode":"C0002","locationName":"计算机书库",
+                     "curLocationName":"借还书区","processType":"借出"}
+                ]}"#
+            } else {
+                r#"{"success":false,"errCode":404,"message":"unknown path"}"#
+            };
+            write!(
+                stream,
+                "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",
+                payload.len(),
+                payload
+            )
+            .unwrap();
+        }
+    });
+    (base, headers)
+}
+
+#[tokio::test]
+async fn search_books_uses_public_headers_and_parses() {
+    let (find_base, headers) = mock_find_api();
+    let dir = tempfile::tempdir().unwrap();
+    let client = LibraryClient::new(
+        "u",
+        "p",
+        "http://localhost/cas".into(),
+        "0f".into(),
+        "010001".into(),
+        "http://localhost/unified".into(),
+        find_base.clone(),
+        find_base,
+        "201550".into(),
+        dir.path().join("session.json"),
+    );
+
+    // 检索：免登录也能用（session.json 不存在也不影响）。
+    let page = client.search_books("深度学习", 1, 5).await.unwrap();
+    assert_eq!(page.num_found, 2);
+    assert_eq!(page.books.len(), 2);
+    let first = &page.books[0];
+    assert_eq!(first.record_id, 279213);
+    assert_eq!(first.title, "深度学习 : 原理与应用实践");
+    assert_eq!(first.author.as_deref(), Some("张重生著"));
+    assert_eq!(first.call_no.as_deref(), Some("TP273/248"));
+    assert_eq!(first.physical_count, 3);
+    // callNoOne 缺失时回退 callNo[0]。
+    assert_eq!(page.books[1].call_no.as_deref(), Some("TP311.56/731"));
+
+    // 馆藏：在架 1/2。
+    let items = client.holdings(279213).await.unwrap();
+    assert_eq!(items.len(), 2);
+    assert!(items[0].is_on_shelf());
+    assert!(!items[1].is_on_shelf());
+    assert_eq!(items[1].cur_location_name.as_deref(), Some("借还书区"));
+
+    // 公开两头：groupCode + mappingPath=gzus；绝不带 jwt / cookie。
+    {
+        let all = headers.lock().unwrap().join("\n").to_lowercase();
+        assert!(all.contains("groupcode: 201550"));
+        assert!(all.contains("mappingpath: gzus"));
+        assert!(!all.contains("jwtopacauth:"));
+        assert!(!all.contains("cookie:"));
+    }
+}
