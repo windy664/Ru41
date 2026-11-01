@@ -32,6 +32,7 @@ PLUGINS=(
   "plugins/blog:libru41_plugin_blog.so"
   "plugins/projects:libru41_plugin_projects.so"
   "plugins/lecture:libru41_plugin_lecture.so"
+  "plugins/library:libru41_plugin_library.so"
 )
 
 for entry in "${PLUGINS[@]}"; do

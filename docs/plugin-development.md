@@ -82,6 +82,7 @@ cp target-docker/release/libru41_plugin_foo.so <服务器>:/etc/ru41/plugins/
 |---|---|---|
 | hello | `templates/plugin-hello/` | 最小模板 |
 | blog / competitions / compshare / ecard / homework / jobs / notices / pagewatch / papers / programs / projects / research / rss / zhihuishu | `plugins/*/` | 业务附属全部插件化（共 14 个，配置与运行细节见 `docs/sources-*.md`） |
+| library | `plugins/library/` | 图书馆借阅：CAS→超星统一认证→libsp，到期催还提醒（3/1/0 天分级）、`/借阅`、`/续借`（带按钮）；协议见 `docs/library-recon.md` |
 
 ## 本地开发与测试
 
