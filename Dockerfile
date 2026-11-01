@@ -23,7 +23,10 @@ ENV CARGO_TARGET_DIR=/build/.plugins-target
 RUN set -e; for d in plugins/*/; do cp Cargo.lock "$d/Cargo.lock"; done \
  && for d in plugins/*/; do (cd "$d" && cargo build --release --features plugin-entry); done \
  && mkdir -p /plugins-dist \
- && for d in plugins/*/; do n=$(basename "$d"); cp ".plugins-target/release/libru41_plugin_$n.so" /plugins-dist/; done
+ && for d in plugins/*/; do n=$(basename "$d"); cp ".plugins-target/release/libru41_plugin_$n.so" /plugins-dist/; done \
+ && mkdir -p /plugins-skills \
+ && for d in plugins/*/; do n=$(basename "$d"); \
+      if [ -d "$d/skills" ]; then mkdir -p "/plugins-skills/$n" && cp -r "$d/skills" "/plugins-skills/$n/"; fi; done
 
 FROM node:22-trixie-slim
 # 智谱 GLM coding plan 只有 chat 兼容端点，codex ≥0.16x 移除了 wire_api="chat"
@@ -54,7 +57,9 @@ RUN mkdir -p /data/codex /etc/ru41 \
     && echo "Asia/Shanghai" > /etc/timezone
 COPY --from=builder /build/target/release/ru41 /usr/local/bin/ru41
 COPY --from=plugins /plugins-dist/ /etc/ru41/plugins/
-COPY src/modules /etc/ru41/modules
+# 技能包烤进 /usr/share/ru41/（/etc/ru41 是宿主机 bind mount，会被整体遮蔽）。
+COPY src/modules /usr/share/ru41/modules
+COPY --from=plugins /plugins-skills/ /usr/share/ru41/plugins/
 USER node
 ENV HOME=/home/node
 ENV CODEX_HOME=/data/codex
