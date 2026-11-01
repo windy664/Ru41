@@ -8,7 +8,7 @@ pub fn render(rows: &[EventRow], today: NaiveDate) -> String {
     let mut out = format!(
         "# 🗓️ 活动日程总览\n\n\
          > 生成于 {today} · 数据源：茶思屋会议日历，由 ru41 events 附属定时刷新\n\
-         > 口径：科技向（AI/网络安全/软件/开源/芯片/计算等），已结束与非科技方向自动滤掉；\n\
+         > 口径：科技向（AI/网络安全/软件/开源/计算等），已结束与非科技方向自动滤掉；\n\
          > ⭐ = 大湾区线下；全国性重大大会（WAIC/GOSIM/CNCC 等）不论地域都会推送通知\n\n"
     );
     let conferences: Vec<&EventRow> = rows.iter().filter(|r| r.kind == "会议/论坛").collect();
