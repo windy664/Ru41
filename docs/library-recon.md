@@ -128,6 +128,18 @@ unify/search 请求体（前端懒加载 chunk 反推 + 实测）：
  "page":1,"rows":10,"sortField":"in_date","sortClause":"desc"}
 ```
 
+⚠️ **多词查询坑**：keyWord 把「rust 清华大学」整串当一个词匹配 → 恒 0。
+多条件必须走 advancedSearch（前端 chunk 64 反推的 searchItems 结构）：
+
+```json
+{"searchItems":[{"oper":null,"searchField":"keyWord","matchMode":"2","searchFieldContent":"rust"},
+ {"oper":"AND","searchField":"publisher","matchMode":"2","searchFieldContent":"清华大学"}],
+ "docCode":[],"page":1,"rows":10,"sortField":"relevance","sortClause":"desc"}
+```
+
+- oper：首项 null，后续 AND/OR/NOT；searchField 同普通检索字段集
+- 实测 rust+清华大学出版社 → 12 条（普通检索 0 条）；sortField 用 relevance
+
 - searchField：keyWord=关键词 subject=主题 title=题名 author=作者
   publisher=出版社 classNo=分类号 abstract=摘要 callNo=索书号 isbn=ISBN
   （注意 camelCase：keyWord，不是 keyword）

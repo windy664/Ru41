@@ -6,7 +6,10 @@ pub mod source;
 pub use config::LibrarySection;
 pub use qq_command::LibraryQqCommand;
 pub use service::{LibraryConfig, LibraryPollReport, LibraryTracker};
-pub use source::{HoldingItem, LibraryWatch, LoanPage, LoanRecord, LibraryClient, SearchBook, SearchPage};
+pub use source::{
+    HoldingItem, LibraryWatch, LoanPage, LoanRecord, LibraryClient, SearchBook, SearchItem,
+    SearchPage, build_search_items, describe_search_items,
+};
 
 /// 注册表定义：library 的调度清单、tracker、QQ 命令闭环。
 pub static DEF: ru41::modules::ModuleDef = ru41::modules::ModuleDef {

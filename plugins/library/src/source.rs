@@ -81,6 +81,59 @@ pub struct SearchPage {
     pub books: Vec<SearchBook>,
 }
 
+/// 高级检索单项（oper=None 为首项）。
+#[derive(Clone, Debug)]
+pub struct SearchItem {
+    pub oper: Option<String>,
+    pub search_field: String,
+    pub content: String,
+}
+
+/// 把「rust 清华大学」式多词查询拆成高级检索项：
+/// 出版社样词归 publisher 字段，其余归 keyWord，全部 AND。
+/// 单词查询返回空（调用方走普通 keyWord 即可）。
+pub fn build_search_items(query: &str) -> Vec<SearchItem> {
+    const PUBLISHER_HINTS: &[&str] = &[
+        "出版社", "出版集团", "出版传媒", "书局", "书社", "印书馆", "大学",
+    ];
+    let tokens: Vec<&str> = query.split_whitespace().collect();
+    if tokens.len() < 2 {
+        return Vec::new();
+    }
+    let mut items = Vec::new();
+    for token in tokens {
+        let is_publisher = PUBLISHER_HINTS.iter().any(|h| token.contains(h));
+        items.push(SearchItem {
+            oper: if items.is_empty() {
+                None
+            } else {
+                Some("AND".to_owned())
+            },
+            search_field: if is_publisher { "publisher" } else { "keyWord" }.to_owned(),
+            content: token.to_owned(),
+        });
+    }
+    items
+}
+
+/// 拆词结果的人类可读说明（「关键词『rust』＋出版社『清华大学』」）。
+pub fn describe_search_items(items: &[SearchItem]) -> String {
+    items
+        .iter()
+        .map(|item| {
+            let field = match item.search_field.as_str() {
+                "publisher" => "出版社",
+                "title" => "题名",
+                "author" => "作者",
+                "isbn" => "ISBN",
+                _ => "关键词",
+            };
+            format!("{field}『{}』", item.content)
+        })
+        .collect::<Vec<_>>()
+        .join("＋")
+}
+
 /// 单册馆藏（find/physical/groupitems）。
 #[derive(Clone, Debug, Default)]
 pub struct HoldingItem {
@@ -855,6 +908,49 @@ impl LibraryClient {
         Ok(SearchPage { num_found, books })
     }
 
+    /// 高级检索（find/unify/advancedSearch）：多条件 AND/OR 组合。
+    /// 「rust 清华大学」整串 keyWord 恒 0，必须拆成字段组合才有结果。
+    pub async fn advanced_search(
+        &self,
+        items: &[SearchItem],
+        page: u32,
+        rows: u32,
+    ) -> Result<SearchPage> {
+        let search_items: Vec<serde_json::Value> = items
+            .iter()
+            .map(|item| {
+                serde_json::json!({
+                    "oper": item.oper,
+                    "searchField": item.search_field,
+                    "matchMode": "2",
+                    "searchFieldContent": item.content,
+                })
+            })
+            .collect();
+        let body = serde_json::json!({
+            "searchItems": search_items,
+            "docCode": [],
+            "page": page,
+            "rows": rows,
+            "sortField": "relevance",
+            "sortClause": "desc",
+        });
+        let value = self
+            .find_public_post("/find/unify/advancedSearch", body)
+            .await?;
+        let data = value.get("data").cloned().unwrap_or(serde_json::Value::Null);
+        let num_found = data
+            .get("numFound")
+            .and_then(serde_json::Value::as_i64)
+            .unwrap_or(0);
+        let books = data
+            .get("searchResult")
+            .and_then(serde_json::Value::as_array)
+            .map(|list| list.iter().map(parse_search_book).collect())
+            .unwrap_or_default();
+        Ok(SearchPage { num_found, books })
+    }
+
     /// 单册馆藏（find/physical/groupitems）：索书号、馆藏地、在架状态。同样免登录。
     pub async fn holdings(&self, record_id: i64) -> Result<Vec<HoldingItem>> {
         let body = serde_json::json!({ "recordId": record_id, "page": 1, "rows": 20 });
@@ -1156,5 +1252,25 @@ mod tests {
         assert_eq!(record.norm_return_date.as_deref(), Some("2026-11-01"));
         assert_eq!(record.location_name.as_deref(), Some("计算机书库"));
         assert!(record.return_date.is_none());
+    }
+
+    #[test]
+    fn splits_multi_word_query_into_fields() {
+        use super::{build_search_items, describe_search_items};
+        let items = build_search_items("rust 清华大学");
+        assert_eq!(items.len(), 2);
+        assert_eq!(items[0].search_field, "keyWord");
+        assert_eq!(items[0].oper, None);
+        assert_eq!(items[0].content, "rust");
+        assert_eq!(items[1].search_field, "publisher");
+        assert_eq!(items[1].oper.as_deref(), Some("AND"));
+        assert_eq!(describe_search_items(&items), "关键词『rust』＋出版社『清华大学』");
+        // 单词查询不拆（走普通 keyWord）。
+        assert!(build_search_items("rust").is_empty());
+        // 三个词：出版社样词只归出版社位。
+        let three = build_search_items("深度学习 实战 人民邮电出版社");
+        assert_eq!(three[0].search_field, "keyWord");
+        assert_eq!(three[1].search_field, "keyWord");
+        assert_eq!(three[2].search_field, "publisher");
     }
 }

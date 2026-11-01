@@ -11,6 +11,8 @@ description: 用于回答广软图书馆的馆藏检索、索书号与馆藏地�
    请求体：`{"searchField":"keyWord","searchFieldContent":"<词>","matchMode":"2","page":1,"rows":5}`。
    searchField 可取 keyWord/subject/title/author/publisher/callNo/isbn。
    响应 `data.searchResult[]` 含 recordId/title/author/publisher/publishYear/callNoOne/physicalCount。
+   **多词查询**（如「rust 清华大学」）整串 keyWord 恒 0，要拆字段走
+   `POST /find/unify/advancedSearch`：`{"searchItems":[{"oper":null,"searchField":"keyWord","matchMode":"2","searchFieldContent":"rust"},{"oper":"AND","searchField":"publisher","matchMode":"2","searchFieldContent":"清华大学"}],"docCode":[],"page":1,"rows":5}`。
 2. 单册馆藏（在架状态）也是公开接口：
    `POST https://findgzus.libsp.cn/find/physical/groupitems`，同样的两个头，
    请求体 `{"recordId":<id>,"page":1,"rows":100}`，字段含 callNo/locationName/processType。
