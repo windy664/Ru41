@@ -230,13 +230,12 @@ impl LibraryQqCommand {
         // 集齐 8 条候选即停；馆藏查询失败的不滤（可能是网络抖动），只是没有状态行。
         let mut entries: Vec<(&crate::source::SearchBook, Option<Vec<crate::source::HoldingItem>>)> =
             Vec::new();
-        let mut filtered = 0usize;
         for book in &page.books {
             if entries.len() >= 8 {
                 break;
             }
             match self.client.holdings(book.record_id).await {
-                Ok(items) if items.is_empty() => filtered += 1,
+                Ok(items) if items.is_empty() => {}
                 Ok(items) => entries.push((book, Some(items))),
                 Err(_) => entries.push((book, None)),
             }
@@ -254,9 +253,6 @@ impl LibraryQqCommand {
         if let Some(note) = fallback_note {
             lines.push(format!("*整串无命中，已自动拆分为 {note} 组合检索*\n"));
         }
-        if filtered > 0 {
-            lines.push(format!("*已隐藏 {filtered} 条无单册馆藏的书目*\n"));
-        }
         // 封面下载到本地后走媒体上传（QQ 服务器拉不动独秀签名 URL，必须字节上传）。
         let mut covers: Vec<ru41::ports::channel::MediaRef> = Vec::new();
         for (index, (book, holdings)) in entries.iter().enumerate() {
@@ -270,13 +266,10 @@ impl LibraryQqCommand {
             .collect::<Vec<_>>()
             .join("｜");
             let call_no = book.call_no.as_deref().unwrap_or("无索书号");
-            lines.push(format!(
-                "{}. 《{}》\n　{}｜索书号 {}",
-                index + 1,
-                book.title,
-                if meta.is_empty() { "未知" } else { &meta },
-                call_no
-            ));
+            lines.push(format!("**{}. 《{}》**", index + 1, book.title));
+            if !meta.is_empty() {
+                lines.push(meta);
+            }
             if let Some(items) = holdings {
                 // 样本库仅供阅览不算可借；按馆藏地分组展示在架情况。
                 let loanable = items
@@ -312,17 +305,21 @@ impl LibraryQqCommand {
                     })
                     .collect::<Vec<_>>()
                     .join("、");
-                lines.push(format!("　↳ 可借 {loanable} 册｜{detail}"));
+                let state = if loanable > 0 {
+                    format!("✅ 可借 {loanable} 册")
+                } else {
+                    "🔴 暂无可借".to_owned()
+                };
+                lines.push(format!("`{call_no}` ｜ {state} ｜ {detail}"));
                 // 借出中的册子给最早归还日，方便决定去等还是换书。
                 let mut due_dates: Vec<String> =
                     items.iter().filter_map(|h| h.due_back()).collect();
                 due_dates.sort();
                 if !due_dates.is_empty() {
-                    lines.push(format!(
-                        "　↳ 借出中，最早 {} 归还",
-                        due_dates[0]
-                    ));
+                    lines.push(format!("🕐 最早 {} 归还", due_dates[0]));
                 }
+            } else {
+                lines.push(format!("`{call_no}`"));
             }
             // 前 3 条附封面：下载到本地，文本里嵌 ru41-media://N 占位符，
             // 渠道层上传为 QQ 素材后替换引用，图片直接内嵌在 markdown 里。
@@ -337,15 +334,10 @@ impl LibraryQqCommand {
                 );
                 media.filename = Some(format!("cover-{}.jpg", book.record_id));
                 covers.push(media);
-                lines.push(format!("![《{}》封面](ru41-media://{})", book.title, covers.len() - 1));
+                lines.push(format!("![](ru41-media://{})", covers.len() - 1));
             }
+            lines.push(String::new());
         }
-        if page.num_found > 5 {
-            lines.push(format!(
-                "\n> 按相关度召回、出版年新→旧展示前 5 条；更精确的关键词可缩小范围，或上 findgzus.libsp.cn 翻页。"
-            ));
-        }
-        lines.push("> 🗺️ 架位 = 馆藏地 + 索书号：到对应书库按索书号升序找架（同号段相邻）".into());
         // 追书按钮只给「有馆藏但暂不可借」的书（样本库仅阅览/全部被借出）；
         // 当前可借的直接去借，不用追。
         let mut markup = ReplyMarkup::new();
