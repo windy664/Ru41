@@ -9,8 +9,14 @@ use std::{
 use crate::service::{format_loan_reply, local_today};
 use crate::source::{LibraryClient, LibraryWatch, LoanRecord};
 
-/// QQ 借阅/续借命令：`/借阅`（在借清单 + 续借按钮）、`/借阅 历史`、
-/// `/续借 书名`。个人信息，双闸（身份绑定 + 仅单聊）。
+/// QQ 借阅/续借/找书/追书命令。借阅/续借/追书是个人信息，双闸（身份绑定 + 仅单聊）。
+///
+/// ⚠️ 所有触网的 handler 必须经 `ru41::plugins::bridge`：cdylib 静态链接了
+/// 独立 tokio 副本，reactor TLS 跨不过 .so 边界；直接 Box::pin 的 future 由宿主
+/// runtime 驱动，第一个 reqwest await 就 panic「no reactor running」并 abort
+/// 整个网关进程（2026-11-01 /找书 实测炸服）。同步闸（require_private）无
+/// reactor 依赖，留在宿主侧先跑。
+#[derive(Clone)]
 pub struct LibraryQqCommand {
     client: Arc<LibraryClient>,
 }
@@ -39,17 +45,9 @@ impl CommandHandler for LibraryQqCommand {
             if let Some(reply) = ctx.require_private("查询借阅", "借阅记录属于个人数据")? {
                 return Ok(Some(Reply::text(reply)));
             }
-            let trimmed = arg.trim();
-            if trimmed.is_empty() || trimmed == "在借" {
-                self.list_loans().await
-            } else if trimmed == "历史" {
-                self.list_history().await
-            } else {
-                // 「/借阅 xxx」不拦截书名查询以外的东西：交给 Agent。
-                Ok(Some(Reply::text(
-                    "用法：`/借阅` 查看在借清单；`/借阅 历史` 查看最近借阅；`/续借 书名` 续借；`/找书 关键词` 查馆藏。",
-                )))
-            }
+            let worker = self.clone();
+            let arg = arg.trim().to_owned();
+            ru41::plugins::bridge(async move { worker.dispatch(arg).await }).await
         })
     }
 
@@ -64,16 +62,24 @@ impl CommandHandler for LibraryQqCommand {
                 if let Some(reply) = ctx.require_private("续借图书", "借阅记录属于个人数据")? {
                     return Ok(Some(Reply::text(reply)));
                 }
-                self.renew(arg.trim()).await
+                let worker = self.clone();
+                let arg = arg.trim().to_owned();
+                ru41::plugins::bridge(async move { worker.renew(&arg).await }).await
             }),
             // 找书是公开馆藏检索（无个人数据），无需私聊闸。
-            "找书" | "查书" | "馆藏" => Box::pin(async move { self.search(arg.trim()).await }),
+            "找书" | "查书" | "馆藏" => Box::pin(async move {
+                let worker = self.clone();
+                let arg = arg.trim().to_owned();
+                ru41::plugins::bridge(async move { worker.search(&arg).await }).await
+            }),
             // 追书是个人跟踪清单（含推送），与借阅同级私聊闸。
             "追书" | "订书" => Box::pin(async move {
                 if let Some(reply) = ctx.require_private("追书", "追书清单属于个人数据")? {
                     return Ok(Some(Reply::text(reply)));
                 }
-                self.watch_cmd(arg.trim()).await
+                let worker = self.clone();
+                let arg = arg.trim().to_owned();
+                ru41::plugins::bridge(async move { worker.watch_cmd(&arg).await }).await
             }),
             _ => self.handle(arg, ctx),
         }
@@ -81,6 +87,20 @@ impl CommandHandler for LibraryQqCommand {
 }
 
 impl LibraryQqCommand {
+    async fn dispatch(&self, arg: String) -> Result<Option<Reply>> {
+        let trimmed = arg.trim();
+        if trimmed.is_empty() || trimmed == "在借" {
+            self.list_loans().await
+        } else if trimmed == "历史" {
+            self.list_history().await
+        } else {
+            // 「/借阅 xxx」不拦截书名查询以外的东西：交给 Agent。
+            Ok(Some(Reply::text(
+                "用法：`/借阅` 查看在借清单；`/借阅 历史` 查看最近借阅；`/续借 书名` 续借；`/找书 关键词` 查馆藏。",
+            )))
+        }
+    }
+
     async fn list_loans(&self) -> Result<Option<Reply>> {
         if let Err(err) = self.client.ensure_session().await {
             return Ok(Some(Reply::text(format!(
