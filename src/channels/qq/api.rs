@@ -281,7 +281,10 @@ impl QqApiClient {
     /// Markdown 内嵌图片素材上传（prepare → PUT 预签名 → complete），
     /// 返回 `qqbot-media://` 引用，可直接写进 markdown content 由平台转存渲染。
     /// 公网 URL 转存走不通的图（如带签名的 CDN，实测 40093007）必须走这条路。
-    pub async fn upload_markdown_image(&self, media: &crate::ports::channel::MediaRef) -> Result<String> {
+    pub async fn upload_markdown_image(
+        &self,
+        media: &crate::ports::channel::MediaRef,
+    ) -> Result<String> {
         let bytes = if media.is_remote() {
             self.http
                 .get(&media.source)
@@ -310,7 +313,8 @@ impl QqApiClient {
         // 90 天滑动过期、每次引用自动续期，命中缓存就不用再传。
         let cache_path = markdown_image_cache_path();
         if let Ok(raw) = std::fs::read_to_string(&cache_path)
-            && let Ok(cache) = serde_json::from_str::<std::collections::HashMap<String, String>>(&raw)
+            && let Ok(cache) =
+                serde_json::from_str::<std::collections::HashMap<String, String>>(&raw)
             && let Some(url) = cache.get(&md5)
         {
             return Ok(url.clone());
@@ -391,10 +395,11 @@ impl QqApiClient {
             .and_then(|v| v.as_str())
             .map(str::to_owned)
             .with_context(|| format!("complete missing url: {complete}"))?;
-        let mut cache: std::collections::HashMap<String, String> = std::fs::read_to_string(&cache_path)
-            .ok()
-            .and_then(|raw| serde_json::from_str(&raw).ok())
-            .unwrap_or_default();
+        let mut cache: std::collections::HashMap<String, String> =
+            std::fs::read_to_string(&cache_path)
+                .ok()
+                .and_then(|raw| serde_json::from_str(&raw).ok())
+                .unwrap_or_default();
         cache.insert(md5, url.clone());
         if let Ok(json) = serde_json::to_string(&cache) {
             let _ = std::fs::write(&cache_path, json);
