@@ -100,7 +100,9 @@ impl ObsidianSectionExt for crate::bootstrap::config::ObsidianSection {
 
 /// AI 合并设置：显式 merge_ai=false 关闭；其余情况 key 就位即启用，
 /// key 缺失不阻断启动（冲突时降级为通知人工）。
-fn resolve_merge(section: &crate::bootstrap::config::ObsidianSection) -> Option<crate::app::merge::MergeSettings> {
+fn resolve_merge(
+    section: &crate::bootstrap::config::ObsidianSection,
+) -> Option<crate::app::merge::MergeSettings> {
     use crate::bootstrap::config::ObsidianSection as S;
     if section.merge_ai == Some(false) {
         return None;
@@ -109,9 +111,7 @@ fn resolve_merge(section: &crate::bootstrap::config::ObsidianSection) -> Option<
         .merge_api_key_env
         .clone()
         .unwrap_or_else(|| S::DEFAULT_MERGE_KEY_ENV.into());
-    let api_key = std::env::var(&env)
-        .ok()
-        .filter(|v| !v.trim().is_empty())?;
+    let api_key = std::env::var(&env).ok().filter(|v| !v.trim().is_empty())?;
     Some(crate::app::merge::MergeSettings {
         base_url: section
             .merge_base_url
@@ -274,8 +274,7 @@ impl ObsidianService {
                     if let Err(error) = self.merge_conflicts(&files).await {
                         eprintln!("[obsidian] vault conflict ai-merge failed: {error:#}");
                         let vault = self.vault.clone();
-                        let _ =
-                            tokio::task::spawn_blocking(move || vault.rebase_abort()).await;
+                        let _ = tokio::task::spawn_blocking(move || vault.rebase_abort()).await;
                         self.notify_merge_failed(&files, &error).await?;
                     }
                 }
@@ -666,7 +665,10 @@ impl ObsidianService {
             .merge
             .clone()
             .context("AI 合并未启用或无 key（obsidian.merge_* / ZHIPU_API_KEY）")?;
-        if let Some(bad) = files.iter().find(|f| !crate::app::merge::is_mergeable_path(f)) {
+        if let Some(bad) = files
+            .iter()
+            .find(|f| !crate::app::merge::is_mergeable_path(f))
+        {
             bail!("含非文本冲突文件 {bad}，交人工处理");
         }
         let resolver = crate::app::merge::MergeResolver::new(

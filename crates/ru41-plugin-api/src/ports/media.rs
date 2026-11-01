@@ -33,14 +33,12 @@ impl MediaRef {
     }
 
     pub fn display_name(&self) -> &str {
-        self.filename
-            .as_deref()
-            .unwrap_or_else(|| {
-                self.source
-                    .rsplit(['/', '\\'])
-                    .next()
-                    .filter(|s| !s.is_empty())
-                    .unwrap_or("附件")
-            })
+        self.filename.as_deref().unwrap_or_else(|| {
+            self.source
+                .rsplit(['/', '\\'])
+                .next()
+                .filter(|s| !s.is_empty())
+                .unwrap_or("附件")
+        })
     }
 }

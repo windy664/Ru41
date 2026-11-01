@@ -507,9 +507,8 @@ impl QqBot {
 /// 取消息事件携带的附件列表；非消息事件返回空。
 fn event_attachments(event: &GatewayEvent) -> &[gateway::MessageAttachment] {
     match event {
-        GatewayEvent::GroupMessage { attachments, .. } | GatewayEvent::C2cMessage { attachments, .. } => {
-            attachments
-        }
+        GatewayEvent::GroupMessage { attachments, .. }
+        | GatewayEvent::C2cMessage { attachments, .. } => attachments,
         _ => &[],
     }
 }
