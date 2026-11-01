@@ -324,7 +324,8 @@ impl LibraryQqCommand {
                     ));
                 }
             }
-            // 前 3 条附封面：下载到本地临时文件，渠道层按字节上传为图片消息。
+            // 前 3 条附封面：下载到本地，文本里嵌 ru41-media://N 占位符，
+            // 渠道层上传为 QQ 素材后替换引用，图片直接内嵌在 markdown 里。
             if index < 3
                 && let Ok(info) = self.client.item_info(book.record_id).await
                 && let Some(cover) = info.cover_url
@@ -334,8 +335,9 @@ impl LibraryQqCommand {
                     ru41::ports::channel::MediaKind::Image,
                     path,
                 );
-                media.filename = Some(format!("《{}》封面.jpg", book.title));
+                media.filename = Some(format!("cover-{}.jpg", book.record_id));
                 covers.push(media);
+                lines.push(format!("![《{}》封面](ru41-media://{})", book.title, covers.len() - 1));
             }
         }
         if page.num_found > 5 {

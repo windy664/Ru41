@@ -323,18 +323,43 @@ impl QqBot {
 
     /// 命令的即时被动回复；msg_seq 经共享序号器分配，与终态/进度通知不撞车。
     /// 有按钮走 markdown + keyboard 通道（平台不支持时发送层自动降级纯文本）。
+    /// 文本里的 `ru41-media://N` 占位符指向 reply.media[N]，这里上传为 markdown
+    /// 素材（qqbot-media:// 引用）后内嵌；上传失败降级为独立媒体消息。
     async fn reply(&self, target: &str, msg_id: &str, reply: &Reply) -> Result<()> {
+        let mut text = reply.text.clone();
+        let mut inlined = vec![false; reply.media.len()];
+        for (index, media) in reply.media.iter().enumerate() {
+            let placeholder = format!("ru41-media://{index}");
+            if !text.contains(&placeholder) {
+                continue;
+            }
+            match self.api.upload_markdown_image(media).await {
+                Ok(reference) => {
+                    text = text.replace(&placeholder, &reference);
+                    inlined[index] = true;
+                }
+                Err(err) => {
+                    eprintln!("[qq.reply] markdown 素材上传失败 {}: {err:#}", media.source);
+                    // 清掉坏掉的图片语法，媒体走独立消息发送。
+                    text = text
+                        .lines()
+                        .filter(|line| !line.contains(&placeholder))
+                        .collect::<Vec<_>>()
+                        .join("\n");
+                }
+            }
+        }
         let seq = self.sequencer.next(msg_id);
         if let Some(group) = target.strip_prefix(TARGET_GROUP_PREFIX) {
             match &reply.markup {
                 Some(markup) if !markup.is_empty() => {
                     self.api
-                        .send_group_markup(group, &reply.text, markup, Some(msg_id), seq)
+                        .send_group_markup(group, &text, markup, Some(msg_id), seq)
                         .await?;
                 }
                 _ => {
                     self.api
-                        .send_group_text(group, &reply.text, Some(msg_id), seq)
+                        .send_group_text(group, &text, Some(msg_id), seq)
                         .await?;
                 }
             }
@@ -342,21 +367,24 @@ impl QqBot {
             match &reply.markup {
                 Some(markup) if !markup.is_empty() => {
                     self.api
-                        .send_c2c_markup(user, &reply.text, markup, Some(msg_id), seq)
+                        .send_c2c_markup(user, &text, markup, Some(msg_id), seq)
                         .await?;
                 }
                 _ => {
                     self.api
-                        .send_c2c_text(user, &reply.text, Some(msg_id), seq)
+                        .send_c2c_text(user, &text, Some(msg_id), seq)
                         .await?;
                 }
             }
         } else {
             bail!("unknown qq notify target: {target}")
         }
-        // 富媒体附件（封面图等）跟在文本后逐条发；单条失败只记日志，
+        // 富媒体附件（未内嵌成功的）跟在文本后逐条发；单条失败只记日志，
         // 不影响已经送达的正文。
-        for media in &reply.media {
+        for (index, media) in reply.media.iter().enumerate() {
+            if inlined.get(index).copied().unwrap_or(false) {
+                continue;
+            }
             let media_seq = self.sequencer.next(msg_id);
             let result = if let Some(group) = target.strip_prefix(TARGET_GROUP_PREFIX) {
                 self.api
