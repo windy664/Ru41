@@ -569,7 +569,10 @@ fn qq_keyboard(markup: &crate::ports::commands::ReplyMarkup) -> Option<serde_jso
                         },
                         "action": {
                             "type": 2,
-                            "permission": { "type": 0 },
+                            // 0=指定用户（必须带 specify_user_ids，否则所有人点都
+                            // toast「无权限操作」）；2=所有人。鉴权留在服务端
+                            // （require_private 等），按钮层不设限。
+                            "permission": { "type": 2 },
                             "data": button.command,
                             "reply": true,
                             "enter": true
