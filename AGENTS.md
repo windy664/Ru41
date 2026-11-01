@@ -30,6 +30,8 @@ migrations/    数据库迁移（核心领地）
   本地产物路径：`plugins/target-plugins/release/libru41_plugin_<名>.so`（scp 部署用这条）。
 - 插件依赖主 crate 走 path；`ru41::ports::vault::Vault` 等公共 trait 变更会让所有插件的测试 fake 同步失编译（`sync` 返回 `SyncOutcome`，记得有 `resolve_conflict`/`rebase_continue`/`rebase_abort`）。
 - 插件技能包在 `plugins/<名>/skills/<技能>/SKILL.md`，由 `src/skills/` 加载注入 agent prompt。
+  容器内从镜像的 `/usr/share/ru41/{modules,plugins}/` 读（`/etc/ru41` 被宿主机
+  bind mount 整体遮蔽，技能包放那里等于没有）；改技能必须走镜像部署，热更 .so 不带技能。
 
 ## 部署链（生产机 backup238 / 192.168.1.223，目录 /home/windy2/ru41-mimo-smoke）
 
