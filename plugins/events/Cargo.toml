@@ -1,0 +1,24 @@
+[package]
+name = "ru41-plugin-events"
+version = "0.1.0"
+edition = "2024"
+description = "活动日程总览（茶思屋会议日历）：论坛/会议/直播追踪 → vault 总览 + 新活动通知"
+
+[lib]
+crate-type = ["cdylib", "rlib"]
+
+[features]
+plugin-entry = []
+
+[dependencies]
+# 必须与宿主同一版本（ABI 握手校验 api crate 版本 + deps stamp）。
+ru41 = { path = "../.." }
+anyhow = "1"
+chrono = { version = "0.4", default-features = false, features = ["std", "clock"] }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+reqwest = { version = "0.12", default-features = false, features = ["rustls-tls", "json"] }
+tokio = { version = "1", features = ["full"] }
+
+[dev-dependencies]
+tempfile = "3"

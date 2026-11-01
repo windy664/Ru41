@@ -217,6 +217,18 @@ services:
       - ${RU41_VAULT_PATH:?set RU41_VAULT_PATH to the vault clone dir}:/vault
     command: ["--config", "/etc/ru41/ru41.toml", "--db", "/data/state.db", "research", "run"]
 
+  # 活动日程总览：茶思屋会议日历 → 科技向筛选 → vault 活动总览.md，
+  # [ru41] 自提交，需挂载 Vault；只沉淀 Obsidian，不推送通知。
+  events:
+    <<: *ru41-common
+    profiles: [events]
+    volumes:
+      - ../ru41.toml:/etc/ru41/ru41.toml:ro
+      - ../.ru41:/data
+      - ../.ru41/plugins:/etc/ru41/plugins:ro
+      - ${RU41_VAULT_PATH:?set RU41_VAULT_PATH to the vault clone dir}:/vault
+    command: ["--config", "/etc/ru41/ru41.toml", "--db", "/data/state.db", "events", "run"]
+
   # 竞赛日程总览：多源赛事筛选（有奖+大湾区+线上）→ vault 日程总览.md，
   # [ru41] 自提交，需挂载 Vault。
   competitions:
