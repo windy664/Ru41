@@ -99,13 +99,16 @@ fn row_score(row: &CompetitionRow) -> u8 {
     !row.prize.is_empty() as u8 + row.deadline.is_some() as u8 + (row.source == "HackerTrip") as u8
 }
 
-/// 全量入口前的 prize 闸门：常规要求现金/奖品/权益；CTFtime 的权重豁免行
-/// （"权重 N（奖金未公布）"）由 collect_ctftime 判定后放行。
+/// 全量入口前的 prize 闸门：常规要求现金/奖品/权益；CTFtime 的权重/顶级赛事
+/// 豁免行（"权重 N（奖金未公布）" / "顶级赛事（奖金未公布）"）由
+/// collect_ctftime 判定后放行。
 fn prize_gate(row: &CompetitionRow) -> bool {
     if row.prize.is_empty() {
         return false;
     }
-    has_prize(&row.prize) || (row.source == "CTFtime" && row.prize.contains("权重"))
+    has_prize(&row.prize)
+        || (row.source == "CTFtime"
+            && (row.prize.contains("权重") || row.prize.contains("顶级赛事")))
 }
 
 /// 全量入口：逐条应用口径 → 未来过滤 → 去重 → 大湾区优先 + 截止日升序。
@@ -356,10 +359,28 @@ pub fn collect_datafountain(
 }
 
 /// CTFtime（全球 CTF 日历，国内 S/A 级安全赛赛季在此登记）：
-/// 无报名截止字段，用开赛日做行动节点；奖金常 TBD，weight ≥ 20 的大赛
-/// 即使奖金未公布也保留（prize 列写"权重 N（奖金未公布）"，靠
-/// build_rows 的 ctftime 豁免过 prize 闸门）。
+/// 无报名截止字段，用开赛日做行动节点；奖金常 TBD。
+/// ⚠️ weight 只在**赛后**由参赛队投票累计，未开赛的赛事 weight 恒 0——
+/// 「weight ≥ 20 是大赛线」对已评分赛事成立，但对未开赛赛事会把强网杯
+/// 这样的 S 级赛事静默丢掉（2026-11-01 漏报事故）。所以规则是：
+/// 有奖金 → 留；weight ≥ 20 → 留；命中顶级赛事白名单（按名字）→ 留。
 /// CTFtime 的 prize 字段常是多行英文段落（含换行/pipe），进表格前压成单行。
+const TOP_TIER_CTF: &[&str] = &[
+    // 国内 S/A 级（中英文写法都收）
+    "强网", "qiangwang", "网鼎", "wangding", "长城杯", "tctf", "xctf", "bytectf",
+    "ciscn", "n1ctf", "0ctf", "alictf", "陇剑杯", "羊城杯", "湾区杯", "粤安杯",
+    "iscc", "祥云杯", "华秦杯",
+    // 国际公认大赛
+    "defcon", "def con", "hitcon", "realworld", "corctf", "google ctf",
+    "plaidctf", "picoctf", "asis ctf", "balsn", "hack.lu", "codegate",
+    "sekai", "idek", "bi0s", "33c3",
+];
+
+/// 顶级赛事按名放行（大小写不敏感的包含匹配）。
+fn is_top_tier_ctf(title: &str) -> bool {
+    let lower = title.to_lowercase();
+    TOP_TIER_CTF.iter().any(|k| lower.contains(k))
+}
 fn one_line(text: &str) -> String {
     text.split_whitespace()
         .collect::<Vec<_>>()
@@ -378,6 +399,8 @@ pub fn collect_ctftime(
         prizes.chars().take(40).collect()
     } else if ev.weight >= 20.0 {
         format!("权重 {:.0}（奖金未公布）", ev.weight)
+    } else if is_top_tier_ctf(&ev.title) {
+        "顶级赛事（奖金未公布）".to_owned()
     } else {
         return None;
     };
@@ -568,6 +591,23 @@ mod tests {
         assert!(!r.prize.contains('\n'), "prize 不得含换行: {:?}", r.prize);
         assert!(!r.prize.contains('|'));
         assert!(r.prize.contains("1100$"));
+        // 2026-11-01 事故回归：强网杯资格赛未开赛 weight=0 + 奖金 TBD，
+        // 顶级赛事白名单必须放行，且能过 build_rows 的 prize 闸门。
+        let r = collect_ctftime(&ev(
+            "2026 Qiangwang Challenge on Cyber Mimic Defense Qualification",
+            "TBD",
+            0.0,
+            false,
+            "",
+        ))
+        .expect("强网杯 weight=0 也必须保留");
+        assert_eq!(r.prize, "顶级赛事（奖金未公布）");
+        let out = build_rows(vec![r], today);
+        assert_eq!(out.len(), 1, "顶级赛事豁免行必须过 prize 闸门");
+        // 中文名同样命中
+        assert!(collect_ctftime(&ev("第九届强网杯全国网络安全挑战赛", "TBD", 0.0, false, "")).is_some());
+        // 非白名单小赛照旧丢
+        assert!(collect_ctftime(&ev("Random Small CTF", "TBD", 0.0, false, "")).is_none());
     }
 
     #[test]
