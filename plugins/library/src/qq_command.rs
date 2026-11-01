@@ -183,24 +183,41 @@ impl LibraryQqCommand {
     }
 
     /// `/找书 关键词`：公开馆藏检索（免登录），附前几条的在架状态。
+    /// 多词查询整串 keyWord 恒 0（如「rust 清华大学」），自动拆成
+    /// 关键词＋出版社的高级检索降级。
     async fn search(&self, query: &str) -> Result<Option<Reply>> {
         if query.is_empty() {
             return Ok(Some(Reply::text(
                 "用法：`/找书 关键词`（书名/作者/主题词均可）".to_owned(),
             )));
         }
-        let page = match self.client.search_books(query, 1, 5).await {
+        let mut page = match self.client.search_books(query, 1, 5).await {
             Ok(page) => page,
             Err(err) => {
                 return Ok(Some(Reply::text(format!("## 馆藏检索失败\n\n{err}"))));
             }
         };
+        // 多词 0 命中 → 拆成高级检索（关键词＋出版社 AND）。
+        let mut fallback_note: Option<String> = None;
+        if page.books.is_empty() {
+            let items = crate::source::build_search_items(query);
+            if !items.is_empty()
+                && let Ok(advanced) = self.client.advanced_search(&items, 1, 5).await
+                && !advanced.books.is_empty()
+            {
+                fallback_note = Some(crate::source::describe_search_items(&items));
+                page = advanced;
+            }
+        }
         if page.books.is_empty() {
             return Ok(Some(Reply::text(format!(
                 "## 馆藏检索\n\n「{query}」没有命中馆藏。\n\n> 换个关键词试试（可用更泛的词，如「深度学习」而非全名）。"
             ))));
         }
         let mut lines = vec![format!("## 找书「{query}」（共 {} 条）\n", page.num_found)];
+        if let Some(note) = fallback_note {
+            lines.push(format!("*整串无命中，已自动拆分为 {note} 组合检索*\n"));
+        }
         let top = page.books.len().min(3);
         for (index, book) in page.books.iter().enumerate() {
             let meta = [
