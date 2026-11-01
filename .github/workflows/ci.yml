@@ -1,12 +1,26 @@
-name: Rust checks
+name: CI
+
+# 单次推送 = 单条运行：check（fmt/密钥扫描/clippy/test）→ image（镜像构建推 GHCR）。
+# 文档类提交整体跳过，不产生运行记录。
 on:
   push:
-    # 只跑 main：我们每次推送是 main + exp/plugin-api 双分支同步推，
-    # 不设限会每次产生两条完全一样的检查记录。
     branches: [main]
+    paths-ignore:
+      - 'docs/**'
+      - '**.md'
+      - 'sidecar/**'
   pull_request:
+  workflow_dispatch:
+
 permissions:
   contents: read
+  packages: write
+
+# 新提交自动取消同分支过期的运行，不排队浪费构建时长。
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
 jobs:
   check:
     runs-on: ubuntu-latest
@@ -26,13 +40,44 @@ jobs:
       RU41_TEST_PG_URL: postgres://postgres:postgres@localhost:5432/postgres
     steps:
       - uses: actions/checkout@v4
+      # 钉 1.99 不跟 stable 漂移：新 clippy lint 不会突然卡死部署链
+      # （image 挂在 check 后面，check 红 = 出不了镜像）。升级工具链时
+      # 本地、CI、Dockerfile（rust:1.98）三处一起动。
       - name: Install Rust
-        run: rustup toolchain install stable --profile minimal --component rustfmt --component clippy
-      - run: cargo +stable fmt --all -- --check
+        run: rustup toolchain install 1.99 --profile minimal --component rustfmt --component clippy
+      - run: cargo +1.99 fmt --all -- --check
       - name: Secret scan（防手滑提交 token/手机号/openid）
         run: |
           ! grep -rInE "node[0-9a-z]{30,}|(^|[^0-9])1[3-9][0-9]{9}([^0-9]|$)|opXvX5|o6gXt5" \
             --include="*.rs" --include="*.toml" --include="*.md" \
             --exclude-dir=target --exclude-dir=.github --exclude=sanitize.rs .
-      - run: cargo +stable clippy --locked --all-targets -- -D warnings
-      - run: cargo +stable test --locked
+      - run: cargo +1.99 clippy --locked --all-targets -- -D warnings
+      - run: cargo +1.99 test --locked
+
+  # 构建完整镜像（二进制 + 16 插件）推到 GHCR，服务器只需 docker pull。
+  # check 红了不浪费构建；PR 不推镜像。
+  image:
+    needs: check
+    if: github.event_name != 'pull_request'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: docker/setup-buildx-action@v3
+
+      - uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - uses: docker/build-push-action@v6
+        with:
+          context: .
+          build-args: RU41_GIT_HASH_OVERRIDE=${{ github.sha }}
+          tags: |
+            ghcr.io/windy664/ru41:latest
+            ghcr.io/windy664/ru41:${{ github.sha }}
+          push: true
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
