@@ -142,6 +142,13 @@ groupitems 单册字段：callNo、barcode/propNo、locationName(计算机书库
 realLocationName/curLocationName(归属 vs 当前馆藏地)、processType(在架/借出)、
 inDate、listPrice
 
+⚠️ **样本库陷阱**：`广州校区样本书库` 的单册字段与普通馆藏完全一致
+（itemPolicyName=普通、processType=在架），**只能靠 locationName 含「样本」
+识别**，样本仅供馆内阅览不外借——/找书 的可借数必须排除样本。
+已测馆藏地全集：社科书库、自科书库、计算机书库、文学书库、密集书库、
+过刊库、网络系资料室、广州校区样本书库、广州复本库、江门分馆、
+江分计算机书库、江分综合书库、江门复本库（复本库实测可借出，不算样本）。
+
 ### 前端产物结构（再逆向备用）
 
 - SPA 壳：`findgzus.libsp.cn/` → static12.libsp.cn/static/js/{manifest,0,20}.js
