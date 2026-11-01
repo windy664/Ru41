@@ -145,6 +145,14 @@ pub struct HoldingItem {
     pub process_type: Option<String>,
 }
 
+/// 书目附加信息（封面 + 在架数）。
+#[derive(Clone, Debug, Default)]
+pub struct ItemInfo {
+    /// 独秀封面 URL（cover01.chaoxing.com，公网可访问，可直接嵌 markdown 图片）。
+    pub cover_url: Option<String>,
+    pub on_shelf_count: Option<i64>,
+}
+
 impl HoldingItem {
     /// 是否可借（在架）。
     pub fn is_on_shelf(&self) -> bool {
@@ -993,6 +1001,28 @@ impl LibraryClient {
             );
         }
         Ok(value)
+    }
+
+    /// 书目附加信息（getPItemAndOnShelfCountAndDuxiuImageUrl）：
+    /// 独秀封面 URL + 在架数。payload 是单对象（title/isbn/recordId），不是数组。
+    pub async fn item_info(&self, record_id: i64) -> Result<ItemInfo> {
+        let body = serde_json::json!({
+            "title": "",
+            "isbn": "",
+            "recordId": record_id,
+        });
+        let value = self
+            .find_public_post("/find/unify/getPItemAndOnShelfCountAndDuxiuImageUrl", body)
+            .await?;
+        let data = value.get("data").cloned().unwrap_or(serde_json::Value::Null);
+        Ok(ItemInfo {
+            cover_url: data
+                .get("duxiuImageUrl")
+                .and_then(serde_json::Value::as_str)
+                .filter(|s| !s.is_empty())
+                .map(str::to_owned),
+            on_shelf_count: data.get("onShelfCount").and_then(serde_json::Value::as_i64),
+        })
     }
 
     /// 书目题名（getBookDetail 的 bean2List 里 cnb01「题名/责任者」，
