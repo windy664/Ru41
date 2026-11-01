@@ -106,7 +106,23 @@ ecarduser 改 .111 与 ecard 容器一致）。`ru41-roll.py` 按 ExtraHosts 原
 --config /etc/ru41/ru41.toml --db /data/state.db jwxt poll` 以守护进程同参
 手动触发（⚠️ 不带 --db 会落到容器内不存在的本地路径，读到空库假象）。
 
-## 五、附属规划（已对齐）
+## 五、空间预约侦察结论（2026-11-01，不可做）
+
+「空间预约」不在 libsp 移动图书馆里，入口是超星另一产品 `reserve.chaoxing.com`。
+
+实测（探针脚本走完整 CAS→统一认证链）：
+- unified-auth 会话可迁移到超星网页会话：`GET passport2.chaoxing.com/wlogin`
+  带 unified-auth cookie 走一遍，即拿到 `.chaoxing.com` 域全套 cookie
+  （`_uid/fid/vc3/p_auth_token/...`），`i.chaoxing.com` 个人空间 200 验证为真登录态；
+- 本校 chaoxing fid=30155（与 libsp 的 groupCode=201550 不同命名空间）；
+- 但带真实会话访问 `reserve.chaoxing.com` 全部 404（`/front/apps/reserve/*`、
+  `/front/third/seat`）；用户在学习通 App 点「空间预约」也报
+  「该应用只允许本单位用户使用」。
+- 结论：**学校未开通超星空间预约应用**，非登录链问题；学校开通后可复用
+  上述迁移链直接接入。libsp 内的 `/find/onlineReturn/*`+`/find/order/*`
+  是「预约借书」（网借快递），不是空间预约。
+
+## 六、附属规划（已对齐）
 
 - P0：到期催还提醒（poll loanList，应还前 3/1/0 天提醒）+ 提醒消息带「续借」
   按钮（复用 ports::commands::ReplyMarkup，点击=以用户身份发 `/续借 书名`）
