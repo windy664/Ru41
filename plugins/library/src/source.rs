@@ -908,7 +908,7 @@ impl LibraryClient {
             "matchMode": "2",
             "page": page,
             "rows": rows,
-            "sortField": "in_date",
+            "sortField": "relevance",
             "sortClause": "desc",
         });
         let value = self.find_public_post("/find/unify/search", body).await?;
@@ -1010,6 +1010,28 @@ impl LibraryClient {
             );
         }
         Ok(value)
+    }
+
+    /// 下载封面到本地临时文件。QQ 服务器拉不动独秀 CDN 的签名 URL
+    /// （实测富媒体上传报 40093007「富媒体文件下载失败」），必须自下载
+    /// 后走字节上传；返回本地路径供渠道层上传。
+    pub async fn download_cover(&self, url: &str, record_id: i64) -> Result<String> {
+        let bytes = self
+            .http_public
+            .get(url)
+            .send()
+            .await
+            .context("封面下载请求失败")?
+            .error_for_status()
+            .context("封面下载被拒")?
+            .bytes()
+            .await
+            .context("封面字节读取失败")?;
+        let dir = std::env::temp_dir().join("ru41-lib-covers");
+        std::fs::create_dir_all(&dir).context("封面临时目录创建失败")?;
+        let path = dir.join(format!("{record_id}.jpg"));
+        std::fs::write(&path, &bytes).context("封面写入临时目录失败")?;
+        Ok(path.to_string_lossy().into_owned())
     }
 
     /// 书目附加信息（getPItemAndOnShelfCountAndDuxiuImageUrl）：
