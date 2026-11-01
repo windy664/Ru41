@@ -200,19 +200,41 @@ impl LibraryQqCommand {
                 if items.is_empty() {
                     lines.push("　↳ 无单册馆藏记录".into());
                 } else {
-                    let on_shelf = items.iter().filter(|h| h.is_on_shelf()).count();
-                    let locations: Vec<String> = items
+                    // 样本库仅供阅览不算可借；按馆藏地分组展示在架情况。
+                    let loanable = items
                         .iter()
-                        .filter_map(|h| h.location_name.clone())
-                        .collect::<std::collections::BTreeSet<_>>()
-                        .into_iter()
-                        .collect();
-                    lines.push(format!(
-                        "　↳ 在架 {}/{} 册（{}）",
-                        on_shelf,
-                        items.len(),
-                        locations.join("、")
-                    ));
+                        .filter(|h| h.is_on_shelf() && !h.is_sample())
+                        .count();
+                    let mut order: Vec<String> = Vec::new();
+                    let mut parts: Vec<(String, usize, usize, bool)> = Vec::new();
+                    for item in &items {
+                        let loc = item.location_name.clone().unwrap_or_else(|| "未知".into());
+                        let sample = item.is_sample();
+                        let idx = order
+                            .iter()
+                            .position(|l| *l == loc)
+                            .unwrap_or_else(|| {
+                                order.push(loc.clone());
+                                parts.push((loc, 0, 0, sample));
+                                parts.len() - 1
+                            });
+                        parts[idx].2 += 1;
+                        if item.is_on_shelf() {
+                            parts[idx].1 += 1;
+                        }
+                    }
+                    let detail = parts
+                        .iter()
+                        .map(|(loc, on, total, sample)| {
+                            if *sample {
+                                format!("{loc} {total}（仅供阅览）")
+                            } else {
+                                format!("{loc} 在架{on}/{total}")
+                            }
+                        })
+                        .collect::<Vec<_>>()
+                        .join("、");
+                    lines.push(format!("　↳ 可借 {loanable} 册｜{detail}"));
                 }
             }
         }

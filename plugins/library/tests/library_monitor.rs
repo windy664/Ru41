@@ -317,7 +317,9 @@ fn mock_find_api() -> (String, Arc<Mutex<Vec<String>>>) {
                     {"callNo":"TP273/248","barcode":"C0001","locationName":"计算机书库",
                      "curLocationName":"计算机书库","processType":"在架"},
                     {"callNo":"TP273/248","barcode":"C0002","locationName":"计算机书库",
-                     "curLocationName":"借还书区","processType":"借出"}
+                     "curLocationName":"借还书区","processType":"借出"},
+                    {"callNo":"TP273/248","barcode":"C0003","locationName":"广州校区样本书库",
+                     "curLocationName":"广州校区样本书库","processType":"在架"}
                 ]}"#
             } else {
                 r#"{"success":false,"errCode":404,"message":"unknown path"}"#
@@ -364,12 +366,16 @@ async fn search_books_uses_public_headers_and_parses() {
     // callNoOne 缺失时回退 callNo[0]。
     assert_eq!(page.books[1].call_no.as_deref(), Some("TP311.56/731"));
 
-    // 馆藏：在架 1/2。
+    // 馆藏：在架 1/2（样本库不计可借）。
     let items = client.holdings(279213).await.unwrap();
-    assert_eq!(items.len(), 2);
+    assert_eq!(items.len(), 3);
     assert!(items[0].is_on_shelf());
     assert!(!items[1].is_on_shelf());
     assert_eq!(items[1].cur_location_name.as_deref(), Some("借还书区"));
+    // 样本库单册：在架但仅供阅览。
+    assert!(items[2].is_on_shelf());
+    assert!(items[2].is_sample());
+    assert!(!items[0].is_sample());
 
     // 公开两头：groupCode + mappingPath=gzus；绝不带 jwt / cookie。
     {

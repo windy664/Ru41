@@ -97,6 +97,14 @@ impl HoldingItem {
     pub fn is_on_shelf(&self) -> bool {
         self.process_type.as_deref() == Some("在架")
     }
+
+    /// 样本库单册：仅供馆内阅览，不外借（字段与普通馆藏一致，
+    /// 只能靠馆藏地名字识别，如「广州校区样本书库」）。
+    pub fn is_sample(&self) -> bool {
+        self.location_name
+            .as_deref()
+            .is_some_and(|l| l.contains("样本"))
+    }
 }
 
 impl LoanRecord {
