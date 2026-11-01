@@ -198,6 +198,23 @@ fn build_http(user_agent: &'static str, jar: &Arc<CookieJar>, hosts: &[(&str, u1
     builder.build().expect("reqwest client build")
 }
 
+/// 调试用：不跟随重定向的客户端（手动逐跳检查 SSO 响应）。
+fn build_http_noredir(
+    user_agent: &'static str,
+    jar: &Arc<CookieJar>,
+    hosts: &[(&str, u16)],
+) -> reqwest::Client {
+    let mut builder = reqwest::Client::builder()
+        .user_agent(user_agent)
+        .timeout(ru41::util::HTTP_TIMEOUT)
+        .cookie_provider(jar.clone())
+        .redirect(reqwest::redirect::Policy::none());
+    for o in ru41::util::dns_fallback_overrides(hosts) {
+        builder = builder.resolve(&o.host, o.addr);
+    }
+    builder.build().expect("reqwest client build")
+}
+
 fn random_uid() -> String {
     let mut rng = rand::rng();
     (0..4).map(|_| format!("{:08x}", rng.random::<u32>())).collect()
@@ -244,6 +261,7 @@ pub fn jwt_ttl(jwt: &str) -> Option<i64> {
 pub struct LibraryClient {
     jar: Arc<CookieJar>,
     http: reqwest::Client,
+    http_noredir: reqwest::Client,
     username: String,
     password: String,
     cas_base: String,
@@ -282,13 +300,19 @@ impl LibraryClient {
             (mobile_host.as_str(), 443),
         ];
         let http = build_http(
-            concat!("ru41/", env!("CARGO_PKG_VERSION")),
+            "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/143.0.0.0 Safari/537.36",
+            &jar,
+            &hosts,
+        );
+        let http_noredir = build_http_noredir(
+            "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/143.0.0.0 Safari/537.36",
             &jar,
             &hosts,
         );
         Self {
             jar,
             http,
+            http_noredir,
             username: username.into(),
             password: password.into(),
             cas_base,
@@ -421,6 +445,51 @@ impl LibraryClient {
             .context("超星验票页读取失败")?;
         let (data, time, enc) = extract_sso_params(&html)
             .context("超星验票页缺少 data/time/enc 参数（页面结构可能变更）")?;
+
+        // 5) libsp 落地 → 抓 JWT 与鉴权头名。
+        // 必须手动逐跳跟随：jwt 在 302 Location 的 `#/Home?jwt=...` 片段里，
+        // reqwest 自动重定向会剥掉 fragment（fragments 不随请求发送），
+        // response.url() 永远拿不到 jwt。
+        let mut current = format!(
+            "{}/find/sso/login/gzus/1?data={}&time={}&enc={}",
+            self.find_base,
+            data.as_str(),
+            time.as_str(),
+            enc.as_str()
+        );
+        let mut hop = 0;
+        let response = loop {
+            hop += 1;
+            let resp = self
+                .http_noredir
+                .get(&current)
+                .send()
+                .await
+                .context("libsp SSO 落地失败")?;
+            let status = resp.status();
+            let location = resp
+                .headers()
+                .get(reqwest::header::LOCATION)
+                .and_then(|v| v.to_str().ok())
+                .map(str::to_owned);
+            match location {
+                Some(next) if status.is_redirection() && hop < 6 => {
+                    current = if next.starts_with("http") {
+                        next
+                    } else {
+                        format!("{}{next}", self.find_base)
+                    };
+                }
+                _ => break resp,
+            }
+        };
+        let final_url = current.clone();
+        let _ = response.error_for_status();
+        let (jwt, jwt_header) = extract_jwt(&final_url)
+            .with_context(|| format!("libsp 落地 URL 缺少 jwt 参数：{final_url}"))?;
+        self.persist_jwt(&jwt, &jwt_header)?;
+
+        // 6) 超星会话建立（library 业务不依赖，仅为保持与浏览器流程一致的完整链）。
         let login_status: serde_json::Value = self
             .http
             .get(format!(
@@ -443,24 +512,6 @@ impl LibraryClient {
         if login_status.get("status") != Some(&serde_json::Value::Bool(true)) {
             bail!("超星会话建立被拒：{login_status}");
         }
-
-        // 5) libsp 落地 → 抓 JWT 与鉴权头名。
-        let response = self
-            .http
-            .get(format!("{}/find/sso/login/gzus/1", self.find_base))
-            .query(&[
-                ("data", data.as_str()),
-                ("time", time.as_str()),
-                ("enc", enc.as_str()),
-            ])
-            .send()
-            .await
-            .context("libsp SSO 落地失败")?;
-        let final_url = response.url().to_string();
-        let _ = response.error_for_status();
-        let (jwt, jwt_header) = extract_jwt(&final_url)
-            .with_context(|| format!("libsp 落地 URL 缺少 jwt 参数：{final_url}"))?;
-        self.persist_jwt(&jwt, &jwt_header)?;
         Ok(())
     }
 

@@ -187,6 +187,7 @@ impl LibraryTracker {
         err: anyhow::Error,
         now: i64,
     ) -> Result<LibraryPollReport> {
+        eprintln!("[library] 自动登录失败: {err:#}");
         let today = local_today().format("%Y-%m-%d").to_string();
         let key = format!("login:{today}");
         let mut notified = false;
