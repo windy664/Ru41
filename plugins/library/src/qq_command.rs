@@ -1,5 +1,5 @@
 use anyhow::Result;
-use ru41::ports::commands::{CommandContext, CommandHandler, Reply};
+use ru41::ports::commands::{CommandContext, CommandHandler, MarkupButton, Reply, ReplyMarkup};
 use std::{
     future::Future,
     pin::Pin,
@@ -7,7 +7,7 @@ use std::{
 };
 
 use crate::service::{format_loan_reply, local_today};
-use crate::source::{LibraryClient, LoanRecord};
+use crate::source::{LibraryClient, LibraryWatch, LoanRecord};
 
 /// QQ 借阅/续借命令：`/借阅`（在借清单 + 续借按钮）、`/借阅 历史`、
 /// `/续借 书名`。个人信息，双闸（身份绑定 + 仅单聊）。
@@ -23,11 +23,11 @@ impl LibraryQqCommand {
 
 impl CommandHandler for LibraryQqCommand {
     fn matches(&self, verb: &str) -> bool {
-        matches!(verb, "借阅" | "借书" | "图书" | "续借" | "找书" | "查书" | "馆藏")
+        matches!(verb, "借阅" | "借书" | "图书" | "续借" | "找书" | "查书" | "馆藏" | "追书" | "订书")
     }
 
     fn help(&self) -> &'static str {
-        "`/借阅`：查询在借图书与应还日期（可点续借按钮）；`/续借 书名`：续借指定图书；`/找书 关键词`：查馆藏（索书号/在架）"
+        "`/借阅`：在借清单（可点续借按钮）；`/续借 书名`：续借；`/找书 关键词`：查馆藏（索书号/在架）；`/追书 书名`：馆藏可借到货提醒"
     }
 
     fn handle<'a>(
@@ -68,6 +68,13 @@ impl CommandHandler for LibraryQqCommand {
             }),
             // 找书是公开馆藏检索（无个人数据），无需私聊闸。
             "找书" | "查书" | "馆藏" => Box::pin(async move { self.search(arg.trim()).await }),
+            // 追书是个人跟踪清单（含推送），与借阅同级私聊闸。
+            "追书" | "订书" => Box::pin(async move {
+                if let Some(reply) = ctx.require_private("追书", "追书清单属于个人数据")? {
+                    return Ok(Some(Reply::text(reply)));
+                }
+                self.watch_cmd(arg.trim()).await
+            }),
             _ => self.handle(arg, ctx),
         }
     }
@@ -243,7 +250,143 @@ impl LibraryQqCommand {
                 "\n> 仅显示前 5 条；回复更精确的关键词缩小范围，或上 findgzus.libsp.cn 翻页。"
             ));
         }
+        // 前 3 条给追书按钮（点了就是发 /追书 <recordId>）。
+        let mut markup = ReplyMarkup::new();
+        for book in page.books.iter().take(3) {
+            let short: String = book.title.chars().take(12).collect();
+            markup.push_row(vec![MarkupButton::new(
+                format!("📌追书 {short}"),
+                format!("/追书 {}", book.record_id),
+            )]);
+        }
+        Ok(Some(Reply::with_markup(lines.join("\n"), markup)))
+    }
+
+    /// `/追书`：跟踪清单管理。无参/列表=查看；`取消 <id或书名>`；数字=按 recordId
+    /// 直接跟踪；其他=先检索再由按钮选定（避免追错书）。
+    async fn watch_cmd(&self, query: &str) -> Result<Option<Reply>> {
+        if query.is_empty() || query == "列表" {
+            return self.list_watches().await;
+        }
+        if let Some(rest) = query.strip_prefix("取消") {
+            return self.cancel_watch(rest.trim());
+        }
+        if let Ok(record_id) = query.parse::<i64>() {
+            return self.add_watch_by_id(record_id).await;
+        }
+        // 关键词：检索 → 唯一命中直接加，多条出按钮。
+        let page = match self.client.search_books(query, 1, 5).await {
+            Ok(page) => page,
+            Err(err) => return Ok(Some(Reply::text(format!("## 馆藏检索失败\n\n{err}")))),
+        };
+        match page.books.len() {
+            0 => Ok(Some(Reply::text(format!(
+                "## 追书失败\n\n「{query}」没有命中馆藏，请换个关键词。"
+            )))),
+            1 => self.add_watch_by_id(page.books[0].record_id).await,
+            _ => {
+                let mut lines = vec![format!("## 选一本跟踪（共 {} 条命中）\n", page.num_found)];
+                let mut markup = ReplyMarkup::new();
+                for (index, book) in page.books.iter().enumerate() {
+                    lines.push(format!(
+                        "{}. 《{}》｜{}",
+                        index + 1,
+                        book.title,
+                        book.call_no.as_deref().unwrap_or("无索书号")
+                    ));
+                    let short: String = book.title.chars().take(12).collect();
+                    markup.push_row(vec![MarkupButton::new(
+                        format!("📌追这本 {short}"),
+                        format!("/追书 {}", book.record_id),
+                    )]);
+                }
+                lines.push("\n> 点按钮选定，或回复 `/追书 <recordId>`".into());
+                Ok(Some(Reply::with_markup(lines.join("\n"), markup)))
+            }
+        }
+    }
+
+    /// 查看追书清单（活跃项带当前可借数快照）。
+    async fn list_watches(&self) -> Result<Option<Reply>> {
+        let watches = self.client.load_watches();
+        let active: Vec<&LibraryWatch> = watches.iter().filter(|w| w.active).collect();
+        if active.is_empty() {
+            return Ok(Some(Reply::text(
+                "## 追书清单\n\n当前没有跟踪中的书。\n\n> `/找书 关键词` 查馆藏后点「📌追书」按钮，或回复 `/追书 书名`。"
+                    .to_owned(),
+            )));
+        }
+        let mut lines = vec![format!("## 追书清单（{} 本）\n", active.len())];
+        for watch in &active {
+            let state = if watch.last_loanable > 0 {
+                format!("🟢 当前可借 {} 册", watch.last_loanable)
+            } else {
+                "🔴 暂无可借".to_owned()
+            };
+            lines.push(format!(
+                "- 《{}》｜{}｜{}\n　取消：/追书 取消 {}",
+                watch.title,
+                watch.call_no.as_deref().unwrap_or("无索书号"),
+                state,
+                watch.record_id
+            ));
+        }
         Ok(Some(Reply::text(lines.join("\n"))))
+    }
+
+    /// 取消追书（墓碑停用）。
+    fn cancel_watch(&self, id_or_title: &str) -> Result<Option<Reply>> {
+        if id_or_title.is_empty() {
+            return Ok(Some(Reply::text("用法：`/追书 取消 <recordId或书名>`".to_owned())));
+        }
+        match self.client.cancel_watch(id_or_title) {
+            Ok(Some(title)) => Ok(Some(Reply::text(format!(
+                "## 已停止跟踪\n\n《{title}》不再做馆藏到货提醒。"
+            )))),
+            Ok(None) => Ok(Some(Reply::text(format!(
+                "## 未找到跟踪项\n\n清单里没有匹配「{id_or_title}」的书。回复 `/追书 列表` 查看。"
+            )))),
+            Err(err) => Ok(Some(Reply::text(format!("## 取消失败\n\n{err}")))),
+        }
+    }
+
+    /// 按 recordId 添加追书：取题名、读当前馆藏做基线（只报未来 0→N）。
+    async fn add_watch_by_id(&self, record_id: i64) -> Result<Option<Reply>> {
+        let title = match self.client.book_title(record_id).await {
+            Ok(Some(title)) => title,
+            Ok(None) => {
+                return Ok(Some(Reply::text(format!(
+                    "## 追书失败\n\nrecordId {record_id} 没有对应书目，请从 `/找书` 结果里选。"
+                ))));
+            }
+            Err(err) => return Ok(Some(Reply::text(format!("## 追书失败\n\n{err}")))),
+        };
+        let items = self.client.holdings(record_id).await.unwrap_or_default();
+        let loanable = items
+            .iter()
+            .filter(|h| h.is_on_shelf() && !h.is_sample())
+            .count() as i64;
+        let call_no = items.iter().find_map(|h| h.call_no.clone());
+        if let Err(err) = self.client.add_watch(LibraryWatch {
+            record_id,
+            title: title.clone(),
+            call_no: call_no.clone(),
+            active: true,
+            added_at: ru41::util::now(),
+            last_loanable: loanable,
+            last_check: ru41::util::now(),
+        }) {
+            return Ok(Some(Reply::text(format!("## 追书失败\n\n{err}"))));
+        }
+        let hint = if loanable > 0 {
+            format!("🟢 当前就有 {loanable} 册可借，直接去借！（已记录基线，不会重复提醒）")
+        } else {
+            "🔴 当前无可借（含样本库仅阅览），到货会第一时间通知你".to_owned()
+        };
+        Ok(Some(Reply::text(format!(
+            "## 📌 已加入追书\n\n- 《{title}》\n- 索书号 {}\n- {hint}\n\n> 每 6 小时自动检查一次馆藏；回复 `/追书 列表` 查看，`/追书 取消 {record_id}` 停止。",
+            call_no.as_deref().unwrap_or("见详情页")
+        ))))
     }
 
     async fn renew(&self, title_query: &str) -> Result<Option<Reply>> {
