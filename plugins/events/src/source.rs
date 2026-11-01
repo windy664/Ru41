@@ -6,6 +6,7 @@
 //! 会议日历是 `conferences/calendar/list`（官方 API 里 confereces 是站方拼写，别改）。
 
 use anyhow::{Context, Result, bail};
+use chrono::TimeZone;
 
 pub const CALENDAR_PATH: &str = "/chasiwu/v1/content/conferences/calendar/list";
 pub const DEFAULT_BASE: &str = "https://www.chaspark.com";
@@ -139,6 +140,94 @@ fn as_i64(value: &serde_json::Value) -> Option<i64> {
         .or_else(|| value.as_str().and_then(|s| s.parse().ok()))
 }
 
+// ---------- 活动行（huodongxing）：民间活动最大平台 ----------
+
+/// 活动行城市列表页是 SSR（RSSHub 路由也是这么抓的），字段结构稳定：
+/// `a.item-title` 标题+链接、`p.item-data` 日期「2026.11.10-2026.11.12」、
+/// `p.item-dress` 地点「广东广州广交会展馆C区」。
+pub struct HuodongxingClient {
+    http: reqwest::Client,
+}
+
+/// 盯防城市：大湾区核心三城。
+pub const HDX_CITIES: &[&str] = &["广州", "深圳", "香港"];
+
+impl HuodongxingClient {
+    pub fn new() -> Self {
+        let http = reqwest::Client::builder()
+            .user_agent("Mozilla/5.0 (X11; Linux x86_64) ru41-events")
+            .timeout(std::time::Duration::from_secs(20))
+            .build()
+            .expect("hdx http client");
+        Self { http }
+    }
+
+    /// 抓一个城市列表页（一页 ~13 条，无需翻页——只要最近的）。
+    pub async fn fetch_city(&self, city: &str) -> Result<Vec<EventItem>> {
+        let url = format!("https://www.huodongxing.com/eventlist?city={city}");
+        let html = self
+            .http
+            .get(&url)
+            .send()
+            .await
+            .with_context(|| format!("活动行城市页请求失败: {city}"))?
+            .text()
+            .await
+            .context("活动行城市页读取失败")?;
+        Ok(parse_hdx_list(&html))
+    }
+}
+
+fn parse_hdx_list(html: &str) -> Vec<EventItem> {
+    let block_re =
+        regex::Regex::new(r#"(?s)<a class="item-title" href="(/event/\d+)[^"]*"[^>]*>([^<]+)</a>.*?item-data[^>]*>.*?</span>([^<]+)</p>.*?item-dress[^>]*>.*?</span>([^<]+)</p>"#)
+            .expect("hdx item regex");
+    block_re
+        .captures_iter(html)
+        .filter_map(|cap| {
+            let id = cap[1].trim_start_matches("/event/").to_owned();
+            let title = cap[2].trim().to_owned();
+            let (start, end) = parse_hdx_dates(cap[3].trim());
+            let start = start?;
+            Some(EventItem {
+                url: format!("https://www.huodongxing.com{}", &cap[1]),
+                id: format!("hdx-{id}"),
+                title,
+                start,
+                end,
+                location: Some(cap[4].trim().to_owned()).filter(|s| !s.is_empty()),
+                domains: Vec::new(),
+            })
+        })
+        .collect()
+}
+
+/// 「2026.11.10-2026.11.12」→（开始， 结束）；单天「2026.11.10」也行。
+fn parse_hdx_dates(text: &str) -> (Option<i64>, Option<i64>) {
+    let day_re = regex::Regex::new(r"(\d{4})[.\-/](\d{1,2})[.\-/](\d{1,2})").expect("date regex");
+    let mut days = day_re
+        .captures_iter(text)
+        .filter_map(|cap| {
+            let (y, m, d) = (
+                cap[1].parse().ok()?,
+                cap[2].parse().ok()?,
+                cap[3].parse().ok()?,
+            );
+            chrono::NaiveDate::from_ymd_opt(y, m, d)
+        });
+    let first = days.next();
+    let second = days.next();
+    let to_ts = |day: chrono::NaiveDate, hour: u32| {
+        day.and_hms_opt(hour, 0, 0)
+            .and_then(|dt| chrono::Local.from_local_datetime(&dt).single())
+            .map(|t| t.timestamp())
+    };
+    (
+        first.and_then(|d| to_ts(d, 9)),
+        second.or(first).and_then(|d| to_ts(d, 18)),
+    )
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -167,4 +256,26 @@ mod tests {
         assert!(parse_event(&serde_json::json!({"id": "1"})).is_none());
         assert!(parse_event(&serde_json::json!({"id": "1", "titleZh": "x"})).is_none());
     }
+}
+
+#[cfg(test)]
+mod html_tests {
+    use super::*;
+
+    #[test]
+    fn parses_huodongxing_list_item() {
+        let html = r##"<div class="search-tab-content-item flex">
+<a class="item-title" href="/event/2880642408800?utm_source=x" target="_blank">第四届人工智能生成内容国际会议 (AIGC 2026)</a>
+<p class="item-data flex"><span class="item-data-icon icon"></span>2026.11.10-2026.11.12</p>
+<p class="item-dress flex"><span class="item-dress-icon icon"></span>广东广州广交会展馆C区</p>
+</div>"##;
+        let items = parse_hdx_list(html);
+        assert_eq!(items.len(), 1);
+        assert_eq!(items[0].id, "hdx-2880642408800");
+        assert!(items[0].title.contains("AIGC"));
+        assert_eq!(items[0].location.as_deref(), Some("广东广州广交会展馆C区"));
+        assert!(items[0].start > 0);
+        assert!(items[0].end.unwrap() > items[0].start);
+    }
+
 }
