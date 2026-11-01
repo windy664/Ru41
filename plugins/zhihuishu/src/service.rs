@@ -554,12 +554,15 @@ fn task_line_item(
 /// 真正要动笔的作业要求通常 100 字以上，取 50 作为干净的分界线。
 const SUBSTANTIVE_MIN_CONTENT_CHARS: usize = 50;
 
-/// 实质作业：正文要求达到最小长度或有平台附件——值得在 vault 留档、
-/// 让 agent 协助产出；课前测等纯在线客观题只有模板话，任务目录纯属噪音。
+/// 实质作业：正文要求达到最小长度、有平台附件，或为小组作业——值得在 vault
+/// 留档、让 agent 协助产出；课前测等纯在线客观题只有模板话，任务目录纯属噪音。
+/// 小组作业单独放行：线下活动/提交视频类说明往往只有一句话，但交付物是真的。
 fn is_substantive(task: &ZhihuishuTask) -> bool {
-    task.content
-        .as_deref()
-        .is_some_and(|c| c.trim().chars().count() >= SUBSTANTIVE_MIN_CONTENT_CHARS)
+    task.kind.as_deref() == Some("group")
+        || task
+            .content
+            .as_deref()
+            .is_some_and(|c| c.trim().chars().count() >= SUBSTANTIVE_MIN_CONTENT_CHARS)
         || task.attachments.as_ref().is_some_and(|a| !a.is_empty())
 }
 
@@ -781,6 +784,13 @@ mod tests {
     fn online_quiz_is_not_substantive() {
         assert!(!is_substantive(&task(None, 0)));
         assert!(!is_substantive(&task(Some("   "), 0)));
+    }
+
+    #[test]
+    fn group_task_is_always_substantive() {
+        let mut group = task(Some("交视频。"), 0);
+        group.kind = Some("group".into());
+        assert!(is_substantive(&group));
     }
 
     #[test]
