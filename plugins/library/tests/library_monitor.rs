@@ -124,6 +124,18 @@ fn make_tracker_full(
     notifier: Option<Arc<dyn NotifyChannel>>,
     remind_days: i64,
 ) -> LibraryTracker {
+    make_tracker_find(store, api_base, "http://localhost/find", cas_base, session_path, notifier, remind_days)
+}
+
+fn make_tracker_find(
+    store: &Arc<dyn TaskStore>,
+    api_base: &str,
+    find_base: &str,
+    cas_base: &str,
+    session_path: std::path::PathBuf,
+    notifier: Option<Arc<dyn NotifyChannel>>,
+    remind_days: i64,
+) -> LibraryTracker {
     let config = LibraryConfig {
         username: "u".into(),
         password: "p".into(),
@@ -131,7 +143,7 @@ fn make_tracker_full(
         cas_modulus: "0f".into(),
         cas_exponent: "010001".into(),
         unified_base: "http://localhost/unified".into(),
-        find_base: "http://localhost/find".into(),
+        find_base: find_base.to_owned(),
         mobile_base: api_base.to_owned(),
         group_code: "201550".into(),
         session_path,
@@ -385,4 +397,97 @@ async fn search_books_uses_public_headers_and_parses() {
         assert!(!all.contains("jwtopacauth:"));
         assert!(!all.contains("cookie:"));
     }
+}
+
+#[tokio::test]
+async fn watch_alert_on_zero_to_loanable_even_when_login_down() {
+    let (find_base, _headers) = mock_find_api();
+    let (api_base, _h2) = mock_library_api(r#"{"success":true,"data":{"searchResult":[]}}"#);
+    let dir = tempfile::tempdir().unwrap();
+    let session_path = dir.path().join("session.json");
+    // JWT 过期：登录链必失败。追书走公开接口，照样要能出货。
+    seed_session(&session_path, &make_jwt(-3600));
+    std::fs::write(
+        dir.path().join("watch.json"),
+        serde_json::json!([{
+            "record_id": 279213, "title": "深度学习", "call_no": "TP273/248",
+            "active": true, "added_at": 1, "last_loanable": 0, "last_check": 0
+        }])
+        .to_string(),
+    )
+    .unwrap();
+    let store: Arc<dyn TaskStore> =
+        Arc::new(SqliteTaskStore::open(&dir.path().join("state.db")).unwrap());
+    let channel = Arc::new(MockChannel::default());
+    let notifier: Arc<dyn NotifyChannel> = channel.clone();
+    let tracker = make_tracker_find(
+        &store,
+        &api_base,
+        &find_base,
+        &api_base,
+        session_path,
+        Some(notifier),
+        3,
+    );
+
+    let report = tracker.poll_once().await.unwrap();
+    assert!(!report.login_ok);
+    // mock 馆藏：1 在架（计算机书库）+ 1 借出 + 1 样本 → 可借 1，0→1 触发。
+    assert_eq!(report.watch_alerts, vec!["深度学习".to_owned()]);
+    {
+        let sent = channel.sent.lock().unwrap();
+        // [0] 追书到货（先于登录失败通知），[1] 登录态失效。
+        assert!(sent[0].contains("追书到货"));
+        assert!(sent[0].contains("深度学习"));
+        assert!(sent[0].contains("可借 1 册"));
+        assert!(sent[1].contains("图书馆登录态失效"));
+    }
+    // 基线已更新：last_loanable=1。
+    let watches: Vec<ru41_plugin_library::LibraryWatch> = serde_json::from_str(
+        &std::fs::read_to_string(dir.path().join("watch.json")).unwrap(),
+    )
+    .unwrap();
+    assert_eq!(watches[0].last_loanable, 1);
+    assert!(watches[0].active);
+
+    // 第二轮：1→1 不再提醒；登录失败当日也去过重，无新消息。
+    let again = tracker.poll_once().await.unwrap();
+    assert!(again.watch_alerts.is_empty());
+    assert_eq!(channel.sent.lock().unwrap().len(), 2);
+}
+
+#[tokio::test]
+async fn canceled_watch_stays_quiet() {
+    let (find_base, _headers) = mock_find_api();
+    let (api_base, _h2) = mock_library_api(r#"{"success":true,"data":{"searchResult":[]}}"#);
+    let dir = tempfile::tempdir().unwrap();
+    let session_path = dir.path().join("session.json");
+    seed_session(&session_path, &make_jwt(3600));
+    std::fs::write(
+        dir.path().join("watch.json"),
+        serde_json::json!([{
+            "record_id": 279213, "title": "深度学习", "call_no": "TP273/248",
+            "active": false, "added_at": 1, "last_loanable": 0, "last_check": 0
+        }])
+        .to_string(),
+    )
+    .unwrap();
+    let store: Arc<dyn TaskStore> =
+        Arc::new(SqliteTaskStore::open(&dir.path().join("state.db")).unwrap());
+    let channel = Arc::new(MockChannel::default());
+    let notifier: Arc<dyn NotifyChannel> = channel.clone();
+    let tracker = make_tracker_find(
+        &store,
+        &api_base,
+        &find_base,
+        "http://localhost/cas",
+        session_path,
+        Some(notifier),
+        3,
+    );
+
+    let report = tracker.poll_once().await.unwrap();
+    assert!(report.login_ok);
+    assert!(report.watch_alerts.is_empty());
+    assert!(channel.sent.lock().unwrap().is_empty());
 }

@@ -39,6 +39,8 @@ pub struct LibraryPollReport {
     pub overdue: Vec<String>,
     pub login_ok: bool,
     pub notified: bool,
+    /// 追书到货书目（可借数 0→N）。
+    pub watch_alerts: Vec<String>,
 }
 
 /// 按剩余天数分级；纯函数便于测试。
@@ -117,11 +119,21 @@ impl LibraryTracker {
         let now = ru41::util::now();
         let today = local_today();
 
+        // 追书到货检测走公开馆藏接口，不依赖登录态（登录挂了照样追书）。
+        // 失败只记日志，不拖垮催还主流程。
+        let watch_alerts = match self.check_watches(now).await {
+            Ok(alerts) => alerts,
+            Err(err) => {
+                eprintln!("[library] 追书检测失败: {err:#}");
+                Vec::new()
+            }
+        };
+
         let page = match self.client.ensure_session().await {
-            Err(err) => return self.login_failed_report(err, now).await,
+            Err(err) => return self.login_failed_report(err, now, watch_alerts).await,
             Ok(()) => match self.client.loans().await {
                 Ok(page) => page,
-                Err(err) => return self.login_failed_report(err, now).await,
+                Err(err) => return self.login_failed_report(err, now, watch_alerts).await,
             },
         };
 
@@ -178,7 +190,67 @@ impl LibraryTracker {
             overdue,
             login_ok: true,
             notified,
+            watch_alerts,
         })
+    }
+
+    /// 追书到货检测（公开馆藏接口，不依赖登录态）：
+    /// 每条活跃追书查一次 groupitems，可借数（在架且非样本）0→N 触发通知。
+    async fn check_watches(&self, now: i64) -> Result<Vec<String>> {
+        let mut watches = self.client.load_watches();
+        if !watches.iter().any(|w| w.active) {
+            return Ok(Vec::new());
+        }
+        let mut alerted = Vec::new();
+        let mut dirty = false;
+        for watch in &mut watches {
+            if !watch.active {
+                continue;
+            }
+            let items = match self.client.holdings(watch.record_id).await {
+                Ok(items) => items,
+                Err(err) => {
+                    eprintln!("[library] 追书《{}》馆藏查询失败: {err:#}", watch.title);
+                    continue;
+                }
+            };
+            let loanable = items
+                .iter()
+                .filter(|h| h.is_on_shelf() && !h.is_sample())
+                .count() as i64;
+            if watch.last_loanable == 0 && loanable > 0 {
+                if let Some(notifier) = &self.notifier {
+                    let locations: Vec<String> = items
+                        .iter()
+                        .filter(|h| h.is_on_shelf() && !h.is_sample())
+                        .filter_map(|h| h.location_name.clone())
+                        .collect::<std::collections::BTreeSet<_>>()
+                        .into_iter()
+                        .collect();
+                    notifier
+                        .send(
+                            &self.config.notify_target,
+                            None,
+                            &format!(
+                                "## 📖 追书到货\n\n《{}》可以借了！\n\n- 索书号 {}\n- 可借 {loanable} 册（{}）\n\n> 借到后回复 `/追书 取消 {}` 停止跟踪",
+                                watch.title,
+                                watch.call_no.as_deref().unwrap_or("见详情页"),
+                                locations.join("、"),
+                                watch.record_id
+                            ),
+                        )
+                        .await?;
+                }
+                alerted.push(watch.title.clone());
+            }
+            watch.last_loanable = loanable;
+            watch.last_check = now;
+            dirty = true;
+        }
+        if dirty {
+            self.client.save_watches(&watches)?;
+        }
+        Ok(alerted)
     }
 
     /// 登录失败：每日最多提醒一次（PASSERROR 锁号等硬失败同样只提醒人工）。
@@ -186,6 +258,7 @@ impl LibraryTracker {
         &self,
         err: anyhow::Error,
         now: i64,
+        watch_alerts: Vec<String>,
     ) -> Result<LibraryPollReport> {
         eprintln!("[library] 自动登录失败: {err:#}");
         let today = local_today().format("%Y-%m-%d").to_string();
@@ -217,6 +290,7 @@ impl LibraryTracker {
             overdue: Vec::new(),
             login_ok: false,
             notified,
+            watch_alerts,
         })
     }
 }

@@ -275,6 +275,26 @@ fn build_http_public(hosts: &[(&str, u16)]) -> reqwest::Client {
     builder.build().expect("reqwest client build")
 }
 
+/// 追书单条：馆藏到货跟踪（持久化在 session 目录下的 watch.json）。
+/// 状态机：last_loanable 0→N 触发一次「可以借了」通知。
+#[derive(Clone, Debug, Default, serde::Serialize, serde::Deserialize)]
+pub struct LibraryWatch {
+    pub record_id: i64,
+    pub title: String,
+    #[serde(default)]
+    pub call_no: Option<String>,
+    #[serde(default = "default_true")]
+    pub active: bool,
+    pub added_at: i64,
+    /// 上次检测到的可借数（在架且非样本库）。
+    pub last_loanable: i64,
+    pub last_check: i64,
+}
+
+fn default_true() -> bool {
+    true
+}
+
 fn random_uid() -> String {
     let mut rng = rand::rng();
     (0..4).map(|_| format!("{:08x}", rng.random::<u32>())).collect()
@@ -877,6 +897,108 @@ impl LibraryClient {
             );
         }
         Ok(value)
+    }
+
+    /// 书目题名（getBookDetail 的 bean2List 里 cnb01「题名/责任者」，
+    /// 「/」前是题名）。找不到返回 None。
+    pub async fn book_title(&self, record_id: i64) -> Result<Option<String>> {
+        let url = format!("{}/find/searchResultDetail/getBookDetail", self.find_base);
+        let response = self
+            .http_public
+            .get(&url)
+            .query(&[("recordId", record_id.to_string())])
+            .header("groupCode", self.group_code.as_str())
+            .header("mappingPath", self.find_mapping_path.as_str())
+            .send()
+            .await
+            .context("find 书目详情请求失败")?;
+        let value: serde_json::Value = response.json().await.context("find 书目详情不是 JSON")?;
+        let title = value
+            .get("data")
+            .and_then(|d| d.get("bean2List"))
+            .and_then(serde_json::Value::as_array)
+            .and_then(|list| {
+                list.iter().find_map(|item| {
+                    if item.get("key").and_then(serde_json::Value::as_str) == Some("cnb01") {
+                        item.get("fieldVal")
+                            .and_then(serde_json::Value::as_str)
+                            .map(str::to_owned)
+                    } else {
+                        None
+                    }
+                })
+            })
+            .map(|raw| {
+                raw.split('/').next().unwrap_or(&raw).trim().to_owned()
+            })
+            .filter(|s| !s.is_empty());
+        Ok(title)
+    }
+
+    /// 追书清单持久化文件（session 同目录）。
+    fn watch_path(&self) -> std::path::PathBuf {
+        self.session_path
+            .parent()
+            .unwrap_or_else(|| std::path::Path::new("."))
+            .join("watch.json")
+    }
+
+    /// 读取全部追书（含已停用的墓碑；读取失败视为空清单）。
+    pub fn load_watches(&self) -> Vec<LibraryWatch> {
+        let Ok(raw) = std::fs::read_to_string(self.watch_path()) else {
+            return Vec::new();
+        };
+        serde_json::from_str(&raw).unwrap_or_default()
+    }
+
+    /// 原子写回追书清单（tmp + rename，防止 tracker 与命令并发写坏）。
+    pub fn save_watches(&self, watches: &[LibraryWatch]) -> Result<()> {
+        let path = self.watch_path();
+        let tmp = path.with_extension("json.tmp");
+        std::fs::write(&tmp, serde_json::to_string_pretty(watches)?)
+            .with_context(|| format!("追书清单写入失败: {}", tmp.display()))?;
+        std::fs::rename(&tmp, &path)
+            .with_context(|| format!("追书清单原子替换失败: {}", path.display()))?;
+        Ok(())
+    }
+
+    /// 新增/复活一条追书（同 recordId 已存在则复活并保留 added_at）。
+    pub fn add_watch(&self, watch: LibraryWatch) -> Result<Vec<LibraryWatch>> {
+        let mut watches = self.load_watches();
+        if let Some(existing) = watches.iter_mut().find(|w| w.record_id == watch.record_id) {
+            existing.active = true;
+            existing.title = watch.title;
+            existing.call_no = watch.call_no;
+            // 保留 last_loanable：若当前已可借，下一轮 poll 立即触发通知。
+        } else {
+            watches.push(watch);
+        }
+        self.save_watches(&watches)?;
+        Ok(watches)
+    }
+
+    /// 停用追书（墓碑保留）。按 recordId 数字或书名片段匹配；返回停用的书名。
+    pub fn cancel_watch(&self, id_or_title: &str) -> Result<Option<String>> {
+        let mut watches = self.load_watches();
+        let mut canceled: Option<String> = None;
+        for watch in &mut watches {
+            if !watch.active {
+                continue;
+            }
+            let by_id = id_or_title
+                .parse::<i64>()
+                .map(|id| id == watch.record_id)
+                .unwrap_or(false);
+            let by_title = watch.title.contains(id_or_title);
+            if by_id || by_title {
+                watch.active = false;
+                canceled = Some(watch.title.clone());
+            }
+        }
+        if canceled.is_some() {
+            self.save_watches(&watches)?;
+        }
+        Ok(canceled)
     }
 }
 
