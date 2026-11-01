@@ -219,6 +219,8 @@ impl LibraryQqCommand {
             lines.push(format!("*整串无命中，已自动拆分为 {note} 组合检索*\n"));
         }
         let top = page.books.len().min(3);
+        // 记录每条是否有单册馆藏：零馆藏的书不给追书按钮（追了也等不到）。
+        let mut trackable: Vec<bool> = Vec::with_capacity(page.books.len());
         for (index, book) in page.books.iter().enumerate() {
             let meta = [
                 book.author.as_deref().unwrap_or(""),
@@ -238,10 +240,12 @@ impl LibraryQqCommand {
                 call_no
             ));
             // 前 3 条附在架状态与封面。
+            let mut has_holdings = false;
             if index < top {
                 if let Ok(items) = self.client.holdings(book.record_id).await {
+                    has_holdings = !items.is_empty();
                     if items.is_empty() {
-                        lines.push("　↳ 无单册馆藏记录".into());
+                        lines.push("　↳ 无单册馆藏记录（追不了，不用等）".into());
                     } else {
                         // 样本库仅供阅览不算可借；按馆藏地分组展示在架情况。
                         let loanable = items
@@ -299,6 +303,7 @@ impl LibraryQqCommand {
                     lines.push(format!("![《{}》封面]({cover})", book.title));
                 }
             }
+            trackable.push(has_holdings);
         }
         if page.num_found > 5 {
             lines.push(format!(
@@ -306,9 +311,13 @@ impl LibraryQqCommand {
             ));
         }
         lines.push("> 🗺️ 架位 = 馆藏地 + 索书号：到对应书库按索书号升序找架（同号段相邻）".into());
-        // 前 3 条给追书按钮（点了就是发 /追书 <recordId>）。
+        // 前 3 条给追书按钮（点了就是发 /追书 <recordId>）；
+        // 零馆藏的跳过——没有单册可追踪，加了也是白等。
         let mut markup = ReplyMarkup::new();
-        for book in page.books.iter().take(3) {
+        for (index, book) in page.books.iter().take(3).enumerate() {
+            if !trackable.get(index).copied().unwrap_or(false) {
+                continue;
+            }
             let short: String = book.title.chars().take(12).collect();
             markup.push_row(vec![MarkupButton::new(
                 format!("📌追书 {short}"),
@@ -417,7 +426,21 @@ impl LibraryQqCommand {
             }
             Err(err) => return Ok(Some(Reply::text(format!("## 追书失败\n\n{err}")))),
         };
-        let items = self.client.holdings(record_id).await.unwrap_or_default();
+        // 零馆藏的书没有任何可追踪对象（书目在、单册记录无），直接拒收；
+        // 样本库等有馆藏但暂不可借的才值得追。
+        let items = match self.client.holdings(record_id).await {
+            Ok(items) => items,
+            Err(err) => {
+                return Ok(Some(Reply::text(format!(
+                    "## 追书失败\n\n馆藏查询失败：{err}"
+                ))));
+            }
+        };
+        if items.is_empty() {
+            return Ok(Some(Reply::text(format!(
+                "## 追书失败\n\n《{title}》在本馆没有任何单册馆藏记录，追了也等不到。\n\n> 只有「有馆藏但暂不可借」的书才值得追（比如都在样本库仅供阅览）。"
+            ))));
+        }
         let loanable = items
             .iter()
             .filter(|h| h.is_on_shelf() && !h.is_sample())
