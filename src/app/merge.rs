@@ -92,8 +92,8 @@ fn clean_response(raw: &str) -> String {
         .and_then(|r| r.strip_suffix("```"))
     {
         // 开围栏行带语言标记（```markdown）则剥掉首行；裸围栏（```\n）首行即内容。
-        let body = if rest.starts_with('\n') {
-            &rest[1..]
+        let body = if let Some(stripped) = rest.strip_prefix('\n') {
+            stripped
         } else {
             match rest.split_once('\n') {
                 Some((_info, body)) => body,

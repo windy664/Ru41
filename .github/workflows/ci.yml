@@ -1,6 +1,9 @@
 name: Rust checks
 on:
   push:
+    # 只跑 main：我们每次推送是 main + exp/plugin-api 双分支同步推，
+    # 不设限会每次产生两条完全一样的检查记录。
+    branches: [main]
   pull_request:
 permissions:
   contents: read
