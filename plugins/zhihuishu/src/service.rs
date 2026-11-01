@@ -195,44 +195,112 @@ impl ZhihuishuTracker {
                     self.store
                         .put_document("zhihuishu_task", &key, None, &snapshot)?;
                     new_tasks += 1;
-                } else if completed {
-                    // 平台侧已完成 → 回勾待办（一次性；todo 已非 Active 视为人工处理过）
-                    let todo_id = existing
-                        .as_ref()
-                        .and_then(|doc| doc.value.get("todo_id"))
-                        .and_then(serde_json::Value::as_str)
-                        .map(str::to_owned);
-                    let already_synced = existing
-                        .as_ref()
-                        .and_then(|doc| doc.value.get("todo_synced"))
+                } else {
+                    // 既有任务的刷新语义（此前只同步 completed，字段漂移全丢）：
+                    // ① 重开：已完成 → 未完成（老师打回/开放补交）→ 重建待办 + 提醒
+                    // ② 截止时间漂移：老师改 ddl → 快照 + 待办 postpone + 提醒
+                    // ③ 完成同步：平台已完成 → 回勾待办（一次性）
+                    let doc = existing.as_ref().expect("else 分支必然存在快照");
+                    let old_completed = doc
+                        .value
+                        .get("completed")
                         .and_then(serde_json::Value::as_bool)
                         .unwrap_or(false);
-                    if let (Some(todo_id), false) = (todo_id, already_synced) {
-                        let doc = existing.unwrap();
+                    let old_end = doc
+                        .value
+                        .get("end_at")
+                        .and_then(serde_json::Value::as_str)
+                        .map(str::to_owned);
+                    let new_end = task.end_at.clone();
+                    let reopened = old_completed && !completed;
+                    let drifted = old_end.as_deref() != new_end.as_deref();
+
+                    if reopened {
                         let revision = doc.revision;
-                        let mut snapshot = doc.value;
-                        let synced = match self.todos.complete(&todo_id, now) {
-                            Ok(_) => {
-                                lines.push(format!(
-                                    "- ✅{}｜{}｜平台已完成，待办已勾选",
-                                    course.title, task.title
-                                ));
-                                true
-                            }
-                            Err(_) => true,
+                        let mut snapshot = doc.value.clone();
+                        snapshot["completed"] = serde_json::json!(false);
+                        snapshot["todo_synced"] = serde_json::json!(false);
+                        snapshot["end_at"] = serde_json::json!(new_end.clone());
+                        let todo_id = if self.config.todo_sync {
+                            self.create_todo(course, task, end_ts, is_exam_style, is_due_soon, now)
+                                .ok()
+                                .map(|item| item.id)
+                        } else {
+                            None
                         };
-                        if synced {
-                            snapshot["todo_synced"] = serde_json::json!(true);
-                            snapshot["completed"] = serde_json::json!(true);
-                            // 文档必然已存在，必须带 revision 走 CAS——
-                            // put_document(None) 是仅新建，写回会被静默丢弃，
-                            // 导致作业总表永远显示未完成、每轮重复 complete。
-                            self.store.put_document(
-                                "zhihuishu_task",
-                                &key,
-                                Some(revision),
-                                &snapshot,
-                            )?;
+                        if let Some(id) = todo_id {
+                            snapshot["todo_id"] = serde_json::json!(id);
+                        }
+                        self.store
+                            .put_document("zhihuishu_task", &key, Some(revision), &snapshot)?;
+                        lines.push(format!(
+                            "- ♻️{}｜{}｜作业重新开放（打回/补交），已重建待办",
+                            course.title, task.title
+                        ));
+                    } else if drifted {
+                        let revision = doc.revision;
+                        let mut snapshot = doc.value.clone();
+                        snapshot["end_at"] = serde_json::json!(new_end.clone());
+                        self.store
+                            .put_document("zhihuishu_task", &key, Some(revision), &snapshot)?;
+                        if let Some(todo_id) = doc
+                            .value
+                            .get("todo_id")
+                            .and_then(serde_json::Value::as_str)
+                        {
+                            let _ = self.todos.postpone(
+                                todo_id,
+                                &new_end.clone().unwrap_or_default(),
+                                now,
+                            );
+                        }
+                        lines.push(format!(
+                            "- 🕐{}｜{}｜截止时间变更：{} → {}",
+                            course.title,
+                            task.title,
+                            old_end.clone().unwrap_or_else(|| "未知".into()),
+                            new_end.clone().unwrap_or_else(|| "未知".into())
+                        ));
+                    }
+
+                    if completed {
+                        // 平台侧已完成 → 回勾待办（一次性；todo 已非 Active 视为人工处理过）
+                        let todo_id = doc
+                            .value
+                            .get("todo_id")
+                            .and_then(serde_json::Value::as_str)
+                            .map(str::to_owned);
+                        let already_synced = doc
+                            .value
+                            .get("todo_synced")
+                            .and_then(serde_json::Value::as_bool)
+                            .unwrap_or(false);
+                        if let (Some(todo_id), false) = (todo_id, already_synced) {
+                            let revision = doc.revision;
+                            let mut snapshot = doc.value.clone();
+                            let synced = match self.todos.complete(&todo_id, now) {
+                                Ok(_) => {
+                                    lines.push(format!(
+                                        "- ✅{}｜{}｜平台已完成，待办已勾选",
+                                        course.title, task.title
+                                    ));
+                                    true
+                                }
+                                Err(_) => true,
+                            };
+                            if synced {
+                                snapshot["todo_synced"] = serde_json::json!(true);
+                                snapshot["completed"] = serde_json::json!(true);
+                                // 文档必然已存在，必须带 revision 走 CAS——
+                                // put_document(None) 是仅新建，写回会被静默丢弃，
+                                // 导致作业总表永远显示未完成、每轮重复 complete。
+                                self.store.put_document(
+                                    "zhihuishu_task",
+                                    &key,
+                                    Some(revision),
+                                    &snapshot,
+                                )?;
+                            }
                         }
                     }
                 }
