@@ -225,8 +225,7 @@ impl LibraryQqCommand {
                 Ok(items) => entries.push((book, Some(items))),
                 Err(_) => entries.push((book, None)),
             }
-        }
-        if entries.is_empty() {
+        }        if entries.is_empty() {
             return Ok(Some(Reply::text(format!(
                 "## 馆藏检索\n\n「{query}」命中 {} 条书目，但全都没有单册馆藏记录。\n\n> 这类书馆内查不到也追不了，建议换关键词或走馆际互借/荐购。",
                 page.num_found
@@ -239,6 +238,8 @@ impl LibraryQqCommand {
         if filtered > 0 {
             lines.push(format!("*已隐藏 {filtered} 条无单册馆藏的书目*\n"));
         }
+        // 封面收集为原生图片消息（QQ markdown 不渲染外链图，走媒体上传通道）。
+        let mut covers: Vec<ru41::ports::channel::MediaRef> = Vec::new();
         for (index, (book, holdings)) in entries.iter().enumerate() {
             let meta = [
                 book.author.as_deref().unwrap_or(""),
@@ -304,12 +305,15 @@ impl LibraryQqCommand {
                     ));
                 }
             }
-            // 前 3 条附封面（独秀 CDN，markdown 图片直接嵌；拿不到就跳过）。
+            // 前 3 条附封面：收进 Reply.media，渠道层作为图片消息发送。
             if index < 3
                 && let Ok(info) = self.client.item_info(book.record_id).await
                 && let Some(cover) = info.cover_url
             {
-                lines.push(format!("![《{}》封面]({cover})", book.title));
+                covers.push(ru41::ports::channel::MediaRef::new(
+                    ru41::ports::channel::MediaKind::Image,
+                    cover,
+                ));
             }
         }
         if page.num_found > 5 {
@@ -327,7 +331,9 @@ impl LibraryQqCommand {
                 format!("/追书 {}", book.record_id),
             )]);
         }
-        Ok(Some(Reply::with_markup(lines.join("\n"), markup)))
+        Ok(Some(
+            Reply::with_markup(lines.join("\n"), markup).with_media(covers),
+        ))
     }
 
     /// `/追书`：跟踪清单管理。无参/列表=查看；`取消 <id或书名>`；数字=按 recordId

@@ -354,6 +354,25 @@ impl QqBot {
         } else {
             bail!("unknown qq notify target: {target}")
         }
+        // 富媒体附件（封面图等）跟在文本后逐条发；单条失败只记日志，
+        // 不影响已经送达的正文。
+        for media in &reply.media {
+            let media_seq = self.sequencer.next(msg_id);
+            let result = if let Some(group) = target.strip_prefix(TARGET_GROUP_PREFIX) {
+                self.api
+                    .send_group_media(group, "", media, Some(msg_id), media_seq)
+                    .await
+            } else if let Some(user) = target.strip_prefix(TARGET_C2C_PREFIX) {
+                self.api
+                    .send_c2c_media(user, "", media, Some(msg_id), media_seq)
+                    .await
+            } else {
+                continue;
+            };
+            if let Err(err) = result {
+                eprintln!("[qq.reply] 媒体附件发送失败 {}: {err:#}", media.source);
+            }
+        }
         Ok(())
     }
 
