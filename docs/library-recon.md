@@ -41,6 +41,9 @@ libsp 自身不管理密码，登录走学校统一身份认证（联奕 CAS，�
 4. libsp 落地
    GET https://findgzus.libsp.cn/find/sso/login/gzus/1?data=&time=&enc=
    → 302 到 https://mfindgzus.libsp.cn/#/Home?jwt=<JWT>&jwtHeader=jwtOpacAuth
+   ⚠️ jwt 在 URL fragment（# 后面）里！HTTP 客户端自动跟随重定向会剥掉
+   fragment（fragment 不随请求发送），必须用不跟随重定向的客户端手动
+   逐跳取原始 Location（source.rs http_noredir，2026-11-01 生产踩坑）。
    ⚠️ 鉴权头名字不是固定的！从落地 URL 的 jwtHeader 参数读取（当前值
    jwtOpacAuth），校方/超星可换；JWT payload 含 sub/groupCode/mappingPath，
    有效期 24h。
