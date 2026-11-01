@@ -118,14 +118,22 @@ fn validate(merged: &str, original: &str) -> Result<()> {
         }
     }
     if merged.len() > original.len().saturating_mul(3) + 1024 {
-        bail!("合并结果异常膨胀（{} -> {} 字节）", original.len(), merged.len());
+        bail!(
+            "合并结果异常膨胀（{} -> {} 字节）",
+            original.len(),
+            merged.len()
+        );
     }
     Ok(())
 }
 
 /// 只允许文本类文件走 AI 合并；二进制/其他类型直接交人工。
 pub fn is_mergeable_path(path: &str) -> bool {
-    let ext = path.rsplit('.').next().unwrap_or_default().to_ascii_lowercase();
+    let ext = path
+        .rsplit('.')
+        .next()
+        .unwrap_or_default()
+        .to_ascii_lowercase();
     matches!(ext.as_str(), "md" | "markdown" | "txt")
 }
 
@@ -135,7 +143,10 @@ mod tests {
 
     #[test]
     fn clean_strips_fenced_block() {
-        assert_eq!(clean_response("```markdown\n# 标题\n内容\n```"), "# 标题\n内容");
+        assert_eq!(
+            clean_response("```markdown\n# 标题\n内容\n```"),
+            "# 标题\n内容"
+        );
         assert_eq!(clean_response("# 直接内容"), "# 直接内容");
         assert_eq!(clean_response("```\n内容\n```"), "内容");
     }
