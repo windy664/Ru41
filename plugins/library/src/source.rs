@@ -166,6 +166,15 @@ impl HoldingItem {
             .as_deref()
             .is_some_and(|l| l.contains("样本"))
     }
+
+    /// 借出单册的应还日期（processType 形如「借出-应还日期:2026-11-22」）。
+    pub fn due_back(&self) -> Option<String> {
+        let raw = self.process_type.as_deref()?;
+        raw.strip_prefix("借出-应还日期:")
+            .map(str::trim)
+            .filter(|s| !s.is_empty())
+            .map(str::to_owned)
+    }
 }
 
 impl LoanRecord {

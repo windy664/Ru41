@@ -13,4 +13,5 @@
 /ru41.toml
 templates/*/target*/
 plugins/*/target*/
+plugins/target-plugins/
 /.plugins-dist/

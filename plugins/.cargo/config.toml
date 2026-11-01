@@ -1,0 +1,6 @@
+# 插件本地开发加速：所有插件共享一个 target 目录，
+# ru41 主 crate（path 依赖，最重的一块）只编译一次；
+# lld 链接器替代默认 ld，显著缩短链接时间。
+[build]
+target-dir = "target-plugins"
+rustflags = ["-C", "linker=clang", "-C", "link-arg=-fuse-ld=lld"]
