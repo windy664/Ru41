@@ -1923,6 +1923,7 @@ version = "0.1.0"
 dependencies = [
  "anyhow",
  "chrono",
+ "regex",
  "reqwest",
  "ru41",
  "serde",

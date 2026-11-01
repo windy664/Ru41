@@ -68,7 +68,16 @@ impl PagewatchTracker {
             .unwrap_or_default();
         Self {
             store,
-            http: ru41::util::http_client(),
+            // 浏览器 UA：政府/新闻站普遍按 UA 拦截非浏览器抓取（实测广东省
+            // 科技厅对 ru41/x.y UA 直接断连，换浏览器 UA 即 200）。
+            http: reqwest::Client::builder()
+                .user_agent(
+                    "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 \
+                     (KHTML, like Gecko) Chrome/126.0.0.0 Safari/537.36",
+                )
+                .timeout(ru41::util::HTTP_TIMEOUT)
+                .build()
+                .expect("pagewatch http client"),
             notifier,
             notify_target,
             config,

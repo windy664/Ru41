@@ -63,18 +63,25 @@ impl EventsService {
     }
 
     async fn collect_rows(&self, now: i64) -> Vec<EventRow> {
-        // 窗口：昨天起 30 天（昨天的留一天便于跨天查看）。
+        let mut all = Vec::new();
+        // 茶思屋会议日历：昨天起 30 天（昨天的留一天便于跨天查看）。
         match self
             .client
             .fetch_calendar(now - 86400, now + 30 * 86400)
             .await
         {
-            Ok(items) => build_rows(items, now),
-            Err(error) => {
-                eprintln!("[events] 茶思屋日历抓取失败: {error:#}");
-                Vec::new()
+            Ok(items) => all.extend(items),
+            Err(error) => eprintln!("[events] 茶思屋日历抓取失败: {error:#}"),
+        }
+        // 活动行：大湾区三城民间活动（一页即最近，不翻页）。
+        let hdx = crate::source::HuodongxingClient::new();
+        for city in crate::source::HDX_CITIES {
+            match hdx.fetch_city(city).await {
+                Ok(items) => all.extend(items),
+                Err(error) => eprintln!("[events] 活动行 {city} 抓取失败: {error:#}"),
             }
         }
+        build_rows(all, now)
     }
 }
 
