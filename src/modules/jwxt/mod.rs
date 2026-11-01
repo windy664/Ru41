@@ -1,4 +1,4 @@
-mod captcha;
+pub mod captcha;
 mod captcha_templates;
 pub mod cli;
 pub mod config;
