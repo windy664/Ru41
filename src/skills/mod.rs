@@ -29,7 +29,11 @@ pub fn default_roots() -> Vec<PathBuf> {
         PathBuf::from("src/modules"),
         // 整体插件化：插件的技能包在 plugins/<模块>/skills/。
         PathBuf::from("plugins"),
-        PathBuf::from("/etc/ru41/modules"),
+        // 容器内 CWD 是 /home/node，相对根找不到；镜像把技能包烤进
+        // /usr/share/ru41/（/etc/ru41 被宿主机 bind mount 整体遮蔽，
+        // 放那里只会读到宿主机的陈旧快照）。
+        PathBuf::from("/usr/share/ru41/modules"),
+        PathBuf::from("/usr/share/ru41/plugins"),
     ]
 }
 
