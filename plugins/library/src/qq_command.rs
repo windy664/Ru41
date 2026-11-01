@@ -214,14 +214,32 @@ impl LibraryQqCommand {
                 "## 馆藏检索\n\n「{query}」没有命中馆藏。\n\n> 换个关键词试试（可用更泛的词，如「深度学习」而非全名）。"
             ))));
         }
+        // 每条都查一次馆藏：零单册的书整条不显示（追了也等不到，看了也没用）。
+        // 馆藏查询失败的不滤（可能是网络抖动），只是没有状态行。
+        let mut entries: Vec<(&crate::source::SearchBook, Option<Vec<crate::source::HoldingItem>>)> =
+            Vec::new();
+        let mut filtered = 0usize;
+        for book in &page.books {
+            match self.client.holdings(book.record_id).await {
+                Ok(items) if items.is_empty() => filtered += 1,
+                Ok(items) => entries.push((book, Some(items))),
+                Err(_) => entries.push((book, None)),
+            }
+        }
+        if entries.is_empty() {
+            return Ok(Some(Reply::text(format!(
+                "## 馆藏检索\n\n「{query}」命中 {} 条书目，但全都没有单册馆藏记录。\n\n> 这类书馆内查不到也追不了，建议换关键词或走馆际互借/荐购。",
+                page.num_found
+            ))));
+        }
         let mut lines = vec![format!("## 找书「{query}」（共 {} 条）\n", page.num_found)];
         if let Some(note) = fallback_note {
             lines.push(format!("*整串无命中，已自动拆分为 {note} 组合检索*\n"));
         }
-        let top = page.books.len().min(3);
-        // 记录每条是否有单册馆藏：零馆藏的书不给追书按钮（追了也等不到）。
-        let mut trackable: Vec<bool> = Vec::with_capacity(page.books.len());
-        for (index, book) in page.books.iter().enumerate() {
+        if filtered > 0 {
+            lines.push(format!("*已隐藏 {filtered} 条无单册馆藏的书目*\n"));
+        }
+        for (index, (book, holdings)) in entries.iter().enumerate() {
             let meta = [
                 book.author.as_deref().unwrap_or(""),
                 book.publisher.as_deref().unwrap_or(""),
@@ -239,71 +257,60 @@ impl LibraryQqCommand {
                 if meta.is_empty() { "未知" } else { &meta },
                 call_no
             ));
-            // 前 3 条附在架状态与封面。
-            let mut has_holdings = false;
-            if index < top {
-                if let Ok(items) = self.client.holdings(book.record_id).await {
-                    has_holdings = !items.is_empty();
-                    if items.is_empty() {
-                        lines.push("　↳ 无单册馆藏记录（追不了，不用等）".into());
-                    } else {
-                        // 样本库仅供阅览不算可借；按馆藏地分组展示在架情况。
-                        let loanable = items
-                            .iter()
-                            .filter(|h| h.is_on_shelf() && !h.is_sample())
-                            .count();
-                        let mut order: Vec<String> = Vec::new();
-                        let mut parts: Vec<(String, usize, usize, bool)> = Vec::new();
-                        for item in &items {
-                            let loc = item.location_name.clone().unwrap_or_else(|| "未知".into());
-                            let sample = item.is_sample();
-                            let idx = order
-                                .iter()
-                                .position(|l| *l == loc)
-                                .unwrap_or_else(|| {
-                                    order.push(loc.clone());
-                                    parts.push((loc, 0, 0, sample));
-                                    parts.len() - 1
-                                });
-                            parts[idx].2 += 1;
-                            if item.is_on_shelf() {
-                                parts[idx].1 += 1;
-                            }
-                        }
-                        let detail = parts
-                            .iter()
-                            .map(|(loc, on, total, sample)| {
-                                if *sample {
-                                    format!("{loc} {total}（仅供阅览）")
-                                } else {
-                                    format!("{loc} 在架{on}/{total}")
-                                }
-                            })
-                            .collect::<Vec<_>>()
-                            .join("、");
-                        lines.push(format!("　↳ 可借 {loanable} 册｜{detail}"));
-                        // 借出中的册子给最早归还日，方便决定去等还是换书。
-                        let mut due_dates: Vec<String> = items
-                            .iter()
-                            .filter_map(|h| h.due_back())
-                            .collect();
-                        due_dates.sort();
-                        if !due_dates.is_empty() {
-                            lines.push(format!(
-                                "　↳ 借出中，最早 {} 归还",
-                                due_dates[0]
-                            ));
-                        }
+            if let Some(items) = holdings {
+                // 样本库仅供阅览不算可借；按馆藏地分组展示在架情况。
+                let loanable = items
+                    .iter()
+                    .filter(|h| h.is_on_shelf() && !h.is_sample())
+                    .count();
+                let mut order: Vec<String> = Vec::new();
+                let mut parts: Vec<(String, usize, usize, bool)> = Vec::new();
+                for item in items {
+                    let loc = item.location_name.clone().unwrap_or_else(|| "未知".into());
+                    let sample = item.is_sample();
+                    let idx = order
+                        .iter()
+                        .position(|l| *l == loc)
+                        .unwrap_or_else(|| {
+                            order.push(loc.clone());
+                            parts.push((loc, 0, 0, sample));
+                            parts.len() - 1
+                        });
+                    parts[idx].2 += 1;
+                    if item.is_on_shelf() {
+                        parts[idx].1 += 1;
                     }
                 }
-                // 封面（独秀 CDN，markdown 图片直接嵌；拿不到就跳过）。
-                if let Ok(info) = self.client.item_info(book.record_id).await
-                    && let Some(cover) = info.cover_url
-                {
-                    lines.push(format!("![《{}》封面]({cover})", book.title));
+                let detail = parts
+                    .iter()
+                    .map(|(loc, on, total, sample)| {
+                        if *sample {
+                            format!("{loc} {total}（仅供阅览）")
+                        } else {
+                            format!("{loc} 在架{on}/{total}")
+                        }
+                    })
+                    .collect::<Vec<_>>()
+                    .join("、");
+                lines.push(format!("　↳ 可借 {loanable} 册｜{detail}"));
+                // 借出中的册子给最早归还日，方便决定去等还是换书。
+                let mut due_dates: Vec<String> =
+                    items.iter().filter_map(|h| h.due_back()).collect();
+                due_dates.sort();
+                if !due_dates.is_empty() {
+                    lines.push(format!(
+                        "　↳ 借出中，最早 {} 归还",
+                        due_dates[0]
+                    ));
                 }
             }
-            trackable.push(has_holdings);
+            // 前 3 条附封面（独秀 CDN，markdown 图片直接嵌；拿不到就跳过）。
+            if index < 3
+                && let Ok(info) = self.client.item_info(book.record_id).await
+                && let Some(cover) = info.cover_url
+            {
+                lines.push(format!("![《{}》封面]({cover})", book.title));
+            }
         }
         if page.num_found > 5 {
             lines.push(format!(
@@ -311,13 +318,9 @@ impl LibraryQqCommand {
             ));
         }
         lines.push("> 🗺️ 架位 = 馆藏地 + 索书号：到对应书库按索书号升序找架（同号段相邻）".into());
-        // 前 3 条给追书按钮（点了就是发 /追书 <recordId>）；
-        // 零馆藏的跳过——没有单册可追踪，加了也是白等。
+        // 前 3 条给追书按钮（点了就是发 /追书 <recordId>）。
         let mut markup = ReplyMarkup::new();
-        for (index, book) in page.books.iter().take(3).enumerate() {
-            if !trackable.get(index).copied().unwrap_or(false) {
-                continue;
-            }
+        for (book, _) in entries.iter().take(3) {
             let short: String = book.title.chars().take(12).collect();
             markup.push_row(vec![MarkupButton::new(
                 format!("📌追书 {short}"),
