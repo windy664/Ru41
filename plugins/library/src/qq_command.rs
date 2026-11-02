@@ -491,14 +491,28 @@ impl LibraryQqCommand {
             ))));
         }
         let call_no = items.iter().find_map(|h| h.call_no.clone());
+        // 追书按书名(+出版社)跟踪同名其他版本，补取出版社用于替代版本匹配。
+        let publisher = self
+            .client
+            .search_books(&title, 1, 10)
+            .await
+            .ok()
+            .and_then(|page| {
+                page.books
+                    .iter()
+                    .find(|b| b.record_id == record_id)
+                    .and_then(|b| b.publisher.clone())
+            });
         if let Err(err) = self.client.add_watch(LibraryWatch {
             record_id,
             title: title.clone(),
+            publisher,
             call_no: call_no.clone(),
             active: true,
             added_at: ru41::util::now(),
             last_loanable: loanable,
             last_check: ru41::util::now(),
+            alt_alerted: None,
         }) {
             return Ok(Some(Reply::text(format!("## 追书失败\n\n{err}"))));
         }

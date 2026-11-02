@@ -347,10 +347,16 @@ fn build_http_public(hosts: &[(&str, u16)]) -> reqwest::Client {
 
 /// 追书单条：馆藏到货跟踪（持久化在 session 目录下的 watch.json）。
 /// 状态机：last_loanable 0→N 触发一次「可以借了」通知。
+/// 追书语义是「这本书能借了叫我」，不钉死版本：pinned record 仍无可借时，
+/// 还会按 书名(+出版社) 回检索一次，同名新版/其他记录可借了同样通知
+/// （每个替代版本只报一次，见 alt_alerted）。
 #[derive(Clone, Debug, Default, serde::Serialize, serde::Deserialize)]
 pub struct LibraryWatch {
     pub record_id: i64,
     pub title: String,
+    /// 出版社（选填）：有则替代版本必须同社才认，防止同名异书误报。
+    #[serde(default)]
+    pub publisher: Option<String>,
     #[serde(default)]
     pub call_no: Option<String>,
     #[serde(default = "default_true")]
@@ -359,6 +365,9 @@ pub struct LibraryWatch {
     /// 上次检测到的可借数（在架且非样本库）。
     pub last_loanable: i64,
     pub last_check: i64,
+    /// 已通知过的替代版本 record_id（同名其他记录 0→N 已播报）。
+    #[serde(default)]
+    pub alt_alerted: Option<i64>,
 }
 
 fn default_true() -> bool {

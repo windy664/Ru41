@@ -7,7 +7,7 @@ use ru41::{
 use serde::Serialize;
 use std::sync::Arc;
 
-use crate::source::{LibraryClient, LoanRecord};
+use crate::source::{LibraryClient, LibraryWatch, LoanRecord};
 
 /// 图书馆借阅监控配置（对应配置文件的 [sources.library]）。
 #[derive(Debug, Clone)]
@@ -217,6 +217,38 @@ impl LibraryTracker {
         })
     }
 
+    /// 书名级回检索：找「同名（+同社，若已知出版社）且非 pinned 记录」里
+    /// 当前有可借册的第一条。只在 pinned 版本 0 可借时调用，控制请求量。
+    async fn find_loanable_alt(&self, watch: &LibraryWatch) -> Option<crate::source::SearchBook> {
+        let norm = |s: &str| s.chars().filter(|c| !c.is_whitespace()).collect::<String>();
+        let want_title = norm(&watch.title);
+        let page = self.client.search_books(&watch.title, 1, 10).await.ok()?;
+        for book in page.books.iter().filter(|b| b.record_id != watch.record_id).take(5) {
+            let got = norm(&book.title);
+            if got != want_title && !got.contains(&want_title) && !want_title.contains(&got) {
+                continue;
+            }
+            if let Some(want_pub) = &watch.publisher {
+                match &book.publisher {
+                    Some(got_pub) if got_pub.contains(want_pub) || want_pub.contains(got_pub) => {}
+                    _ => continue,
+                }
+            }
+            // 单条候选查询失败不拖垮整轮回检索
+            let Ok(items) = self.client.holdings(book.record_id).await else {
+                continue;
+            };
+            let loanable = items
+                .iter()
+                .filter(|h| h.is_on_shelf() && !h.is_sample())
+                .count();
+            if loanable > 0 {
+                return Some(book.clone());
+            }
+        }
+        None
+    }
+
     /// 追书到货检测（公开馆藏接口，不依赖登录态）：
     /// 每条活跃追书查一次 groupitems，可借数（在架且非样本）0→N 触发通知。
     async fn check_watches(&self, now: i64) -> Result<Vec<String>> {
@@ -250,23 +282,69 @@ impl LibraryTracker {
                         .collect::<std::collections::BTreeSet<_>>()
                         .into_iter()
                         .collect();
+                    let mut card = ru41::util::msg::Card::new("📖 追书到货");
+                    card.raw(format!("《{}》可以借了！", watch.title));
+                    card.raw(format!(
+                        "- 索书号 {}",
+                        watch.call_no.as_deref().unwrap_or("见详情页")
+                    ));
+                    card.raw(format!("- 可借 {loanable} 册（{}）", locations.join("、")));
+                    let mut markup = ru41::ports::commands::ReplyMarkup::new();
+                    markup.push_row(vec![ru41::ports::commands::MarkupButton::new(
+                        "❌ 停止追书",
+                        format!("/追书 取消 {}", watch.record_id),
+                    )]);
                     notifier
-                        .send(
+                        .send_with_markup(
                             &self.config.notify_target,
                             None,
-                            &format!(
-                                "## 📖 追书到货\n\n《{}》可以借了！\n\n- 索书号 {}\n- 可借 {loanable} 册（{}）\n\n> 借到后回复 `/追书 取消 {}` 停止跟踪",
-                                watch.title,
-                                watch.call_no.as_deref().unwrap_or("见详情页"),
-                                locations.join("、"),
-                                watch.record_id
-                            ),
+                            &card.build(),
+                            &markup,
                         )
                         .await?;
                 }
                 alerted.push(watch.title.clone());
             }
             watch.last_loanable = loanable;
+            // 书名级追踪：pinned 版本仍不可借时，回检索同名（+同社）其他记录，
+            // 新版/其他册次可借了同样通知（每个替代版本只报一次）。
+            if loanable == 0
+                && let Some(alt) = self.find_loanable_alt(watch).await
+                && watch.alt_alerted != Some(alt.record_id)
+            {
+                if let Some(notifier) = &self.notifier {
+                    let mut card = ru41::util::msg::Card::new("📖 追书到货（其他版本）");
+                    card.raw(format!("《{}》有同名版本可以借了！", watch.title));
+                    card.raw(format!(
+                        "- {}{}",
+                        alt.publisher.as_deref().unwrap_or("出版社未知"),
+                        alt.publish_year
+                            .as_deref()
+                            .map(|y| format!(" {y}"))
+                            .unwrap_or_default()
+                    ));
+                    card.raw(format!(
+                        "- 索书号 {}",
+                        alt.call_no.as_deref().unwrap_or("见详情页")
+                    ));
+                    card.hint("追的原版本仍不可借；如只要原版可忽略本条");
+                    let mut markup = ru41::ports::commands::ReplyMarkup::new();
+                    markup.push_row(vec![ru41::ports::commands::MarkupButton::new(
+                        "❌ 停止追书",
+                        format!("/追书 取消 {}", watch.record_id),
+                    )]);
+                    notifier
+                        .send_with_markup(
+                            &self.config.notify_target,
+                            None,
+                            &card.build(),
+                            &markup,
+                        )
+                        .await?;
+                }
+                watch.alt_alerted = Some(alt.record_id);
+                alerted.push(watch.title.clone());
+            }
             watch.last_check = now;
             dirty = true;
         }
