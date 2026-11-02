@@ -529,6 +529,9 @@ impl ZhihuishuTracker {
     }
 
     /// 把 sidecar 已下载的附件拷进 Vault 作业文件夹；返回成功拷贝数。
+    /// 附件清单优先取报告里的 attachments 字段；字段缺失时回退扫描
+    /// `attachments/<activity_task_id>/` 目录（sidecar 只在首次发现时把
+    /// 附件清单写进报告，后续报告可能不再携带，但文件还在磁盘上）。
     /// 单个附件缺失/路径非法只跳过，不阻塞整体同步。
     fn copy_task_attachments(
         &self,
@@ -536,20 +539,49 @@ impl ZhihuishuTracker {
         vault: &dyn Vault,
         dest_base: &str,
     ) -> Result<usize> {
-        let Some(list) = &task.attachments else {
-            return Ok(0);
-        };
-        let mut copied = 0;
-        for att in list {
-            // 路径来自报告文件; 拒绝越出附件根的相对跳转
-            if att.file.split(['/', '\\']).any(|seg| seg == "..") {
-                continue;
+        // (源文件路径, 展示名) 清单：报告字段优先，目录扫描兜底。
+        let mut items: Vec<(std::path::PathBuf, String)> = Vec::new();
+        if let Some(list) = &task.attachments {
+            for att in list {
+                // 路径来自报告文件; 拒绝越出附件根的相对跳转
+                if att.file.split(['/', '\\']).any(|seg| seg == "..") {
+                    continue;
+                }
+                items.push((
+                    self.config.attachments_dir.join(&att.file),
+                    att.name.clone(),
+                ));
             }
-            let source = self.config.attachments_dir.join(&att.file);
+        } else {
+            let dir = self
+                .config
+                .attachments_dir
+                .join("attachments")
+                .join(&task.activity_task_id);
+            if let Ok(entries) = std::fs::read_dir(&dir) {
+                for entry in entries.flatten() {
+                    let path = entry.path();
+                    if !path.is_file() {
+                        continue;
+                    }
+                    // sidecar 会在附件目录里放 detail_api.json / meta.json
+                    // 这类自己的元数据，不是作业附件，不拷进 vault。
+                    if path.extension().is_some_and(|e| e == "json") {
+                        continue;
+                    }
+                    let Some(name) = path.file_name().and_then(|n| n.to_str()) else {
+                        continue;
+                    };
+                    items.push((path.clone(), name.to_owned()));
+                }
+            }
+        }
+        let mut copied = 0;
+        for (source, raw_name) in items {
             let Ok(data) = std::fs::read(&source) else {
                 continue;
             };
-            let name = homework_work::sanitize_title(&att.name);
+            let name = homework_work::sanitize_title(&raw_name);
             vault.write_bytes(&format!("{dest_base}/{name}"), &data)?;
             copied += 1;
             copied += self.convert_office_attachment(&source, &name, vault, dest_base);
@@ -585,10 +617,11 @@ impl ZhihuishuTracker {
         let out_md = temp.join(format!("{stem}.md"));
         let ok = std::process::Command::new("pandoc")
             .arg(source)
-            .args(["-t", "gfm", "--wrap=none", "--extract-media"])
-            .arg(&temp)
-            .arg("-o")
-            .arg(&out_md)
+            .args(["-t", "gfm", "--wrap=none", "--extract-media", ".", "-o"])
+            // extract-media 传相对路径并在 temp 里执行：链接才会是相对路径
+            // `media/...`（传绝对路径 pandoc 会把绝对路径原样写进 md）。
+            .arg(format!("{stem}.md"))
+            .current_dir(&temp)
             .output()
             .map(|o| o.status.success() && out_md.exists())
             .unwrap_or(false);
