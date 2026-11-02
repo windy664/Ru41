@@ -336,7 +336,13 @@ impl ZhihuishuTracker {
                     };
                 }
                 if is_due_soon || is_overdue {
-                    let nag_key = format!("{key}:{today}");
+                    // 临期按天提醒（{key}:{date}）；过期只提醒一次（{key}:overdue），
+                    // 之后它就躺在作业清单/总表里，不再每天刷存在感。
+                    let nag_key = if is_overdue {
+                        format!("{key}:overdue")
+                    } else {
+                        format!("{key}:{today}")
+                    };
                     let nagged = self.store.document("zhihuishu_alert", &nag_key)?.is_some();
                     if !nagged && self.notifier.is_some() {
                         self.store.put_document(
