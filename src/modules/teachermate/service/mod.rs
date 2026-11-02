@@ -227,11 +227,7 @@ impl TeachermateTracker {
                 sign.name
             )
         } else {
-            format!(
-                "- ⏰{}｜{}｜进行中",
-                sign.name,
-                sign.kind_label()
-            )
+            format!("- ⏰{}｜{}｜进行中", sign.name, sign.kind_label())
         }
     }
 
