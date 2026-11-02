@@ -32,6 +32,8 @@ pub struct ZhihuishuConfig {
     pub vault_courses: BTreeMap<String, String>,
     /// 任务目录策略：实质作业才建目录，纯在线任务（课前测等）不进 vault。
     pub vault_task_dirs: ru41::ports::vault::VaultTaskDirs,
+    /// 忽略名单：`课程关键字｜作业关键字` 或纯作业关键字，见 ZhihuishuSection。
+    pub ignore_tasks: Vec<String>,
     /// 提醒投递目标（装配层按 [notify] 渠道解析）。
     pub notify_target: String,
 }
@@ -57,9 +59,10 @@ pub struct ZhihuishuPollReport {
 /// 未完成任务按截止时间分类（纯 Rust 规则判断，不经 Agent）→ 通知提醒。
 ///
 /// 通知策略：
-/// - 任务首次出现 → 提醒一次（考试式任务会显式标注「需人工完成」）；
-/// - 未完成且临近截止/已过期 → 每日最多提醒一次；
-/// - 登录态失效 → 每日最多提醒一次（提醒人工重新登录 sidecar）。
+/// - 任务首次出现 → 提醒一次（考试式任务会显式标注「需人工完成」，选做任务标注「选做」）；
+/// - 未完成且临近截止 → 每日最多提醒一次；已过期 → 只提醒一次，之后只留在清单里；
+/// - 登录态失效 → 每日最多提醒一次（提醒人工重新登录 sidecar）；
+/// - 忽略名单（ignore_tasks）命中的任务完全跳过：不落库、不建待办、不进 vault。
 ///
 /// 红线：考试式任务（限时/监考）只提醒人工，不进入任何自动作答流程。
 #[derive(Clone)]
@@ -140,6 +143,11 @@ impl ZhihuishuTracker {
                 }
             }
             for task in &course.tasks {
+                // 忽略名单：平台误采的「假作业」（随堂练习等），完全跳过——
+                // 不落 store、不建待办、不进 vault、不提醒。
+                if is_ignored(&self.config.ignore_tasks, &course.title, &task.title) {
+                    continue;
+                }
                 tasks += 1;
                 let key = format!("{}#{}", course.title, task.activity_task_id);
                 let is_exam_style = task.exam_duration_minutes.unwrap_or(0) > 0
@@ -308,7 +316,11 @@ impl ZhihuishuTracker {
                     continue;
                 }
 
-                let label = format!("{course_name}｜{}", task.title);
+                let label = if is_optional(task) {
+                    format!("{course_name}｜{}（选做）", task.title)
+                } else {
+                    format!("{course_name}｜{}", task.title)
+                };
                 if is_exam_style {
                     exam_style.push(label.clone());
                 }
@@ -424,6 +436,10 @@ impl ZhihuishuTracker {
         }
         let base = self.config.vault_course_dir.trim_end_matches('/');
         let mut written = 0usize;
+        // 同一 vault 目录可能对应多个平台课程条目（如 `26-27-1…` 与 `26-27（1）…`
+        // 是同一门课的两个开课实例），先按目录聚合任务再渲染索引，
+        // 否则同目录的课程互相覆写索引、后写的盖住先写的。
+        let mut groups: BTreeMap<String, Vec<&ZhihuishuTask>> = BTreeMap::new();
         for course in &report.courses {
             // 平台课名带学期后缀，先归一化成课表短名再查映射/建目录，
             // 保证与 jwxt 课表、lecture 课堂笔记落进同一目录。
@@ -434,15 +450,38 @@ impl ZhihuishuTracker {
                 .get(normalized.as_str())
                 .cloned()
                 .unwrap_or(normalized);
+            let tasks = groups.entry(dir).or_default();
+            for task in &course.tasks {
+                if is_ignored(&self.config.ignore_tasks, &course.title, &task.title) {
+                    continue;
+                }
+                tasks.push(task);
+            }
+        }
+        for (dir, tasks) in &groups {
             let course_base = format!("{base}/{dir}");
-            // 课程级索引：未完成/已完成清单，任务行双链到作业文件夹
+            // 课程级索引：按目录名渲染（合并同目录的所有平台课程条目）
             vault.write_file(
                 &format!("{course_base}/智慧树作业.md"),
-                &render_course_note(course, now, self.config.vault_task_dirs),
+                &render_course_note(dir, tasks, now, self.config.vault_task_dirs),
             )?;
             written += 1;
+        }
+        for course in &report.courses {
+            let normalized = normalize_course_name(&course.title);
+            let dir = self
+                .config
+                .vault_courses
+                .get(normalized.as_str())
+                .cloned()
+                .unwrap_or(normalized);
+            let course_base = format!("{base}/{dir}");
             // 任务级资料夹：{YYYY.MM.DD}_{作业名}/作业说明.md + 平台附件
+            // frontmatter 保留平台原始课名，便于溯源。
             for task in &course.tasks {
+                if is_ignored(&self.config.ignore_tasks, &course.title, &task.title) {
+                    continue;
+                }
                 // substantive 策略：纯在线任务（无正文要求、无附件）不建目录，
                 // 它们只出现在课程索引与作业总表里。
                 if self.config.vault_task_dirs == ru41::ports::vault::VaultTaskDirs::Substantive
@@ -532,7 +571,11 @@ impl ZhihuishuTracker {
         if is_exam_style {
             title = format!("🔒{title}");
         }
-        let priority = if is_exam_style || is_due_soon {
+        if is_optional(task) {
+            title = format!("{title}（选做）");
+        }
+        // 选做任务不因临期升级 High——不强制交的东西不值得紧急推送。
+        let priority = if is_exam_style || (is_due_soon && !is_optional(task)) {
             TodoPriority::High
         } else {
             TodoPriority::Normal
@@ -582,19 +625,23 @@ fn truncate_err(err: &anyhow::Error) -> String {
     }
 }
 
-/// 渲染单门课程的作业清单笔记（Obsidian Tasks 格式，每轮整体覆写）。
+/// 渲染课程目录的作业索引笔记（Obsidian Tasks 格式，每轮整体覆写）。
+/// `title` 是 vault 目录名（课表短名）；`tasks` 是聚合后的任务——
+/// 同一目录可能合并了多个平台课程条目（同一门课的两个开课实例），
+/// 因此不再写 platform 行（合并视图下单个平台值没有意义）。
 fn render_course_note(
-    course: &ZhihuishuCourse,
+    title: &str,
+    tasks: &[&ZhihuishuTask],
     now: i64,
     dirs: ru41::ports::vault::VaultTaskDirs,
 ) -> String {
     let mut open: Vec<&ZhihuishuTask> = Vec::new();
     let mut done: Vec<&ZhihuishuTask> = Vec::new();
-    for task in &course.tasks {
+    for task in tasks {
         if task.completed.unwrap_or(false) {
-            done.push(task);
+            done.push(*task);
         } else {
-            open.push(task);
+            open.push(*task);
         }
     }
     // 平台时间串 YYYY-MM-DD HH:MM:SS 字典序即时间序
@@ -603,21 +650,11 @@ fn render_course_note(
 
     let mut out = String::new();
     out.push_str("---\n");
-    out.push_str(&format!("course: {}\n", yaml_scalar(&course.title)));
-    // sidecar 认不出平台时会上报字面量 "?"，那是 YAML 的显式键指示符，
-    // 原样写出会直接炸掉 frontmatter——按未上报处理。
-    if let Some(platform) = course
-        .platform
-        .as_deref()
-        .map(str::trim)
-        .filter(|p| !p.is_empty() && *p != "?")
-    {
-        out.push_str(&format!("platform: {}\n", yaml_scalar(platform)));
-    }
+    out.push_str(&format!("course: {}\n", yaml_scalar(title)));
     // 不写 updated 时间戳：内容须随数据变化而变化，每轮 poll 都变的时间戳
     // 会让 vault 每轮都产生 diff → commit → 触发「已同步」通知刷屏。
     out.push_str("tags:\n  - 课程\n  - 智慧树\n---\n\n");
-    out.push_str(&format!("# {} · 智慧树作业\n\n", course.title));
+    out.push_str(&format!("# {title} · 智慧树作业\n\n"));
     out.push_str("> 由 Ru41 每轮轮询自动覆写，请勿手改；截止时间为平台北京时间。\n\n");
 
     out.push_str(&format!("## 未完成（{}）\n\n", open.len()));
@@ -658,6 +695,51 @@ fn task_line_item(
         )
     } else {
         format!("- [{checked}] {line}\n")
+    }
+}
+
+/// 忽略名单命中判断：条目含「｜」时按 `课程关键字｜作业关键字` 双侧子串匹配，
+/// 否则只匹配作业标题（任意课程下同名即忽略）。
+fn is_ignored(rules: &[String], course: &str, task: &str) -> bool {
+    rules.iter().any(|rule| {
+        let rule = rule.trim();
+        if rule.is_empty() {
+            return false;
+        }
+        if let Some((c, t)) = rule.split_once(['｜', '|']) {
+            course.contains(c.trim()) && task.contains(t.trim())
+        } else {
+            task.contains(rule)
+        }
+    })
+}
+
+/// 选做/弹性任务识别：平台没有专门字段，只能从文本判断。宁缺毋滥，
+/// 只标高置信信号——明确的选做关键词，或「基础/进阶/拓展」分层结构
+/// （课堂弹性练习的典型话术，不是人人必交的硬性作业）。
+fn is_optional(task: &ZhihuishuTask) -> bool {
+    const HINTS: &[&str] = &[
+        "选做",
+        "选答",
+        "自愿",
+        "附加题",
+        "加分题",
+        "额外加分",
+        "不作要求",
+        "不做要求",
+        "学有余力",
+    ];
+    let text_hit = |s: &str| HINTS.iter().any(|h| s.contains(h));
+    if text_hit(&task.title) {
+        return true;
+    }
+    match task.content.as_deref() {
+        Some(content) => {
+            text_hit(content)
+                || (content.contains("基础：")
+                    && (content.contains("进阶：") || content.contains("拓展：")))
+        }
+        None => false,
     }
 }
 
@@ -843,6 +925,9 @@ fn task_line(task: &ZhihuishuTask, now: i64) -> String {
         line.push_str("⚠️已过期 ");
     }
     line.push_str(&task.title);
+    if is_optional(task) {
+        line.push_str(" 🎯选做");
+    }
     if exam {
         let invigilated = if task.video_invigilate == Some(true) {
             "（监考）"

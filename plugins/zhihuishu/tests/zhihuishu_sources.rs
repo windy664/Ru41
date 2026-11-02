@@ -145,6 +145,7 @@ fn make_tracker_with(
                 .into_iter()
                 .collect(),
             vault_task_dirs: ru41::ports::vault::VaultTaskDirs::All,
+            ignore_tasks: vec![],
             notify_target: "user:mock".into(),
         },
         ru41::domain::todo::TodoOptions {
@@ -516,14 +517,113 @@ async fn vault_syncs_course_index_and_task_notes() {
 }
 
 #[tokio::test]
-async fn vault_frontmatter_skips_unknown_platform() {
+async fn ignored_task_is_fully_skipped() {
+    let dir = tempfile::tempdir().unwrap();
+    let store = make_store(dir.path());
+    let channel = mock_channel();
+    let vault = Arc::new(FakeVault::default());
+    let path = write_report(dir.path(), &sample_report_json());
+    let tracker = ZhihuishuTracker::new(
+        store.clone(),
+        Some(channel.clone()),
+        ZhihuishuConfig {
+            attachments_dir: path.parent().map(|p| p.to_path_buf()).unwrap(),
+            report_path: path,
+            deadline_days: 3,
+            interval_secs: 21_600,
+            todo_sync: true,
+            vault_sync: true,
+            vault_course_dir: "01-Courses-课程/2026-Fall-大一上".into(),
+            vault_courses: [("职业生涯规划".to_owned(), "大学生职业生涯规划".to_owned())]
+                .into_iter()
+                .collect(),
+            vault_task_dirs: ru41::ports::vault::VaultTaskDirs::All,
+            ignore_tasks: vec!["职业生涯规划｜课前测".into()],
+            notify_target: "user:mock".into(),
+        },
+        ru41::domain::todo::TodoOptions {
+            offset_seconds: 28_800,
+            recent_days: 7,
+            long_term_days: 30,
+        },
+        Some(vault.clone()),
+    );
+
+    let report = tracker.poll_once().await.unwrap();
+    // T1「第五节课 课前测」被忽略：不落 store、不建待办、不进 vault、不提醒
+    assert_eq!(report.new_tasks, 3);
+    assert!(
+        store
+            .document("zhihuishu_task", "职业生涯规划#T1")
+            .unwrap()
+            .is_none()
+    );
+    let sent = channel.sent.lock().unwrap();
+    assert!(!sent[0].contains("课前测"), "忽略任务不应播报: {}", sent[0]);
+    let files = vault.files.lock().unwrap();
+    assert!(
+        files.keys().all(|k| !k.contains("课前测")),
+        "忽略任务不进 vault: {:?}",
+        files.keys().collect::<Vec<_>>()
+    );
+    // 课程索引里也不出现
+    let index = files
+        .get("01-Courses-课程/2026-Fall-大一上/大学生职业生涯规划/智慧树作业.md")
+        .unwrap();
+    assert!(index.contains("未完成（2）"));
+    assert!(!index.contains("课前测"));
+}
+
+#[tokio::test]
+async fn optional_task_is_marked() {
+    let dir = tempfile::tempdir().unwrap();
+    let store = make_store(dir.path());
+    let channel = mock_channel();
+    let mut report_value = sample_report_json();
+    // T1 临期（+1 天）且正文含选做信号 → 标注但待办不升 High
+    report_value["courses"][0]["tasks"][0]["content"] =
+        json!("选做：设置三个习题，用于回顾第四节的知识点。");
+    let path = write_report(dir.path(), &report_value);
+    let tracker = make_tracker(&store, path, Some(channel.clone()));
+
+    tracker.poll_once().await.unwrap();
+    let sent = channel.sent.lock().unwrap();
+    assert!(
+        sent[0].contains("第五节课 课前测（选做）"),
+        "选做任务应在提醒中标注: {}",
+        sent[0]
+    );
+    let snap = store
+        .document("zhihuishu_task", "职业生涯规划#T1")
+        .unwrap()
+        .unwrap();
+    let id = snap.value["todo_id"].as_str().unwrap();
+    let doc = store.document("todo_item", id).unwrap().unwrap();
+    let item: TodoItem = serde_json::from_value(doc.value).unwrap();
+    assert!(item.title.contains("（选做）"));
+    assert_eq!(item.priority, TodoPriority::Normal, "选做不因临期升 High");
+}
+
+#[tokio::test]
+async fn vault_index_merges_courses_into_one_dir() {
     let dir = tempfile::tempdir().unwrap();
     let store = make_store(dir.path());
     let vault = Arc::new(FakeVault::default());
-    // sidecar 认不出平台时上报字面量 "?"——YAML 显式键指示符，
-    // 写进 frontmatter 会让 Obsidian 属性面板整条解析失败。
+    // 同一门课的两个开课实例（平台课名不同、映射到同一 vault 目录），
+    // 索引必须合并渲染而不是互相覆写。
     let mut report = sample_report_json();
-    report["courses"][0]["platform"] = json!("?");
+    report["courses"][0]["platform"] = json!("?"); // 顺带覆盖：未知平台不进 frontmatter
+    let mut second = sample_report_json()["courses"][0].clone();
+    second["title"] = json!("职业生涯规划（2026-2027学年第一学期）");
+    second["content_published"] = json!(false);
+    second["tasks"] = json!([{
+        "activity_task_id": "X1",
+        "title": "另一班次的专属作业",
+        "kind": "assignment",
+        "end_at": platform_time(2),
+        "completed": false
+    }]);
+    report["courses"].as_array_mut().unwrap().push(second);
     let path = write_report(dir.path(), &report);
     let tracker = make_tracker_with(&store, path, None, true, Some(vault.clone()));
 
@@ -532,8 +632,12 @@ async fn vault_frontmatter_skips_unknown_platform() {
     let index = files
         .get("01-Courses-课程/2026-Fall-大一上/大学生职业生涯规划/智慧树作业.md")
         .unwrap();
-    assert!(!index.contains("platform:"), "平台未知时不写 platform 行");
-    assert!(index.contains("course: 职业生涯规划"));
+    // 合并视图：标题用目录名，两个班次的任务都在，未知平台不写 platform 行
+    assert!(index.contains("# 大学生职业生涯规划 · 智慧树作业"));
+    assert!(index.contains("course: 大学生职业生涯规划"));
+    assert!(!index.contains("platform:"));
+    assert!(index.contains("未完成（4）"), "两个班次的任务应合并: {index}");
+    assert!(index.contains("另一班次的专属作业"));
 }
 
 #[tokio::test]

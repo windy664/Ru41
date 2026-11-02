@@ -27,6 +27,11 @@ pub struct ZhihuishuSection {
     /// 任务目录策略："all"（默认，每个任务都建目录）或 "substantive"
     /// （只有实质作业——有正文要求或附件——才建目录，纯在线任务不进 vault）。
     pub vault_task_dirs: Option<String>,
+    /// 忽略名单：平台误采的任务（随堂练习、分层选做等不是真作业的条目）。
+    /// 每项形如 `课程关键字｜作业关键字`（两边都命中才忽略），
+    /// 或只写作业关键字（任意课程下同名即忽略）。
+    #[serde(default)]
+    pub ignore_tasks: Option<Vec<String>>,
 }
 
 impl ZhihuishuSection {
@@ -83,6 +88,7 @@ impl ZhihuishuSection {
             vault_task_dirs: ru41::ports::vault::VaultTaskDirs::parse(
                 self.vault_task_dirs.as_deref(),
             )?,
+            ignore_tasks: self.ignore_tasks.clone().unwrap_or_default(),
             notify_target,
         })
     }
