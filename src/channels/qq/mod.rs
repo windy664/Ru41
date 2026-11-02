@@ -118,7 +118,8 @@ impl NotifyChannel for QqNotifier {
         msg_id: Option<&'a str>,
         caption: &'a str,
         media: &'a crate::ports::channel::MediaRef,
-    ) -> Pin<Box<dyn Future<Output = Result<()>> + Send + 'a>> {        Box::pin(async move {
+    ) -> Pin<Box<dyn Future<Output = Result<()>> + Send + 'a>> {
+        Box::pin(async move {
             let key = msg_id.unwrap_or_default();
             let seq = self.sequencer.next(key);
             if let Some(group) = target.strip_prefix(TARGET_GROUP_PREFIX) {
