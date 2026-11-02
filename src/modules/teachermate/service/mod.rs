@@ -386,16 +386,17 @@ impl TeachermateTracker {
         let mut notified = false;
         if let Some(notifier) = &self.notifier {
             if !pending_lines.is_empty() {
-                let footer = if pending_buttons.is_empty() {
-                    ""
-                } else {
-                    "\n\n> 点下方按钮一键签到"
-                };
-                let message = format!(
-                    "## ✍️ 微助教签到（{} 个进行中）\n\n{}{footer}",
-                    signs.len(),
-                    pending_lines.join("\n")
-                );
+                let mut card = crate::util::msg::Card::new(format!(
+                    "✍️ 微助教签到（{} 个进行中）",
+                    signs.len()
+                ));
+                for line in &pending_lines {
+                    card.raw(line);
+                }
+                if !pending_buttons.is_empty() {
+                    card.hint("点下方按钮一键签到");
+                }
+                let message = card.build();
                 let mut markup = crate::ports::commands::ReplyMarkup::new();
                 markup.push_row(
                     pending_buttons
@@ -412,7 +413,11 @@ impl TeachermateTracker {
                 notified = true;
             }
             if !outcome_lines.is_empty() {
-                let message = format!("## ✅ 微助教签到回执\n\n{}", outcome_lines.join("\n"));
+                let mut card = crate::util::msg::Card::new("✅ 微助教签到回执");
+                for line in &outcome_lines {
+                    card.raw(line);
+                }
+                let message = card.build();
                 let mut markup = crate::ports::commands::ReplyMarkup::new();
                 markup.push_row(
                     retry_buttons

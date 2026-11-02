@@ -404,7 +404,12 @@ impl ZhihuishuTracker {
         if !lines.is_empty()
             && let Some(notifier) = &self.notifier
         {
-            let message = format!("## 📚 作业提醒（{}）\n\n{}", lines.len(), lines.join("\n"));
+            let mut card =
+                ru41::util::msg::Card::new(format!("📚 作业提醒（{}）", lines.len()));
+            for line in &lines {
+                card.raw(line);
+            }
+            let message = card.build();
             let mut markup = ru41::ports::commands::ReplyMarkup::new();
             markup.push_row(vec![ru41::ports::commands::MarkupButton::new(
                 "📋 作业清单",

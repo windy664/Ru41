@@ -515,22 +515,29 @@ impl JwxtTracker {
         };
         let tomorrow = today + Duration::days(1);
         let day_meetings = meetings_on(meetings, start, tomorrow);
-        let message = format!(
-            "## 📚 明日课表\n\n**{} {} · 第{}周**\n\n{}",
+        let mut card = crate::util::msg::Card::new("📚 明日课表");
+        card.raw(format!(
+            "**{} {} · 第{}周**",
             tomorrow.format("%m月%d日"),
             weekday_name(tomorrow),
-            week_of(start, tomorrow),
-            if day_meetings.is_empty() {
-                "明天没有课 🎉".to_owned()
-            } else {
-                let mut lines: Vec<String> = day_meetings
-                    .iter()
-                    .map(|m| StoredMeeting::from(m).display_line(self.config.clock.as_ref()))
-                    .collect();
-                lines.sort();
-                format!("{}\n\n共 {} 节课", lines.join("\n"), lines.len())
+            week_of(start, tomorrow)
+        ));
+        card.raw("");
+        if day_meetings.is_empty() {
+            card.raw("明天没有课 🎉");
+        } else {
+            let mut lines: Vec<String> = day_meetings
+                .iter()
+                .map(|m| StoredMeeting::from(m).display_line(self.config.clock.as_ref()))
+                .collect();
+            lines.sort();
+            for line in &lines {
+                card.raw(line);
             }
-        );
+            card.raw("");
+            card.raw(format!("共 {} 节课", lines.len()));
+        }
+        let message = card.build();
         notifier
             .send(&self.config.notify_target, None, &message)
             .await?;
@@ -757,7 +764,9 @@ impl JwxtTracker {
                 .send(
                     &self.config.notify_target,
                     None,
-                    &format!("## 📅 课表变更（{xnm}-{xqm} 学期）\n\n{items}"),
+                    &crate::util::msg::Card::new(format!("📅 课表变更（{xnm}-{xqm} 学期）"))
+                        .raw(items)
+                        .build(),
                 )
                 .await?;
         }

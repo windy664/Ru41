@@ -181,10 +181,12 @@ impl LibraryTracker {
         if !lines.is_empty()
             && let Some(notifier) = &self.notifier
         {
-            let message = format!(
-                "## 📚 图书催还\n\n{}\n\n> 点下方按钮直接续借，或回复 `/借阅` 查看在借清单",
-                lines.join("\n")
-            );
+            let mut card = ru41::util::msg::Card::new("📚 图书催还");
+            for line in &lines {
+                card.raw(line);
+            }
+            card.hint("点下方按钮直接续借，或回复 `/借阅` 查看在借清单");
+            let message = card.build();
             let mut markup = ru41::ports::commands::ReplyMarkup::new();
             markup.push_row(
                 renew_buttons

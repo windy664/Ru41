@@ -1,5 +1,7 @@
 //! 少量跨层通用的小工具。保持克制：只在出现真实重复时才把代码收进这里。
 
+pub mod msg;
+
 use std::net::ToSocketAddrs;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
