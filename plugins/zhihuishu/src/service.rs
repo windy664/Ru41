@@ -552,8 +552,81 @@ impl ZhihuishuTracker {
             let name = homework_work::sanitize_title(&att.name);
             vault.write_bytes(&format!("{dest_base}/{name}"), &data)?;
             copied += 1;
+            copied += self.convert_office_attachment(&source, &name, vault, dest_base);
         }
         Ok(copied)
+    }
+
+    /// docx/pptx 附件转 markdown 一并进 vault：嵌入图片抽到 `{stem}.media/`，
+    /// 链接同步改写，Obsidian 里直接可读；模板/评分标准类附件从此对 agent
+    /// 与人都可读，不再是打不开的二进制。工具缺失或转换失败只记日志跳过，
+    /// 原件已在上一步拷入，不受影响。
+    fn convert_office_attachment(
+        &self,
+        source: &std::path::Path,
+        name: &str,
+        vault: &dyn Vault,
+        dest_base: &str,
+    ) -> usize {
+        let ext = name
+            .rsplit('.')
+            .next()
+            .unwrap_or_default()
+            .to_ascii_lowercase();
+        if !matches!(ext.as_str(), "docx" | "pptx") {
+            return 0;
+        }
+        let stem = name.rsplit_once('.').map(|(s, _)| s).unwrap_or(name);
+        let temp = std::env::temp_dir().join(format!("ru41-docconv-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&temp);
+        if std::fs::create_dir_all(&temp).is_err() {
+            return 0;
+        }
+        let out_md = temp.join(format!("{stem}.md"));
+        let ok = std::process::Command::new("pandoc")
+            .arg(source)
+            .args(["-t", "gfm", "--wrap=none", "--extract-media"])
+            .arg(&temp)
+            .arg("-o")
+            .arg(&out_md)
+            .output()
+            .map(|o| o.status.success() && out_md.exists())
+            .unwrap_or(false);
+        if !ok {
+            eprintln!("[zhihuishu] pandoc 转换失败（跳过，保留原件）：{name}");
+            let _ = std::fs::remove_dir_all(&temp);
+            return 0;
+        }
+        let mut written = 0usize;
+        // pandoc 把嵌入图片抽到 extract-media 根的 media/ 下，同一作业文件夹
+        // 有多个 docx 时不同附件的图片会撞名（都叫 image1.png），
+        // 改成按附件名分目录 `{stem}.media/` 并同步改写 md 里的引用。
+        if let Ok(md) = std::fs::read_to_string(&out_md) {
+            let md = md
+                .replace("](media/", &format!("]({stem}.media/"))
+                .replace("src=\"media/", &format!("src=\"{stem}.media/"));
+            if vault
+                .write_file(&format!("{dest_base}/{stem}.md"), &md)
+                .is_ok()
+            {
+                written += 1;
+            }
+        }
+        let media_root = temp.join("media");
+        for file in collect_files(&media_root) {
+            let Ok(rel) = file.strip_prefix(&media_root) else {
+                continue;
+            };
+            let Ok(data) = std::fs::read(&file) else {
+                continue;
+            };
+            let dest = format!("{dest_base}/{stem}.media/{}", rel.display());
+            if vault.write_bytes(&dest, &data).is_ok() {
+                written += 1;
+            }
+        }
+        let _ = std::fs::remove_dir_all(&temp);
+        written
     }
 
     /// 消息/待办里展示用的课程短名：归一化后查 vault 课程映射，
@@ -920,6 +993,27 @@ fn fmt_due(raw: &str) -> &str {
         return date;
     }
     trimmed.get(..16).unwrap_or(trimmed)
+}
+
+/// 递归收集目录下全部文件；目录不存在返回空。
+fn collect_files(dir: &std::path::Path) -> Vec<PathBuf> {
+    let mut out = Vec::new();
+    let mut stack = vec![dir.to_path_buf()];
+    while let Some(dir) = stack.pop() {
+        let Ok(entries) = std::fs::read_dir(&dir) else {
+            continue;
+        };
+        for entry in entries.flatten() {
+            let path = entry.path();
+            if path.is_dir() {
+                stack.push(path);
+            } else {
+                out.push(path);
+            }
+        }
+    }
+    out.sort();
+    out
 }
 
 /// 单条未完成任务行：📅 日期 + 考试式/过期标注。
