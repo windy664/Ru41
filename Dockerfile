@@ -59,7 +59,7 @@ RUN sed -i 's|deb.debian.org|mirrors.aliyun.com|g; s|security.debian.org|mirrors
 RUN apt-get update \
     && apt-get install -y --no-install-recommends ca-certificates sqlite3 git \
         python3 python3-pip curl jq \
-        ripgrep zip unzip ffmpeg \
+        ripgrep zip unzip ffmpeg pandoc \
     && pip3 install --break-system-packages --no-cache-dir requests beautifulsoup4 lxml yt-dlp \
     && apt-get purge -y python3-pip python3-setuptools python3-wheel \
     && apt-get autoremove -y --purge \
