@@ -725,6 +725,7 @@ fn is_optional(task: &ZhihuishuTask) -> bool {
         "附加题",
         "加分题",
         "额外加分",
+        "课堂表现加分",
         "不作要求",
         "不做要求",
         "学有余力",
