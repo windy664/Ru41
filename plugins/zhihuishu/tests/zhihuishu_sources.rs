@@ -391,7 +391,8 @@ async fn todo_created_then_synced_on_platform_completion() {
         item
     };
     let t1 = todo_of("职业生涯规划#T1");
-    assert!(t1.title.contains("智慧树｜职业生涯规划｜第五节课 课前测"));
+    // 展示名走 vault 课程映射：平台原名 → 课表短名（目录名）。
+    assert!(t1.title.contains("智慧树｜大学生职业生涯规划｜第五节课 课前测"));
     assert!(t1.due_at.is_some() && t1.remind_at.is_some());
     assert_eq!(t1.source.as_ref().unwrap().channel, "zhihuishu");
     assert!(channel.sent.lock().unwrap()[0].contains("已入待办"));
@@ -512,6 +513,27 @@ async fn vault_syncs_course_index_and_task_notes() {
     let report2 = tracker.poll_once().await.unwrap();
     assert_eq!(report2.vault_files, 0);
     assert_eq!(channel.sent.lock().unwrap().len(), 1);
+}
+
+#[tokio::test]
+async fn vault_frontmatter_skips_unknown_platform() {
+    let dir = tempfile::tempdir().unwrap();
+    let store = make_store(dir.path());
+    let vault = Arc::new(FakeVault::default());
+    // sidecar 认不出平台时上报字面量 "?"——YAML 显式键指示符，
+    // 写进 frontmatter 会让 Obsidian 属性面板整条解析失败。
+    let mut report = sample_report_json();
+    report["courses"][0]["platform"] = json!("?");
+    let path = write_report(dir.path(), &report);
+    let tracker = make_tracker_with(&store, path, None, true, Some(vault.clone()));
+
+    tracker.poll_once().await.unwrap();
+    let files = vault.files.lock().unwrap();
+    let index = files
+        .get("01-Courses-课程/2026-Fall-大一上/大学生职业生涯规划/智慧树作业.md")
+        .unwrap();
+    assert!(!index.contains("platform:"), "平台未知时不写 platform 行");
+    assert!(index.contains("course: 职业生涯规划"));
 }
 
 #[tokio::test]
