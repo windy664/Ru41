@@ -405,8 +405,13 @@ impl ZhihuishuTracker {
             && let Some(notifier) = &self.notifier
         {
             let message = format!("## 📚 作业提醒（{}）\n\n{}", lines.len(), lines.join("\n"));
+            let mut markup = ru41::ports::commands::ReplyMarkup::new();
+            markup.push_row(vec![ru41::ports::commands::MarkupButton::new(
+                "📋 作业清单",
+                "/作业",
+            )]);
             notifier
-                .send(&self.config.notify_target, None, &message)
+                .send_with_markup(&self.config.notify_target, None, &message, &markup)
                 .await?;
             notified = true;
         }

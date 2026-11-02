@@ -38,7 +38,11 @@ pub struct TeachermatePollReport {
 /// 自动签到单次尝试的结果（语义同 chaoxing：拒绝不重试，瞬时错误下轮重试）。
 enum AutoSignOutcome {
     Signed(String),
-    Rejected(String),
+    /// retry：可重试时附（按钮文案, 回传命令）。
+    Rejected {
+        line: String,
+        retry: Option<(String, String)>,
+    },
     Transient,
 }
 
@@ -144,13 +148,18 @@ impl TeachermateTracker {
                     ))
                 } else {
                     self.mark_rejected(sign, response.trim());
-                    AutoSignOutcome::Rejected(format!(
-                        "- ❌{}｜{}｜自动签到被平台拒绝（响应：{}）→ 可 `teachermate sign {}` 重试",
-                        sign.name,
-                        sign.kind_label(),
-                        response.trim(),
-                        sign.sign_id
-                    ))
+                    AutoSignOutcome::Rejected {
+                        line: format!(
+                            "- ❌{}｜{}｜自动签到被平台拒绝（响应：{}）→ 点下方按钮重试",
+                            sign.name,
+                            sign.kind_label(),
+                            response.trim(),
+                        ),
+                        retry: Some((
+                            format!("🔄 重试{}", sign.kind_label()),
+                            format!("teachermate sign {}", sign.sign_id),
+                        )),
+                    }
                 }
             }
             // 网络等瞬时错误：快照不动，下一轮 poll 自然重试（窗口常为 1-2 分钟）
@@ -219,11 +228,9 @@ impl TeachermateTracker {
             )
         } else {
             format!(
-                "- ⏰{}｜{}｜进行中｜id={}｜`teachermate sign {}`",
+                "- ⏰{}｜{}｜进行中",
                 sign.name,
-                sign.kind_label(),
-                sign.sign_id,
-                sign.sign_id
+                sign.kind_label()
             )
         }
     }
@@ -271,6 +278,9 @@ impl TeachermateTracker {
         let mut ended_unsigned = 0usize;
         let mut pending_lines: Vec<String> = Vec::new();
         let mut outcome_lines: Vec<String> = Vec::new();
+        // 消息附带的一键按钮：(按钮文案, 回传命令)。QQ 键盘单行最多 4 个。
+        let mut pending_buttons: Vec<(String, String)> = Vec::new();
+        let mut retry_buttons: Vec<(String, String)> = Vec::new();
         let mut active_keys: HashSet<String> = HashSet::new();
 
         for sign in &signs {
@@ -300,11 +310,22 @@ impl TeachermateTracker {
                             auto_signed += 1;
                             outcome_lines.push(line);
                         }
-                        AutoSignOutcome::Rejected(line) => outcome_lines.push(line),
+                        AutoSignOutcome::Rejected { line, retry } => {
+                            outcome_lines.push(line);
+                            if let Some(b) = retry {
+                                retry_buttons.push(b);
+                            }
+                        }
                         AutoSignOutcome::Transient => {}
                     }
                 } else {
                     pending_lines.push(self.pending_line(sign));
+                    if !sign.is_qr() {
+                        pending_buttons.push((
+                            format!("✍️ 去签到（{}）", sign.kind_label()),
+                            format!("teachermate sign {}", sign.sign_id),
+                        ));
+                    }
                 }
                 continue;
             };
@@ -321,7 +342,12 @@ impl TeachermateTracker {
                         auto_signed += 1;
                         outcome_lines.push(line);
                     }
-                    AutoSignOutcome::Rejected(line) => outcome_lines.push(line),
+                    AutoSignOutcome::Rejected { line, retry } => {
+                        outcome_lines.push(line);
+                        if let Some(b) = retry {
+                            retry_buttons.push(b);
+                        }
+                    }
                     AutoSignOutcome::Transient => {}
                 }
             }
@@ -364,20 +390,45 @@ impl TeachermateTracker {
         let mut notified = false;
         if let Some(notifier) = &self.notifier {
             if !pending_lines.is_empty() {
+                let footer = if pending_buttons.is_empty() {
+                    ""
+                } else {
+                    "\n\n> 点下方按钮一键签到"
+                };
                 let message = format!(
-                    "## ✍️ 微助教签到（{} 个进行中）\n\n{}\n\n> openid 失效时用 `teachermate bind <链接>` 重新投喂）",
+                    "## ✍️ 微助教签到（{} 个进行中）\n\n{}{footer}",
                     signs.len(),
                     pending_lines.join("\n")
                 );
+                let mut markup = crate::ports::commands::ReplyMarkup::new();
+                markup.push_row(
+                    pending_buttons
+                        .iter()
+                        .take(4)
+                        .map(|(label, cmd)| {
+                            crate::ports::commands::MarkupButton::new(label.clone(), cmd.clone())
+                        })
+                        .collect(),
+                );
                 notifier
-                    .send(&self.config.notify_target, None, &message)
+                    .send_with_markup(&self.config.notify_target, None, &message, &markup)
                     .await?;
                 notified = true;
             }
             if !outcome_lines.is_empty() {
                 let message = format!("## ✅ 微助教签到回执\n\n{}", outcome_lines.join("\n"));
+                let mut markup = crate::ports::commands::ReplyMarkup::new();
+                markup.push_row(
+                    retry_buttons
+                        .iter()
+                        .take(4)
+                        .map(|(label, cmd)| {
+                            crate::ports::commands::MarkupButton::new(label.clone(), cmd.clone())
+                        })
+                        .collect(),
+                );
                 notifier
-                    .send(&self.config.notify_target, None, &message)
+                    .send_with_markup(&self.config.notify_target, None, &message, &markup)
                     .await?;
                 notified = true;
             }

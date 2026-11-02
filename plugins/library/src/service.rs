@@ -140,6 +140,8 @@ impl LibraryTracker {
         let mut due_soon = Vec::new();
         let mut overdue = Vec::new();
         let mut lines: Vec<String> = Vec::new();
+        // 催还消息附带的续借按钮（每书一个，QQ 键盘单行最多 4 个）。
+        let mut renew_buttons: Vec<(String, String)> = Vec::new();
         for record in &page.records {
             let Some(days_left) = days_until_due(record.norm_return_date.as_deref(), today) else {
                 continue;
@@ -159,6 +161,11 @@ impl LibraryTracker {
             if self.store.document("library_alert", &nag_key)?.is_some() {
                 continue;
             }
+            renew_buttons.push((
+                // 按钮文案截断防书名过长撑爆键盘；命令带全名保证续借精确匹配。
+                format!("🔄 续借《{}》", truncate_label(&record.display_title(), 6)),
+                format!("/续借 {}", record.display_title()),
+            ));
             if self.notifier.is_some() {
                 self.store.put_document(
                     "library_alert",
@@ -175,11 +182,25 @@ impl LibraryTracker {
             && let Some(notifier) = &self.notifier
         {
             let message = format!(
-                "## 📚 图书催还\n\n{}\n\n> 回复 `/借阅` 查看在借清单，`/续借 书名` 一键续借",
+                "## 📚 图书催还\n\n{}\n\n> 点下方按钮直接续借，或回复 `/借阅` 查看在借清单",
                 lines.join("\n")
             );
+            let mut markup = ru41::ports::commands::ReplyMarkup::new();
+            markup.push_row(
+                renew_buttons
+                    .iter()
+                    .take(4)
+                    .map(|(label, cmd)| {
+                        ru41::ports::commands::MarkupButton::new(label.clone(), cmd.clone())
+                    })
+                    .collect(),
+            );
+            markup.push_row(vec![ru41::ports::commands::MarkupButton::new(
+                "📚 在借清单",
+                "/借阅",
+            )]);
             notifier
-                .send(&self.config.notify_target, None, &message)
+                .send_with_markup(&self.config.notify_target, None, &message, &markup)
                 .await?;
             notified = true;
         }
@@ -296,6 +317,15 @@ impl LibraryTracker {
 }
 
 /// 单条催还提醒行。
+/// 按钮文案截断：按字符数截断并补省略号。
+fn truncate_label(text: &str, max: usize) -> String {
+    if text.chars().count() <= max {
+        text.to_string()
+    } else {
+        format!("{}…", text.chars().take(max).collect::<String>())
+    }
+}
+
 pub fn format_loan_line(record: &LoanRecord, days_left: i64) -> String {
     let due = record
         .norm_return_date

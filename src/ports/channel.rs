@@ -30,6 +30,18 @@ pub trait NotifyChannel: Send + Sync {
             self.send(target, msg_id, &text).await
         })
     }
+
+    /// 发送带快捷按钮的消息；渠道不支持的默认降级为纯文本发送
+    /// （正文应保留操作指路，降级后用户仍知道能做什么）。
+    fn send_with_markup<'a>(
+        &'a self,
+        target: &'a str,
+        msg_id: Option<&'a str>,
+        text: &'a str,
+        _markup: &'a ru41_plugin_api::ports::commands::ReplyMarkup,
+    ) -> Pin<Box<dyn Future<Output = Result<()>> + Send + 'a>> {
+        Box::pin(async move { self.send(target, msg_id, text).await })
+    }
 }
 
 impl<T: NotifyChannel + ?Sized> NotifyChannel for Arc<T> {
@@ -52,5 +64,14 @@ impl<T: NotifyChannel + ?Sized> NotifyChannel for Arc<T> {
         media: &'a MediaRef,
     ) -> Pin<Box<dyn Future<Output = Result<()>> + Send + 'a>> {
         (**self).send_media(target, msg_id, caption, media)
+    }
+    fn send_with_markup<'a>(
+        &'a self,
+        target: &'a str,
+        msg_id: Option<&'a str>,
+        text: &'a str,
+        markup: &'a ru41_plugin_api::ports::commands::ReplyMarkup,
+    ) -> Pin<Box<dyn Future<Output = Result<()>> + Send + 'a>> {
+        (**self).send_with_markup(target, msg_id, text, markup)
     }
 }

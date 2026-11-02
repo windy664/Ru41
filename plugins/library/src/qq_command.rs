@@ -441,9 +441,14 @@ impl LibraryQqCommand {
             Ok(Some(title)) => Ok(Some(Reply::text(format!(
                 "## 已停止跟踪\n\n《{title}》不再做馆藏到货提醒。"
             )))),
-            Ok(None) => Ok(Some(Reply::text(format!(
-                "## 未找到跟踪项\n\n清单里没有匹配「{id_or_title}」的书。回复 `/追书 列表` 查看。"
-            )))),
+            Ok(None) => {
+                let mut markup = ReplyMarkup::new();
+                markup.push_row(vec![MarkupButton::new("📌 追书列表", "/追书 列表")]);
+                Ok(Some(Reply::with_markup(
+                    format!("## 未找到跟踪项\n\n清单里没有匹配「{id_or_title}」的书。"),
+                    markup,
+                )))
+            }
             Err(err) => Ok(Some(Reply::text(format!("## 取消失败\n\n{err}")))),
         }
     }
@@ -500,10 +505,18 @@ impl LibraryQqCommand {
         // 走到这里必然 loanable == 0（>0 已在上面拒收）。
         let hint =
             "🔴 当前无可借（样本库仅阅览 / 全部被借出），可借了会第一时间通知你".to_owned();
-        Ok(Some(Reply::text(format!(
-            "## 📌 已加入追书\n\n- 《{title}》\n- 索书号 {}\n- {hint}\n\n> 每 6 小时自动检查一次馆藏；回复 `/追书 列表` 查看，`/追书 取消 {record_id}` 停止。",
-            call_no.as_deref().unwrap_or("见详情页")
-        ))))
+        let mut markup = ReplyMarkup::new();
+        markup.push_row(vec![
+            MarkupButton::new("📌 追书列表", "/追书 列表"),
+            MarkupButton::new("❌ 取消追书", format!("/追书 取消 {record_id}")),
+        ]);
+        Ok(Some(Reply::with_markup(
+            format!(
+                "## 📌 已加入追书\n\n- 《{title}》\n- 索书号 {}\n- {hint}\n\n> 每 6 小时自动检查一次馆藏。",
+                call_no.as_deref().unwrap_or("见详情页")
+            ),
+            markup,
+        )))
     }
 
     async fn renew(&self, title_query: &str) -> Result<Option<Reply>> {
@@ -533,9 +546,14 @@ impl LibraryQqCommand {
             })
             .collect();
         match matches.len() {
-            0 => Ok(Some(Reply::text(format!(
-                "## 未找到在借图书\n\n在借清单里没有匹配「{title_query}」的书。回复 `/借阅` 查看清单。"
-            )))),
+            0 => {
+                let mut markup = ReplyMarkup::new();
+                markup.push_row(vec![MarkupButton::new("📚 在借清单", "/借阅")]);
+                Ok(Some(Reply::with_markup(
+                    format!("## 未找到在借图书\n\n在借清单里没有匹配「{title_query}」的书。"),
+                    markup,
+                )))
+            }
             1 => match self.client.renew(matches[0]).await {
                 Ok(message) => {
                     let new_due = matches[0]

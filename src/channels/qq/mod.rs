@@ -86,14 +86,39 @@ impl NotifyChannel for QqNotifier {
         })
     }
 
+    /// 带快捷按钮的通知（markdown + keyboard，失败按 无键盘→纯文本 降级）。
+    fn send_with_markup<'a>(
+        &'a self,
+        target: &'a str,
+        msg_id: Option<&'a str>,
+        text: &'a str,
+        markup: &'a crate::ports::commands::ReplyMarkup,
+    ) -> Pin<Box<dyn Future<Output = Result<()>> + Send + 'a>> {
+        Box::pin(async move {
+            let key = msg_id.unwrap_or_default();
+            let seq = self.sequencer.next(key);
+            if let Some(group) = target.strip_prefix(TARGET_GROUP_PREFIX) {
+                self.api
+                    .send_group_markup(group, text, markup, msg_id, seq)
+                    .await?;
+            } else if let Some(user) = target.strip_prefix(TARGET_C2C_PREFIX) {
+                self.api
+                    .send_c2c_markup(user, text, markup, msg_id, seq)
+                    .await?;
+            } else {
+                bail!("unknown qq notify target: {target}");
+            }
+            Ok(())
+        })
+    }
+
     fn send_media<'a>(
         &'a self,
         target: &'a str,
         msg_id: Option<&'a str>,
         caption: &'a str,
         media: &'a crate::ports::channel::MediaRef,
-    ) -> Pin<Box<dyn Future<Output = Result<()>> + Send + 'a>> {
-        Box::pin(async move {
+    ) -> Pin<Box<dyn Future<Output = Result<()>> + Send + 'a>> {        Box::pin(async move {
             let key = msg_id.unwrap_or_default();
             let seq = self.sequencer.next(key);
             if let Some(group) = target.strip_prefix(TARGET_GROUP_PREFIX) {
