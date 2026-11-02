@@ -744,16 +744,17 @@ impl ChaoxingTracker {
         }
         if let Some(notifier) = &self.notifier {
             if !pending_lines.is_empty() {
-                let footer = if pending_buttons.is_empty() {
-                    "\n\n> 二维码需现场 enc"
+                let mut card =
+                    crate::util::msg::Card::new(format!("✍️ 学习通签到（{pending} 个待签）"));
+                for line in &pending_lines {
+                    card.raw(line);
+                }
+                card.hint(if pending_buttons.is_empty() {
+                    "二维码需现场 enc"
                 } else {
-                    "\n\n> 点下方按钮一键签到；二维码需现场 enc"
-                };
-                let message = format!(
-                    "## ✍️ 学习通签到（{} 个待签）\n\n{}{footer}",
-                    pending,
-                    pending_lines.join("\n")
-                );
+                    "点下方按钮一键签到；二维码需现场 enc"
+                });
+                let message = card.build();
                 let mut markup = crate::ports::commands::ReplyMarkup::new();
                 markup.push_row(
                     pending_buttons
@@ -770,7 +771,11 @@ impl ChaoxingTracker {
                 notified = true;
             }
             if !outcome_lines.is_empty() {
-                let message = format!("## ✅ 学习通签到回执\n\n{}", outcome_lines.join("\n"));
+                let mut card = crate::util::msg::Card::new("✅ 学习通签到回执");
+                for line in &outcome_lines {
+                    card.raw(line);
+                }
+                let message = card.build();
                 let mut markup = crate::ports::commands::ReplyMarkup::new();
                 markup.push_row(
                     retry_buttons

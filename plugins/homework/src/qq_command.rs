@@ -109,10 +109,15 @@ fn render(store: &dyn TaskStore) -> String {
     let now = ru41::util::now();
     let (open, done) = collect_rows(store);
     if open.is_empty() && done == 0 {
-        return "## 暂无作业数据\n\n两个平台都还没有采集到作业；等下一轮轮询后再问吧。".to_owned();
+        return ru41::util::msg::Card::new("📚 作业清单")
+            .raw("两个平台都还没有采集到作业；等下一轮轮询后再问吧。")
+            .build();
     }
     if open.is_empty() {
-        return format!("## 📚 作业清单\n\n当前没有未完成作业 🎉（已完成 {done} 条）");
+        return ru41::util::msg::Card::new("📚 作业清单")
+            .raw("当前没有未完成作业 🎉")
+            .hint(format!("已完成 {done} 条；清单见 Obsidian「作业总表」"))
+            .build();
     }
 
     let urgent = DUE_SOON_DAYS * 86_400;
@@ -136,7 +141,7 @@ fn render(store: &dyn TaskStore) -> String {
     due_soon.sort_by(by_end);
     later.sort_by(by_end);
 
-    let mut out = String::from("## 📚 作业清单\n\n");
+    let mut card = ru41::util::msg::Card::new("📚 作业清单");
     // 每条一行：课程｜标题（截止时间+剩余）；平台不同才标来源，全同源时省略降噪。
     let platforms: std::collections::HashSet<_> = open.iter().map(|r| r.platform).collect();
     let multi_platform = platforms.len() > 1;
@@ -165,25 +170,27 @@ fn render(store: &dyn TaskStore) -> String {
             row.course, row.title
         ));
     };
-    let mut push_section = |out: &mut String, title: String, rows: &[&Row]| {
+    let mut push_section = |card: &mut ru41::util::msg::Card, title: String, rows: &[&Row]| {
         if rows.is_empty() {
             return;
         }
-        out.push_str(&format!("**{title}**\n"));
+        card.raw(format!("**{title}**"));
         for (index, row) in rows.iter().enumerate() {
-            push_row(out, index + 1, row);
+            let mut line = String::new();
+            push_row(&mut line, index + 1, row);
+            card.raw(line.trim_end());
         }
-        out.push('\n');
+        card.raw("");
     };
-    push_section(&mut out, format!("⚠️ 已过期（{}）", overdue.len()), &overdue);
+    push_section(&mut card, format!("⚠️ 已过期（{}）", overdue.len()), &overdue);
     push_section(
-        &mut out,
+        &mut card,
         format!("⏰ {DUE_SOON_DAYS} 天内截止（{}）", due_soon.len()),
         &due_soon,
     );
-    push_section(&mut out, format!("📝 其他未交（{}）", later.len()), &later);
-    out.push_str(&format!("—— 已完成 {done} 条；清单见 Obsidian「作业总表」"));
-    out
+    push_section(&mut card, format!("📝 其他未交（{}）", later.len()), &later);
+    card.hint(format!("已完成 {done} 条；清单见 Obsidian「作业总表」"));
+    card.build()
 }
 
 /// 收集两平台的开放/完成行：新平台接入时在此追加。
@@ -371,7 +378,8 @@ mod tests {
         let store_path = dir.join("s.db");
         let store = ru41::adapters::database::sqlite::SqliteTaskStore::open(&store_path).unwrap();
         let text = render(&store);
-        assert!(text.contains("暂无作业数据"));
+        assert!(text.contains("作业清单"));
+        assert!(text.contains("还没有采集到作业"));
     }
 
     #[test]
