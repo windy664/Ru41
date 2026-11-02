@@ -120,6 +120,9 @@ impl ZhihuishuTracker {
         }
 
         for course in &report.courses {
+            // 消息与待办标题里用课表短名（`26-27-1思想道德与法治` → `思想道德修养与法律基础`）；
+            // store 的 key 仍用平台原名，保证跨轮稳定。
+            let course_name = self.display_course(&course.title);
             // 视频内容上线检测（Autovisor 解锁信号）：每课程只播报一次
             if course.content_published == Some(true) {
                 let ckey = format!("content:{}", course.title);
@@ -131,8 +134,7 @@ impl ZhihuishuTracker {
                         &serde_json::json!({ "ts": now }),
                     )?;
                     lines.push(format!(
-                        "- 📺{}｜视频内容已发布，可安排自动学习",
-                        course.title
+                        "- 📺 {course_name}｜视频内容已发布，可安排自动学习"
                     ));
                     content_ready.push(course.title.clone());
                 }
@@ -178,8 +180,7 @@ impl ZhihuishuTracker {
                             }
                             Err(err) => {
                                 lines.push(format!(
-                                    "- ⚠️{}｜{}｜待办创建失败: {}",
-                                    course.title,
+                                    "- ⚠️ {course_name}｜{}｜待办创建失败: {}",
                                     task.title,
                                     truncate_err(&err)
                                 ));
@@ -234,8 +235,8 @@ impl ZhihuishuTracker {
                         self.store
                             .put_document("zhihuishu_task", &key, Some(revision), &snapshot)?;
                         lines.push(format!(
-                            "- ♻️{}｜{}｜作业重新开放（打回/补交），已重建待办",
-                            course.title, task.title
+                            "- ♻️ {course_name}｜{}｜作业重新开放（打回/补交），已重建待办",
+                            task.title
                         ));
                     } else if drifted {
                         let revision = doc.revision;
@@ -255,11 +256,10 @@ impl ZhihuishuTracker {
                             );
                         }
                         lines.push(format!(
-                            "- 🕐{}｜{}｜截止时间变更：{} → {}",
-                            course.title,
+                            "- 🕐 {course_name}｜{}｜截止变更：{} → {}",
                             task.title,
-                            old_end.clone().unwrap_or_else(|| "未知".into()),
-                            new_end.clone().unwrap_or_else(|| "未知".into())
+                            old_end.as_deref().map(fmt_due).unwrap_or("未知"),
+                            new_end.as_deref().map(fmt_due).unwrap_or("未知")
                         ));
                     }
 
@@ -281,8 +281,8 @@ impl ZhihuishuTracker {
                             let synced = match self.todos.complete(&todo_id, now) {
                                 Ok(_) => {
                                     lines.push(format!(
-                                        "- ✅{}｜{}｜平台已完成，待办已勾选",
-                                        course.title, task.title
+                                        "- ✅ {course_name}｜{}｜平台已完成，待办已勾选",
+                                        task.title
                                     ));
                                     true
                                 }
@@ -308,20 +308,20 @@ impl ZhihuishuTracker {
                     continue;
                 }
 
-                let label = format!("{}｜{}", course.title, task.title);
+                let label = format!("{course_name}｜{}", task.title);
                 if is_exam_style {
                     exam_style.push(label.clone());
                 }
                 if is_overdue {
                     overdue.push(format!(
                         "{label}（截止 {}）",
-                        task.end_at.clone().unwrap_or_default()
+                        task.end_at.as_deref().map(fmt_due).unwrap_or("未知")
                     ));
                 }
                 if is_due_soon {
                     due_soon.push(format!(
                         "{label}（截止 {}）",
-                        task.end_at.clone().unwrap_or_default()
+                        task.end_at.as_deref().map(fmt_due).unwrap_or("未知")
                     ));
                 }
 
@@ -354,15 +354,16 @@ impl ZhihuishuTracker {
                     }
                 }
                 if should_notify {
-                    let style = if is_exam_style {
-                        "🔒考试式(人工) "
-                    } else {
-                        ""
+                    let icon = match reason {
+                        "已过期" => "⚠️",
+                        "临近截止" => "⏰",
+                        "考试式·需人工" => "🔒",
+                        _ => "🆕",
                     };
                     let todo_note = if todo_created { "｜已入待办" } else { "" };
                     lines.push(format!(
-                        "- {style}{label}｜{reason}｜截止 {}{todo_note}",
-                        task.end_at.clone().unwrap_or_else(|| "未知".into()),
+                        "- {icon} {label}｜{reason}｜截止 {}{todo_note}",
+                        task.end_at.as_deref().map(fmt_due).unwrap_or("未知"),
                     ));
                 }
             }
@@ -500,6 +501,17 @@ impl ZhihuishuTracker {
         Ok(copied)
     }
 
+    /// 消息/待办里展示用的课程短名：归一化后查 vault 课程映射，
+    /// 把 `26-27-1思想道德与法治` 这类平台课名收敛成课表短名。
+    fn display_course(&self, title: &str) -> String {
+        let normalized = normalize_course_name(title);
+        self.config
+            .vault_courses
+            .get(&normalized)
+            .cloned()
+            .unwrap_or(normalized)
+    }
+
     /// 把未完成作业写进待办：考试式/临期 → High，remind_at 对齐截止时刻。
     fn create_todo(
         &self,
@@ -510,7 +522,7 @@ impl ZhihuishuTracker {
         is_due_soon: bool,
         now: i64,
     ) -> Result<TodoItem> {
-        let mut title = format!("智慧树｜{}｜{}", course.title, task.title);
+        let mut title = format!("智慧树｜{}｜{}", self.display_course(&course.title), task.title);
         if is_exam_style {
             title = format!("🔒{title}");
         }
@@ -537,6 +549,24 @@ impl ZhihuishuTracker {
 }
 
 /// 错误信息截断，避免推送消息被单条异常撑爆。
+/// YAML plain scalar 安全输出：sidecar 上报的课名/平台名是外部数据，
+/// 含 `: `、`#`、前导特殊字符或首尾空白时必须加引号，否则 Obsidian 属性面板
+/// 直接报 frontmatter 解析错误（整条笔记「坏掉」）。
+fn yaml_scalar(value: &str) -> String {
+    const SPECIAL: &str = "-?:,[]{}#&*!|>'\"%@`";
+    let needs_quote = value.is_empty()
+        || value != value.trim()
+        || value.starts_with(|c: char| SPECIAL.contains(c) || c.is_whitespace())
+        || value.contains(": ")
+        || value.contains(" #")
+        || value.ends_with(':');
+    if needs_quote {
+        format!("\"{}\"", value.replace('\\', "\\\\").replace('"', "\\\""))
+    } else {
+        value.to_string()
+    }
+}
+
 fn truncate_err(err: &anyhow::Error) -> String {
     let text = err.to_string();
     if text.chars().count() > 80 {
@@ -567,9 +597,16 @@ fn render_course_note(
 
     let mut out = String::new();
     out.push_str("---\n");
-    out.push_str(&format!("course: {}\n", course.title));
-    if let Some(platform) = &course.platform {
-        out.push_str(&format!("platform: {platform}\n"));
+    out.push_str(&format!("course: {}\n", yaml_scalar(&course.title)));
+    // sidecar 认不出平台时会上报字面量 "?"，那是 YAML 的显式键指示符，
+    // 原样写出会直接炸掉 frontmatter——按未上报处理。
+    if let Some(platform) = course
+        .platform
+        .as_deref()
+        .map(str::trim)
+        .filter(|p| !p.is_empty() && *p != "?")
+    {
+        out.push_str(&format!("platform: {}\n", yaml_scalar(platform)));
     }
     // 不写 updated 时间戳：内容须随数据变化而变化，每轮 poll 都变的时间戳
     // 会让 vault 每轮都产生 diff → commit → 触发「已同步」通知刷屏。
@@ -733,10 +770,10 @@ fn render_task_note(course: &ZhihuishuCourse, task: &ZhihuishuTask) -> String {
     };
     let mut out = String::new();
     out.push_str("---\n");
-    out.push_str(&format!("course: {}\n", course.title));
-    out.push_str(&format!("task: {}\n", task.title));
+    out.push_str(&format!("course: {}\n", yaml_scalar(&course.title)));
+    out.push_str(&format!("task: {}\n", yaml_scalar(&task.title)));
     if let Some(kind) = &task.kind {
-        out.push_str(&format!("kind: {kind}\n"));
+        out.push_str(&format!("kind: {}\n", yaml_scalar(kind)));
     }
     if let Some(end) = &task.end_at {
         out.push_str(&format!("due: \"{end}\"\n"));
@@ -774,6 +811,16 @@ fn render_task_note(course: &ZhihuishuCourse, task: &ZhihuishuTask) -> String {
     }
     out.push_str("\n\n> 由 Ru41 自智慧树 sidecar 报告自动生成与更新。\n");
     out
+}
+
+/// 平台时间串在消息里的展示：午夜的 ` 00:00:00` 是平台占位噪音，剥成纯日期；
+/// 非午夜保留到分钟（`2026-11-14 12:00`）。
+fn fmt_due(raw: &str) -> &str {
+    let trimmed = raw.trim();
+    if let Some(date) = trimmed.strip_suffix(" 00:00:00") {
+        return date;
+    }
+    trimmed.get(..16).unwrap_or(trimmed)
 }
 
 /// 单条未完成任务行：📅 日期 + 考试式/过期标注。
