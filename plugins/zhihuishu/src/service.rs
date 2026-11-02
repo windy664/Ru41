@@ -648,11 +648,7 @@ impl ZhihuishuTracker {
         }
         let mut written = 0usize;
         if let Ok(md) = std::fs::read_to_string(&out_md) {
-            let md = md
-                .replace("](media/", &format!("]({stem}.media/"))
-                .replace("](./media/", &format!("]({stem}.media/"))
-                .replace("src=\"media/", &format!("src=\"{stem}.media/"))
-                .replace("src=\"./media/", &format!("src=\"{stem}.media/"));
+            let md = rewrite_media_refs(&md, stem);
             if vault
                 .write_file(&format!("{dest_base}/{stem}.md"), &md)
                 .is_ok()
@@ -1063,8 +1059,43 @@ fn collect_files(dir: &std::path::Path) -> Vec<PathBuf> {
     out
 }
 
+/// 改写 pandoc 产出的 media 引用：markdown 图片语法改为 `{stem}.media/` 前缀
+/// （同目录多附件撞名防护）；HTML `<img>` 标签整体换成 Obsidian wikilink
+/// `![[...]]`——Obsidian 对 HTML img 的相对路径按 vault 根解析会裂图，
+/// wikilink 按文件名全库解析，不受笔记位置影响。
+fn rewrite_media_refs(md: &str, stem: &str) -> String {
+    let mut out = md
+        .replace("](media/", &format!("]({stem}.media/"))
+        .replace("](./media/", &format!("]({stem}.media/"));
+    // <img src="(./)media/xxx" ...> → ![[{stem}.media/xxx]]
+    while let Some(start) = out.find("<img") {
+        let Some(end) = out[start..].find("/>").map(|i| start + i + 2).or_else(|| {
+            out[start..].find('>').map(|i| start + i + 1)
+        }) else {
+            break;
+        };
+        let tag = out[start..end].to_owned();
+        let src = tag
+            .split("src=\"")
+            .nth(1)
+            .and_then(|rest| rest.split('\"').next())
+            .map(|s| s.to_owned());
+        let replacement = match src {
+            Some(src) => {
+                let rel = src.strip_prefix("./").unwrap_or(&src);
+                match rel.strip_prefix("media/") {
+                    Some(file) => format!("![[{stem}.media/{file}]]"),
+                    None => tag.clone(),
+                }
+            }
+            None => tag.clone(),
+        };
+        out.replace_range(start..end, &replacement);
+    }
+    out
+}
+
 /// pptx → pdf：LibreOffice 无头转换，版式/图表/动画帧全保，Obsidian 原生预览。
-/// 输出文件名由 soffice 按源文件名生成，再改名进 vault。
 fn soffice_to_pdf(
     source: &std::path::Path,
     name: &str,
