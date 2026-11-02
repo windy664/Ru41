@@ -353,3 +353,26 @@ async fn reconcile_matches_by_title_not_filename() {
     assert_eq!(report.action, "idle");
     assert_eq!(report.published, 0);
 }
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn publishes_after_external_push_to_blog_remote() {
+    let fx = Fx::new();
+    // 外部直接推 GitHub（网页编辑 README、另一台机器手工发布等）。
+    let blog_seed = fx._dir.path().join("blog-seed");
+    std::fs::write(blog_seed.join("README.md"), "外部更新\n").unwrap();
+    git(&blog_seed, &["add", "-A"]);
+    git(&blog_seed, &["commit", "-m", "external edit"]);
+    git(&blog_seed, &["push", "origin", "master"]);
+
+    let tracker = fx.tracker();
+    fx.push_published("外部更新后的文章.md", POST);
+    let report = tracker.poll_once().await.unwrap();
+    assert_eq!(report.action, "published");
+    assert_eq!(report.published, 1);
+
+    // 远端同时保留外部提交与 ru41 的发布提交。
+    git(&blog_seed, &["fetch", "origin"]);
+    let log = git(&blog_seed, &["log", "--format=%s", "origin/master", "-3"]);
+    assert!(log.contains("external edit"), "{log}");
+    assert!(log.contains("[ru41] sync posts"), "{log}");
+}

@@ -1,7 +1,11 @@
 use anyhow::{Context, Result};
 use ru41::{
     adapters::vault::EMPTY_TREE,
-    ports::{channel::NotifyChannel, storage::TaskStore, vault::Vault},
+    ports::{
+        channel::NotifyChannel,
+        storage::TaskStore,
+        vault::{SyncOutcome, Vault},
+    },
 };
 use serde::Serialize;
 use std::path::PathBuf;
@@ -291,7 +295,13 @@ impl BlogPublishTracker {
                 // push 必须无条件执行：上一轮 push 失败时本地已存在未推送提交，
                 // 本轮 commit_all 为空集不代表远端已同步。
                 blog.commit_all("[ru41] sync posts")?;
-                blog.push()?;
+                // 外部可能直接推过 GitHub（网页编辑、别的机器发布）：sync 先
+                // pull --rebase 再推，避免 non-fast-forward 把管线卡死。
+                // 文章文件名唯一，冲突概率极低；真冲突就中止并报错下轮重试。
+                if let SyncOutcome::Conflict(files) = blog.sync()? {
+                    let _ = blog.rebase_abort();
+                    anyhow::bail!("博客仓库与远端冲突（{}），已中止，需人工处理", files.join(", "));
+                }
                 Ok(())
             })
             .await?;
