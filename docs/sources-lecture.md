@@ -28,6 +28,10 @@ api_key = "GLM 的 key"      # 或 api_key_env = "ZHIPU_API_KEY"（默认）；w
 # 本地 whisper.cpp server 示例：
 # asr_api = "whispercpp"
 # asr_base_url = "http://whisper-asr:8080"
+# 本地 SenseVoice（推荐，CPU 上快十几倍）：deploy/sensevoice/ 提供了
+# whisper.cpp 兼容的 /inference 端点，配置同样用 whispercpp 风格：
+# asr_api = "whispercpp"
+# asr_base_url = "http://sensevoice-asr:50000"
 # asr_model = "glm-asr-2512"
 # slice_secs = 600          # 切片秒数（≥30 才生效）
 # workspace = "/data/lecture"
