@@ -4,11 +4,14 @@
 # 实测（2026-11）：300s 音频 24x 实时速度，峰值内存 ~450MB。
 FROM python:3.11-slim
 
-RUN apt-get update && apt-get install -y --no-install-recommends \
+# 宿舍网直连海外源极慢且代理对 deb.debian.org 不稳定：apt/pip 全走清华镜像
+RUN sed -i 's|deb.debian.org|mirrors.tuna.tsinghua.edu.cn|g' /etc/apt/sources.list.d/debian.sources && \
+    apt-get update && apt-get install -y --no-install-recommends \
         ffmpeg curl bzip2 && \
     rm -rf /var/lib/apt/lists/*
 
-RUN pip install --no-cache-dir sherpa-onnx soundfile fastapi "uvicorn[standard]" python-multipart
+RUN pip install --no-cache-dir -i https://pypi.tuna.tsinghua.edu.cn/simple \
+        sherpa-onnx soundfile fastapi "uvicorn[standard]" python-multipart
 
 # 模型走 gh-proxy 加速（宿舍网 GitHub 直连约 60KB/s，代理后 ~750KB/s）
 RUN mkdir -p /models && \
