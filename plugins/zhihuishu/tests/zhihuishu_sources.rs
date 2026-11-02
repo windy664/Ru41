@@ -579,6 +579,16 @@ async fn overdue_task_reported() {
     assert!(report.notified);
     assert!(channel.sent.lock().unwrap()[0].contains("已过期"));
     assert!(channel.sent.lock().unwrap()[0].contains("过期的思维导图"));
+    // 过期提醒是一次性的：nag 记录不带日期，后续轮询不再重复播报
+    assert!(
+        store
+            .document("zhihuishu_alert", "职业生涯规划#OLD1:overdue")
+            .unwrap()
+            .is_some()
+    );
+    let report2 = tracker.poll_once().await.unwrap();
+    assert!(!report2.notified);
+    assert_eq!(channel.sent.lock().unwrap().len(), 1);
 }
 
 #[tokio::test]
