@@ -41,6 +41,28 @@ impl NotifyChannel for MockChannel {
             Ok(())
         })
     }
+    fn send_with_markup<'a>(
+        &'a self,
+        target: &'a str,
+        _msg_id: Option<&'a str>,
+        text: &'a str,
+        markup: &'a ru41::ports::commands::ReplyMarkup,
+    ) -> Pin<Box<dyn Future<Output = anyhow::Result<()>> + Send + 'a>> {
+        // 按钮命令并入记录：断言可同时覆盖正文与按钮内容。
+        let buttons: Vec<&str> = markup
+            .rows
+            .iter()
+            .flatten()
+            .map(|b| b.command.as_str())
+            .collect();
+        Box::pin(async move {
+            self.sent
+                .lock()
+                .unwrap()
+                .push(format!("{target}|{text}|buttons:{}", buttons.join(",")));
+            Ok(())
+        })
+    }
 }
 
 fn mock_channel() -> Arc<MockChannel> {

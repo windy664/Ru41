@@ -68,7 +68,11 @@ enum AutoSignOutcome {
     /// 平台接受：文案进回执。
     Signed(String),
     /// 平台明确拒绝或参数不全：标记已尝试、文案进回执、不再自动重试。
-    Rejected(String),
+    /// retry：可重试时附（按钮文案, 命令），手势等只能手动的不给。
+    Rejected {
+        line: String,
+        retry: Option<(String, String)>,
+    },
     /// 网络等瞬时错误：不动快照，下轮自然重试。
     Transient,
 }
@@ -389,11 +393,14 @@ impl ChaoxingTracker {
             Ok(method) => method,
             Err(err) => {
                 self.mark_auto_attempted(course, activity, &err.to_string());
-                return AutoSignOutcome::Rejected(format!(
-                    "- ❌{}｜{}｜自动签到配置不全：{err}",
-                    course.title,
-                    activity.type_label()
-                ));
+                return AutoSignOutcome::Rejected {
+                    line: format!(
+                        "- ❌{}｜{}｜自动签到配置不全：{err}",
+                        course.title,
+                        activity.type_label()
+                    ),
+                    retry: None,
+                };
             }
         };
         match self.client.sign(course, activity, &method).await {
@@ -408,18 +415,27 @@ impl ChaoxingTracker {
                     ))
                 } else {
                     self.mark_auto_attempted(course, activity, response.trim());
-                    // 手势的兜底是手机端手画（窗口常仅约 2 分钟），其余类型指路 CLI 重试
-                    let advice = if activity.is_gesture() {
-                        "→ 滑块重签仍被拒，立即打开学习通手动签！".to_string()
+                    // 手势的兜底是手机端手画（窗口常仅约 2 分钟），其余类型附重试按钮
+                    let (advice, retry) = if activity.is_gesture() {
+                        ("→ 滑块重签仍被拒，立即打开学习通手动签！".to_string(), None)
                     } else {
-                        format!("→ 可 `chaoxing sign {}` 重试", activity.id)
+                        (
+                            "→ 点下方按钮重试".to_string(),
+                            Some((
+                                format!("🔄 重试{}", activity.type_label()),
+                                format!("chaoxing sign {}", activity.id),
+                            )),
+                        )
                     };
-                    AutoSignOutcome::Rejected(format!(
-                        "- ❌{}｜{}｜自动签到被平台拒绝（响应：{}）{advice}",
-                        course.title,
-                        activity.type_label(),
-                        response.trim(),
-                    ))
+                    AutoSignOutcome::Rejected {
+                        line: format!(
+                            "- ❌{}｜{}｜自动签到被平台拒绝（响应：{}）{advice}",
+                            course.title,
+                            activity.type_label(),
+                            response.trim(),
+                        ),
+                        retry,
+                    }
                 }
             }
             // 网络等瞬时错误：快照不动，下一轮 poll 自然重试（窗口常为 1-2 分钟）
@@ -521,6 +537,9 @@ impl ChaoxingTracker {
         let mut missed = 0usize;
         let mut pending_lines: Vec<String> = Vec::new();
         let mut outcome_lines: Vec<String> = Vec::new();
+        // 消息附带的一键按钮：(按钮文案, 回传命令)。QQ 键盘单行最多 4 个。
+        let mut pending_buttons: Vec<(String, String)> = Vec::new();
+        let mut retry_buttons: Vec<(String, String)> = Vec::new();
         let mut course_errors = 0usize;
         let mut last_course_error: Option<String> = None;
         let mut rate_limited = false;
@@ -576,7 +595,12 @@ impl ChaoxingTracker {
                                     auto_signed += 1;
                                     outcome_lines.push(line);
                                 }
-                                AutoSignOutcome::Rejected(line) => outcome_lines.push(line),
+                                AutoSignOutcome::Rejected { line, retry } => {
+                                    outcome_lines.push(line);
+                                    if let Some(b) = retry {
+                                        retry_buttons.push(b);
+                                    }
+                                }
                                 AutoSignOutcome::Transient => {}
                             }
                         } else {
@@ -586,18 +610,22 @@ impl ChaoxingTracker {
                             }
                             if self.notifier.is_some() {
                                 pending_lines.push(format!(
-                                    "- ⏰{}｜{}｜进行中，截止 {}｜id={}｜`chaoxing sign {}`{}",
+                                    "- ⏰{}｜{}｜进行中，截止 {}{}",
                                     course.title,
                                     activity.type_label(),
                                     format_ms(activity.end_time).unwrap_or_else(|| "未知".into()),
-                                    activity.id,
-                                    activity.id,
                                     if activity.is_qr() {
-                                        "（把二维码照片发给机器人即可代签）"
+                                        "｜把二维码照片发给机器人即可代签"
                                     } else {
                                         ""
                                     },
                                 ));
+                                if !activity.is_qr() {
+                                    pending_buttons.push((
+                                        format!("✍️ 去签到（{}）", activity.type_label()),
+                                        format!("chaoxing sign {}", activity.id),
+                                    ));
+                                }
                             }
                         }
                     }
@@ -622,7 +650,12 @@ impl ChaoxingTracker {
                             auto_signed += 1;
                             outcome_lines.push(line);
                         }
-                        AutoSignOutcome::Rejected(line) => outcome_lines.push(line),
+                        AutoSignOutcome::Rejected { line, retry } => {
+                            outcome_lines.push(line);
+                            if let Some(b) = retry {
+                                retry_buttons.push(b);
+                            }
+                        }
                         AutoSignOutcome::Transient => {}
                     }
                     continue;
@@ -711,20 +744,45 @@ impl ChaoxingTracker {
         }
         if let Some(notifier) = &self.notifier {
             if !pending_lines.is_empty() {
+                let footer = if pending_buttons.is_empty() {
+                    "\n\n> 二维码需现场 enc"
+                } else {
+                    "\n\n> 点下方按钮一键签到；二维码需现场 enc"
+                };
                 let message = format!(
-                    "## ✍️ 学习通签到（{} 个待签）\n\n{}\n\n> 二维码需现场 enc，其余可 `chaoxing sign <id>` 手动签",
+                    "## ✍️ 学习通签到（{} 个待签）\n\n{}{footer}",
                     pending,
                     pending_lines.join("\n")
                 );
+                let mut markup = crate::ports::commands::ReplyMarkup::new();
+                markup.push_row(
+                    pending_buttons
+                        .iter()
+                        .take(4)
+                        .map(|(label, cmd)| {
+                            crate::ports::commands::MarkupButton::new(label.clone(), cmd.clone())
+                        })
+                        .collect(),
+                );
                 notifier
-                    .send(&self.config.notify_target, None, &message)
+                    .send_with_markup(&self.config.notify_target, None, &message, &markup)
                     .await?;
                 notified = true;
             }
             if !outcome_lines.is_empty() {
                 let message = format!("## ✅ 学习通签到回执\n\n{}", outcome_lines.join("\n"));
+                let mut markup = crate::ports::commands::ReplyMarkup::new();
+                markup.push_row(
+                    retry_buttons
+                        .iter()
+                        .take(4)
+                        .map(|(label, cmd)| {
+                            crate::ports::commands::MarkupButton::new(label.clone(), cmd.clone())
+                        })
+                        .collect(),
+                );
                 notifier
-                    .send(&self.config.notify_target, None, &message)
+                    .send_with_markup(&self.config.notify_target, None, &message, &markup)
                     .await?;
                 notified = true;
             }
