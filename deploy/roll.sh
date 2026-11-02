@@ -3,8 +3,12 @@
 # （env/挂载/网络/重启策略逐字段从 docker inspect 恢复），并接入 ru41-net。
 #
 # 用法：
-#   ./deploy/roll.sh                 # 滚动全部已知 ru41 容器
+#   ./deploy/roll.sh                 # 滚动全部 ru41 容器（自动发现，无手写名单）
 #   ./deploy/roll.sh ru41-rss ...    # 只滚动指定容器
+#
+# 自动发现规则：容器名以 ru41- 开头 且 entrypoint 是 /usr/local/bin/ru41。
+# 不依赖任何手写列表——新附属上线（新容器）自动被后续滚动覆盖，
+# 镜像被 pin 成无标签 ID 的掉队容器也能凭 entrypoint 识别回来。
 #
 # 安全：重建前把每个容器的完整 inspect 备份到 ~/roll-backup-<时间戳>/，
 # 回滚 = 用备份的 inspect 重建 + 旧镜像（镜像标签未被本脚本删除）。
@@ -18,12 +22,19 @@ mkdir -p "$BACKUP"
 if [[ $# -gt 0 ]]; then
   NAMES=("$@")
 else
-  NAMES=(
-    ru41-qq ru41-ecard ru41-jwxt ru41-chaoxing ru41-chaoxing-work
-    ru41-zhihuishu ru41-blog ru41-todo-remind ru41-class-remind
-    ru41-mimo-worker ru41-rss ru41-projects
-  )
+  NAMES=()
+  while read -r name; do
+    [[ "$name" == ru41-* ]] || continue
+    ep="$(docker inspect "$name" --format '{{json .Config.Entrypoint}}' 2>/dev/null || true)"
+    [[ "$ep" == *"/usr/local/bin/ru41"* ]] && NAMES+=("$name")
+  done < <(docker ps -a --format '{{.Names}}')
 fi
+
+if [[ ${#NAMES[@]} -eq 0 ]]; then
+  echo "没有发现任何 ru41 容器" >&2
+  exit 1
+fi
+echo "目标容器（${#NAMES[@]} 个）: ${NAMES[*]}"
 
 NEW_ID="$(docker image inspect "$TARGET_IMAGE" --format '{{.Id}}')"
 FAILED=0
