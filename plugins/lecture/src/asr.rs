@@ -35,7 +35,9 @@ impl AsrClient {
     pub fn new(base_url: &str, api_key: &str, model: &str, api: &str) -> Result<Self> {
         Ok(Self {
             http: reqwest::Client::builder()
-                .timeout(Duration::from_secs(180))
+                // 长切片在 CPU whisper 上可能跑数倍实时（5 分钟片最坏 10+ 分钟），
+                // 超时给足 900s；重试逻辑只兜网络/5xx，不兜超时。
+                .timeout(Duration::from_secs(900))
                 .build()
                 .expect("asr http client"),
             api: AsrApi::parse(api)?,
