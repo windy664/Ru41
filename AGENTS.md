@@ -38,7 +38,7 @@ migrations/    数据库迁移（核心领地）
 1. commit + `git push origin main main:exp/plugin-api`。
 2. CI（单一 workflow，check→image 两个 job）构建 `ghcr.io/windy664/ru41:<40位SHA>`（约 10 分钟，后台轮询 `gh run view <id>`）。
 3. 本机 `docker pull` → `docker save | ssh windy2@192.168.1.223 docker load`。
-4. 服务器：`docker tag ...:SHA ru41:local` → `docker create` + `docker cp CID:/etc/ru41/plugins/. ~/ru41-mimo-smoke/plugins/` + `docker rm` → `python3 ~/ru41-roll.py && python3 ~/ru41-roll-3.py`（滚动重启全部 ru41-* 容器，自动备份到 ~/roll-backup-*）。
+4. 服务器：`docker tag ...:SHA ru41:local` → `docker create` + `docker cp CID:/etc/ru41/plugins/. ~/ru41-mimo-smoke/plugins/` + `docker rm` → `bash ~/ru41-roll.sh`（自动发现全部 ru41 容器——名字前缀 `ru41-` 且 entrypoint 是 ru41，无手写名单；滚动重建到 `ru41:local`，自动备份到 ~/roll-backup-*；仓库同源副本在 `deploy/roll.sh`）。
 5. 验证：`docker ps | grep -c Up`（应 ~27）、`docker logs ru41-<插件> --since 5m`。
 
 ## 红线
