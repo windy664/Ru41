@@ -589,10 +589,10 @@ impl ZhihuishuTracker {
         Ok(copied)
     }
 
-    /// docx/pptx 附件转 markdown 一并进 vault：嵌入图片抽到 `{stem}.media/`，
-    /// 链接同步改写，Obsidian 里直接可读；模板/评分标准类附件从此对 agent
-    /// 与人都可读，不再是打不开的二进制。工具缺失或转换失败只记日志跳过，
-    /// 原件已在上一步拷入，不受影响。
+    /// 附件可读副本转换：docx → markdown（文字为主，pandoc 保公式和嵌图）、
+    /// pptx → pdf（版式为主，LibreOffice 渲染保真，Obsidian 原生预览）、
+    /// xlsx → markdown 表格（openpyxl）。转换产物只是可读副本，原件已在上一步
+    /// 拷入 vault，格式权威以原件为准。工具缺失或失败只记日志跳过。
     fn convert_office_attachment(
         &self,
         source: &std::path::Path,
@@ -605,15 +605,32 @@ impl ZhihuishuTracker {
             .next()
             .unwrap_or_default()
             .to_ascii_lowercase();
-        if !matches!(ext.as_str(), "docx" | "pptx") {
-            return 0;
-        }
         let stem = name.rsplit_once('.').map(|(s, _)| s).unwrap_or(name);
         let temp = std::env::temp_dir().join(format!("ru41-docconv-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&temp);
         if std::fs::create_dir_all(&temp).is_err() {
             return 0;
         }
+        let written = match ext.as_str() {
+            "docx" => self.pandoc_to_md(source, stem, &temp, vault, dest_base),
+            "pptx" => soffice_to_pdf(source, name, stem, &temp, vault, dest_base),
+            "xlsx" => xlsx_to_md(source, stem, &temp, vault, dest_base),
+            _ => 0,
+        };
+        let _ = std::fs::remove_dir_all(&temp);
+        written
+    }
+
+    /// docx → markdown：嵌入图片抽到 `{stem}.media/` 并同步改写引用，
+    /// 同一作业文件夹多个附件的图片不会撞名。
+    fn pandoc_to_md(
+        &self,
+        source: &std::path::Path,
+        stem: &str,
+        temp: &std::path::Path,
+        vault: &dyn Vault,
+        dest_base: &str,
+    ) -> usize {
         let out_md = temp.join(format!("{stem}.md"));
         let ok = std::process::Command::new("pandoc")
             .arg(source)
@@ -621,23 +638,21 @@ impl ZhihuishuTracker {
             // extract-media 传相对路径并在 temp 里执行：链接才会是相对路径
             // `media/...`（传绝对路径 pandoc 会把绝对路径原样写进 md）。
             .arg(format!("{stem}.md"))
-            .current_dir(&temp)
+            .current_dir(temp)
             .output()
             .map(|o| o.status.success() && out_md.exists())
             .unwrap_or(false);
         if !ok {
-            eprintln!("[zhihuishu] pandoc 转换失败（跳过，保留原件）：{name}");
-            let _ = std::fs::remove_dir_all(&temp);
+            eprintln!("[zhihuishu] pandoc 转换失败（跳过，保留原件）：{stem}");
             return 0;
         }
         let mut written = 0usize;
-        // pandoc 把嵌入图片抽到 extract-media 根的 media/ 下，同一作业文件夹
-        // 有多个 docx 时不同附件的图片会撞名（都叫 image1.png），
-        // 改成按附件名分目录 `{stem}.media/` 并同步改写 md 里的引用。
         if let Ok(md) = std::fs::read_to_string(&out_md) {
             let md = md
                 .replace("](media/", &format!("]({stem}.media/"))
-                .replace("src=\"media/", &format!("src=\"{stem}.media/"));
+                .replace("](./media/", &format!("]({stem}.media/"))
+                .replace("src=\"media/", &format!("src=\"{stem}.media/"))
+                .replace("src=\"./media/", &format!("src=\"{stem}.media/"));
             if vault
                 .write_file(&format!("{dest_base}/{stem}.md"), &md)
                 .is_ok()
@@ -658,7 +673,6 @@ impl ZhihuishuTracker {
                 written += 1;
             }
         }
-        let _ = std::fs::remove_dir_all(&temp);
         written
     }
 
@@ -1047,6 +1061,113 @@ fn collect_files(dir: &std::path::Path) -> Vec<PathBuf> {
     }
     out.sort();
     out
+}
+
+/// pptx → pdf：LibreOffice 无头转换，版式/图表/动画帧全保，Obsidian 原生预览。
+/// 输出文件名由 soffice 按源文件名生成，再改名进 vault。
+fn soffice_to_pdf(
+    source: &std::path::Path,
+    name: &str,
+    stem: &str,
+    temp: &std::path::Path,
+    vault: &dyn Vault,
+    dest_base: &str,
+) -> usize {
+    let ok = std::process::Command::new("soffice")
+        .args(["--headless", "--convert-to", "pdf", "--outdir"])
+        .arg(temp)
+        .arg(source)
+        .output()
+        .map(|o| o.status.success())
+        .unwrap_or(false);
+    if !ok {
+        eprintln!("[zhihuishu] soffice 转换失败（跳过，保留原件）：{name}");
+        return 0;
+    }
+    // soffice 输出名跟随源文件名（可能含原始命名，不是清洗后的 stem）。
+    let Some(src_stem) = source.file_stem().and_then(|s| s.to_str()) else {
+        return 0;
+    };
+    let pdf = temp.join(format!("{src_stem}.pdf"));
+    let Ok(data) = std::fs::read(&pdf) else {
+        return 0;
+    };
+    vault
+        .write_bytes(&format!("{dest_base}/{stem}.pdf"), &data)
+        .map(|_| 1)
+        .unwrap_or(0)
+}
+
+/// xlsx → markdown 表格（每个 sheet 一张表，截断到 200 行防爆量）。
+/// 经 python3 + openpyxl（镜像内置）；脚本内嵌，不落盘到 vault。
+fn xlsx_to_md(
+    source: &std::path::Path,
+    stem: &str,
+    temp: &std::path::Path,
+    vault: &dyn Vault,
+    dest_base: &str,
+) -> usize {
+    const SCRIPT: &str = r###"
+import sys
+from openpyxl import load_workbook
+wb = load_workbook(sys.argv[1], read_only=True, data_only=True)
+out = []
+for ws in wb.worksheets:
+    rows = []
+    for r in ws.iter_rows(values_only=True, max_row=200):
+        rows.append(["" if c is None else str(c) for c in r])
+    if not rows:
+        continue
+    ncol = max(len(r) for r in rows)
+    rows = [r + [""] * (ncol - len(r)) for r in rows]
+    # 去掉全空的尾列
+    while ncol > 0 and all(not r[ncol - 1] for r in rows):
+        for r in rows:
+            r.pop()
+        ncol -= 1
+    if ncol == 0:
+        continue
+    out.append(f"## {ws.title}\n")
+    esc = lambda c: c.replace("|", "\\|").replace("\n", " ")
+    out.append("| " + " | ".join(esc(c) for c in rows[0]) + " |")
+    out.append("|" + " --- |" * ncol)
+    for r in rows[1:]:
+        out.append("| " + " | ".join(esc(c) for c in r) + " |")
+    out.append("")
+print("\n".join(out))
+"###;
+    let script = temp.join("xlsx2md.py");
+    if std::fs::write(&script, SCRIPT).is_err() {
+        return 0;
+    }
+    let output = std::process::Command::new("python3")
+        .arg(&script)
+        .arg(source)
+        .output();
+    let Ok(output) = output else {
+        eprintln!("[zhihuishu] python3/openpyxl 不可用（跳过 xlsx 转换）：{stem}");
+        return 0;
+    };
+    if !output.status.success() {
+        eprintln!(
+            "[zhihuishu] xlsx 转换失败（跳过，保留原件）：{stem}: {}",
+            String::from_utf8_lossy(&output.stderr)
+                .lines()
+                .next()
+                .unwrap_or_default()
+        );
+        return 0;
+    }
+    let Ok(md) = String::from_utf8(output.stdout) else {
+        return 0;
+    };
+    if md.trim().is_empty() {
+        return 0;
+    }
+    vault
+        .write_file(&format!("{dest_base}/{stem}.md"), &md)
+        .map(|_| 1)
+        .unwrap_or(0)
 }
 
 /// 单条未完成任务行：📅 日期 + 考试式/过期标注。
