@@ -128,12 +128,24 @@ impl CommandHandler for LectureHandler {
             let channel = ctx.reply_channel.to_owned();
             let target = ctx.target.to_owned();
             let msg_id = ctx.msg_id.to_owned();
-            let size = ru41::plugins::bridge(async move {
+            let size = match ru41::plugins::bridge(async move {
                 worker
                     .run_job(store, source, display_name, channel, target, msg_id)
                     .await
             })
-            .await?;
+            .await
+            {
+                Ok(size) => size,
+                // 下载失败要回执（链接时效/网络故障用户需要知道并重发），
+                // 不能只在服务端日志里留个 handle failed。
+                Err(error) => {
+                    return Ok(Some(Reply::text(format!(
+                        "## 录音接收失败\n\n《{}》下载没成功：{error:#}\n\n\
+                         QQ 文件链接有时效，也可能是网络临时故障，请重新发一次。",
+                        audio.display_name(),
+                    ))));
+                }
+            };
             let hint = (!content.trim().is_empty())
                 .then(|| format!("\n\n> 附言：{}", content.trim()))
                 .unwrap_or_default();
