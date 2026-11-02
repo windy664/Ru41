@@ -60,7 +60,8 @@ RUN apt-get update \
     && apt-get install -y --no-install-recommends ca-certificates sqlite3 git \
         python3 python3-pip curl jq \
         ripgrep zip unzip ffmpeg pandoc \
-    && pip3 install --break-system-packages --no-cache-dir requests beautifulsoup4 lxml yt-dlp \
+        libreoffice-impress fonts-noto-cjk \
+    && pip3 install --break-system-packages --no-cache-dir requests beautifulsoup4 lxml yt-dlp openpyxl \
     && apt-get purge -y python3-pip python3-setuptools python3-wheel \
     && apt-get autoremove -y --purge \
     && rm -rf /var/lib/apt/lists/* /root/.cache \
