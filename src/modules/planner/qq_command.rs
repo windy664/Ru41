@@ -16,13 +16,18 @@ use anyhow::{Result, bail, ensure};
 use std::{future::Future, pin::Pin, sync::Arc};
 
 /// QQ 私人待办入口；持久化与日期视图由核心 TodoService 提供。
+/// `jwxt_semester_start` 来自 jwxt 模块配置，/日程 用它把课表并进同一条时间轴。
 pub struct TodoQqCommand {
     options: TodoOptions,
+    jwxt_semester_start: Option<chrono::NaiveDate>,
 }
 
 impl TodoQqCommand {
-    pub fn new(options: TodoOptions) -> Self {
-        Self { options }
+    pub fn new(options: TodoOptions, jwxt_semester_start: Option<chrono::NaiveDate>) -> Self {
+        Self {
+            options,
+            jwxt_semester_start,
+        }
     }
 
     fn service(&self, store: &Arc<dyn TaskStore>) -> TodoService {
@@ -94,7 +99,7 @@ impl CommandHandler for TodoQqCommand {
                     self.event_add_reply(&self.event_service(ctx.store), arg, ctx, now)?
                 }
                 "日程" | "行程" | "schedule" => {
-                    self.event_list_reply(&self.event_service(ctx.store), arg, now)?
+                    self.event_list_reply(ctx.store, &self.event_service(ctx.store), arg, now)?
                 }
                 "取消日程" => {
                     ensure!(!arg.is_empty(), "用法：`/取消日程 <日程ID>`");
@@ -262,12 +267,18 @@ impl TodoQqCommand {
         )))
     }
 
-    /// `/日程 [今天|明天|N天]`：默认今天 + 未来 7 天。
-    fn event_list_reply(&self, service: &ScheduleService, arg: &str, now: i64) -> Result<Reply> {
+    /// `/日程 [今天|明天|N天]`：默认今天 + 未来 7 天；行程之外附带同窗口课表摘要。
+    fn event_list_reply(
+        &self,
+        store: &Arc<dyn TaskStore>,
+        service: &ScheduleService,
+        arg: &str,
+        now: i64,
+    ) -> Result<Reply> {
         let days = parse_event_view(arg).unwrap_or(7);
         let occurrences = service.upcoming(now, days, 50)?;
         let mut lines = vec![format!(
-            "## 行程（未来 {} 天，{} 项）",
+            "## 日程（未来 {} 天，行程 {} 项）",
             days,
             occurrences.len()
         )];
@@ -289,6 +300,19 @@ impl TodoQqCommand {
                 }
                 lines.push(line);
             }
+        }
+        // 同一窗口的课表并入同一条时间轴（来自 jwxt 缓存快照，只读不触网）。
+        let today = crate::domain::schedule::local_date(now, self.options.offset_seconds)
+            .unwrap_or_else(|| chrono::Local::now().date_naive());
+        let courses = crate::modules::jwxt::service::courses_summary_from_store(
+            store,
+            self.jwxt_semester_start,
+            today,
+            days as u32,
+        );
+        if !courses.is_empty() {
+            lines.push(format!("\n### 📚 课表（{} 天内有课）", courses.len()));
+            lines.extend(courses);
         }
         let mut markup = ReplyMarkup::new();
         for occurrence in occurrences.iter().take(4) {

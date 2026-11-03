@@ -29,8 +29,16 @@ pub static DEF: super::ModuleDef = super::ModuleDef {
     },
     tracker: |_, _, _| Ok(None),
     qq_handlers: |config, _| {
+        // /日程 的合并视图需要按周次过滤课表，这里复用 jwxt 的学期起点配置。
+        let jwxt_semester_start = config
+            .sources
+            .get::<crate::modules::jwxt::JwxtSection>("jwxt")?
+            .semester_start
+            .as_deref()
+            .and_then(|raw| chrono::NaiveDate::parse_from_str(raw.trim(), "%Y-%m-%d").ok());
         Ok(vec![std::sync::Arc::new(TodoQqCommand::new(
             config.todo.options()?,
+            jwxt_semester_start,
         ))])
     },
     image_consumers: super::no_image_consumers,

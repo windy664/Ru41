@@ -248,7 +248,7 @@ impl EventItem {
     }
 }
 
-fn local_date(timestamp: i64, offset_seconds: i32) -> Option<NaiveDate> {
+pub(crate) fn local_date(timestamp: i64, offset_seconds: i32) -> Option<NaiveDate> {
     let offset = FixedOffset::east_opt(offset_seconds)?;
     DateTime::from_timestamp(timestamp, 0).map(|utc| utc.with_timezone(&offset).date_naive())
 }

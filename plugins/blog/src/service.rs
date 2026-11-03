@@ -59,7 +59,8 @@ pub struct BlogPollReport {
 struct BlogPublishState {
     #[serde(default)]
     processed_sha: String,
-    /// 已处理（含校验拒绝）的已发布文件，键为 `路径:内容hash`，防止崩溃重试循环。
+    /// 已处理（含校验拒绝）的已发布文件，键为 `v3|路径:内容hash`，防止崩溃重试循环；
+    /// 内容变化视为新文件重新处理。
     #[serde(default)]
     done: Vec<String>,
     /// 已发布 vault 路径 → 博客仓库文件名；下架时按它找要删的目标。
@@ -188,7 +189,6 @@ impl BlogPublishTracker {
                 .iter()
                 .filter(|(_, deleted)| !deleted)
                 .map(|(path, _)| path.clone())
-                .filter(|path| !state.done.contains(&done_key(path)))
                 .collect();
             // 待下架：优先 published_map 记录的目标；老条目（无映射）从日期前缀文件名推导。
             let mut unpublish: Vec<(String, String)> = Vec::new();
@@ -235,7 +235,8 @@ impl BlogPublishTracker {
         // 逐个读取并校验；校验失败的标记完成并收集原因。
         let vault = self.vault.clone();
         let paths = fresh.clone();
-        let contents =
+        // 内容未变的已处理文件直接跳过（done 键含内容 hash，内容变了会重新处理）。
+        let mut contents =
             tokio::task::spawn_blocking(move || -> Result<Vec<(String, Option<String>)>> {
                 paths
                     .into_iter()
@@ -246,6 +247,12 @@ impl BlogPublishTracker {
                     .collect()
             })
             .await??;
+        contents.retain(|(path, content)| match content {
+            Some(c) => !state.done.contains(&done_key(path, c)),
+            None => true,
+        });
+        let content_by_path: std::collections::HashMap<String, Option<String>> =
+            contents.iter().cloned().collect();
 
         let mut posts: Vec<PendingPost> = Vec::new();
         let mut rejected: Vec<RejectedPost> = Vec::new();
@@ -318,19 +325,31 @@ impl BlogPublishTracker {
             }
         }
 
-        for path in &fresh {
-            state.done.push(done_key(path));
-        }
         for post in &posts {
+            state
+                .done
+                .push(done_key(&post.source_path, &post.content));
             state
                 .published_map
                 .insert(post.source_path.clone(), post.target_name.clone());
         }
+        // 校验拒绝的也按当前内容记 done（防重试循环）；内容变化后会重新处理。
+        for reject in &rejected {
+            let content = content_by_path
+                .get(&reject.published_path)
+                .and_then(|c| c.as_deref())
+                .unwrap_or("");
+            state.done.push(done_key(&reject.published_path, content));
+        }
         for (path, _) in &unpublish {
             state.published_map.remove(path);
             // 清掉 done 记录：同一文件以后移回已发布目录时应能重新发布。
-            let prefix = format!("{path}:");
-            state.done.retain(|k| !k.starts_with(&prefix));
+            // （v3 是现行键格式；不带版本前缀的旧键顺带清掉。）
+            let v3 = format!("v3|{path}:");
+            let legacy = format!("{path}:");
+            state
+                .done
+                .retain(|k| !k.starts_with(&v3) && !k.starts_with(&legacy));
         }
         state.processed_sha = head.clone();
         state.notified_sha = None;
@@ -369,7 +388,7 @@ impl BlogPublishTracker {
             tokio::task::spawn_blocking(move || vault.list_files(&head_owned, &prefix)).await??;
         let published: Vec<String> = published
             .into_iter()
-            .filter(|p| p.ends_with(".md") && !state.done.contains(&done_key(p)))
+            .filter(|p| p.ends_with(".md"))
             .collect();
         if published.is_empty() {
             return Ok(Vec::new());
@@ -400,12 +419,16 @@ impl BlogPublishTracker {
 
         let vault = self.vault.clone();
         let head_owned = head.to_owned();
+        let done = state.done.clone();
         tokio::task::spawn_blocking(move || -> Result<Vec<String>> {
             let mut missing = Vec::new();
             for path in published {
                 let Some(content) = vault.read_file_at(&head_owned, &path)? else {
                     continue;
                 };
+                if done.contains(&done_key(&path, &content)) {
+                    continue;
+                }
                 let Some(front) = parse_frontmatter(&content) else {
                     continue;
                 };
@@ -558,23 +581,55 @@ impl ru41::ingress::schedule::PollJob for BlogPublishTracker {
 }
 
 /// 已处理键：路径 + 内容 hash（内容变化视为新文件重新处理）。
-fn done_key(path: &str) -> String {
+/// 带 `v3|` 前缀：v2 修复了「只 hash 路径」；v3 配合 frontmatter 块列表解析，
+/// 让此前因解析失败被误拒的文件有机会重新处理。
+fn done_key(path: &str, content: &str) -> String {
     use std::hash::{Hash, Hasher};
     let mut hasher = std::collections::hash_map::DefaultHasher::new();
     path.hash(&mut hasher);
-    format!("{path}:{:016x}", hasher.finish())
+    content.hash(&mut hasher);
+    format!("v3|{path}:{:016x}", hasher.finish())
 }
 
 fn today_label() -> String {
     ru41::util::today_utc(ru41::util::now())
 }
 
-/// 极简 frontmatter 行解析：只取 title/date/draft/categories/tags 的标量或单行数组。
+/// 极简 frontmatter 行解析：取 title/date/draft/categories/tags 的标量、
+/// 单行数组或块列表（`key:` 换行 `  - item`，Obsidian 常见写法）。
+/// 块列表合成回 `[a, b]` 单行形式，供下游 validate/tags 计数复用。
 fn parse_frontmatter(content: &str) -> Option<std::collections::HashMap<String, String>> {
     let text = content.strip_prefix("---\n")?;
     let end = text.find("\n---\n")?;
     let mut map = std::collections::HashMap::new();
+    let mut block_key: Option<String> = None;
+    let mut block_items: Vec<String> = Vec::new();
+    let mut flush_block = |map: &mut std::collections::HashMap<String, String>,
+                           key: &mut Option<String>,
+                           items: &mut Vec<String>| {
+        if let Some(k) = key.take() {
+            let joined = if items.is_empty() {
+                String::new()
+            } else {
+                format!("[{}]", items.join(", "))
+            };
+            map.insert(k, joined);
+            items.clear();
+        }
+    };
     for line in text[..end].lines() {
+        let trimmed = line.trim();
+        if let Some(item) = trimmed.strip_prefix("- ") {
+            if block_key.is_some() {
+                block_items.push(
+                    item.trim()
+                        .trim_matches('"')
+                        .trim_matches('\'')
+                        .to_owned(),
+                );
+                continue;
+            }
+        }
         let Some((key, value)) = line.split_once(':') else {
             continue;
         };
@@ -582,11 +637,16 @@ fn parse_frontmatter(content: &str) -> Option<std::collections::HashMap<String, 
         if !matches!(key, "title" | "date" | "draft" | "categories" | "tags") {
             continue;
         }
-        map.insert(
-            key.to_owned(),
-            value.trim().trim_matches('"').trim_matches('\'').to_owned(),
-        );
+        let value = value.trim().trim_matches('"').trim_matches('\'').to_owned();
+        flush_block(&mut map, &mut block_key, &mut block_items);
+        if value.is_empty() {
+            // `key:` 后无同行值：可能是块列表开头，等后续 `- item` 行。
+            block_key = Some(key.to_owned());
+        } else {
+            map.insert(key.to_owned(), value);
+        }
     }
+    flush_block(&mut map, &mut block_key, &mut block_items);
     Some(map)
 }
 

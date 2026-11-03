@@ -868,6 +868,78 @@ pub fn describe_day_from_store(
     Ok(format!("{title}{body}"))
 }
 
+/// 多日课表紧凑摘要（/日程 合并视图用）：每天一行「MM-DD 周X：课(第N节)@教室」。
+/// 没配置学期起点、没有课表缓存或当天无课的日子都不产生行；出错时返回空列表不阻塞日程视图。
+pub fn courses_summary_from_store(
+    store: &Arc<dyn TaskStore>,
+    semester_start: Option<NaiveDate>,
+    start_date: NaiveDate,
+    days: u32,
+) -> Vec<String> {
+    let Some(start) = semester_start else {
+        return Vec::new();
+    };
+    let summary = (|| -> Result<Vec<String>> {
+        let (xnm, xqm) = resolve_term(None, None, chrono::Local::now().date_naive());
+        let key = format!("{xnm}#{xqm}");
+        let Some(doc) = store.document("jwxt_timetable", &key)? else {
+            return Ok(Vec::new());
+        };
+        let snapshot: TimetableSnapshot = serde_json::from_value(doc.value)?;
+        let meetings: Vec<CourseMeeting> = snapshot
+            .meetings
+            .iter()
+            .map(|m| CourseMeeting {
+                course: m.course.clone(),
+                course_id: m.course_id.clone(),
+                teacher: m.teacher.clone(),
+                classroom: m.classroom.clone(),
+                weekday: m.weekday,
+                sections_raw: m.sections_raw.clone(),
+                start_section: m.start_section,
+                end_section: m.end_section,
+                weeks: m.weeks.clone(),
+                weeks_raw: m.weeks_raw.clone(),
+                class_type: m.class_type.clone(),
+                class_group: m.class_group.clone(),
+                xnm: snapshot.xnm.clone(),
+                xqm: snapshot.xqm.clone(),
+            })
+            .collect();
+        let mut out = Vec::new();
+        for offset in 0..days {
+            let date = start_date + Duration::days(offset as i64);
+            let day = meetings_on(&meetings, start, date);
+            if day.is_empty() {
+                continue;
+            }
+            let items: Vec<String> = day
+                .iter()
+                .map(|m| {
+                    let section = m
+                        .start_section
+                        .map(|s| format!("（第{s}节）"))
+                        .unwrap_or_default();
+                    let loc = if m.classroom.is_empty() {
+                        String::new()
+                    } else {
+                        format!("@{}", m.classroom)
+                    };
+                    format!("{}{}{}", m.course, section, loc)
+                })
+                .collect();
+            out.push(format!(
+                "- {} {}：{}",
+                date.format("%m-%d"),
+                weekday_name(date),
+                items.join("、")
+            ));
+        }
+        Ok(out)
+    })();
+    summary.unwrap_or_default()
+}
+
 impl crate::ingress::schedule::PollJob for JwxtTracker {
     fn job_interval(&self) -> std::time::Duration {
         std::time::Duration::from_secs(self.config.interval_secs)
