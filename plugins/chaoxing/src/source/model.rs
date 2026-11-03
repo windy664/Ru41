@@ -173,7 +173,7 @@ impl ChaoxingActivity {
     }
     pub fn type_label(&self) -> String {
         self.name_one.clone().unwrap_or_else(|| {
-            crate::modules::chaoxing::service::sign_type_name(self.sign_type).to_owned()
+            crate::service::sign_type_name(self.sign_type).to_owned()
         })
     }
 }

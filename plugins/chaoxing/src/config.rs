@@ -31,7 +31,7 @@ pub struct ChaoxingConfig {
     /// 学习通课程名 → Vault 课程目录名映射。
     pub vault_courses: std::collections::BTreeMap<String, String>,
     /// 作业任务目录策略；substantive 下只给未交作业建目录。
-    pub work_vault_task_dirs: crate::ports::vault::VaultTaskDirs,
+    pub work_vault_task_dirs: ru41::ports::vault::VaultTaskDirs,
     /// enc 样本库路径（科研线：QR 窗口探测 + 照片解码样本的 JSONL 落盘）；
     /// None 关闭采集。缺省 /data/chaoxing/enc-samples.jsonl。
     pub enc_sample_path: Option<std::path::PathBuf>,
@@ -141,7 +141,7 @@ impl ChaoxingSection {
                     .unwrap_or_else(|| Self::DEFAULT_VAULT_COURSE_DIR.into()),
             ),
             vault_courses: self.vault_courses.clone().unwrap_or_default(),
-            work_vault_task_dirs: crate::ports::vault::VaultTaskDirs::parse(
+            work_vault_task_dirs: ru41::ports::vault::VaultTaskDirs::parse(
                 self.work_vault_task_dirs.as_deref(),
             )?,
             enc_sample_path: Some(

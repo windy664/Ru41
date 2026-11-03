@@ -13,8 +13,8 @@ use ru41::{
     domain::schedule::{EventInput, EventSource, parse_event_when},
     domain::todo::{TodoInput, parse_due},
     ingress::cli::{
-        ChaoxingCommand, Cli, Command, EventCommand, JwxtCommand, KnowledgeCommand, QqCommand,
-        ScheduleCommand, TaskCommand, TodoCommand, TrackerCommand,
+        Cli, Command, EventCommand, JwxtCommand, KnowledgeCommand, QqCommand, ScheduleCommand,
+        TaskCommand, TodoCommand, TrackerCommand,
     },
     ingress::cli_ops,
     privacy::{NoopSanitizer, RandomSanitizer, Sanitizer},
@@ -264,45 +264,6 @@ async fn main() -> Result<()> {
             return Ok(());
         }
         Command::Tracker(_) => unreachable!("handled by tracker dispatch above"),
-        Command::Chaoxing { command } => match command {
-            ChaoxingCommand::Poll => tracker_or_exit(
-                tracker_cli("chaoxing", TrackerCommand::Poll, &config, &store_config).await?,
-            )?,
-            ChaoxingCommand::Work => {
-                let tracker = ru41::modules::chaoxing::build_work_tracker(
-                    &config,
-                    open_store(&store_config)?,
-                )?;
-                serde_json::to_value(tracker.poll_once().await?)?
-            }
-            ChaoxingCommand::Run => {
-                tracker_cli("chaoxing", TrackerCommand::Run, &config, &store_config).await?;
-                return Ok(());
-            }
-            ChaoxingCommand::Sign {
-                activity_id,
-                lat,
-                lon,
-                addr,
-                enc,
-                photo,
-            } => {
-                let tracker =
-                    ru41::modules::chaoxing::build_tracker(&config, open_store(&store_config)?)?;
-                serde_json::to_value(
-                    tracker
-                        .sign_manual(
-                            &activity_id,
-                            lat,
-                            lon,
-                            addr.as_deref(),
-                            enc.as_deref(),
-                            photo.as_deref(),
-                        )
-                        .await?,
-                )?
-            }
-        },
         Command::Jwxt { command } => match command {
             JwxtCommand::Poll => tracker_or_exit(
                 tracker_cli("jwxt", TrackerCommand::Poll, &config, &store_config).await?,

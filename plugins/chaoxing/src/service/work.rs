@@ -2,11 +2,11 @@
 //! 与智慧树作业模块同构，共享同一 Vault 学期目录并聚合作业总表。
 //! 红线：作业只做提醒/跟踪/归档，不做自动作答（自动答题=代写）。
 
-use crate::app::homework_work::{self as work_common, WorkNoteItem};
-use crate::app::todo::TodoService;
-use crate::modules::chaoxing::config::ChaoxingConfig;
-use crate::modules::chaoxing::source::{ChaoxingClient, ChaoxingWork};
-use crate::ports::{channel::NotifyChannel, storage::TaskStore, vault::Vault};
+use ru41::app::homework_work::{self as work_common, WorkNoteItem};
+use ru41::app::todo::TodoService;
+use crate::config::ChaoxingConfig;
+use crate::source::{ChaoxingClient, ChaoxingWork};
+use ru41::ports::{channel::NotifyChannel, storage::TaskStore, vault::Vault};
 use anyhow::Result;
 use serde::Serialize;
 use std::sync::Arc;
@@ -61,7 +61,7 @@ impl ChaoxingWorkTracker {
         client: ChaoxingClient,
         notifier: Option<Arc<dyn NotifyChannel>>,
         config: ChaoxingConfig,
-        todo_options: crate::domain::todo::TodoOptions,
+        todo_options: ru41::domain::todo::TodoOptions,
         vault: Option<Arc<dyn Vault>>,
     ) -> Self {
         Self {
@@ -75,9 +75,9 @@ impl ChaoxingWorkTracker {
     }
 
     pub async fn poll_once(&self) -> Result<ChaoxingWorkPollReport> {
-        use crate::domain::todo::{TodoInput, TodoPriority, TodoSource};
-        let now = crate::util::now();
-        let today = crate::util::today_utc(now);
+        use ru41::domain::todo::{TodoInput, TodoPriority, TodoSource};
+        let now = ru41::util::now();
+        let today = ru41::util::today_utc(now);
         let offset = self.todos.options().offset_seconds;
 
         if let Err(err) = self.client.ensure_session().await {
@@ -138,7 +138,7 @@ impl ChaoxingWorkTracker {
             };
             works_total += works.len();
             let mut note_items: Vec<(
-                crate::modules::chaoxing::source::ChaoxingWork,
+                crate::source::ChaoxingWork,
                 Option<String>,
             )> = Vec::new();
 
@@ -412,7 +412,7 @@ impl ChaoxingWorkTracker {
             for (work, deadline) in items {
                 // substantive 策略：作业说明不含正文，只为未交作业建目录；
                 // 已交作业的空壳目录纯属噪音，索引里降级为纯文本行。
-                if dirs == crate::ports::vault::VaultTaskDirs::Substantive && !work.is_open() {
+                if dirs == ru41::ports::vault::VaultTaskDirs::Substantive && !work.is_open() {
                     continue;
                 }
                 let folder = work_common::work_folder_name(&work.title, deadline.as_deref(), None);
@@ -449,7 +449,7 @@ impl ChaoxingWorkTracker {
     }
 }
 
-impl crate::ingress::schedule::PollJob for ChaoxingWorkTracker {
+impl ru41::ingress::schedule::PollJob for ChaoxingWorkTracker {
     fn job_interval(&self) -> std::time::Duration {
         std::time::Duration::from_secs(self.config.work_poll_secs)
     }
