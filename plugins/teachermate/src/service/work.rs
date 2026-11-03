@@ -43,6 +43,7 @@ pub struct TeachermateWorkPollReport {
 /// 状态语义（微信端 UI 状态表）：1 未完成、2 被打回、7 补交中需要动作；
 /// 3 已超时、4/5 已提交、6 已公布成绩、8 已批阅视为收敛。
 /// 临期/过期提醒每日最多一次（records kind `teachermate_work_alert`）。
+#[derive(Clone)]
 pub struct TeachermateWorkTracker {
     store: Arc<dyn TaskStore>,
     notifier: Option<Arc<dyn NotifyChannel>>,
@@ -520,6 +521,7 @@ impl ru41::ingress::schedule::PollJob for TeachermateWorkTracker {
     ) -> std::pin::Pin<
         Box<dyn std::future::Future<Output = anyhow::Result<serde_json::Value>> + Send + '_>,
     > {
-        Box::pin(async move { Ok(serde_json::to_value(self.poll_once().await?)?) })
+        let owned = self.clone();
+        ru41::plugins::bridge(async move { Ok(serde_json::to_value(owned.poll_once().await?)?) })
     }
 }

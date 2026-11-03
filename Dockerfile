@@ -39,6 +39,10 @@ COPY plugins ./plugins
 ARG RU41_GIT_HASH_OVERRIDE=unknown
 ENV RU41_GIT_HASH_OVERRIDE=$RU41_GIT_HASH_OVERRIDE
 RUN set -e; for d in plugins/*/; do cp Cargo.lock "$d/Cargo.lock"; done \
+ # 防御空壳残留：依赖层 touch 过 src/lib.rs，若 COPY 进来的真实源码 mtime
+ # 更旧，cargo 会误判「无变化」直接分发空壳 .so（2026-11-03 library 事故：
+ # 该插件数日未动，全量重编时只它有此问题）。统一 touch 强制重编。
+ && find plugins -name '*.rs' -exec touch {} + \
  && for d in plugins/*/; do (cd "$d" && cargo build --release --features plugin-entry); done \
  && mkdir -p /plugins-dist \
  && for d in plugins/*/; do n=$(basename "$d"); cp ".plugins-target/release/libru41_plugin_$n.so" /plugins-dist/; done \

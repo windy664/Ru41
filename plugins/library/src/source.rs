@@ -3,7 +3,7 @@
 //!
 //! 登录链（四跳，全部纯 HTTP）：
 //! 1. `POST {cas}/v1/tickets`（Ohdave RSA 密码 + 算术验证码，模板复用
-//!    `ru41::modules::jwxt::captcha`）→ TGT；
+//!    `ru41::adapters::cas`）→ TGT；
 //! 2. `POST {cas}/v1/tickets/<TGT>` 换 ST（service = 超星统一认证）；
 //! 3. `GET {unified}/login_auth/v2/cas/gzus/index?ticket=<ST>` → 页面内嵌
 //!    AJAX 参数 data/time/enc → `GET .../gzus/login?...` 建立超星会话；
@@ -715,7 +715,7 @@ impl LibraryClient {
             let png = base64::engine::general_purpose::STANDARD
                 .decode(data_url.split_once(',').map(|(_, b64)| b64).unwrap_or(&data_url))
                 .context("CAS 验证码 base64 解码失败")?;
-            let Some(answer) = ru41::modules::jwxt::captcha::solve(&png) else {
+            let Some(answer) = ru41::adapters::cas::solve(&png) else {
                 continue; // 认不出这张图，换新的一张
             };
             let uid = kaptcha.uid.unwrap_or(requested);
@@ -747,7 +747,7 @@ impl LibraryClient {
                 ("username", self.username.as_str()),
                 (
                     "password",
-                    ru41::modules::jwxt::source::ohdave_encrypt(
+                    ru41::adapters::cas::ohdave_encrypt(
                         &self.password,
                         &self.cas_exponent,
                         &self.cas_modulus,

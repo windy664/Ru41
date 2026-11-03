@@ -92,6 +92,7 @@ enum AutoSignOutcome {
 /// 自动签策略：平台接受 → ✅ 回执；平台明确拒绝 → 打「已尝试」标记、❌ 回执、
 /// 不自动重试（避免对同一活动反复撞）；网络等瞬时错误 → 快照不动，下轮自然重试。
 /// 所有签到动作均有 QQ 回执可审计。
+#[derive(Clone)]
 pub struct ChaoxingTracker {
     store: Arc<dyn TaskStore>,
     notifier: Option<Arc<dyn NotifyChannel>>,
@@ -829,7 +830,8 @@ impl ru41::ingress::schedule::PollJob for ChaoxingTracker {
     ) -> std::pin::Pin<
         Box<dyn std::future::Future<Output = anyhow::Result<serde_json::Value>> + Send + '_>,
     > {
-        Box::pin(async move { Ok(serde_json::to_value(self.poll_once().await?)?) })
+        let owned = self.clone();
+        ru41::plugins::bridge(async move { Ok(serde_json::to_value(owned.poll_once().await?)?) })
     }
 }
 

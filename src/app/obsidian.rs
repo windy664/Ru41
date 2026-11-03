@@ -174,6 +174,7 @@ struct PendingOrganize {
 /// Obsidian 闭环追踪器：git 轮询与游标是确定性 Rust，归档判断交给 Agent 任务。
 /// Obsidian Vault 核心服务：Git 轮询与游标是确定性代码，归档判断交给 Agent 任务。
 /// 属于核心能力（app 层）：digest 落 Vault、周报、博客管线等附属都经它读写。
+#[derive(Clone)]
 pub struct ObsidianService {
     store: Arc<dyn TaskStore>,
     vault: Arc<dyn Vault>,
@@ -795,7 +796,12 @@ impl crate::ingress::schedule::PollJob for ObsidianService {
         &self,
     ) -> std::pin::Pin<Box<dyn std::future::Future<Output = Result<serde_json::Value>> + Send + '_>>
     {
-        Box::pin(async move { Ok(serde_json::to_value(self.poll_once().await?)?) })
+        // 经 plugin-api 桥到插件/宿主自己的 runtime：本服务会被插件 .so 静态链接，
+        // 插件 tokio 的 reactor 与宿主不通用（blog 插件 2026-10-27 事故同款）。
+        let owned = self.clone();
+        ru41_plugin_api::bridge::bridge(async move {
+            Ok(serde_json::to_value(owned.poll_once().await?)?)
+        })
     }
 }
 

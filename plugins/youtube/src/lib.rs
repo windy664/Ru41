@@ -143,7 +143,7 @@ fn youtube_cli(
             route,
         ))
     })();
-    Box::pin(async move {
+    Box::pin(ru41::plugins::bridge(async move {
         let (video_id, client, interests, level, max_chars, backend, route) = prepared?;
         let message = service::prep_video_task(
             &store,
@@ -157,7 +157,7 @@ fn youtube_cli(
         )
         .await?;
         Ok(Some(serde_json::json!({ "video_id": video_id, "message": message })))
-    })
+    }))
 }
 
 /// 宿主加载入口（插件不用 linkme，走显式注册）。

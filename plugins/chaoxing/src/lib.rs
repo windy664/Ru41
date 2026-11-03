@@ -211,7 +211,7 @@ fn chaoxing_cli(
             _ => anyhow::bail!("用法: ru41 chaoxing work|sign <活动ID> [--lat x] [--lon y] [--addr t] [--enc e] [--photo p]"),
         }
     })();
-    Box::pin(async move {
+    Box::pin(ru41::plugins::bridge(async move {
         let value = match prepared? {
             Job::Work(tracker) => serde_json::to_value(tracker.poll_once().await?)?,
             Job::Sign(tracker, activity_id, lat, lon, addr, enc, photo) => serde_json::to_value(
@@ -221,7 +221,7 @@ fn chaoxing_cli(
             )?,
         };
         Ok(Some(value))
-    })
+    }))
 }
 
 /// 宿主加载入口（插件不用 linkme，走显式注册）。
