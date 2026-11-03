@@ -92,18 +92,13 @@ pub enum Command {
     /// 长驻运行终态通知派发；按配置注册渠道（当前为飞书 webhook）。
     /// QQ 网关在 qq run 内自带派发，此命令用于不跑 QQ 的部署。
     Notify,
-    /// 学习通签到监控：协议端直连，检测待签活动并提醒，支持手动签到。
-    Chaoxing {
-        #[command(subcommand)]
-        command: ChaoxingCommand,
-    },
     /// 教务课表监控：CAS 单点登录拉课表，变更检测与明日课表提醒。
     Jwxt {
         #[command(subcommand)]
         command: JwxtCommand,
     },
     /// 附属通用入口：`ru41 <模块名> poll|run|<专属子命令>`（模块名见 `schedule list`；
-    /// 有专属子命令的模块如 chaoxing/jwxt 在上方独立变体，其余走各模块 cli 钩子）。
+    /// 内建模块的专属子命令仅剩 jwxt，插件模块一律走各自 cli 钩子）。
     #[command(external_subcommand)]
     Tracker(Vec<String>),
     /// 定时任务注册表：统一查看和运行各附属的轮询任务。
@@ -172,36 +167,6 @@ pub enum TrackerCommand {
     Poll,
     /// 常驻运行，按该来源配置的 interval_secs 周期轮询。
     Run,
-}
-
-#[derive(Subcommand)]
-pub enum ChaoxingCommand {
-    /// 采集一轮课程与签到活动并按需提醒（适合系统 cron 调用）。
-    Poll,
-    /// 常驻运行，按 sources.chaoxing.interval_secs 周期轮询。
-    Run,
-    /// 采集一轮全课程作业清单：提醒/待办/Obsidian 同步（独立低频任务）。
-    Work,
-    /// 手动签到一个签到活动（全类型：普通/手势/签到码/位置/二维码/拍照）。
-    Sign {
-        /// 签到活动 ID（poll 提醒里带的 id）。
-        activity_id: String,
-        /// 位置签到纬度（缺省用配置 default_lat）。
-        #[arg(long)]
-        lat: Option<f64>,
-        /// 位置签到经度（缺省用配置 default_lon）。
-        #[arg(long)]
-        lon: Option<f64>,
-        /// 位置签到地址文本（缺省用配置 default_addr；会显示在教师端）。
-        #[arg(long)]
-        addr: Option<String>,
-        /// 二维码签到 enc 值（现场二维码内容里的时效 token，过期需重扫）。
-        #[arg(long)]
-        enc: Option<String>,
-        /// 拍照签到照片路径（缺省用配置 photo_path，再缺省用内置照片）。
-        #[arg(long)]
-        photo: Option<String>,
-    },
 }
 
 #[derive(Subcommand)]

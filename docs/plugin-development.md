@@ -86,6 +86,7 @@ cp target-docker/release/libru41_plugin_foo.so <服务器>:/etc/ru41/plugins/
 | events | `plugins/events/` | 活动日程：茶思屋会议日历 + 活动行大湾区三城 → 科技向筛选 → vault `Events-活动/活动总览.md`；只写 Obsidian 不推送 |
 | youtube | `plugins/youtube/` | YouTube 英语预习：频道轮询 + `/英语` QQ 命令 + `ru41 youtube prep` 专属 CLI（cli 钩子的参考实现） |
 | teachermate | `plugins/teachermate/` | 微助教：openid 直连签到监控 + 作业提醒 + `ru41 teachermate work/bind/sign` 专属 CLI（cli 钩子多子命令参考实现） |
+| chaoxing | `plugins/chaoxing/` | 学习通：签到监控（全类型 sign + 二维码照片消费者）+ 作业提醒 + `ru41 chaoxing work/sign` 专属 CLI（image_consumers 接线测试被 DEF 直调钉住） |
 
 ## 本地开发与测试
 

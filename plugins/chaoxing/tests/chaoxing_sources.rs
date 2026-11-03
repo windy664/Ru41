@@ -17,10 +17,10 @@ use ru41::{
         NotifyRoute,
         todo::{TodoItem, TodoStatus},
     },
-    modules::chaoxing::{
-        ChaoxingClient, ChaoxingConfig, ChaoxingSection, ChaoxingTracker, sign_type_name,
-    },
     ports::{channel::NotifyChannel, storage::TaskStore},
+};
+use ru41_plugin_chaoxing::{
+    ChaoxingClient, ChaoxingConfig, ChaoxingSection, ChaoxingTracker, sign_type_name,
 };
 use serde_json::json;
 
@@ -787,7 +787,7 @@ async fn photo_sign_falls_back_to_builtin_photo() {
     assert!(fallback.is_file());
     assert_eq!(
         std::fs::read(&fallback).unwrap(),
-        ru41::modules::chaoxing::fallback_photo_bytes()
+        ru41_plugin_chaoxing::fallback_photo_bytes()
     );
 }
 
@@ -1063,7 +1063,7 @@ async fn gesture_sign_captcha_failure_falls_back_to_manual_advice() {
 /// 种类识别以 nameOne 文案为准，type 字段不可信。
 #[test]
 fn sign_kind_is_derived_from_platform_label_not_type_field() {
-    use ru41::modules::chaoxing::source::{ChaoxingActivity, ChaoxingSignKind};
+    use ru41_plugin_chaoxing::source::{ChaoxingActivity, ChaoxingSignKind};
     let mk = |sign_type: i64, name_one: &str| ChaoxingActivity {
         id: 1,
         active_type: Some(2),
@@ -1215,7 +1215,7 @@ fn make_work_tracker(
     cookie_path: std::path::PathBuf,
     notifier: Option<Arc<dyn NotifyChannel>>,
     vault: Option<Arc<dyn ru41::ports::vault::Vault>>,
-) -> ru41::modules::chaoxing::ChaoxingWorkTracker {
+) -> ru41_plugin_chaoxing::ChaoxingWorkTracker {
     let client = ChaoxingClient::with_base_urls(
         "10000000000",
         "pw",
@@ -1227,7 +1227,7 @@ fn make_work_tracker(
         base.to_owned(),
         base.to_owned(),
     );
-    ru41::modules::chaoxing::ChaoxingWorkTracker::new(
+    ru41_plugin_chaoxing::ChaoxingWorkTracker::new(
         store,
         client,
         notifier,
@@ -1435,7 +1435,7 @@ fn activity_json_parses_probe_shape() {
         "isLook":1,"type":2,"releaseNum":0,"attendNum":57,"activeType":2,
         "nameOne":"二维码签到","flagLogo":false,"startTime":1792135761000,
         "id":1000174332257,"endTime":1792135881000,"status":2,"nameFour":"10-16 15:31"}"#;
-    let a: ru41::modules::chaoxing::ChaoxingActivity = serde_json::from_str(raw).unwrap();
+    let a: ru41_plugin_chaoxing::ChaoxingActivity = serde_json::from_str(raw).unwrap();
     assert_eq!(a.id, 1000174332257);
     assert!(a.is_sign());
     assert!(!a.is_pending());
@@ -1444,7 +1444,7 @@ fn activity_json_parses_probe_shape() {
 
 #[test]
 fn activity_pending_detection() {
-    let mk = |v: serde_json::Value| -> ru41::modules::chaoxing::ChaoxingActivity {
+    let mk = |v: serde_json::Value| -> ru41_plugin_chaoxing::ChaoxingActivity {
         serde_json::from_value(v).unwrap()
     };
     assert!(
@@ -1519,7 +1519,8 @@ password = "pw"
 "#,
     )
     .unwrap();
-    let consumers = ru41::bootstrap::assembly::qq_image_consumers(&config).unwrap();
+    // 插件化后不再经过宿主 assembly 的模块注册表，直接调本插件 DEF。
+    let consumers = (ru41_plugin_chaoxing::DEF.image_consumers)(&config).unwrap();
     assert_eq!(
         consumers.len(),
         1,

@@ -1,9 +1,9 @@
 //! 学习通签到监控：轮询活动 → 待签处理（普通/手势/位置/拍照/签到码当场自动签，
 //! 被 90002 风控拦下时自动过滑块重签；二维码指路图片通道）→ 状态变迁回执。
 
-use crate::modules::chaoxing::config::ChaoxingConfig;
-use crate::modules::chaoxing::source::ChaoxingClient;
-use crate::ports::{channel::NotifyChannel, storage::TaskStore};
+use crate::config::ChaoxingConfig;
+use crate::source::ChaoxingClient;
+use ru41::ports::{channel::NotifyChannel, storage::TaskStore};
 use anyhow::Result;
 use chrono::TimeZone;
 use serde::Serialize;
@@ -129,11 +129,11 @@ impl ChaoxingTracker {
         let mut windows = Vec::new();
         for doc in self.store.documents("event", 10_000)? {
             let Ok(item) =
-                serde_json::from_value::<crate::domain::schedule::EventItem>(doc.value.clone())
+                serde_json::from_value::<ru41::domain::schedule::EventItem>(doc.value.clone())
             else {
                 continue;
             };
-            if item.status != crate::domain::schedule::EventStatus::Active {
+            if item.status != ru41::domain::schedule::EventStatus::Active {
                 continue;
             }
             if item.source.as_ref().map(|s| s.channel.as_str()) != Some("jwxt") {
@@ -235,14 +235,14 @@ impl ChaoxingTracker {
     /// 按活动类型 + 命令行参数 + 配置解析出具体签到方式。
     fn resolve_method(
         &self,
-        activity: &crate::modules::chaoxing::source::ChaoxingActivity,
+        activity: &crate::source::ChaoxingActivity,
         lat: Option<f64>,
         lon: Option<f64>,
         addr: Option<&str>,
         enc: Option<&str>,
         photo_path: Option<&str>,
-    ) -> Result<crate::modules::chaoxing::source::SignMethod> {
-        use crate::modules::chaoxing::source::{ChaoxingSignKind, SignMethod};
+    ) -> Result<crate::source::SignMethod> {
+        use crate::source::{ChaoxingSignKind, SignMethod};
         let default = self.config.default_location.as_ref();
         Ok(match activity.sign_kind() {
             // 位置：坐标与地址逐项回落到默认位置配置
@@ -305,7 +305,7 @@ impl ChaoxingTracker {
         let path = dir.join("fallback-photo.jpg");
         std::fs::write(
             &path,
-            crate::modules::chaoxing::source::fallback_photo_bytes(),
+            crate::source::fallback_photo_bytes(),
         )?;
         Ok(path)
     }
@@ -313,12 +313,12 @@ impl ChaoxingTracker {
     /// 签到落定后更新快照：标记 user_status=0，poll 侧就不会再播一次「已签」变迁。
     fn mark_signed(
         &self,
-        course: &crate::modules::chaoxing::source::ChaoxingCourse,
-        activity: &crate::modules::chaoxing::source::ChaoxingActivity,
+        course: &crate::source::ChaoxingCourse,
+        activity: &crate::source::ChaoxingActivity,
         via: &str,
     ) {
         let key = format!("{}#{}", course.course_id, activity.id);
-        let now = crate::util::now();
+        let now = ru41::util::now();
         let result = match self.store.document("chaoxing_sign", &key) {
             Ok(Some(doc)) => {
                 let mut value = doc.value.clone();
@@ -355,15 +355,15 @@ impl ChaoxingTracker {
     /// 平台明确拒绝后打「已尝试」标记：自动签不会对同一活动反复重试。
     fn mark_auto_attempted(
         &self,
-        course: &crate::modules::chaoxing::source::ChaoxingCourse,
-        activity: &crate::modules::chaoxing::source::ChaoxingActivity,
+        course: &crate::source::ChaoxingCourse,
+        activity: &crate::source::ChaoxingActivity,
         note: &str,
     ) {
         let key = format!("{}#{}", course.course_id, activity.id);
         let _ = self.store.document("chaoxing_sign", &key).map(|doc| {
             doc.map(|doc| {
                 let mut value = doc.value.clone();
-                value["auto_attempted"] = serde_json::json!(crate::util::now());
+                value["auto_attempted"] = serde_json::json!(ru41::util::now());
                 value["auto_note"] = serde_json::json!(note);
                 self.store
                     .put_document("chaoxing_sign", &key, Some(doc.revision), &value)
@@ -386,8 +386,8 @@ impl ChaoxingTracker {
 
     async fn try_auto_sign(
         &self,
-        course: &crate::modules::chaoxing::source::ChaoxingCourse,
-        activity: &crate::modules::chaoxing::source::ChaoxingActivity,
+        course: &crate::source::ChaoxingCourse,
+        activity: &crate::source::ChaoxingActivity,
     ) -> AutoSignOutcome {
         let method = match self.resolve_method(activity, None, None, None, None, None) {
             Ok(method) => method,
@@ -444,8 +444,8 @@ impl ChaoxingTracker {
     }
 
     pub async fn poll_once(&self) -> Result<ChaoxingPollReport> {
-        let now = crate::util::now();
-        let today = crate::util::today_utc(now);
+        let now = ru41::util::now();
+        let today = ru41::util::today_utc(now);
 
         if let Err(err) = self.client.ensure_session().await {
             let key = format!("login:{today}");
@@ -745,7 +745,7 @@ impl ChaoxingTracker {
         if let Some(notifier) = &self.notifier {
             if !pending_lines.is_empty() {
                 let mut card =
-                    crate::util::msg::Card::new(format!("✍️ 学习通签到（{pending} 个待签）"));
+                    ru41::util::msg::Card::new(format!("✍️ 学习通签到（{pending} 个待签）"));
                 for line in &pending_lines {
                     card.raw(line);
                 }
@@ -755,13 +755,13 @@ impl ChaoxingTracker {
                     "点下方按钮一键签到；二维码需现场 enc"
                 });
                 let message = card.build();
-                let mut markup = crate::ports::commands::ReplyMarkup::new();
+                let mut markup = ru41::ports::commands::ReplyMarkup::new();
                 markup.push_row(
                     pending_buttons
                         .iter()
                         .take(4)
                         .map(|(label, cmd)| {
-                            crate::ports::commands::MarkupButton::new(label.clone(), cmd.clone())
+                            ru41::ports::commands::MarkupButton::new(label.clone(), cmd.clone())
                         })
                         .collect(),
                 );
@@ -771,18 +771,18 @@ impl ChaoxingTracker {
                 notified = true;
             }
             if !outcome_lines.is_empty() {
-                let mut card = crate::util::msg::Card::new("✅ 学习通签到回执");
+                let mut card = ru41::util::msg::Card::new("✅ 学习通签到回执");
                 for line in &outcome_lines {
                     card.raw(line);
                 }
                 let message = card.build();
-                let mut markup = crate::ports::commands::ReplyMarkup::new();
+                let mut markup = ru41::ports::commands::ReplyMarkup::new();
                 markup.push_row(
                     retry_buttons
                         .iter()
                         .take(4)
                         .map(|(label, cmd)| {
-                            crate::ports::commands::MarkupButton::new(label.clone(), cmd.clone())
+                            ru41::ports::commands::MarkupButton::new(label.clone(), cmd.clone())
                         })
                         .collect(),
                 );
@@ -819,7 +819,7 @@ fn format_ms(ms: Option<i64>) -> Option<String> {
         .map(|dt| dt.format("%Y-%m-%d %H:%M:%S").to_string())
 }
 
-impl crate::ingress::schedule::PollJob for ChaoxingTracker {
+impl ru41::ingress::schedule::PollJob for ChaoxingTracker {
     fn job_interval(&self) -> std::time::Duration {
         std::time::Duration::from_secs(self.config.interval_secs)
     }
@@ -865,11 +865,10 @@ fn course_title_match(a: &str, b: &str) -> bool {
 
 #[cfg(test)]
 mod tests {
-    use super::{ChaoxingTracker, course_title_match, in_any_window};
-    use crate::adapters::database::sqlite::SqliteTaskStore;
-    use crate::modules::chaoxing::config::ChaoxingSection;
-    use crate::modules::chaoxing::source::ChaoxingClient;
-    use crate::ports::storage::TaskStore;
+    use super::{course_title_match, in_any_window};
+    use crate::{ChaoxingTracker, config::ChaoxingSection, source::ChaoxingClient};
+    use ru41::adapters::database::sqlite::SqliteTaskStore;
+    use ru41::ports::storage::TaskStore;
     use anyhow::Result;
     use std::sync::Arc;
 

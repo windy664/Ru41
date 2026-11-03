@@ -79,7 +79,7 @@ pub fn extract_enc_candidates(text: &str) -> Vec<String> {
 /// 窗口探测：抓详情页 + preSign，工件落盘，enc 候选进样本库。
 /// 全程 best-effort：任何失败只写日志（eprintln），不上报错误。
 pub async fn probe_window(
-    client: &crate::modules::chaoxing::source::ChaoxingClient,
+    client: &crate::source::ChaoxingClient,
     activity_id: i64,
     sample_path: &std::path::Path,
 ) {
@@ -89,7 +89,7 @@ pub async fn probe_window(
         .unwrap_or_else(|| PathBuf::from("/tmp/chaoxing-enc-probe"));
     let _ = std::fs::create_dir_all(&artifacts);
     let logger = EncSampleLogger::new(sample_path);
-    let ts = crate::util::now();
+    let ts = ru41::util::now();
 
     if let Err(err) = client.ensure_session().await {
         eprintln!("[enc-probe] {activity_id} 登录态不可用：{err:#}");
@@ -102,7 +102,7 @@ pub async fn probe_window(
             "presign",
             client
                 .pre_sign_body(
-                    &crate::modules::chaoxing::source::ChaoxingCourse::bare(),
+                    &crate::source::ChaoxingCourse::bare(),
                     &activity_id.to_string(),
                     &client.uid().unwrap_or_default(),
                 )

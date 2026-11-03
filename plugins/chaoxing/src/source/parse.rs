@@ -109,7 +109,7 @@ pub(super) fn capture(text: &str, pattern: &str) -> Option<String> {
 
 #[cfg(test)]
 mod tests {
-    use super::super::model::ChaoxingActivity;
+    use crate::source::model::ChaoxingActivity;
     use super::*;
 
     #[test]

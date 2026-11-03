@@ -7,10 +7,10 @@
 use std::future::Future;
 use std::pin::Pin;
 
-use crate::modules::chaoxing::source::{
+use crate::source::{
     ChaoxingActivity, ChaoxingClient, ChaoxingCourse, SignMethod,
 };
-use crate::ports::commands::ImageConsumer;
+use ru41::ports::commands::ImageConsumer;
 
 use super::enc_sample::{EncSample, EncSampleLogger};
 use super::sign::sign_response_ok;
@@ -149,7 +149,7 @@ impl ChaoxingQrSigner {
         // 科研线 C：成败都落样本（拒绝文本是 token 有效期分析的关键数据）
         if let Some(logger) = &self.enc_log {
             logger.log(&EncSample {
-                ts: crate::util::now(),
+                ts: ru41::util::now(),
                 activity_id: qr.activity_id,
                 enc: qr.enc.clone(),
                 source: "photo".into(),

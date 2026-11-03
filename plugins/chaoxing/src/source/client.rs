@@ -180,7 +180,7 @@ impl ChaoxingClient {
         let jar = std::sync::Arc::new(CookieJar::default());
         let http = reqwest::Client::builder()
             .user_agent(concat!("ru41/", env!("CARGO_PKG_VERSION")))
-            .timeout(crate::util::HTTP_TIMEOUT)
+            .timeout(ru41::util::HTTP_TIMEOUT)
             .cookie_provider(jar.clone())
             .build()
             .expect("reqwest client build");
@@ -350,7 +350,7 @@ impl ChaoxingClient {
                 ("courseId", course.course_id.clone()),
                 ("classId", course.clazz_id.clone()),
                 ("showNotStartedActive", "0".to_string()),
-                ("_", crate::util::now().to_string()),
+                ("_", ru41::util::now().to_string()),
             ])
             .send()
             .await
@@ -483,7 +483,7 @@ impl ChaoxingClient {
     /// 方案对齐社区 ChaoxingSignFaker 的纯 HTTP 实现（无 WebView 依赖）。
     pub async fn solve_slider_captcha(&self, referer: &str) -> Result<String> {
         use super::captcha;
-        let now = crate::util::now();
+        let now = ru41::util::now();
         let conf = self
             .http
             .get(format!("{}/captcha/get/conf", self.captcha_base))
@@ -500,7 +500,7 @@ impl ChaoxingClient {
             .context("captcha conf 响应读取失败")?;
         let t = captcha::parse_conf_t(&conf)?;
 
-        let (captcha_key, iv, image_token) = captcha::image_params(t, crate::util::now());
+        let (captcha_key, iv, image_token) = captcha::image_params(t, ru41::util::now());
         let image = self
             .http
             .get(format!(
@@ -516,7 +516,7 @@ impl ChaoxingClient {
                 ("token", image_token.as_str()),
                 ("referer", referer),
                 ("iv", iv.as_str()),
-                ("_", &crate::util::now().to_string()),
+                ("_", &ru41::util::now().to_string()),
             ])
             .send()
             .await
@@ -564,7 +564,7 @@ impl ChaoxingClient {
                 ("version", captcha::CAPTCHA_VERSION),
                 ("t", "a"),
                 ("iv", iv.as_str()),
-                ("_", &crate::util::now().to_string()),
+                ("_", &ru41::util::now().to_string()),
             ])
             .header("Referer", referer)
             .send()
@@ -662,7 +662,7 @@ impl ChaoxingClient {
             .context("云盘 token 获取失败（登录态可能失效）")?
             .to_owned();
         let uid = self.uid()?;
-        let boundary = format!("----ru41{}", crate::util::now());
+        let boundary = format!("----ru41{}", ru41::util::now());
         let mut body = Vec::with_capacity(bytes.len() + 512);
         body.extend_from_slice(
             format!(
@@ -742,7 +742,7 @@ impl ChaoxingClient {
                 course.cpi,
                 encs.openc,
                 encs.work_enc,
-                crate::util::now(),
+                ru41::util::now(),
                 encs.enc
             );
             async move {
@@ -784,7 +784,7 @@ impl ChaoxingClient {
             .text()
             .await
             .context("作业详情响应读取失败")?;
-        Ok(parse_work_deadline(&html, crate::util::now()))
+        Ok(parse_work_deadline(&html, ru41::util::now()))
     }
 }
 

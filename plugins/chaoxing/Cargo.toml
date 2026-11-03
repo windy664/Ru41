@@ -1,0 +1,36 @@
+[package]
+name = "ru41-plugin-chaoxing"
+version = "0.1.0"
+edition = "2024"
+
+[lib]
+crate-type = ["cdylib", "rlib"]
+
+[features]
+plugin-entry = []
+
+[dependencies]
+# 必须与宿主同一版本（ABI 握手校验 git commit + pkg 版本）。
+ru41 = { path = "../.." }
+anyhow = "1"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+toml = "0.9"
+chrono = { version = "0.4", default-features = false, features = ["std", "clock"] }
+regex = "1"
+reqwest = { version = "0.12", default-features = false, features = ["rustls-tls", "json", "cookies", "blocking"] }
+tokio = { version = "1", features = ["full"] }
+futures-util = "0.3"
+md-5 = "0.11"
+aes = "0.8"
+cbc = { version = "0.1", features = ["alloc"] }
+base64 = "0.22"
+rqrr = "0.11.0"
+rand = "0.9"
+url = "2"
+image = { version = "0.25.10", default-features = false, features = ["png", "jpeg"] }
+
+[dev-dependencies]
+axum = { version = "0.8", features = ["json", "tokio", "http1"] }
+qrcode = "0.14"
+tempfile = "3"

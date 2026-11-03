@@ -6,7 +6,7 @@ mod qr;
 mod sign;
 mod work;
 
-pub use crate::modules::chaoxing::config::ChaoxingConfig;
+pub use crate::config::ChaoxingConfig;
 
 pub use qr::ChaoxingQrSigner;
 pub use sign::{ChaoxingPollReport, ChaoxingTracker, sign_type_name};
