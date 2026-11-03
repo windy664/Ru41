@@ -16,24 +16,14 @@ SSH_RUN="$HOME/bin/ru41-ssh-run2.py"
 SCP="$HOME/bin/ru41-scp.py"
 PLUGIN_DIR_ON_SERVER="/home/windy2/ru41-plugins"
 
-# (crate 目录, 产物 so 文件名)
-PLUGINS=(
-  "plugins/competitions:libru41_plugin_competitions.so"
-  "plugins/papers:libru41_plugin_papers.so"
-  "plugins/rss:libru41_plugin_rss.so"
-  "plugins/pagewatch:libru41_plugin_pagewatch.so"
-  "plugins/jobs:libru41_plugin_jobs.so"
-  "plugins/programs:libru41_plugin_programs.so"
-  "plugins/research:libru41_plugin_research.so"
-  "plugins/zhihuishu:libru41_plugin_zhihuishu.so"
-  "plugins/homework:libru41_plugin_homework.so"
-  "plugins/ecard:libru41_plugin_ecard.so"
-  "plugins/compshare:libru41_plugin_compshare.so"
-  "plugins/blog:libru41_plugin_blog.so"
-  "plugins/projects:libru41_plugin_projects.so"
-  "plugins/lecture:libru41_plugin_lecture.so"
-  "plugins/library:libru41_plugin_library.so"
-)
+# (crate 目录, 产物 so 文件名)：自动发现 plugins/*/Cargo.toml，
+# 新插件不再需要手工登记本列表（目录名即 so 名）。
+PLUGINS=()
+for manifest in plugins/*/Cargo.toml; do
+  dir="$(dirname "$manifest")"
+  name="$(basename "$dir")"
+  PLUGINS+=("$dir:libru41_plugin_${name}.so")
+done
 
 for entry in "${PLUGINS[@]}"; do
   dir="${entry%%:*}"

@@ -1,8 +1,8 @@
-use crate::ports::commands::{CommandContext, CommandHandler, Reply};
+use ru41::ports::commands::{CommandContext, CommandHandler, Reply};
 use anyhow::Result;
 use std::{future::Future, pin::Pin};
 
-use super::{service::prep_video_task, source::YtDlpClient};
+use crate::{service::prep_video_task, source::YtDlpClient};
 
 /// QQ 预习命令：`/预习 <YouTube链接>` 按需生成英语预习单并推送当前会话。
 /// 由装配层注册，QQ 渠道无需认识 youtube 模块。

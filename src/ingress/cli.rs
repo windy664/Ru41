@@ -92,11 +92,6 @@ pub enum Command {
     /// 长驻运行终态通知派发；按配置注册渠道（当前为飞书 webhook）。
     /// QQ 网关在 qq run 内自带派发，此命令用于不跑 QQ 的部署。
     Notify,
-    /// YouTube 英语预习：轮询频道新视频，字幕转写生成重点词句预习单并推送。
-    Youtube {
-        #[command(subcommand)]
-        command: YoutubeCommand,
-    },
     /// 学习通签到监控：协议端直连，检测待签活动并提醒，支持手动签到。
     Chaoxing {
         #[command(subcommand)]
@@ -112,8 +107,8 @@ pub enum Command {
         #[command(subcommand)]
         command: JwxtCommand,
     },
-    /// 附属 tracker 通用入口：`ru41 <模块名> poll|run`（模块名见 `schedule list`；
-    /// 有专属子命令的模块如 youtube/chaoxing/teachermate/jwxt 在上方独立变体）。
+    /// 附属通用入口：`ru41 <模块名> poll|run|<专属子命令>`（模块名见 `schedule list`；
+    /// 有专属子命令的模块如 chaoxing/teachermate/jwxt 在上方独立变体，其余走各模块 cli 钩子）。
     #[command(external_subcommand)]
     Tracker(Vec<String>),
     /// 定时任务注册表：统一查看和运行各附属的轮询任务。
@@ -182,19 +177,6 @@ pub enum TrackerCommand {
     Poll,
     /// 常驻运行，按该来源配置的 interval_secs 周期轮询。
     Run,
-}
-
-#[derive(Subcommand)]
-pub enum YoutubeCommand {
-    /// 执行一轮轮询（适合系统 cron 定时调用）。
-    Poll,
-    /// 常驻运行，按 sources.youtube.interval_secs 周期轮询。
-    Run,
-    /// 手动提交一个视频：拉字幕转写入队预习任务，完成后推送预习单。
-    Prep {
-        /// YouTube 链接（watch / youtu.be / shorts）或 11 位视频 ID
-        url: String,
-    },
 }
 
 #[derive(Subcommand)]

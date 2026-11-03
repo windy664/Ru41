@@ -80,7 +80,7 @@ pub struct ModuleDef {
     /// QQ 图片消费者（如学习通二维码签到）；无则用 no_image_consumers。
     pub image_consumers: ImageConsumersFn,
     /// 专属 CLI 子命令（poll/run 之外，如 youtube prep / chaoxing sign / jwxt login）；
-    /// 入参为模块名之后的原始参数，输出 JSON。无则用 no_cli。
+    /// 入参为模块名之后的原始参数与任务存储，输出 JSON。无则用 no_cli。
     pub cli: CliFn,
 }
 
@@ -91,8 +91,10 @@ pub type QqHandlersFn = fn(&Config, &str) -> Result<Vec<Arc<dyn CommandHandler>>
 pub type ImageConsumersFn =
     fn(&Config) -> Result<Vec<Arc<dyn crate::ports::commands::ImageConsumer>>>;
 /// 专属 CLI 输出（异步 fn 指针；实现内如需 reactor 请过 bridge）。
+/// 注入任务存储：如 youtube prep 需要入队任务，不必自己再解析一遍存储配置。
 pub type CliFn = fn(
     &Config,
+    Arc<dyn TaskStore>,
     &[String],
 ) -> std::pin::Pin<
     Box<dyn std::future::Future<Output = Result<Option<serde_json::Value>>> + Send>,
@@ -108,6 +110,7 @@ pub fn no_image_consumers(
 /// 无专属 CLI 的默认实现：返回 None，由入口侧报"不支持"。
 pub fn no_cli(
     _: &Config,
+    _: Arc<dyn TaskStore>,
     _: &[String],
 ) -> std::pin::Pin<Box<dyn std::future::Future<Output = Result<Option<serde_json::Value>>> + Send>>
 {

@@ -1,9 +1,8 @@
 use ru41::{
-    adapters::database::sqlite::SqliteTaskStore,
-    domain::NotifyRoute,
-    modules::youtube::{YoutubeConfig, YoutubeTracker},
+    adapters::database::sqlite::SqliteTaskStore, domain::NotifyRoute,
     ports::storage::TaskStore,
 };
+use ru41_plugin_youtube::{YoutubeConfig, YoutubeTracker};
 use std::{
     path::{Path, PathBuf},
     sync::Arc,
@@ -325,7 +324,7 @@ async fn rebaseline_covers_preexisting_pending_docs() {
 
 #[tokio::test]
 async fn prep_video_task_creates_deduped_tasks() {
-    use ru41::modules::youtube::{service::prep_video_task, source::YtDlpClient};
+    use ru41_plugin_youtube::{service::prep_video_task, source::YtDlpClient};
 
     let dir = tempfile::tempdir().unwrap();
     let marker = dir.path().join("absent-marker");
@@ -395,7 +394,7 @@ fn rejects_unknown_config_fields() {
     let (config, _) = ru41::bootstrap::config::Config::load_from(None, cwd.path(), None).unwrap();
     let result = config
         .sources
-        .get::<ru41::modules::youtube::YoutubeSection>("youtube");
+        .get::<ru41_plugin_youtube::YoutubeSection>("youtube");
     assert!(result.is_err());
 }
 
@@ -405,9 +404,9 @@ mod review_loop {
         adapters::database::sqlite::SqliteTaskStore,
         app::task::TaskService,
         domain::{AgentResult, RunContract},
-        modules::youtube::review::{self, YoutubeReviewJob},
         ports::{channel::NotifyChannel, storage::TaskStore},
     };
+    use ru41_plugin_youtube::review::{self, YoutubeReviewJob};
     use std::{future::Future, pin::Pin, sync::Arc};
 
     const SHEET: &str = "📺 测试视频主线\n\
@@ -465,7 +464,7 @@ mod review_loop {
         store: Arc<dyn TaskStore>,
         at: chrono::DateTime<chrono::Local>,
     ) -> (YoutubeReviewJob, FakeNotifier) {
-        let config = ru41::modules::youtube::YoutubeConfig {
+        let config = ru41_plugin_youtube::YoutubeConfig {
             channels: vec![],
             keywords: vec![],
             interests: String::new(),

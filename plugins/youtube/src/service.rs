@@ -1,4 +1,4 @@
-use crate::{
+use ru41::{
     app::{digest::keyword_match, task::TaskService},
     domain::NotifyRoute,
     ports::storage::TaskStore,
@@ -7,7 +7,7 @@ use anyhow::Result;
 use serde::Serialize;
 use std::sync::Arc;
 
-use super::source::{
+use crate::source::{
     TranscriptSegment, VideoEntry, VideoMeta, YtDlpClient, format_ts, render_transcript,
 };
 
@@ -128,7 +128,7 @@ impl YoutubeTracker {
                     channel,
                     None,
                     &serde_json::json!({
-                        "baseline_at": crate::util::now(),
+                        "baseline_at": ru41::util::now(),
                         "items": videos.len(),
                     }),
                 ) {
@@ -154,7 +154,7 @@ impl YoutubeTracker {
         let cutoff = if self.config.max_age_days == 0 {
             None
         } else {
-            Some(crate::util::now() - (self.config.max_age_days as i64) * 86_400)
+            Some(ru41::util::now() - (self.config.max_age_days as i64) * 86_400)
         };
         let mut prepared = 0;
         let mut task_ids = Vec::new();
@@ -228,7 +228,7 @@ impl YoutubeTracker {
                 }
                 // failed 满 24h 复活：风控是瞬时的，清 attempts 重新候选。
                 Some("failed")
-                    if crate::util::now()
+                    if ru41::util::now()
                         - doc.value["failed_at"]
                             .as_i64()
                             .unwrap_or_else(|| doc.value["first_seen"].as_i64().unwrap_or(0))
@@ -297,7 +297,7 @@ impl YoutubeTracker {
                 "status": status,
                 "attempts": attempts,
                 "title": title,
-                "first_seen": crate::util::now(),
+                "first_seen": ru41::util::now(),
             }),
         )
     }
@@ -311,7 +311,7 @@ impl YoutubeTracker {
             value["attempts"] = attempts.into();
             // failed 落点时间：复活窗口（FAILED_RETRY_AFTER_SECS）的计时起点。
             if status == "failed" {
-                value["failed_at"] = crate::util::now().into();
+                value["failed_at"] = ru41::util::now().into();
             } else {
                 value.as_object_mut().map(|m| m.remove("failed_at"));
             }
@@ -526,7 +526,7 @@ fn preview_prompt(
     )
 }
 
-impl crate::ingress::schedule::PollJob for YoutubeTracker {
+impl ru41::ingress::schedule::PollJob for YoutubeTracker {
     fn job_interval(&self) -> std::time::Duration {
         std::time::Duration::from_secs(self.config.interval_secs)
     }

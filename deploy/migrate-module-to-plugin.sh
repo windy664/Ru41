@@ -19,6 +19,7 @@ import pathlib, re, sys
 
 m = sys.argv[1]
 dst = pathlib.Path(f'plugins/{m}/src')
+lib = dst / 'lib.rs'
 for p in dst.rglob('*.rs'):
     s = p.read_text()
     # 自引用先换（crate::modules::<m>:: → crate::），再整体 crate:: → ru41::
@@ -30,11 +31,32 @@ for p in dst.rglob('*.rs'):
     s = s.replace('super::ModuleDef', 'ru41::modules::ModuleDef')
     s = s.replace('super::JobSchedule', 'ru41::modules::JobSchedule')
     s = s.replace('super::DEFAULT_PRIORITY', 'ru41::modules::DEFAULT_PRIORITY')
+    # crate 根（旧 mod.rs）里的 super::no_* → ru41::modules::no_*
+    s = s.replace('super::no_cli', 'ru41::modules::no_cli')
+    s = s.replace('super::no_image_consumers', 'ru41::modules::no_image_consumers')
     s = s.replace('use super::', 'use crate::')
     # 去掉 linkme 自注册属性（插件走入口函数）
     s = s.replace('#[linkme::distributed_slice(ru41::modules::MODULES)]\n', '')
     s = s.replace('#[linkme::distributed_slice(super::MODULES)]\n', '')
+    # 子模块测试里的 use super::* 指本模块自身，不能跟着改成 use crate::*
+    if p != lib:
+        s = s.replace('use crate::*;', 'use super::*;')
     p.write_text(s)
+
+# lib.rs（crate 根）里被误改的自引用：按本文件 pub use/模块声明还原 crate::
+s = lib.read_text()
+local_names = set(re.findall(r'pub mod (\w+)', s))
+for use_stmt in re.findall(r'pub use ([^;]+);', s):
+    brace = re.search(r'\{([^}]*)\}', use_stmt)
+    if brace:
+        local_names |= {n.strip() for n in brace.group(1).split(',') if n.strip()}
+    else:
+        tail = use_stmt.strip().rsplit('::', 1)[-1].strip()
+        if re.fullmatch(r'\w+', tail):
+            local_names.add(tail)
+for name in sorted(local_names, key=len, reverse=True):
+    s = re.sub(rf'ru41::{name}\b', f'crate::{name}', s)
+lib.write_text(s)
 
 # 入口函数附加到 lib.rs
 lib = dst / 'lib.rs'
