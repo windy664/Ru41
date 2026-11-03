@@ -13,11 +13,11 @@ use axum::{
 };
 use ru41::{
     adapters::database::sqlite::SqliteTaskStore,
-    modules::teachermate::{
-        TeachermateClient, TeachermateConfig, TeachermateSection, TeachermateTracker,
-        TeachermateWorkTracker,
-    },
     ports::{channel::NotifyChannel, storage::TaskStore},
+};
+use ru41_plugin_teachermate::{
+    TeachermateClient, TeachermateConfig, TeachermateSection, TeachermateTracker,
+    TeachermateWorkTracker,
 };
 use serde_json::json;
 
@@ -579,7 +579,7 @@ async fn bind_writes_openid_and_verifies_role() {
     let openid_path = dir.path().join("teachermate").join("openid");
 
     let link = "https://v18.teachermate.cn/wechat-pro-ssr/student/sign?openid=abcdef0123456789abcdef0123456789";
-    let outcome = ru41::modules::teachermate::cli::bind_json_with_base(
+    let outcome = ru41_plugin_teachermate::cli::bind_json_with_base(
         link,
         &openid_path,
         &format!("http://{addr}"),
@@ -597,7 +597,7 @@ async fn bind_writes_openid_and_verifies_role() {
 
     // openid 失效 → bind 报错（文件仍已落盘，便于对比排查）
     *state.role_ok.lock().unwrap() = false;
-    let err = ru41::modules::teachermate::cli::bind_json_with_base(
+    let err = ru41_plugin_teachermate::cli::bind_json_with_base(
         "fedcba9876543210fedcba9876543210",
         &openid_path,
         &format!("http://{addr}"),
@@ -607,7 +607,7 @@ async fn bind_writes_openid_and_verifies_role() {
     assert!(err.to_string().contains("登录信息失效"));
 
     // 无法提取 openid 的输入 → 明确报错
-    let err = ru41::modules::teachermate::cli::bind_json_with_base(
+    let err = ru41_plugin_teachermate::cli::bind_json_with_base(
         "https://example.com/no-openid",
         &openid_path,
         &format!("http://{addr}"),

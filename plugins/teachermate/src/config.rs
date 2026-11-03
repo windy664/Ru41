@@ -28,7 +28,7 @@ pub struct TeachermateConfig {
     /// 微助教课程名 → Vault 课程目录名映射。
     pub vault_courses: std::collections::BTreeMap<String, String>,
     /// 作业任务目录策略；substantive 下只为未交作业建目录（说明页无正文）。
-    pub work_vault_task_dirs: crate::ports::vault::VaultTaskDirs,
+    pub work_vault_task_dirs: ru41::ports::vault::VaultTaskDirs,
 }
 
 /// 微助教签到监控配置；teachermate poll/run/sign/bind 使用。
@@ -125,7 +125,7 @@ impl TeachermateSection {
             work_vault_sync: self.work_vault_sync.unwrap_or(false),
             vault_course_dir: self.vault_course_dir.clone(),
             vault_courses: self.vault_courses.clone().unwrap_or_default(),
-            work_vault_task_dirs: crate::ports::vault::VaultTaskDirs::parse(
+            work_vault_task_dirs: ru41::ports::vault::VaultTaskDirs::parse(
                 self.work_vault_task_dirs.as_deref(),
             )?,
         })

@@ -46,7 +46,7 @@ impl TeachermateClient {
     pub fn with_api_base(openid: impl Into<String>, api_base: String) -> Self {
         let http = reqwest::Client::builder()
             .user_agent(concat!("ru41/", env!("CARGO_PKG_VERSION")))
-            .timeout(crate::util::HTTP_TIMEOUT)
+            .timeout(ru41::util::HTTP_TIMEOUT)
             .build()
             .expect("reqwest client build");
         Self {

@@ -8,7 +8,6 @@ pub mod chaoxing;
 pub mod jwxt;
 pub mod obsidian;
 pub mod planner;
-pub mod teachermate;
 
 pub use ru41_plugin_api::module::*;
 

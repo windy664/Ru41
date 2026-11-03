@@ -11,9 +11,9 @@ pub mod work;
 
 pub use work::{TeachermateWorkPollReport, TeachermateWorkTracker};
 
-use super::config::TeachermateConfig;
-use super::source::{ActiveSign, SignsOutcome, TeachermateClient, sign_response_ok};
-use crate::ports::{channel::NotifyChannel, storage::TaskStore};
+use crate::config::TeachermateConfig;
+use crate::source::{ActiveSign, SignsOutcome, TeachermateClient, sign_response_ok};
+use ru41::ports::{channel::NotifyChannel, storage::TaskStore};
 use anyhow::{Context, Result};
 use serde::Serialize;
 use std::collections::HashSet;
@@ -175,7 +175,7 @@ impl TeachermateTracker {
     /// 快照不存在时（如直接手动签、poll 还没见过）现场补一条最小快照。
     fn mark_signed(&self, sign: &ActiveSign, via: &str) {
         let key = Self::snapshot_key(sign);
-        let now = crate::util::now();
+        let now = ru41::util::now();
         let result = match self.store.document(RECORD_KIND, &key) {
             Ok(Some(doc)) => {
                 let mut value = doc.value.clone();
@@ -213,7 +213,7 @@ impl TeachermateTracker {
             doc.map(|doc| {
                 let mut value = doc.value.clone();
                 value["auto_note"] = serde_json::json!(note);
-                value["auto_note_at"] = serde_json::json!(crate::util::now());
+                value["auto_note_at"] = serde_json::json!(ru41::util::now());
                 self.store
                     .put_document(RECORD_KIND, &key, Some(doc.revision), &value)
             })
@@ -232,8 +232,8 @@ impl TeachermateTracker {
     }
 
     pub async fn poll_once(&self) -> Result<TeachermatePollReport> {
-        let now = crate::util::now();
-        let today = crate::util::today_utc(now);
+        let now = ru41::util::now();
+        let today = ru41::util::today_utc(now);
 
         let signs = match self.client.active_signs().await? {
             SignsOutcome::Active(signs) => signs,
@@ -386,7 +386,7 @@ impl TeachermateTracker {
         let mut notified = false;
         if let Some(notifier) = &self.notifier {
             if !pending_lines.is_empty() {
-                let mut card = crate::util::msg::Card::new(format!(
+                let mut card = ru41::util::msg::Card::new(format!(
                     "✍️ 微助教签到（{} 个进行中）",
                     signs.len()
                 ));
@@ -397,13 +397,13 @@ impl TeachermateTracker {
                     card.hint("点下方按钮一键签到");
                 }
                 let message = card.build();
-                let mut markup = crate::ports::commands::ReplyMarkup::new();
+                let mut markup = ru41::ports::commands::ReplyMarkup::new();
                 markup.push_row(
                     pending_buttons
                         .iter()
                         .take(4)
                         .map(|(label, cmd)| {
-                            crate::ports::commands::MarkupButton::new(label.clone(), cmd.clone())
+                            ru41::ports::commands::MarkupButton::new(label.clone(), cmd.clone())
                         })
                         .collect(),
                 );
@@ -413,18 +413,18 @@ impl TeachermateTracker {
                 notified = true;
             }
             if !outcome_lines.is_empty() {
-                let mut card = crate::util::msg::Card::new("✅ 微助教签到回执");
+                let mut card = ru41::util::msg::Card::new("✅ 微助教签到回执");
                 for line in &outcome_lines {
                     card.raw(line);
                 }
                 let message = card.build();
-                let mut markup = crate::ports::commands::ReplyMarkup::new();
+                let mut markup = ru41::ports::commands::ReplyMarkup::new();
                 markup.push_row(
                     retry_buttons
                         .iter()
                         .take(4)
                         .map(|(label, cmd)| {
-                            crate::ports::commands::MarkupButton::new(label.clone(), cmd.clone())
+                            ru41::ports::commands::MarkupButton::new(label.clone(), cmd.clone())
                         })
                         .collect(),
                 );
@@ -446,7 +446,7 @@ impl TeachermateTracker {
     }
 }
 
-impl crate::ingress::schedule::PollJob for TeachermateTracker {
+impl ru41::ingress::schedule::PollJob for TeachermateTracker {
     fn job_interval(&self) -> std::time::Duration {
         std::time::Duration::from_secs(self.config.interval_secs)
     }

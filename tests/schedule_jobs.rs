@@ -21,7 +21,7 @@ fn registers_all_module_jobs() {
     // 整体插件化后：外部插件（papers/rss/competitions/youtube/...）经 .so 加载，
     // 不在本测试的注册表内；这里只断言内建模块。
     let jobs = scheduled_jobs(&load(""));
-    for name in ["chaoxing", "teachermate", "jwxt", "todo-remind"] {
+    for name in ["chaoxing", "jwxt", "todo-remind"] {
         assert!(jobs.iter().any(|j| j.name == name), "{name} missing");
     }
 }

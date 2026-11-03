@@ -58,6 +58,25 @@ for name in sorted(local_names, key=len, reverse=True):
     s = re.sub(rf'ru41::{name}\b', f'crate::{name}', s)
 lib.write_text(s)
 
+# 全量文件的模块级自引用还原（teachermate 试点发现）：
+# - 顶层模块（src/config.rs、src/service/ 等）在任何文件里都应指回 crate::
+# - 子目录文件里的兄弟模块引用（source/client.rs 的 super::model）被
+#   use super:: → use crate:: 误升格，按子目录成员表还原回 super::
+top_names = {p.stem for p in dst.glob('*.rs') if p.stem != 'lib'}
+top_names |= {p.name for p in dst.iterdir() if p.is_dir()}
+for p in dst.rglob('*.rs'):
+    if p == lib:
+        continue
+    s = p.read_text()
+    for name in sorted(top_names, key=len, reverse=True):
+        s = re.sub(rf'ru41::{name}\b', f'crate::{name}', s)
+    if p.parent != dst:
+        siblings = {q.stem for q in p.parent.glob('*.rs') if q.stem not in ('mod', p.stem)}
+        siblings |= {q.name for q in p.parent.iterdir() if q.is_dir()}
+        for name in sorted(siblings, key=len, reverse=True):
+            s = re.sub(rf'use crate::{name}\b', f'use super::{name}', s)
+    p.write_text(s)
+
 # 入口函数附加到 lib.rs
 lib = dst / 'lib.rs'
 s = lib.read_text()
