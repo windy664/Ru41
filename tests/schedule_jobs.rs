@@ -7,44 +7,14 @@ fn load(toml: &str) -> Config {
     Config::load_from(None, cwd.path(), None).unwrap().0
 }
 
-fn job<'a>(
-    jobs: &'a [ru41::ingress::schedule::ScheduledJob],
-    name: &str,
-) -> &'a ru41::ingress::schedule::ScheduledJob {
-    jobs.iter()
-        .find(|j| j.name == name)
-        .unwrap_or_else(|| panic!("job {name} not registered"))
-}
-
+/// 全部附属插件化后内建注册表为空：schedule list 优雅返回空列表、不 panic。
+/// 插件侧的 job 注册由各自 DEF（如 planner 的 todo-remind）在加载 .so 后提供，
+/// 见 plugins/planner 的测试与端到端验证。
 #[test]
-fn registers_planner_jobs() {
-    // 整体插件化后：外部插件（jwxt/papers/rss/...）经 .so 加载，不在本测试的
-    // 注册表内；内建模块只剩 planner 的 todo-remind。
+fn empty_builtin_registry_is_graceful() {
     let jobs = scheduled_jobs(&load(""));
-    assert!(jobs.iter().any(|j| j.name == "todo-remind"), "todo-remind missing");
-}
-
-#[test]
-fn reports_disabled_without_config() {
-    let jobs = scheduled_jobs(&load(""));
-    assert!(!job(&jobs, "todo-remind").enabled);
-    assert!(job(&jobs, "todo-remind").notes.is_some());
-}
-
-#[test]
-fn flips_enabled_when_configured() {
-    let config = load(
-        "[notify]\nchannel = \"qq\"\n[channel.qq]\ndefault_notify_target = \"user:U1\"\n",
+    assert!(
+        jobs.is_empty(),
+        "内建模块应已全部插件化，空配置下不应有任何内建 job"
     );
-    let jobs = scheduled_jobs(&config);
-    assert!(job(&jobs, "todo-remind").enabled);
-}
-
-#[test]
-fn exposes_poll_and_run_commands() {
-    let jobs = scheduled_jobs(&load(""));
-    let remind = job(&jobs, "todo-remind");
-    assert_eq!(remind.poll_command, "todo remind --once");
-    assert_eq!(remind.run_command, "todo remind");
-    assert_eq!(remind.module, "planner");
 }

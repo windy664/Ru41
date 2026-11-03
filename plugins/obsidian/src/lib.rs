@@ -3,23 +3,22 @@
 
 pub mod qq_command;
 
-use crate::app::obsidian::ObsidianSectionExt;
+use ru41::app::obsidian::ObsidianSectionExt;
 pub use qq_command::ObsidianQqCommand;
 
 /// 注册表定义：obsidian 同步服务（含知识库索引挂载）与 /记一下 命令闭环。
-#[linkme::distributed_slice(super::MODULES)]
-pub static DEF: super::ModuleDef = super::ModuleDef {
+pub static DEF: ru41::modules::ModuleDef = ru41::modules::ModuleDef {
     name: "obsidian",
-    priority: super::DEFAULT_PRIORITY,
+    priority: ru41::modules::DEFAULT_PRIORITY,
     config_key: None,
     schedule: |config| {
         let ready = config.obsidian.is_ready();
-        vec![super::JobSchedule::simple(
+        vec![ru41::modules::JobSchedule::simple(
             "obsidian",
             config
                 .obsidian
                 .interval_secs
-                .unwrap_or(crate::bootstrap::config::ObsidianSection::DEFAULT_INTERVAL_SECS),
+                .unwrap_or(ru41::bootstrap::config::ObsidianSection::DEFAULT_INTERVAL_SECS),
             ready,
             (!ready).then(|| "需 [obsidian] vault_path 已配置".into()),
         )]
@@ -29,22 +28,22 @@ pub static DEF: super::ModuleDef = super::ModuleDef {
             return Ok(None);
         }
         let obsidian = &config.obsidian;
-        let route = crate::bootstrap::assembly::source_notify(config, obsidian.notify)?;
+        let route = ru41::bootstrap::assembly::source_notify(config, obsidian.notify)?;
         let notifier = match &route {
-            Some(route) => Some(crate::bootstrap::assembly::default_notifier(
+            Some(route) => Some(ru41::bootstrap::assembly::default_notifier(
                 config,
                 &route.channel,
             )?),
             None => None,
         };
         let resolved = obsidian.resolved(route)?;
-        let service = crate::app::obsidian::ObsidianService::new(
+        let service = ru41::app::obsidian::ObsidianService::new(
             store,
-            crate::bootstrap::assembly::vault_client(&resolved),
+            ru41::bootstrap::assembly::vault_client(&resolved),
             notifier,
             resolved,
         );
-        let service = match crate::bootstrap::assembly::knowledge_service(config)? {
+        let service = match ru41::bootstrap::assembly::knowledge_service(config)? {
             Some(knowledge) => service.with_knowledge(knowledge),
             None => service,
         };
@@ -62,11 +61,20 @@ pub static DEF: super::ModuleDef = super::ModuleDef {
         }
         let resolved = config.obsidian.resolved(None)?;
         Ok(vec![std::sync::Arc::new(ObsidianQqCommand::new(
-            crate::bootstrap::assembly::vault_client(&resolved),
+            ru41::bootstrap::assembly::vault_client(&resolved),
             resolved.inbox_dir.clone(),
             config.todo.options()?.offset_seconds,
         ))])
     },
-    image_consumers: super::no_image_consumers,
-    cli: super::no_cli,
+    image_consumers: ru41::modules::no_image_consumers,
+    cli: ru41::modules::no_cli,
 };
+
+/// 宿主加载入口（插件不用 linkme，走显式注册）。
+/// feature 门控：被其他插件依赖时不导出，编 .so 必须 --features plugin-entry。
+#[cfg(feature = "plugin-entry")]
+#[allow(improper_ctypes_definitions)]
+#[unsafe(no_mangle)]
+pub extern "C" fn ru41_plugin_entry() -> ru41::plugins::PluginEntry {
+    ru41::plugins::PluginEntry::new("obsidian", || DEF)
+}

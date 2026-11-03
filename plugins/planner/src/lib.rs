@@ -2,20 +2,19 @@ pub mod qq_command;
 pub use qq_command::TodoQqCommand;
 
 /// 注册表定义：todo-remind 调度（CLI `todo remind` 驱动，无 schedule run 装配）与 /待办 命令。
-#[linkme::distributed_slice(super::MODULES)]
-pub static DEF: super::ModuleDef = super::ModuleDef {
+pub static DEF: ru41::modules::ModuleDef = ru41::modules::ModuleDef {
     name: "planner",
-    priority: super::DEFAULT_PRIORITY,
+    priority: ru41::modules::DEFAULT_PRIORITY,
     config_key: None,
     schedule: |config| {
-        let todo_route_ready = crate::bootstrap::assembly::default_notify_route(config)
+        let todo_route_ready = ru41::bootstrap::assembly::default_notify_route(config)
             .ok()
             .flatten()
             .is_some();
-        vec![super::JobSchedule {
+        vec![ru41::modules::JobSchedule {
             poll_command: Some("todo remind --once"),
             run_command: Some("todo remind"),
-            ..super::JobSchedule::simple(
+            ..ru41::modules::JobSchedule::simple(
                 "todo-remind",
                 60,
                 todo_route_ready,
@@ -46,6 +45,15 @@ pub static DEF: super::ModuleDef = super::ModuleDef {
             jwxt_semester_start,
         ))])
     },
-    image_consumers: super::no_image_consumers,
-    cli: super::no_cli,
+    image_consumers: ru41::modules::no_image_consumers,
+    cli: ru41::modules::no_cli,
 };
+
+/// 宿主加载入口（插件不用 linkme，走显式注册）。
+/// feature 门控：被其他插件依赖时不导出，编 .so 必须 --features plugin-entry。
+#[cfg(feature = "plugin-entry")]
+#[allow(improper_ctypes_definitions)]
+#[unsafe(no_mangle)]
+pub extern "C" fn ru41_plugin_entry() -> ru41::plugins::PluginEntry {
+    ru41::plugins::PluginEntry::new("planner", || DEF)
+}

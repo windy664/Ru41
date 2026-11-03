@@ -1,4 +1,4 @@
-use crate::{
+use ru41::{
     app::obsidian::append_quick_note,
     ports::{
         commands::{CommandContext, CommandHandler, Reply},
@@ -74,7 +74,7 @@ impl ObsidianQqCommand {
                 self.vault.as_ref(),
                 &self.inbox_dir,
                 content,
-                crate::util::now(),
+                ru41::util::now(),
                 self.offset_seconds,
             )?;
             Ok(Some(Reply::text(format!(

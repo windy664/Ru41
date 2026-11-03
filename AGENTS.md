@@ -11,6 +11,8 @@ ru41 是一个 Rust 个人助理运行时：核心任务调度器（SQLite/Postg
 
 ```
 src/           核心：domain/ ports/ app/ runtime/ privacy/ adapters/ ingress/http/
+               （src/modules/ 已于 2026-11-03 全部插件化清空，只剩注册表空壳；
+                 跨附属数据契约住 domain/，如 domain/timetable.rs 课表快照）
 plugins/<名>/  附属插件，独立 crate（各自 Cargo.toml + Cargo.lock）
 docs/          设计文档（plugin-development.md、core-status.md、sources-*.md …）
 deploy/        Dockerfile / 部署脚本
