@@ -183,7 +183,7 @@ fn bound_user_aggregates_across_conversations_in_c2c() {
 #[tokio::test]
 async fn todo_commands_add_list_and_complete_in_private_chat() {
     let fixture = fixture();
-    let command = TodoQqCommand::new(ru41::domain::todo::TodoOptions::default());
+    let command = TodoQqCommand::new(ru41::domain::todo::TodoOptions::default(), None);
     let context = ctx(&fixture, "user:U1", "U1", true);
 
     let unbound = command
@@ -236,7 +236,7 @@ async fn todo_commands_add_list_and_complete_in_private_chat() {
 #[tokio::test]
 async fn todo_commands_reject_group_chat_and_parse_views() {
     let fixture = fixture();
-    let command = TodoQqCommand::new(ru41::domain::todo::TodoOptions::default());
+    let command = TodoQqCommand::new(ru41::domain::todo::TodoOptions::default(), None);
     let private = ctx(&fixture, "user:U1", "U1", true);
     commands::execute(&Command::Bind("s3cret".into()), &private).unwrap();
     command
@@ -269,7 +269,7 @@ async fn todo_commands_reject_group_chat_and_parse_views() {
 
 #[test]
 fn extension_commands_match_aliases_and_join_help() {
-    let todo = TodoQqCommand::new(ru41::domain::todo::TodoOptions::default());
+    let todo = TodoQqCommand::new(ru41::domain::todo::TodoOptions::default(), None);
     for verb in ["待办", "记待办", "完成", "推迟", "取消待办", "恢复待办"] {
         assert!(todo.matches(verb));
     }

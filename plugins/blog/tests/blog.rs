@@ -181,6 +181,44 @@ async fn publishes_published_dir_post_end_to_end() {
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn content_change_republishes_same_path() {
+    let fx = Fx::new();
+    let tracker = fx.tracker();
+    fx.push_published("改标题的文章.md", POST);
+
+    let report = tracker.poll_once().await.unwrap();
+    assert_eq!(report.published, 1);
+
+    // 同一路径内容变化（改标题/改正文）必须重新发布，不能被 done 键挡掉。
+    fx.push_published(
+        "改标题的文章.md",
+        &POST.replace("title: 测试文章", "title: 改后的标题"),
+    );
+    let report = tracker.poll_once().await.unwrap();
+    assert_eq!(report.action, "published", "内容变化应重新发布");
+    assert_eq!(report.published, 1);
+
+    let blog_seed = fx._dir.path().join("blog-seed");
+    git(&blog_seed, &["fetch", "origin"]);
+    let diff = git(&blog_seed, &["show", "--format=", "origin/master"]);
+    assert!(diff.contains("改后的标题"), "{diff}");
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn block_list_frontmatter_publishes() {
+    let fx = Fx::new();
+    let tracker = fx.tracker();
+    // Obsidian 常见的 YAML 块列表写法，此前会被极简解析器误判 categories 为空而拒绝。
+    let post = "---\ntitle: 块列表文章\ndate: 2026-10-19 20:00:00\ntags:\n  - 测试\n  - YAML\ncategories:\n  - 踩坑\n---\n\n正文。\n";
+    fx.push_published("块列表文章.md", post);
+
+    let report = tracker.poll_once().await.unwrap();
+    assert_eq!(report.action, "published", "块列表 frontmatter 应正常发布");
+    assert_eq!(report.published, 1);
+    assert_eq!(report.rejected, 0);
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn rejects_invalid_frontmatter_without_blocking_others() {
     let fx = Fx::new();
     let tracker = fx.tracker();
