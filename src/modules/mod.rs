@@ -4,7 +4,6 @@
 //! ModuleDef/JobSchedule 等边界类型定义在 ru41-plugin-api（宿主与插件
 //! 同一份），本文件保持原路径并持有宿主侧注册表。
 
-
 pub use ru41_plugin_api::module::*;
 
 /// 分布式注册表：各模块在自己的 mod.rs 里用
