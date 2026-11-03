@@ -3,10 +3,10 @@ use ru41::{
     app::task::TaskService,
     channels::qq::commands::{self, Command},
     domain::{NotifyRoute, TaskStatus},
-    modules::planner::TodoQqCommand,
     ports::commands::{CommandContext, CommandHandler},
     ports::storage::TaskStore,
 };
+use ru41_plugin_planner::TodoQqCommand;
 use std::sync::Arc;
 
 #[test]

@@ -87,6 +87,12 @@ cp target-docker/release/libru41_plugin_foo.so <服务器>:/etc/ru41/plugins/
 | youtube | `plugins/youtube/` | YouTube 英语预习：频道轮询 + `/英语` QQ 命令 + `ru41 youtube prep` 专属 CLI（cli 钩子的参考实现） |
 | teachermate | `plugins/teachermate/` | 微助教：openid 直连签到监控 + 作业提醒 + `ru41 teachermate work/bind/sign` 专属 CLI（cli 钩子多子命令参考实现） |
 | chaoxing | `plugins/chaoxing/` | 学习通：签到监控（全类型 sign + 二维码照片消费者）+ 作业提醒 + `ru41 chaoxing work/sign` 专属 CLI（image_consumers 接线测试被 DEF 直调钉住） |
+| jwxt | `plugins/jwxt/` | 教务课表：CAS 登录 + 变更检测 + 明日课表提醒 + `ru41 jwxt classes/login` 专属 CLI（fixtures 自包含） |
+| planner | `plugins/planner/` | 日程：todo-remind job + `/日程` `/待办` QQ 命令（读 domain::timetable 课表契约，最小 JwxtSemesterRef 取学期起点） |
+| obsidian | `plugins/obsidian/` | Obsidian 同步入口：vault 同步 job + `/记一下` 快记（业务服务在核心 app::obsidian，本插件只是 DEF+命令装配） |
+
+**至此 src/modules/ 清空**（2026-11-03）：所有附属插件化完成，内建注册表只剩空壳，
+`/日程` 合并课表走 `ru41::domain::timetable` 数据契约，不依赖任何插件代码。
 
 ## 本地开发与测试
 
@@ -188,8 +194,11 @@ bump `crates/ru41-plugin-api/Cargo.toml` 的 version，全部插件需重编；
 6. **ABI 门**：改了 ru41-plugin-api 任何公开项 → bump 它的 `version`
    （旧 .so 会被握手正确拒载，部署时随镜像全量重编，无需手动）。
 7. **验证顺序**：`cd plugins/<m> && cargo test` → 根 `cargo test`
-   → `cargo build --release --features plugin-entry` 后 `nm -D` 看 `ru41_plugin_entry`
-   → 临时配置 `[plugins] dir = "plugins/target-plugins/release"` 跑
+   → `cd plugins/<m> && cargo build --release --features plugin-entry` 后 `nm -D` 看
+   `ru41_plugin_entry` → 临时配置 `[plugins] dir = "plugins/target-plugins/release"` 跑
    `schedule list`（看到本插件 job + 旧 .so 被拒日志）与 `ru41 <m> <cmd>` 端到端。
+   ⚠️ 编插件必须 cd 进插件目录（或显式 `CARGO_TARGET_DIR=plugins/target-plugins`）：
+   `--manifest-path` 从外部调用时 cargo 发现不了 `plugins/.cargo/config.toml`，
+   会把产物散进 `plugins/<m>/target/`（共享缓存失效 + 重蹈每插件 target 覆辙）。
 8. **部署**：正常发版不用手动编 .so——镜像 CI 的 plugins stage 全量重编；
    热更才 scp 单个 .so + 重启对应容器。

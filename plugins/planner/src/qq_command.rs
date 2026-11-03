@@ -1,4 +1,4 @@
-use crate::{
+use ru41::{
     app::{schedule::ScheduleService, todo::TodoService},
     domain::{
         schedule::{EventInput, EventSource, event_time_label, parse_event_when},
@@ -90,7 +90,7 @@ impl CommandHandler for TodoQqCommand {
                 return Ok(Some(Reply::text(reply)));
             }
             let service = self.service(ctx.store);
-            let now = crate::util::now();
+            let now = ru41::util::now();
             let reply = match verb {
                 "待办" | "todo" => {
                     self.list_reply(&service, &self.event_service(ctx.store), arg, now)?
@@ -302,9 +302,9 @@ impl TodoQqCommand {
             }
         }
         // 同一窗口的课表并入同一条时间轴（来自 jwxt 缓存快照，只读不触网）。
-        let today = crate::domain::schedule::local_date(now, self.options.offset_seconds)
+        let today = ru41::domain::schedule::local_date(now, self.options.offset_seconds)
             .unwrap_or_else(|| chrono::Local::now().date_naive());
-        let courses = crate::domain::timetable::courses_summary_from_store(
+        let courses = ru41::domain::timetable::courses_summary_from_store(
             store,
             self.jwxt_semester_start,
             today,
@@ -346,7 +346,7 @@ fn split_when_and_title(
     arg: &str,
     now: i64,
     options: TodoOptions,
-) -> Option<(i64, i64, crate::domain::schedule::EventRecurrence, String)> {
+) -> Option<(i64, i64, ru41::domain::schedule::EventRecurrence, String)> {
     let parts: Vec<&str> = arg.split_whitespace().collect();
     for end in 1..=parts.len().min(3) {
         let candidate = parts[..end].join(" ");
@@ -420,8 +420,8 @@ fn split_selector_and_time(arg: &str) -> Option<(&str, &str)> {
 }
 
 fn format_overview(
-    overview: &crate::domain::todo::TodoOverview,
-    today_events: &[crate::domain::schedule::EventOccurrence],
+    overview: &ru41::domain::todo::TodoOverview,
+    today_events: &[ru41::domain::schedule::EventOccurrence],
     now: i64,
     options: TodoOptions,
 ) -> String {

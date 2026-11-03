@@ -248,7 +248,9 @@ impl EventItem {
     }
 }
 
-pub(crate) fn local_date(timestamp: i64, offset_seconds: i32) -> Option<NaiveDate> {
+/// 本地日期：时间戳 + 时区偏移（秒）→ NaiveDate；非法输入返回 None。
+/// pub 是因为 planner 插件的 /日程 合并视图也按它换算日期（原为 pub(crate)）。
+pub fn local_date(timestamp: i64, offset_seconds: i32) -> Option<NaiveDate> {
     let offset = FixedOffset::east_opt(offset_seconds)?;
     DateTime::from_timestamp(timestamp, 0).map(|utc| utc.with_timezone(&offset).date_naive())
 }
