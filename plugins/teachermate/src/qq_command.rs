@@ -70,7 +70,7 @@ impl CommandHandler for TeachermateQqCommand {
             let masked = format!("…{}", &openid[openid.len().saturating_sub(4)..]);
             let stamp = self.file_stamp().unwrap_or_else(|| "未知".to_owned());
             let client = TeachermateClient::new(openid);
-            let health = match client.role().await {
+            let health = match ru41::plugins::bridge(async move { client.role().await }).await {
                 Ok(roles) => roles
                     .first()
                     .and_then(|r| r.college_name.clone())
@@ -107,7 +107,7 @@ impl CommandHandler for TeachermateQqCommand {
             };
             // 先验证后落盘：坏凭证不写入，避免“已绑定但失效”的假状态
             let client = TeachermateClient::new(openid.clone());
-            let identity = match client.role().await {
+            let identity = match ru41::plugins::bridge(async move { client.role().await }).await {
                 Ok(roles) => roles
                     .first()
                     .map(|r| {

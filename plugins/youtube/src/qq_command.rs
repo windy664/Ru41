@@ -86,16 +86,26 @@ impl CommandHandler for YoutubeQqCommand {
                 return Ok(None);
             };
             let route = ctx.reply_route();
-            prep_video_task(
-                ctx.store,
-                &self.client,
-                &video_id,
-                &self.interests,
-                &self.level,
-                self.max_transcript_chars,
-                &self.backend,
-                Some(&route),
-            )
+            // ⚠️ 触网（yt-dlp）必须过 bridge：插件 tokio reactor 与宿主不通用。
+            let store = ctx.store.clone();
+            let client = self.client.clone();
+            let interests = self.interests.clone();
+            let level = self.level.clone();
+            let backend = self.backend.clone();
+            let max_transcript_chars = self.max_transcript_chars;
+            ru41::plugins::bridge(async move {
+                prep_video_task(
+                    &store,
+                    &client,
+                    &video_id,
+                    &interests,
+                    &level,
+                    max_transcript_chars,
+                    &backend,
+                    Some(&route),
+                )
+                .await
+            })
             .await
             .map(Reply::text)
             .map(Some)
