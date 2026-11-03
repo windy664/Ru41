@@ -103,7 +103,8 @@ fn looks_like_schedule(text: &str) -> bool {
 
 /// 标题：时间锚点之前最近的「通知」行；否则最近含《》的行（讲座/活动名常在
 /// 书名号里）；再否则最近的非空、非「1、」式条目行（条目行是字段不是标题）。
-/// 清理：去前导 emoji/符号、去「关于」前缀、去「的通知/补充通知/通知」后缀。
+/// 每个候选经 clean_title 清理后仍为空壳（如光秃秃的「通知📢」头行）就让位
+/// 给下一优先级候选——真正的事件名常在头行下面一行。
 fn find_title(lines: &[&str], anchor_idx: usize) -> Option<String> {
     let candidates = &lines[..anchor_idx];
     let is_detail_line = |l: &&str| {
@@ -114,30 +115,40 @@ fn find_title(lines: &[&str], anchor_idx: usize) -> Option<String> {
             None => false,
         }
     };
-    let pick = candidates
-        .iter()
-        .rposition(|l| l.contains("通知"))
-        .or_else(|| candidates.iter().rposition(|l| l.contains('《')))
-        .or_else(|| {
-            candidates
-                .iter()
-                .rposition(|l| !l.trim().is_empty() && !is_detail_line(l))
-        })
-        .or_else(|| candidates.iter().rposition(|l| !l.trim().is_empty()))?;
-    let raw = candidates[pick];
-    // 书名号内容优先作标题（剥掉「（二）xx学院承办的」这类前缀）
+    let picks = [
+        candidates.iter().rposition(|l| l.contains("通知")),
+        candidates.iter().rposition(|l| l.contains('《')),
+        candidates
+            .iter()
+            .rposition(|l| !l.trim().is_empty() && !is_detail_line(l)),
+        candidates.iter().rposition(|l| !l.trim().is_empty()),
+    ];
+    picks
+        .into_iter()
+        .flatten()
+        .find_map(|pick| clean_title(candidates[pick]))
+}
+
+/// 清理一行为标题：书名号内容优先（剥掉「（二）xx学院承办的」这类前缀）；
+/// 否则去首尾 emoji/符号、去「关于/通知：」前缀、去「的通知/补充通知/通知」后缀。
+/// 清理后为空返回 None（纯头行，没有实际事件名）。
+fn clean_title(raw: &str) -> Option<String> {
     if let Some(inner) = raw.split('《').nth(1).and_then(|s| s.split('》').next()) {
         let inner = inner.trim();
         if !inner.is_empty() {
             return Some(inner.chars().take(40).collect());
         }
     }
-    // 前导 emoji/符号剥掉；char::is_alphanumeric 对 CJK 已为真，无需单独判断。
+    // 首尾 emoji/符号剥掉；char::is_alphanumeric 对 CJK 已为真，无需单独判断。
     let stripped: String = raw.chars().skip_while(|c| !c.is_alphanumeric()).collect();
+    let stripped = stripped.trim_end_matches(|c: char| !c.is_alphanumeric());
     let stripped = stripped
         .trim_start_matches("关于")
+        .trim_start_matches("通知")
+        .trim_start_matches(['：', ':', ' '])
         .trim_end_matches("的补充通知")
         .trim_end_matches("通知")
+        .trim_end_matches(|c: char| !c.is_alphanumeric())
         .trim();
     if stripped.is_empty() {
         return None;
@@ -208,6 +219,19 @@ mod tests {
         assert!(extract_notices("我下午有没有课").is_empty());
         assert!(extract_notices("今天天气怎么样").is_empty());
         assert!(extract_notices("通知你一下，记得带钥匙").is_empty());
+    }
+
+    /// 回归（2026-11-03 真实错识别）：光秃秃的「通知📢」头行被当成标题，
+    /// 真正的事件名「知识问答➕生日会」在第二行。空壳头行应让位给下一候选。
+    #[test]
+    fn 裸通知头行让位给事件名() {
+        let msg = "通知📢\n知识问答➕生日会\n时间：11.3周二19:30～21:00\n地点：A101\n大家不要迟到和缺席 到时有签到打卡‼️";
+        let notices = extract_notices(msg);
+        assert_eq!(notices.len(), 1);
+        let n = &notices[0];
+        assert_eq!(n.title, "知识问答➕生日会");
+        assert_eq!(n.when_text, "11-3 19:30~21:00");
+        assert_eq!(n.location.as_deref(), Some("A101"));
     }
 
     /// 回归（2026-10-30 真实漏识别）：讲座通知没有「通知」字样、正文有换行续行，
