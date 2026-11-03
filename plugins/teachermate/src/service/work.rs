@@ -3,13 +3,11 @@
 //! 快照字段名（course/title/status/end_at）刻意对齐，跨平台作业总表直接聚合约。
 //! 红线：作业只做提醒/跟踪/归档，不做自动作答（自动答题=代写）。
 
-use crate::app::homework_work::{self as work_common, WorkNoteItem};
-use crate::app::todo::TodoService;
-use crate::modules::teachermate::config::TeachermateConfig;
-use crate::modules::teachermate::source::{
-    CourseHomework, Homework, TeachermateClient, homework_status_open,
-};
-use crate::ports::{channel::NotifyChannel, storage::TaskStore, vault::Vault};
+use crate::config::TeachermateConfig;
+use crate::source::{CourseHomework, Homework, TeachermateClient, homework_status_open};
+use ru41::app::homework_work::{self as work_common, WorkNoteItem};
+use ru41::app::todo::TodoService;
+use ru41::ports::{channel::NotifyChannel, storage::TaskStore, vault::Vault};
 use anyhow::Result;
 use serde::Serialize;
 use std::sync::Arc;
@@ -63,7 +61,7 @@ impl TeachermateWorkTracker {
         client: TeachermateClient,
         notifier: Option<Arc<dyn NotifyChannel>>,
         config: TeachermateConfig,
-        todo_options: crate::domain::todo::TodoOptions,
+        todo_options: ru41::domain::todo::TodoOptions,
         vault: Option<Arc<dyn Vault>>,
     ) -> Self {
         Self {
@@ -77,9 +75,9 @@ impl TeachermateWorkTracker {
     }
 
     pub async fn poll_once(&self) -> Result<TeachermateWorkPollReport> {
-        use crate::domain::todo::{TodoInput, TodoPriority, TodoSource};
-        let now = crate::util::now();
-        let today = crate::util::today_utc(now);
+        use ru41::domain::todo::{TodoInput, TodoPriority, TodoSource};
+        let now = ru41::util::now();
+        let today = ru41::util::today_utc(now);
         let offset = self.todos.options().offset_seconds;
 
         let courses = match self.client.homework_courses().await {
@@ -452,7 +450,7 @@ impl TeachermateWorkTracker {
             for (work, deadline) in items {
                 // substantive 策略：作业说明不含正文，只为未交作业建目录；
                 // 已交作业的空壳目录纯属噪音，索引里降级为纯文本行。
-                if dirs == crate::ports::vault::VaultTaskDirs::Substantive && !work.is_open() {
+                if dirs == ru41::ports::vault::VaultTaskDirs::Substantive && !work.is_open() {
                     continue;
                 }
                 let folder = work_common::work_folder_name(
@@ -512,7 +510,7 @@ fn deadline_ts(raw: &str, offset_seconds: i32) -> Option<i64> {
     })
 }
 
-impl crate::ingress::schedule::PollJob for TeachermateWorkTracker {
+impl ru41::ingress::schedule::PollJob for TeachermateWorkTracker {
     fn job_interval(&self) -> std::time::Duration {
         std::time::Duration::from_secs(self.config.work_poll_secs)
     }

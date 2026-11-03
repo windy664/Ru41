@@ -2,10 +2,8 @@
 //! （openid 落盘为文件，轮询客户端每请求热加载，无需重启容器）；
 //! `/微助教` 查看绑定与存活状态。写入凭证要求单聊 + 已绑定身份。
 
-use crate::{
-    modules::teachermate::{config::extract_openid, source::TeachermateClient},
-    ports::commands::{CommandContext, CommandHandler, Reply},
-};
+use crate::{config::extract_openid, source::TeachermateClient};
+use ru41::ports::commands::{CommandContext, CommandHandler, Reply};
 use anyhow::Result;
 use std::{future::Future, path::PathBuf, pin::Pin, time::UNIX_EPOCH};
 

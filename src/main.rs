@@ -14,7 +14,7 @@ use ru41::{
     domain::todo::{TodoInput, parse_due},
     ingress::cli::{
         ChaoxingCommand, Cli, Command, EventCommand, JwxtCommand, KnowledgeCommand, QqCommand,
-        ScheduleCommand, TaskCommand, TeachermateCommand, TodoCommand, TrackerCommand,
+        ScheduleCommand, TaskCommand, TodoCommand, TrackerCommand,
     },
     ingress::cli_ops,
     privacy::{NoopSanitizer, RandomSanitizer, Sanitizer},
@@ -301,34 +301,6 @@ async fn main() -> Result<()> {
                         )
                         .await?,
                 )?
-            }
-        },
-        Command::Teachermate { command } => match command {
-            TeachermateCommand::Poll => tracker_or_exit(
-                tracker_cli("teachermate", TrackerCommand::Poll, &config, &store_config).await?,
-            )?,
-            TeachermateCommand::Run => {
-                tracker_cli("teachermate", TrackerCommand::Run, &config, &store_config).await?;
-                return Ok(());
-            }
-            TeachermateCommand::Work => {
-                let tracker = ru41::modules::teachermate::build_work_tracker(
-                    &config,
-                    open_store(&store_config)?,
-                )?;
-                serde_json::to_value(tracker.poll_once().await?)?
-            }
-            TeachermateCommand::Bind { link } => {
-                let openid_path = config
-                    .sources
-                    .get::<ru41::modules::teachermate::TeachermateSection>("teachermate")?
-                    .openid_path_or_default();
-                ru41::modules::teachermate::cli::bind_json(&link, &openid_path).await?
-            }
-            TeachermateCommand::Sign { sign_id, lat, lon } => {
-                let tracker =
-                    ru41::modules::teachermate::build_tracker(&config, open_store(&store_config)?)?;
-                serde_json::to_value(tracker.sign_manual(sign_id, lat, lon).await?)?
             }
         },
         Command::Jwxt { command } => match command {

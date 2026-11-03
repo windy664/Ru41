@@ -1,7 +1,7 @@
 //! 微助教 CLI 专属处理（main.rs 只做参数路由，模块内部细节不放核心入口）。
 
-use super::config::extract_openid;
-use super::source::TeachermateClient;
+use crate::config::extract_openid;
+use crate::source::TeachermateClient;
 use anyhow::{Context, Result};
 
 /// bind：从粘贴内容提取 openid → 原子写入 openid_path → 探测学籍验证。

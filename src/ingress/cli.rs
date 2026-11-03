@@ -97,18 +97,13 @@ pub enum Command {
         #[command(subcommand)]
         command: ChaoxingCommand,
     },
-    /// 微助教签到监控：服务号 openid 直连，检测待签活动并提醒，支持手动签到。
-    Teachermate {
-        #[command(subcommand)]
-        command: TeachermateCommand,
-    },
     /// 教务课表监控：CAS 单点登录拉课表，变更检测与明日课表提醒。
     Jwxt {
         #[command(subcommand)]
         command: JwxtCommand,
     },
     /// 附属通用入口：`ru41 <模块名> poll|run|<专属子命令>`（模块名见 `schedule list`；
-    /// 有专属子命令的模块如 chaoxing/teachermate/jwxt 在上方独立变体，其余走各模块 cli 钩子）。
+    /// 有专属子命令的模块如 chaoxing/jwxt 在上方独立变体，其余走各模块 cli 钩子）。
     #[command(external_subcommand)]
     Tracker(Vec<String>),
     /// 定时任务注册表：统一查看和运行各附属的轮询任务。
@@ -206,32 +201,6 @@ pub enum ChaoxingCommand {
         /// 拍照签到照片路径（缺省用配置 photo_path，再缺省用内置照片）。
         #[arg(long)]
         photo: Option<String>,
-    },
-}
-
-#[derive(Subcommand)]
-pub enum TeachermateCommand {
-    /// 采集一轮待签列表并按需提醒/自动签（适合系统 cron 调用）。
-    Poll,
-    /// 常驻运行，按 sources.teachermate.interval_secs 周期轮询。
-    Run,
-    /// 采集一轮作业清单并按状态提醒（低频，独立于签到轮询）。
-    Work,
-    /// 投喂 openid：从服务号链接或裸 openid 提取、落盘并验证学籍。
-    Bind {
-        /// 微信里复制的微助教链接（含 openid=）或 32 位 openid 本身。
-        link: String,
-    },
-    /// 手动签到一个进行中的签到活动（普通/GPS；二维码需微信现场扫）。
-    Sign {
-        /// 签到活动 ID（poll 提醒里带的 id）。
-        sign_id: i64,
-        /// 位置签到纬度（缺省用配置 default_lat）。
-        #[arg(long)]
-        lat: Option<f64>,
-        /// 位置签到经度（缺省用配置 default_lon）。
-        #[arg(long)]
-        lon: Option<f64>,
     },
 }
 
