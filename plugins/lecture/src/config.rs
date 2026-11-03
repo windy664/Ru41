@@ -28,7 +28,7 @@ pub struct LectureSection {
     /// 工作目录（原始文件/切片落盘处），默认 /data/lecture。
     pub workspace: Option<String>,
     /// Vault 内课程根目录（相对路径），默认 01-Courses-课程；
-    /// 整理笔记存 `{vault_dir}/{课程}/笔记/`（转写是临时产物，不入 Vault）。
+    /// 整理笔记存 `{vault_dir}/{课程}/课堂笔记.md`（转写是临时产物，不入 Vault）。
     pub vault_dir: Option<String>,
     /// 未匹配到当天课时，转写归入的课程名，默认 课堂录音。
     pub fallback_course: Option<String>,
