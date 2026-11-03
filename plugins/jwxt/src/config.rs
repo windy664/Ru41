@@ -2,8 +2,8 @@ use anyhow::{Context, Result};
 use chrono::NaiveDate;
 use serde::Deserialize;
 
-use super::service::JwxtConfig;
-use crate::domain::timetable::SectionClock;
+use crate::service::JwxtConfig;
+use ru41::domain::timetable::SectionClock;
 
 /// 教务课表监控配置；jwxt poll/run/login 使用。协议见 docs/jwxt-recon.md。
 #[derive(Debug, Default, Deserialize)]

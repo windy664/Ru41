@@ -1,12 +1,12 @@
-use crate::domain::timetable::*;
-use crate::ports::{channel::NotifyChannel, storage::TaskStore};
+use ru41::domain::timetable::*;
+use ru41::ports::{channel::NotifyChannel, storage::TaskStore};
 use anyhow::Result;
-use chrono::{Datelike, Duration, NaiveDate, TimeZone, Timelike};
+use chrono::{Duration, NaiveDate, TimeZone, Timelike};
 use serde::Serialize;
 use std::collections::HashSet;
 use std::sync::Arc;
 
-use super::source::{JwxtClient, JwxtError};
+use crate::source::{JwxtClient, JwxtError};
 
 /// 教务课表监控配置（对应配置文件的 [sources.jwxt]）。
 #[derive(Debug, Clone)]
@@ -128,8 +128,8 @@ impl JwxtTracker {
     /// 其余故障静默重试，恢复时由 mark_login_state 报一次自愈。
     async fn alert_login_failure(&self, err: &JwxtError, term_key: &str) -> Result<bool> {
         const ALERT_AFTER_DAYS: i64 = 3;
-        let now = crate::util::now();
-        let today = crate::util::today_utc(now);
+        let now = ru41::util::now();
+        let today = ru41::util::today_utc(now);
         // 连续失败天数按天累计（同日多次轮询只算一次）。
         let streak_doc = self.store.document("jwxt_alert", "login_streak")?;
         let (mut days, last_date) = streak_doc
@@ -206,7 +206,7 @@ impl JwxtTracker {
             "jwxt_alert",
             "login_status",
             doc.as_ref().map(|d| d.revision),
-            &serde_json::json!({ "failed": failed, "ts": crate::util::now() }),
+            &serde_json::json!({ "failed": failed, "ts": ru41::util::now() }),
         )?;
         if failed || !was_failed {
             return Ok(());
@@ -231,7 +231,7 @@ impl JwxtTracker {
         meetings: &[CourseMeeting],
     ) -> Result<Vec<String>> {
         let key = format!("{xnm}#{xqm}");
-        let now = crate::util::now();
+        let now = ru41::util::now();
         let signatures: Vec<String> = meetings.iter().map(CourseMeeting::signature).collect();
         let hash = signature_hash(&signatures);
         let stored: Vec<StoredMeeting> = meetings.iter().map(StoredMeeting::from).collect();
@@ -354,7 +354,7 @@ impl JwxtTracker {
             "jwxt_alert",
             &key,
             None,
-            &serde_json::json!({ "ts": crate::util::now() }),
+            &serde_json::json!({ "ts": ru41::util::now() }),
         )?;
         let Some(notifier) = &self.notifier else {
             return Ok(true);
@@ -371,7 +371,7 @@ impl JwxtTracker {
         };
         let tomorrow = today + Duration::days(1);
         let day_meetings = meetings_on(meetings, start, tomorrow);
-        let mut card = crate::util::msg::Card::new("📚 明日课表");
+        let mut card = ru41::util::msg::Card::new("📚 明日课表");
         card.raw(format!(
             "**{} {} · 第{}周**",
             tomorrow.format("%m月%d日"),
@@ -410,11 +410,11 @@ impl JwxtTracker {
         meetings: &[CourseMeeting],
         today: NaiveDate,
     ) -> Result<(usize, usize)> {
-        use crate::app::schedule::ScheduleService;
-        use crate::domain::schedule::{
+        use ru41::app::schedule::ScheduleService;
+        use ru41::domain::schedule::{
             EVENT_KIND, EventInput, EventItem, EventRecurrence, EventSource,
         };
-        use crate::domain::todo::TodoOptions;
+        use ru41::domain::todo::TodoOptions;
 
         if !self.config.sync_schedule {
             return Ok((0, 0));
@@ -427,7 +427,7 @@ impl JwxtTracker {
                     "jwxt_alert",
                     key,
                     None,
-                    &serde_json::json!({ "ts": crate::util::now() }),
+                    &serde_json::json!({ "ts": ru41::util::now() }),
                 )?;
                 if let Some(notifier) = &self.notifier {
                     notifier
@@ -443,7 +443,7 @@ impl JwxtTracker {
         }
         let semester_start = self.config.semester_start.unwrap();
         let clock = self.config.clock.clone().unwrap();
-        let now = crate::util::now();
+        let now = ru41::util::now();
 
         // 目标事件集：本周 + 下周（周日晚已能看到下周一的课）
         let mut desired: std::collections::HashMap<String, EventInput> =
@@ -517,7 +517,7 @@ impl JwxtTracker {
             };
             let Some(source) = &item.source else { continue };
             if source.channel != "jwxt"
-                || item.status != crate::domain::schedule::EventStatus::Active
+                || item.status != ru41::domain::schedule::EventStatus::Active
             {
                 continue;
             }
@@ -620,7 +620,7 @@ impl JwxtTracker {
                 .send(
                     &self.config.notify_target,
                     None,
-                    &crate::util::msg::Card::new(format!("📅 课表变更（{xnm}-{xqm} 学期）"))
+                    &ru41::util::msg::Card::new(format!("📅 课表变更（{xnm}-{xqm} 学期）"))
                         .raw(items)
                         .build(),
                 )
@@ -662,7 +662,7 @@ fn stored_signature(meeting: &StoredMeeting) -> String {
     )
 }
 
-impl crate::ingress::schedule::PollJob for JwxtTracker {
+impl ru41::ingress::schedule::PollJob for JwxtTracker {
     fn job_interval(&self) -> std::time::Duration {
         std::time::Duration::from_secs(self.config.interval_secs)
     }
@@ -679,11 +679,11 @@ impl crate::ingress::schedule::PollJob for JwxtTracker {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::ports::storage::TaskStore;
+    use ru41::ports::storage::TaskStore;
     use std::sync::Arc;
 
     fn test_tracker(store: Arc<dyn TaskStore>, dir: &std::path::Path) -> JwxtTracker {
-        let client = crate::modules::jwxt::source::JwxtClient::new(
+        let client = crate::source::JwxtClient::new(
             "u",
             "p",
             "http://127.0.0.1:1".into(),
@@ -712,7 +712,7 @@ mod tests {
         // 静默丢弃——恢复后 days 必须真的归零，否则恢复后再遇瞬时失败会立刻告警。
         let dir = tempfile::tempdir().unwrap();
         let store: Arc<dyn TaskStore> = Arc::new(
-            crate::adapters::database::sqlite::SqliteTaskStore::open(&dir.path().join("s.db"))
+            ru41::adapters::database::sqlite::SqliteTaskStore::open(&dir.path().join("s.db"))
                 .unwrap(),
         );
         // 模拟已连续失败 2 天（CAS 建的文档，revision 存在）

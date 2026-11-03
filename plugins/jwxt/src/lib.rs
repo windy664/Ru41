@@ -7,7 +7,7 @@ pub mod service;
 pub mod source;
 
 pub use config::JwxtSection;
-pub use crate::domain::timetable::{
+pub use ru41::domain::timetable::{
     CourseMeeting, SectionClock, StoredMeeting, TimetableSnapshot, courses_summary_from_store,
     describe_day_from_store, infer_term, meetings_on, resolve_term, week_of,
 };
@@ -21,13 +21,13 @@ use std::sync::Arc;
 
 /// 课表 tracker 的具体类型构造：DEF 注册表与 main.rs 的 login 分支共用。
 pub fn build_tracker(
-    config: &crate::bootstrap::config::Config,
-    store: Arc<dyn crate::ports::storage::TaskStore>,
+    config: &ru41::bootstrap::config::Config,
+    store: Arc<dyn ru41::ports::storage::TaskStore>,
 ) -> Result<JwxtTracker> {
     let jwxt = config
         .sources
-        .get::<crate::modules::jwxt::JwxtSection>("jwxt")?;
-    let (notifier, notify_target) = crate::bootstrap::assembly::notify_pair(config, jwxt.notify)?;
+        .get::<crate::JwxtSection>("jwxt")?;
+    let (notifier, notify_target) = ru41::bootstrap::assembly::notify_pair(config, jwxt.notify)?;
     let resolved = jwxt.resolved(notify_target)?;
     let client = JwxtClient::new(
         resolved.username.clone(),
@@ -43,21 +43,20 @@ pub fn build_tracker(
 }
 
 /// 注册表定义：jwxt 的调度清单、课表/课前提醒两个 tracker、QQ 命令闭环。
-#[linkme::distributed_slice(super::MODULES)]
-pub static DEF: super::ModuleDef = super::ModuleDef {
+pub static DEF: ru41::modules::ModuleDef = ru41::modules::ModuleDef {
     name: "jwxt",
-    priority: super::DEFAULT_PRIORITY,
+    priority: ru41::modules::DEFAULT_PRIORITY,
     config_key: Some("jwxt"),
     schedule: |config| {
         let jwxt = config
             .sources
-            .get_or_default::<crate::modules::jwxt::JwxtSection>("jwxt");
-        let todo_route_ready = crate::bootstrap::assembly::default_notify_route(config)
+            .get_or_default::<crate::JwxtSection>("jwxt");
+        let todo_route_ready = ru41::bootstrap::assembly::default_notify_route(config)
             .ok()
             .flatten()
             .is_some();
         vec![
-            super::JobSchedule::simple(
+            ru41::modules::JobSchedule::simple(
                 "jwxt",
                 jwxt.interval_secs
                     .unwrap_or(config::JwxtSection::DEFAULT_INTERVAL_SECS),
@@ -73,9 +72,9 @@ pub static DEF: super::ModuleDef = super::ModuleDef {
                     None
                 },
             ),
-            super::JobSchedule {
+            ru41::modules::JobSchedule {
                 run_command: Some("schedule run class-remind"),
-                ..super::JobSchedule::simple(
+                ..ru41::modules::JobSchedule::simple(
                     "class-remind",
                     60, // 兜底轮询；精准睡眠按 fire_at 计算
                     jwxt.is_ready() && todo_route_ready,
@@ -93,20 +92,20 @@ pub static DEF: super::ModuleDef = super::ModuleDef {
     tracker: |config, store, name| {
         let jwxt = config
             .sources
-            .get::<crate::modules::jwxt::JwxtSection>("jwxt")?;
+            .get::<crate::JwxtSection>("jwxt")?;
         match name {
             "jwxt" => Ok(Some(Box::new(build_tracker(config, store)?))),
             "class-remind" => {
                 jwxt.is_ready().then_some(()).context(
                     "class-remind requires sources.jwxt credentials (RU41_JWXT_USERNAME/RU41_JWXT_PASSWORD)",
                 )?;
-                let route = crate::bootstrap::assembly::default_notify_route(config)?.context(
+                let route = ru41::bootstrap::assembly::default_notify_route(config)?.context(
                     "class-remind requires a default notify route ([notify] or --target)",
                 )?;
                 let notifier =
-                    crate::bootstrap::assembly::default_notifier(config, &route.channel)?;
+                    ru41::bootstrap::assembly::default_notifier(config, &route.channel)?;
                 Ok(Some(Box::new(
-                    crate::app::schedule::ClassRemindTracker::new(
+                    ru41::app::schedule::ClassRemindTracker::new(
                         store,
                         notifier,
                         route,
@@ -121,18 +120,77 @@ pub static DEF: super::ModuleDef = super::ModuleDef {
         Ok(vec![std::sync::Arc::new(JwxtQqCommand::new(
             config
                 .sources
-                .get::<crate::modules::jwxt::JwxtSection>("jwxt")?
+                .get::<crate::JwxtSection>("jwxt")?
                 .semester_start
                 .as_deref()
                 .and_then(|raw| chrono::NaiveDate::parse_from_str(raw.trim(), "%Y-%m-%d").ok()),
             config
                 .sources
-                .get::<crate::modules::jwxt::JwxtSection>("jwxt")?
+                .get::<crate::JwxtSection>("jwxt")?
                 .section_clock()
                 .ok()
                 .flatten(),
         ))])
     },
-    image_consumers: super::no_image_consumers,
-    cli: super::no_cli,
+    image_consumers: ru41::modules::no_image_consumers,
+    cli: jwxt_cli,
 };
+
+/// 专属 CLI：`ru41 jwxt classes [today|tomorrow|week|YYYY-MM-DD]` 与
+/// `ru41 jwxt login [--captcha x]`（CAS 图形验证码只能人工，两步式）。
+fn jwxt_cli(
+    config: &ru41::bootstrap::config::Config,
+    store: std::sync::Arc<dyn ru41::ports::storage::TaskStore>,
+    args: &[String],
+) -> std::pin::Pin<Box<dyn std::future::Future<Output = anyhow::Result<Option<serde_json::Value>>> + Send>>
+{
+    use anyhow::Context as _;
+    enum Job {
+        Classes(crate::JwxtSection, String),
+        Login(crate::JwxtTracker, Option<String>),
+    }
+    let prepared = (|| -> anyhow::Result<Job> {
+        match args.first().map(String::as_str) {
+            Some("classes") => Ok(Job::Classes(
+                config.sources.get::<crate::JwxtSection>("jwxt")?,
+                args.get(1).cloned().unwrap_or_else(|| "today".into()),
+            )),
+            Some("login") => {
+                let mut captcha = None;
+                let mut rest = args.iter().skip(1);
+                while let Some(flag) = rest.next() {
+                    match flag.as_str() {
+                        "--captcha" => {
+                            captcha = Some(
+                                rest.next()
+                                    .map(String::clone)
+                                    .with_context(|| format!("{flag} 缺值"))?,
+                            )
+                        }
+                        other => anyhow::bail!("未知参数 {other}（支持 --captcha）"),
+                    }
+                }
+                Ok(Job::Login(build_tracker(config, store.clone())?, captcha))
+            }
+            _ => anyhow::bail!(
+                "用法: ru41 jwxt classes [today|tomorrow|week|YYYY-MM-DD] | login [--captcha x]"
+            ),
+        }
+    })();
+    Box::pin(async move {
+        let value = match prepared? {
+            Job::Classes(section, when) => cli::classes_json(store, &section, &when)?,
+            Job::Login(tracker, captcha) => cli::login_json(&tracker, captcha.as_deref()).await?,
+        };
+        Ok(Some(value))
+    })
+}
+
+/// 宿主加载入口（插件不用 linkme，走显式注册）。
+/// feature 门控：被其他插件依赖时不导出，编 .so 必须 --features plugin-entry。
+#[cfg(feature = "plugin-entry")]
+#[allow(improper_ctypes_definitions)]
+#[unsafe(no_mangle)]
+pub extern "C" fn ru41_plugin_entry() -> ru41::plugins::PluginEntry {
+    ru41::plugins::PluginEntry::new("jwxt", || DEF)
+}
