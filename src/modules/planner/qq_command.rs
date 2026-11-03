@@ -304,7 +304,7 @@ impl TodoQqCommand {
         // 同一窗口的课表并入同一条时间轴（来自 jwxt 缓存快照，只读不触网）。
         let today = crate::domain::schedule::local_date(now, self.options.offset_seconds)
             .unwrap_or_else(|| chrono::Local::now().date_naive());
-        let courses = crate::modules::jwxt::service::courses_summary_from_store(
+        let courses = crate::domain::timetable::courses_summary_from_store(
             store,
             self.jwxt_semester_start,
             today,

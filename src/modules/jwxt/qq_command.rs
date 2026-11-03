@@ -2,7 +2,7 @@ use crate::ports::commands::{CommandContext, CommandHandler, Reply};
 use anyhow::Result;
 use chrono::{Datelike, Duration, NaiveDate};
 
-use super::service::SectionClock;
+use crate::domain::timetable::SectionClock;
 use std::future::Future;
 use std::pin::Pin;
 
@@ -63,7 +63,7 @@ impl CommandHandler for JwxtQqCommand {
                 return Ok(Some(reply.into()));
             }
             Ok(Some(
-                super::service::describe_day_from_store(
+                crate::domain::timetable::describe_day_from_store(
                     ctx.store,
                     self.semester_start,
                     self.clock.as_ref(),
@@ -103,7 +103,7 @@ impl JwxtQqCommand {
             let mut lines = Vec::new();
             for offset in 0..(7 - today.weekday().num_days_from_monday() as i64) {
                 let day = today + Duration::days(offset);
-                let text = super::service::describe_day_from_store(
+                let text = crate::domain::timetable::describe_day_from_store(
                     ctx.store,
                     self.semester_start,
                     self.clock.as_ref(),
@@ -122,7 +122,7 @@ impl JwxtQqCommand {
             today
         };
         Ok(Some(
-            super::service::describe_day_from_store(
+            crate::domain::timetable::describe_day_from_store(
                 ctx.store,
                 self.semester_start,
                 self.clock.as_ref(),

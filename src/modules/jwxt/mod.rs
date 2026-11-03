@@ -7,12 +7,13 @@ pub mod service;
 pub mod source;
 
 pub use config::JwxtSection;
-pub use qq_command::JwxtQqCommand;
-pub use service::{
-    JwxtConfig, JwxtPollReport, JwxtTracker, SectionClock, describe_day_from_store, infer_term,
-    meetings_on, resolve_term, week_of,
+pub use crate::domain::timetable::{
+    CourseMeeting, SectionClock, StoredMeeting, TimetableSnapshot, courses_summary_from_store,
+    describe_day_from_store, infer_term, meetings_on, resolve_term, week_of,
 };
-pub use source::{CourseMeeting, JwxtClient, JwxtError};
+pub use qq_command::JwxtQqCommand;
+pub use service::{JwxtConfig, JwxtPollReport, JwxtTracker};
+pub use source::{JwxtClient, JwxtError};
 
 use anyhow::Context as _;
 use anyhow::Result;

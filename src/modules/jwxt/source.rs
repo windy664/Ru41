@@ -11,6 +11,7 @@
 //! 所以轮询路径 = 会话复用 → TGT 换 ST → 自动验证码登录，全程无需人工。
 //! 仅当密码错误/账号锁定等硬失败时才提醒人工介入。
 
+use crate::domain::timetable::CourseMeeting;
 use anyhow::{Context, Result, bail};
 use base64::Engine;
 use num_bigint::BigUint;
@@ -68,42 +69,6 @@ const GNMKDM_KB: &str = "N2151";
 /// 学期码：正方 xqm 编码。3=第一学期、12=第二学期、16=第三学期。
 pub const TERM_CODES: [(&str, &str); 3] = [("3", "1"), ("12", "2"), ("16", "3")];
 
-/// 课表行课条目（kbList 的业务子集）。
-#[derive(Debug, Clone, PartialEq)]
-pub struct CourseMeeting {
-    pub course: String,
-    pub course_id: String,
-    pub teacher: String,
-    pub classroom: String,
-    /// 星期 1-7。
-    pub weekday: u8,
-    /// 原始节次文本，如 "9-10节"。
-    pub sections_raw: String,
-    pub start_section: Option<u8>,
-    pub end_section: Option<u8>,
-    /// 解析后的周次列表（zcd）。
-    pub weeks: Vec<u32>,
-    pub weeks_raw: String,
-    pub class_type: String,
-    pub class_group: String,
-    pub xnm: String,
-    pub xqm: String,
-}
-
-impl CourseMeeting {
-    /// 稳定签名：变更检测的粒度（同一门课换教室/换周次即视为变更）。
-    pub fn signature(&self) -> String {
-        format!(
-            "{}|{}|{}|{}|{}|{}",
-            self.course_id,
-            self.weekday,
-            self.sections_raw,
-            self.weeks_raw,
-            self.classroom,
-            self.teacher
-        )
-    }
-}
 
 /// 课表响应（只取需要的字段；其余宽容忽略）。
 #[derive(Debug, Deserialize)]
