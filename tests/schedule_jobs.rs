@@ -17,41 +17,32 @@ fn job<'a>(
 }
 
 #[test]
-fn registers_all_module_jobs() {
-    // 整体插件化后：外部插件（papers/rss/competitions/youtube/...）经 .so 加载，
-    // 不在本测试的注册表内；这里只断言内建模块。
+fn registers_planner_jobs() {
+    // 整体插件化后：外部插件（jwxt/papers/rss/...）经 .so 加载，不在本测试的
+    // 注册表内；内建模块只剩 planner 的 todo-remind。
     let jobs = scheduled_jobs(&load(""));
-    for name in ["jwxt", "todo-remind"] {
-        assert!(jobs.iter().any(|j| j.name == name), "{name} missing");
-    }
+    assert!(jobs.iter().any(|j| j.name == "todo-remind"), "todo-remind missing");
 }
 
 #[test]
 fn reports_disabled_without_config() {
     let jobs = scheduled_jobs(&load(""));
-    assert!(!job(&jobs, "jwxt").enabled);
     assert!(!job(&jobs, "todo-remind").enabled);
-    assert!(job(&jobs, "jwxt").notes.is_some());
+    assert!(job(&jobs, "todo-remind").notes.is_some());
 }
 
 #[test]
 fn flips_enabled_when_configured() {
     let config = load(
-        "[sources.jwxt]\nusername = \"u\"\npassword = \"p\"\ninterval_secs = 3600\n\
-         [notify]\nchannel = \"qq\"\n[channel.qq]\ndefault_notify_target = \"user:U1\"\n",
+        "[notify]\nchannel = \"qq\"\n[channel.qq]\ndefault_notify_target = \"user:U1\"\n",
     );
     let jobs = scheduled_jobs(&config);
-    assert!(job(&jobs, "jwxt").enabled);
     assert!(job(&jobs, "todo-remind").enabled);
-    assert_eq!(job(&jobs, "jwxt").interval_secs, Some(3600));
 }
 
 #[test]
 fn exposes_poll_and_run_commands() {
     let jobs = scheduled_jobs(&load(""));
-    let jwxt = job(&jobs, "jwxt");
-    assert_eq!(jwxt.poll_command, "jwxt poll");
-    assert_eq!(jwxt.run_command, "jwxt run");
     let remind = job(&jobs, "todo-remind");
     assert_eq!(remind.poll_command, "todo remind --once");
     assert_eq!(remind.run_command, "todo remind");

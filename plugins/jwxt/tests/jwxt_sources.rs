@@ -17,10 +17,10 @@ use axum::{
 use chrono::Datelike;
 use ru41::{
     adapters::database::sqlite::SqliteTaskStore,
-    modules::jwxt::{
-        JwxtClient, JwxtConfig, JwxtSection, JwxtTracker, SectionClock as JwxtSectionClock,
-    },
     ports::{channel::NotifyChannel, storage::TaskStore},
+};
+use ru41_plugin_jwxt::{
+    JwxtClient, JwxtConfig, JwxtSection, JwxtTracker, SectionClock as JwxtSectionClock,
 };
 use serde_json::json;
 
@@ -503,12 +503,12 @@ async fn remind_and_describe_use_clock_times_and_markdown() {
 
     // 第2周星期三：fixture 里是 大学英语 3-4 节 → 10:40-12:00
     let target = monday + chrono::Duration::days(9);
-    let clock = ru41::modules::jwxt::SectionClock {
+    let clock = ru41_plugin_jwxt::SectionClock {
         times: section_times_16(),
         duration_mins: 40,
     };
     let store_dyn: Arc<dyn ru41::ports::storage::TaskStore> = store.clone();
-    let reply = ru41::modules::jwxt::describe_day_from_store(
+    let reply = ru41_plugin_jwxt::describe_day_from_store(
         &store_dyn,
         Some(monday),
         Some(&clock),
@@ -526,7 +526,7 @@ async fn remind_and_describe_use_clock_times_and_markdown() {
 
     // 未配置作息表时回退到节次文本
     let fallback =
-        ru41::modules::jwxt::describe_day_from_store(&store_dyn, Some(monday), None, target)
+        ru41_plugin_jwxt::describe_day_from_store(&store_dyn, Some(monday), None, target)
             .unwrap();
     assert!(fallback.contains("- **3-4节** 大学英语"), "{fallback}");
 }

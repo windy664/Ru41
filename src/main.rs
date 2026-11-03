@@ -13,8 +13,8 @@ use ru41::{
     domain::schedule::{EventInput, EventSource, parse_event_when},
     domain::todo::{TodoInput, parse_due},
     ingress::cli::{
-        Cli, Command, EventCommand, JwxtCommand, KnowledgeCommand, QqCommand, ScheduleCommand,
-        TaskCommand, TodoCommand, TrackerCommand,
+        Cli, Command, EventCommand, KnowledgeCommand, QqCommand, ScheduleCommand, TaskCommand,
+        TodoCommand, TrackerCommand,
     },
     ingress::cli_ops,
     privacy::{NoopSanitizer, RandomSanitizer, Sanitizer},
@@ -264,27 +264,6 @@ async fn main() -> Result<()> {
             return Ok(());
         }
         Command::Tracker(_) => unreachable!("handled by tracker dispatch above"),
-        Command::Jwxt { command } => match command {
-            JwxtCommand::Poll => tracker_or_exit(
-                tracker_cli("jwxt", TrackerCommand::Poll, &config, &store_config).await?,
-            )?,
-            JwxtCommand::Run => {
-                tracker_cli("jwxt", TrackerCommand::Run, &config, &store_config).await?;
-                return Ok(());
-            }
-            JwxtCommand::Login { captcha } => {
-                let tracker =
-                    ru41::modules::jwxt::build_tracker(&config, open_store(&store_config)?)?;
-                ru41::modules::jwxt::cli::login_json(&tracker, captcha.as_deref()).await?
-            }
-            JwxtCommand::Classes { when } => ru41::modules::jwxt::cli::classes_json(
-                open_store(&store_config)?,
-                &config
-                    .sources
-                    .get::<ru41::modules::jwxt::JwxtSection>("jwxt")?,
-                &when,
-            )?,
-        },
         Command::Task { command } => {
             let mut service = TaskService::new(open_store(&store_config)?);
             match command {

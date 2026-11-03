@@ -11,7 +11,7 @@
 //! 所以轮询路径 = 会话复用 → TGT 换 ST → 自动验证码登录，全程无需人工。
 //! 仅当密码错误/账号锁定等硬失败时才提醒人工介入。
 
-use crate::domain::timetable::CourseMeeting;
+use ru41::domain::timetable::CourseMeeting;
 use anyhow::{Context, Result, bail};
 use base64::Engine;
 use num_bigint::BigUint;
@@ -30,7 +30,7 @@ fn host_of(base: &str) -> String {
 }
 
 /// 统一构建教务 HTTP 客户端：UA/超时/cookie jar + DNS 兜底覆盖
-/// （系统解析失败的 host 走公共 DoH 直连，见 [`crate::util::dns_fallback_overrides`]）。
+/// （系统解析失败的 host 走公共 DoH 直连，见 [`ru41::util::dns_fallback_overrides`]）。
 fn build_http(
     user_agent: &'static str,
     jar: &Arc<CookieJar>,
@@ -38,9 +38,9 @@ fn build_http(
 ) -> reqwest::Client {
     let mut builder = reqwest::Client::builder()
         .user_agent(user_agent)
-        .timeout(crate::util::HTTP_TIMEOUT)
+        .timeout(ru41::util::HTTP_TIMEOUT)
         .cookie_provider(jar.clone());
-    for o in crate::util::dns_fallback_overrides(hosts) {
+    for o in ru41::util::dns_fallback_overrides(hosts) {
         builder = builder.resolve(&o.host, o.addr);
     }
     builder.build().expect("reqwest client build")
@@ -744,7 +744,7 @@ pub const CAS_TEST_MODULUS: &str = "00b5eeb166e069920e80bebd1fea4829d3d1f3216f2a
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::modules::jwxt::infer_term;
+    use crate::infer_term;
 
     /// 与校方 CAS 前端 JS（node 执行同源 module）的输出逐字节一致。
     /// 这两个向量由真实页面代码生成，改动加密实现必须保持它们通过。

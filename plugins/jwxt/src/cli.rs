@@ -1,11 +1,12 @@
 //! jwxt 模块的 CLI 处理：课表缓存查询与 CAS 两步登录。
 //! 逻辑属于附属本身；main.rs 只做参数路由，不再认识 jwxt 内部。
 
-use crate::{modules::jwxt::JwxtTracker, ports::storage::TaskStore};
+use crate::JwxtTracker;
+use ru41::ports::storage::TaskStore;
 use anyhow::{Context, Result};
 use std::sync::Arc;
 
-use super::{JwxtSection, describe_day_from_store};
+use crate::{JwxtSection, describe_day_from_store};
 
 /// 读本地课表缓存（jwxt_timetable 快照）回答某天/本周的课。
 /// 只读缓存，不触网、不需要登录态，供 agent skill 与排障使用。

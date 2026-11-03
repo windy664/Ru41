@@ -92,13 +92,8 @@ pub enum Command {
     /// 长驻运行终态通知派发；按配置注册渠道（当前为飞书 webhook）。
     /// QQ 网关在 qq run 内自带派发，此命令用于不跑 QQ 的部署。
     Notify,
-    /// 教务课表监控：CAS 单点登录拉课表，变更检测与明日课表提醒。
-    Jwxt {
-        #[command(subcommand)]
-        command: JwxtCommand,
-    },
     /// 附属通用入口：`ru41 <模块名> poll|run|<专属子命令>`（模块名见 `schedule list`；
-    /// 内建模块的专属子命令仅剩 jwxt，插件模块一律走各自 cli 钩子）。
+    /// 所有附属（含内建 planner/obsidian）的专属子命令一律走各自 cli 钩子）。
     #[command(external_subcommand)]
     Tracker(Vec<String>),
     /// 定时任务注册表：统一查看和运行各附属的轮询任务。
@@ -167,27 +162,6 @@ pub enum TrackerCommand {
     Poll,
     /// 常驻运行，按该来源配置的 interval_secs 周期轮询。
     Run,
-}
-
-#[derive(Subcommand)]
-pub enum JwxtCommand {
-    /// 拉取一轮课表并按需提醒（变更检测 + 到点推明日课表；cron 友好）。
-    Poll,
-    /// 常驻运行，按 sources.jwxt.interval_secs 周期轮询。
-    Run,
-    /// CAS 验证码登录：校方 CAS 每次账密登录都要图形验证码，只能人工一次，
-    /// 成功后 TGT 持久化，后续轮询静默换 ST。
-    Login {
-        /// 验证码答案；缺省时只下载验证码图片并提示路径。
-        #[arg(long)]
-        captcha: Option<String>,
-    },
-    /// 读本地课表缓存回答「今天/明天/某天/本周有什么课」；只读缓存，不触网、不需要登录态。
-    Classes {
-        /// 时间：缺省今天；支持 tomorrow/明天、week/周、YYYY-MM-DD。
-        #[arg(default_value = "today")]
-        when: String,
-    },
 }
 
 #[derive(Subcommand)]

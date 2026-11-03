@@ -8,7 +8,7 @@
 //! 人工标注样本生成，LOO 交叉验证 40/40。校方换验证码风格时：抓新样本、
 //! 更新 fixtures 与模板库即可。
 
-use super::captcha_templates::GLYPH_TEMPLATES;
+use crate::captcha_templates::GLYPH_TEMPLATES;
 
 /// 归一化网格尺寸。
 pub const GRID_W: usize = 12;
