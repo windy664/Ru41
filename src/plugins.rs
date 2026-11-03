@@ -65,6 +65,10 @@ pub fn external_defs() -> &'static [&'static ModuleDef] {
 
 /// 扫描目录加载全部 `.so` 插件；单个失败记日志跳过，不挡其他插件与宿主启动。
 /// 返回成功加载数量。
+///
+/// 环境变量 `RU41_PLUGINS`（逗号分隔的插件名）可按容器角色过滤加载：
+/// 默认全量；显式设置后只有名单内的 .so 会被 dlopen——一个坏插件的
+/// ABI/版本问题不再波及无关容器（如 rss 容器不必承担 library 的握手风险）。
 pub fn load_all(dir: &Path) -> Result<usize> {
     let mut libs = Vec::new();
     let mut defs: Vec<&'static ModuleDef> = Vec::new();
@@ -78,7 +82,23 @@ pub fn load_all(dir: &Path) -> Result<usize> {
         }
         so_files.sort();
     }
+    let allowlist: Option<std::collections::HashSet<String>> = std::env::var("RU41_PLUGINS")
+        .ok()
+        .map(|raw| raw.split(',').map(|s| s.trim().to_owned()).collect());
+    if let Some(names) = &allowlist {
+        eprintln!(
+            "[plugins] RU41_PLUGINS 过滤启用：只加载 [{}]",
+            names.iter().cloned().collect::<Vec<_>>().join(", ")
+        );
+    }
     for path in so_files {
+        if let Some(names) = &allowlist {
+            let stem = path.file_stem().and_then(|s| s.to_str()).unwrap_or("");
+            let name = stem.strip_prefix("libru41_plugin_").unwrap_or(stem);
+            if !names.contains(name) {
+                continue;
+            }
+        }
         match load_one(&path) {
             Ok((lib, def)) => {
                 eprintln!("[plugins] 已加载 {}（{}）", def.name, path.display());

@@ -2,13 +2,17 @@
 
 Ru41 托管 Agent，不实现模型推理循环、底座记忆或底座审批策略。渠道通过应用服务提交任务和回复交互；底座适配器翻译原生协议。
 
-## 本轮修复
+## 当前形态（2026-11-03 插件化完成后）
 
-- OpenAPI schema 的嵌套引用统一指向 components/schemas，并收集所有定义；测试递归验证引用可解析。
-- OpenAPI 声明 /api/v1 服务前缀。规范入口与其余入口一样需要认证。
-- /interactions 的响应保持现有 Document[] 包装（id、revision、value），文档与实际返回一致，不改变渠道接口。
-- HTTP 契约生成移至 ingress/http/openapi.rs。
-- Worker 保留底座返回的 session_id 至 AgentRun。非法结果由宿主分类为永久失败；超时仍走有界重试。
+- **src/modules/ 已清空**：全部附属以插件（.so）挂载，内建注册表只剩 linkme 空壳。
+  迁移清单与操作手册见 `docs/plugin-development.md` 附录 checklist。
+- 附属的 poll/run 走 `ru41 <模块名> poll|run`，专属子命令走各模块 `DEF.cli` 钩子
+  （外部子命令统一分发，core 无硬编码命令）。**插件一切异步入口必须过
+  `ru41::plugins::bridge`**（插件静态链接自己的 tokio，reactor 与宿主不通用）。
+- 跨附属数据契约住 core：`domain/timetable.rs`（课表快照）、`adapters/cas.rs`
+  （验证码+RSA）、`adapters/sources/`（多消费者共享的信息源协议层，rss 查表分发）。
+- 动态插件握手：api crate 版本 + deps stamp 硬门（bump 规则见 plugin-development.md）。
+- 容器可按角色过滤加载：`RU41_PLUGINS=jwxt,planner` 环境变量白名单。
 
 ## 尚未完成，不能视为成熟能力
 
@@ -20,6 +24,15 @@ Ru41 托管 Agent，不实现模型推理循环、底座记忆或底座审批策
 6. Codex 会话协议需要独立模拟进程测试与真实冒烟；底座不支持的交互不可冒充支持。
 7. 任务处理仍以 analysis_v1 为主，尚未形成业务处理器注册与可恢复步骤执行。
 8. 投递发送成功但登记前崩溃仍可能重发；平台幂等与回执核验需要按渠道能力实现。
+
+## 附属侧的既有技术债（插件化后新产生）
+
+- digest 去重状态机（`app::digest`）仅 2/23 插件使用，其余手写 put_document
+  seen-set（blog 的 done_key 已演化到 v3）；推广 campaign 待做，接口已就绪。
+- 知识库自动索引原来由 obsidian 服务挂载，插件化后插件内无 ONNX——已改为
+  服务器 cron 每天 03:23 在 obsidian 容器内跑宿主 CLI `knowledge index`。
+- `RU41_PLUGINS` 角色过滤已实现，生产容器逐个配置白名单的 chore 待做
+  （默认全量加载，行为不变）。
 
 ## 并行开发约定
 
