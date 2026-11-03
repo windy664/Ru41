@@ -43,9 +43,16 @@ pub static DEF: ru41::modules::ModuleDef = ru41::modules::ModuleDef {
             notifier,
             resolved,
         );
-        let service = match ru41::bootstrap::assembly::knowledge_service(config)? {
-            Some(knowledge) => service.with_knowledge(knowledge),
-            None => service,
+        // 知识库索引进插件副本就失去 local-embed（插件不带 ONNX）：
+        // 接线失败降级为无知识模式，不影响 git 同步本体；索引用宿主 CLI
+        // `ru41 knowledge index`（镜像宿主二进制带 fastembed）。
+        let service = match ru41::bootstrap::assembly::knowledge_service(config) {
+            Ok(Some(knowledge)) => service.with_knowledge(knowledge),
+            Ok(None) => service,
+            Err(error) => {
+                eprintln!("[obsidian] 知识库接线跳过（插件内无 local-embed）：{error:#}");
+                service
+            }
         };
         // 待办视图投影：todo 配置缺失/非法时跳过视图，不影响 git 闭环本体。
         let service = match config.todo.options() {

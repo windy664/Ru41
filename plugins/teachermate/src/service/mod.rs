@@ -54,6 +54,7 @@ enum AutoSignOutcome {
 /// - 结束收敛：从进行中列表消失且本侧无 signed_at → 🏁 回执一次
 ///   （平台不暴露已签状态，已手签的用户可忽略该回执）；
 /// - openid 失效 → 每日最多告警一次，指路 bind 命令。
+#[derive(Clone)]
 pub struct TeachermateTracker {
     store: Arc<dyn TaskStore>,
     notifier: Option<Arc<dyn NotifyChannel>>,
@@ -456,6 +457,7 @@ impl ru41::ingress::schedule::PollJob for TeachermateTracker {
     ) -> std::pin::Pin<
         Box<dyn std::future::Future<Output = anyhow::Result<serde_json::Value>> + Send + '_>,
     > {
-        Box::pin(async move { Ok(serde_json::to_value(self.poll_once().await?)?) })
+        let owned = self.clone();
+        ru41::plugins::bridge(async move { Ok(serde_json::to_value(owned.poll_once().await?)?) })
     }
 }

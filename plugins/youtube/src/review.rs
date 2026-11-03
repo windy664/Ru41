@@ -101,6 +101,7 @@ const TOPIC_MIN_ANCHORS: usize = 3;
 const TOPIC_MAX_EXAMPLES: usize = 4;
 
 /// 复习任务：每日一跑（内部按日历日幂等），四步——提取、后测、过期批次结转、到期推送。
+#[derive(Clone)]
 pub struct YoutubeReviewJob {
     store: Arc<dyn TaskStore>,
     config: YoutubeConfig,
@@ -1053,7 +1054,8 @@ impl PollJob for YoutubeReviewJob {
     ) -> std::pin::Pin<
         Box<dyn std::future::Future<Output = anyhow::Result<serde_json::Value>> + Send + '_>,
     > {
-        Box::pin(async move { self.review_pass().await })
+        let owned = self.clone();
+        ru41::plugins::bridge(async move { owned.review_pass().await })
     }
 }
 

@@ -203,6 +203,7 @@ impl CookieStore for CookieJar {
 }
 
 /// 教务协议客户端。
+#[derive(Clone)]
 pub struct JwxtClient {
     jar: Arc<CookieJar>,
     http: reqwest::Client,
@@ -682,61 +683,7 @@ pub fn parse_weeks(text: &str) -> Vec<u32> {
     weeks
 }
 
-/// Ohdave BigInt RSA（联奕 CAS 前端加密，语义经页面 JS 逐字节对照）。
-/// 密码按 chunkSize = 2×h(modulus) 字符分块，每块小端打包后 modPow；
-/// 输出按 16-bit limb 自高到低每组 4 位 hex，多块以单空格连接。
-/// 仅推荐 ASCII 密码（非 ASCII 字符的行为在原 JS 中即未定义）。
-pub fn ohdave_encrypt(text: &str, exponent_hex: &str, modulus_hex: &str) -> String {
-    let exponent = BigUint::from_str_radix(exponent_hex, 16).expect("invalid RSA exponent");
-    let modulus = BigUint::from_str_radix(modulus_hex, 16).expect("invalid RSA modulus");
-    // h(modulus)：最高非零 16-bit digit 下标（4 个 hex 字符一组，自高位起）
-    let groups: Vec<u16> = modulus_hex
-        .as_bytes()
-        .chunks(4)
-        .map(|chunk| {
-            u16::from_str_radix(std::str::from_utf8(chunk).unwrap_or("0"), 16).unwrap_or(0)
-        })
-        .collect();
-    let highest = groups.iter().rposition(|g| *g != 0).unwrap_or(0);
-    let chunk = 2 * highest;
-
-    let codes: Vec<u32> = text.chars().map(|c| c as u32).collect();
-    let mut blocks = Vec::new();
-    for offset in (0..codes.len()).step_by(chunk.max(1)) {
-        let slice = &codes[offset..(offset + chunk).min(codes.len())];
-        let mut bytes = vec![0u8; chunk];
-        for (index, code) in slice.iter().enumerate() {
-            bytes[index] = (*code & 0xFF) as u8;
-        }
-        let m = BigUint::from_bytes_le(&bytes);
-        let c = m.modpow(&exponent, &modulus);
-        blocks.push(limb_hex(&c));
-    }
-    blocks.join(" ")
-}
-
-/// BigUint → 按 16-bit limb 自高到低的 4 位 hex（每 limb 恒 4 字符，宽度 =
-/// (最高非零 limb 下标+1)×4），对齐 Ohdave u(m) 的输出。
-fn limb_hex(value: &BigUint) -> String {
-    if value.is_zero() {
-        return "0000".to_owned();
-    }
-    let bytes = value.to_bytes_le();
-    let mut limbs = Vec::new();
-    for chunk in bytes.chunks(2) {
-        let low = chunk[0] as u16;
-        let high = chunk.get(1).map(|b| (*b as u16) << 8).unwrap_or(0);
-        limbs.push(low | high);
-    }
-    while limbs.last() == Some(&0) {
-        limbs.pop();
-    }
-    limbs
-        .iter()
-        .rev()
-        .map(|limb| format!("{limb:04x}"))
-        .collect()
-}
+pub use ru41::adapters::cas::ohdave_encrypt;
 
 /// 校方 CAS 前端配置的 RSA 公钥（与浏览器内 JS 同源，密文可被服务端解密）。
 pub const CAS_TEST_MODULUS: &str = "00b5eeb166e069920e80bebd1fea4829d3d1f3216f2aabe79b6c47a3c18dcee5fd22c2e7ac519cab59198ece036dcf289ea8201e2a0b9ded307f8fb704136eaeb670286f5ad44e691005ba9ea5af04ada5367cd724b5a26fdb5120cc95b6431604bd219c6b7d83a6f8f24b43918ea988a76f93c333aa5a20991493d4eb1117e7b1";

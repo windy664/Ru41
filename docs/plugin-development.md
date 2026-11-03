@@ -193,6 +193,15 @@ bump `crates/ru41-plugin-api/Cargo.toml` 的 version，全部插件需重编；
    `main.rs` 的 Tracker 分发已泛化：`poll|run` 之外的参数一律进 cli 钩子。
 6. **ABI 门**：改了 ru41-plugin-api 任何公开项 → bump 它的 `version`
    （旧 .so 会被握手正确拒载，部署时随镜像全量重编，无需手动）。
+6.5 **异步边界（迁移模块最容易漏，2026-11-03 五连 crash 换来的教训）**：
+   插件静态链接自己的 tokio，reactor 与宿主不通用——模块时代裸写的
+   `Box::pin(async move { ... })` 一律改 `ru41::plugins::bridge(async move {...})`：
+   - 每个 `impl PollJob` 的 `poll_json`（tracker 结构体补 `#[derive(Clone)]`，
+     `let owned = self.clone();` 进桥）
+   - `DEF.cli` 钩子的整个异步体
+   - feature 门代码（local-embed 等）在插件副本里是占位实现：
+     依赖它们的接线要降级容错（如 obsidian 知识库 Err → 无知识模式），
+     插件 .so 一律不带 ONNX。
 7. **验证顺序**：`cd plugins/<m> && cargo test` → 根 `cargo test`
    → `cd plugins/<m> && cargo build --release --features plugin-entry` 后 `nm -D` 看
    `ru41_plugin_entry` → 临时配置 `[plugins] dir = "plugins/target-plugins/release"` 跑

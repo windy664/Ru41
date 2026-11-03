@@ -177,13 +177,13 @@ fn jwxt_cli(
             ),
         }
     })();
-    Box::pin(async move {
+    Box::pin(ru41::plugins::bridge(async move {
         let value = match prepared? {
             Job::Classes(section, when) => cli::classes_json(store, &section, &when)?,
             Job::Login(tracker, captcha) => cli::login_json(&tracker, captcha.as_deref()).await?,
         };
         Ok(Some(value))
-    })
+    }))
 }
 
 /// 宿主加载入口（插件不用 linkme，走显式注册）。

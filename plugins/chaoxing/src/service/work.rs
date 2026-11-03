@@ -46,6 +46,7 @@ pub struct ChaoxingWorkPollReport {
 /// 红线：作业只做提醒/跟踪/归档，不做自动作答（自动答题=代写）。
 /// 请求预算：每课 2 个只读请求（middle+list），详情页只对未交作业拉取；
 /// 平台返回无权限/3004 时跳过该课并不刷屏（下轮重试）。
+#[derive(Clone)]
 pub struct ChaoxingWorkTracker {
     store: Arc<dyn TaskStore>,
     notifier: Option<Arc<dyn NotifyChannel>>,
@@ -459,6 +460,7 @@ impl ru41::ingress::schedule::PollJob for ChaoxingWorkTracker {
     ) -> std::pin::Pin<
         Box<dyn std::future::Future<Output = anyhow::Result<serde_json::Value>> + Send + '_>,
     > {
-        Box::pin(async move { Ok(serde_json::to_value(self.poll_once().await?)?) })
+        let owned = self.clone();
+        ru41::plugins::bridge(async move { Ok(serde_json::to_value(owned.poll_once().await?)?) })
     }
 }

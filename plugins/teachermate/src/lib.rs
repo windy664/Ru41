@@ -176,7 +176,7 @@ fn teachermate_cli(
             _ => anyhow::bail!("用法: ru41 teachermate work|bind <链接>|sign <id> [--lat x --lon y]"),
         }
     })();
-    Box::pin(async move {
+    Box::pin(ru41::plugins::bridge(async move {
         let value = match prepared? {
             Job::Work(tracker) => serde_json::to_value(tracker.poll_once().await?)?,
             Job::Bind(link, path) => cli::bind_json(&link, &path).await?,
@@ -185,7 +185,7 @@ fn teachermate_cli(
             }
         };
         Ok(Some(value))
-    })
+    }))
 }
 
 /// 宿主加载入口（插件不用 linkme，走显式注册）。

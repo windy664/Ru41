@@ -67,6 +67,7 @@ const FAILED_RETRY_AFTER_SECS: i64 = 86_400;
 
 /// YouTube 英语预习追踪：频道列表 → 去重与粗筛 → 字幕转写 → 逐视频入队预习任务。
 /// 终态推送即 Agent 输出的预习单原文（含视频链接），经 [notify] 默认出口投递。
+#[derive(Clone)]
 pub struct YoutubeTracker {
     store: Arc<dyn TaskStore>,
     client: YtDlpClient,
@@ -536,6 +537,7 @@ impl ru41::ingress::schedule::PollJob for YoutubeTracker {
     ) -> std::pin::Pin<
         Box<dyn std::future::Future<Output = anyhow::Result<serde_json::Value>> + Send + '_>,
     > {
-        Box::pin(async move { Ok(serde_json::to_value(self.poll_once().await?)?) })
+        let owned = self.clone();
+        ru41::plugins::bridge(async move { Ok(serde_json::to_value(owned.poll_once().await?)?) })
     }
 }

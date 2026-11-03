@@ -5,6 +5,8 @@ pub mod database;
 /// Embedding 适配器：ports::embedding::Embedder 的实现（本地 fastembed）。
 pub mod embedding;
 /// 跨模块通用的外部信息来源协议（当前为 RSS/Atom feed）。
+pub mod cas;
+pub mod cas_templates;
 pub mod sources;
 /// Vault 适配器：ports::Vault 的 git 工作副本实现。
 pub mod vault;

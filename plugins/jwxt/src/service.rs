@@ -95,6 +95,7 @@ fn signature_hash(signatures: &[String]) -> u64 {
 
 /// 教务课表监控：CAS 会话 → 整学期课表 → 快照 diff（调课/停课提醒）→
 /// 到点推送明日课表。会话失效只提醒（每日最多一次），不自动重试验证码。
+#[derive(Clone)]
 pub struct JwxtTracker {
     store: Arc<dyn TaskStore>,
     notifier: Option<Arc<dyn NotifyChannel>>,
@@ -672,7 +673,8 @@ impl ru41::ingress::schedule::PollJob for JwxtTracker {
     ) -> std::pin::Pin<
         Box<dyn std::future::Future<Output = anyhow::Result<serde_json::Value>> + Send + '_>,
     > {
-        Box::pin(async move { Ok(serde_json::to_value(self.poll_once().await?)?) })
+        let owned = self.clone();
+        ru41::plugins::bridge(async move { Ok(serde_json::to_value(owned.poll_once().await?)?) })
     }
 }
 
