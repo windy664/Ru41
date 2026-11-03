@@ -1,8 +1,8 @@
-use crate::domain::NotifyRoute;
+use ru41::domain::NotifyRoute;
 use anyhow::{Context, Result};
 use serde::Deserialize;
 
-use super::service::YoutubeConfig;
+use crate::service::YoutubeConfig;
 
 /// YouTube 英语预习配置；youtube poll/run 使用。
 #[derive(Debug, Default, Deserialize)]

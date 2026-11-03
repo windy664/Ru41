@@ -4,7 +4,6 @@ use ru41::bootstrap::agents::{AgentOverrides, registry};
 use ru41::bootstrap::assembly::{
     default_notify_route, knowledge_service, notifier_for_route, notify_channels, qq_api,
     qq_command_handlers, qq_image_consumers, scheduled_jobs, todo_notify_route, tracker_job,
-    youtube_client, youtube_prep_route,
 };
 use ru41::bootstrap::store::{open_store, resolve as resolve_store};
 use ru41::{
@@ -16,10 +15,8 @@ use ru41::{
     ingress::cli::{
         ChaoxingCommand, Cli, Command, EventCommand, JwxtCommand, KnowledgeCommand, QqCommand,
         ScheduleCommand, TaskCommand, TeachermateCommand, TodoCommand, TrackerCommand,
-        YoutubeCommand,
     },
     ingress::cli_ops,
-    modules::youtube::{YoutubeSection, qq_command::parse_video_id, service::prep_video_task},
     privacy::{NoopSanitizer, RandomSanitizer, Sanitizer},
     runtime::dispatcher::NotifyDispatcher,
     runtime::worker::{Worker, WorkerConfig},
@@ -58,25 +55,36 @@ async fn main() -> Result<()> {
     }
     // 插件加载完成后再做 [sources] 未知键告警（否则插件的配置段全被误报）。
     ru41::bootstrap::config::warn_unknown_source_keys(&config.sources);
-    // 附属 tracker 通用入口（ru41 <模块名> poll|run）：模块名经注册表校验，
-    // 分支体完全一致，统一分发，不进下面的大 match。
+    // 附属通用入口（ru41 <模块名> poll|run|<专属子命令>）：模块名经注册表校验；
+    // poll|run 统一走 tracker 分发，其余子命令交给模块自己的 cli 钩子（如 youtube prep）。
     if let Command::Tracker(args) = &cli.command {
         let name = args
             .first()
             .context("用法: ru41 <模块名> poll|run（模块名见 schedule list）")?;
-        anyhow::ensure!(
-            ru41::modules::sorted().iter().any(|def| def.name == name),
-            "未知模块: {name}（可用模块见 schedule list）"
-        );
-        let tracker_command = match args.get(1).map(String::as_str) {
-            Some("poll") => TrackerCommand::Poll,
-            Some("run") => TrackerCommand::Run,
-            Some(other) => anyhow::bail!("用法: ru41 {name} poll|run（不支持 {other}）"),
-            None => anyhow::bail!("用法: ru41 {name} poll|run"),
-        };
-        let output =
-            tracker_or_exit(tracker_cli(name, tracker_command, &config, &store_config).await?)?;
-        println!("{}", serde_json::to_string_pretty(&output)?);
+        let defs = ru41::modules::sorted();
+        let def = defs
+            .iter()
+            .find(|def| def.name == name.as_str())
+            .with_context(|| format!("未知模块: {name}（可用模块见 schedule list）"))?;
+        match args.get(1).map(String::as_str) {
+            Some("poll") | Some("run") => {
+                let tracker_command = if args[1] == "poll" {
+                    TrackerCommand::Poll
+                } else {
+                    TrackerCommand::Run
+                };
+                let output = tracker_or_exit(
+                    tracker_cli(name, tracker_command, &config, &store_config).await?,
+                )?;
+                println!("{}", serde_json::to_string_pretty(&output)?);
+            }
+            _ => {
+                let output = (def.cli)(&config, open_store(&store_config)?, &args[1..])
+                    .await?
+                    .with_context(|| format!("用法: ru41 {name} poll|run（或该模块专属子命令）"))?;
+                println!("{}", serde_json::to_string_pretty(&output)?);
+            }
+        }
         return Ok(());
     }
     let output = match cli.command {
@@ -256,42 +264,6 @@ async fn main() -> Result<()> {
             return Ok(());
         }
         Command::Tracker(_) => unreachable!("handled by tracker dispatch above"),
-        Command::Youtube { command } => match command {
-            YoutubeCommand::Prep { url } => {
-                let Some(video_id) = parse_video_id(&url) else {
-                    anyhow::bail!(
-                        "无法从「{url}」解析视频 ID（支持 watch / youtu.be / shorts 链接或 11 位 ID）"
-                    );
-                };
-                let youtube = config
-                    .sources
-                    .get::<ru41::modules::youtube::YoutubeSection>("youtube")?;
-                let message = prep_video_task(
-                    &open_store(&store_config)?,
-                    &youtube_client(&config),
-                    &video_id,
-                    youtube.interests.as_deref().unwrap_or(""),
-                    youtube
-                        .level
-                        .as_deref()
-                        .unwrap_or(YoutubeSection::DEFAULT_LEVEL),
-                    youtube
-                        .max_transcript_chars
-                        .unwrap_or(YoutubeSection::DEFAULT_MAX_TRANSCRIPT_CHARS),
-                    youtube.backend.as_deref().unwrap_or("codex"),
-                    youtube_prep_route(&config)?.as_ref(),
-                )
-                .await?;
-                serde_json::json!({ "video_id": video_id, "message": message })
-            }
-            YoutubeCommand::Poll => tracker_or_exit(
-                tracker_cli("youtube", TrackerCommand::Poll, &config, &store_config).await?,
-            )?,
-            YoutubeCommand::Run => {
-                tracker_cli("youtube", TrackerCommand::Run, &config, &store_config).await?;
-                return Ok(());
-            }
-        },
         Command::Chaoxing { command } => match command {
             ChaoxingCommand::Poll => tracker_or_exit(
                 tracker_cli("chaoxing", TrackerCommand::Poll, &config, &store_config).await?,

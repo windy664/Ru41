@@ -15,7 +15,6 @@ use crate::{
         cli::QqCredentials,
         schedule::{PollJob, ScheduledJob},
     },
-    modules::youtube::source::YtDlpClient,
     ports::{
         channel::NotifyChannel,
         commands::{CommandHandler, ImageConsumer},
@@ -133,23 +132,6 @@ pub fn vault_if_ready(config: &Config, enabled: bool) -> Result<Option<Arc<dyn V
     } else {
         Ok(None)
     }
-}
-
-/// yt-dlp 客户端工厂：tracker、QQ 命令与 CLI prep 共用同一份配置来源。
-/// 实现留在 modules::youtube（tracker/QQ 命令同源），此处仅为装配层转发。
-pub fn youtube_client(config: &Config) -> YtDlpClient {
-    crate::modules::youtube::ytdlp_client(config)
-}
-
-/// [sources.youtube] 语义的通知出口（CLI youtube prep 使用；与 poll 装配一致）。
-pub fn youtube_prep_route(config: &Config) -> Result<Option<crate::domain::NotifyRoute>> {
-    source_notify(
-        config,
-        config
-            .sources
-            .get::<crate::modules::youtube::YoutubeSection>("youtube")?
-            .notify,
-    )
 }
 
 /// 按 [notify] 渠道构造具体通知器；渠道知识只存在于装配层。

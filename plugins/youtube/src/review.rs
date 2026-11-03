@@ -14,7 +14,7 @@
 //! - `youtube_placement`：`latest` 定级测试状态（questions→answers）；
 //! - `youtube_level`：`latest` 定级结果（level/task_id），预习 prompt 的级别来源。
 
-use crate::{
+use ru41::{
     app::task::TaskService,
     bootstrap::assembly,
     domain::NotifyRoute,
@@ -25,7 +25,7 @@ use anyhow::Result;
 use chrono::{Local, Timelike};
 use std::sync::Arc;
 
-use super::service::YoutubeConfig;
+use crate::service::YoutubeConfig;
 
 /// 词块记录 kind；id 形如 `<video>#<n>`（n 为单张预习单内的序号）或 `<video>#meta`。
 const VOCAB_KIND: &str = "youtube_vocab";
@@ -241,7 +241,7 @@ impl YoutubeReviewJob {
             DIGEST_KIND,
             today,
             None,
-            &serde_json::json!({ "task_ids": sheet_ids, "pushed_at": crate::util::now() }),
+            &serde_json::json!({ "task_ids": sheet_ids, "pushed_at": ru41::util::now() }),
         )?;
         if let Some(ids) = batch_ids {
             self.apply_batch_effects(&ids)?;
@@ -267,7 +267,7 @@ impl YoutubeReviewJob {
             .filter(|task| {
                 task.request_key.starts_with("youtube:prep:")
                     && !task.request_key.contains(":dead")
-                    && task.status == crate::domain::TaskStatus::Succeeded
+                    && task.status == ru41::domain::TaskStatus::Succeeded
                     && task.notify.is_none()
                     && task.result.as_ref().is_some_and(|r| {
                         // 新格式门槛：模板 7cc2910 起才有「精听挑战」段。
@@ -283,7 +283,7 @@ impl YoutubeReviewJob {
 
     /// 到期词块复习段：只负责挑词与排版；副作用由 push_daily_digest 统一落。
     fn review_section(&self) -> Result<Option<(String, Vec<String>)>> {
-        let now = crate::util::now();
+        let now = ru41::util::now();
         let mut due: Vec<_> = self
             .store
             .documents(VOCAB_KIND, 2_000)?
@@ -300,7 +300,7 @@ impl YoutubeReviewJob {
         due.sort_by_key(|doc| doc.value["due_at"].as_i64().unwrap_or(i64::MAX));
         // 单批最多 MAX_PER_PUSH 条，且单个视频最多 MAX_PER_VIDEO 条——
         // 防止某一天只学了一个视频时，复习批被同一视频刷满。
-        let mut picked: Vec<crate::domain::records::Document> = Vec::new();
+        let mut picked: Vec<ru41::domain::records::Document> = Vec::new();
         let mut per_video: std::collections::HashMap<String, usize> = Default::default();
         for doc in due {
             let video = doc.value["video_id"]
@@ -347,12 +347,12 @@ impl YoutubeReviewJob {
             BATCH_KIND,
             &today,
             revision,
-            &serde_json::json!({ "items": ids, "pushed_at": crate::util::now(), "resolved": false }),
+            &serde_json::json!({ "items": ids, "pushed_at": ru41::util::now(), "resolved": false }),
         )?;
         for id in ids {
             if let Some(doc) = self.store.document(VOCAB_KIND, id)? {
                 let mut value = doc.value.clone();
-                value["due_at"] = (crate::util::now() + 2 * 86_400).into();
+                value["due_at"] = (ru41::util::now() + 2 * 86_400).into();
                 let _ = self
                     .store
                     .put_document(VOCAB_KIND, id, Some(doc.revision), &value);
@@ -365,10 +365,10 @@ impl YoutubeReviewJob {
     fn topic_section(
         &self,
         today_videos: &[String],
-    ) -> Result<Option<(String, Vec<crate::domain::records::Document>)>> {
+    ) -> Result<Option<(String, Vec<ru41::domain::records::Document>)>> {
         let mut by_category: std::collections::HashMap<
             String,
-            Vec<crate::domain::records::Document>,
+            Vec<ru41::domain::records::Document>,
         > = Default::default();
         for doc in self.store.documents(ANCHOR_KIND, 2_000)? {
             if doc.value["topic_pushed"].as_bool() == Some(true) {
@@ -410,7 +410,7 @@ impl YoutubeReviewJob {
     fn apply_topic_effects(
         &self,
         today: &str,
-        docs: Vec<crate::domain::records::Document>,
+        docs: Vec<ru41::domain::records::Document>,
     ) -> Result<()> {
         let category = docs
             .first()
@@ -435,7 +435,7 @@ impl YoutubeReviewJob {
     fn pickup_level(&self) -> Result<()> {
         let Some(task) = self.store.list(SCAN_LIMIT)?.into_iter().find(|task| {
             task.request_key.starts_with("youtube:place-eval:")
-                && task.status == crate::domain::TaskStatus::Succeeded
+                && task.status == ru41::domain::TaskStatus::Succeeded
                 && task.result.as_ref().is_some_and(|r| !r.summary.is_empty())
         }) else {
             return Ok(());
@@ -454,7 +454,7 @@ impl YoutubeReviewJob {
         let value = serde_json::json!({
             "level": level,
             "task_id": task.id,
-            "date": crate::util::now(),
+            "date": ru41::util::now(),
         });
         match self.store.document(LEVEL_KIND, "latest")? {
             Some(doc) => {
@@ -479,7 +479,7 @@ impl YoutubeReviewJob {
             .filter(|task| {
                 task.request_key.starts_with("youtube:prep:")
                     && !task.request_key.contains(":dead")
-                    && task.status == crate::domain::TaskStatus::Succeeded
+                    && task.status == ru41::domain::TaskStatus::Succeeded
                     && task.result.as_ref().is_some_and(|r| !r.summary.is_empty())
             })
             .map(|task| task.request_key)
@@ -505,7 +505,7 @@ impl YoutubeReviewJob {
             let Some(result) = &task.result else { continue };
             let items = extract_vocab(&result.summary);
             let anchors = extract_anchors(&result.summary);
-            let now = crate::util::now();
+            let now = ru41::util::now();
             for (index, item) in items.iter().enumerate() {
                 self.store.put_document(
                     VOCAB_KIND,
@@ -558,7 +558,7 @@ impl YoutubeReviewJob {
                 continue;
             }
             let pushed_at = doc.value["pushed_at"].as_i64().unwrap_or(0);
-            if crate::util::now() - pushed_at < BATCH_STALE_HOURS * 3600 {
+            if ru41::util::now() - pushed_at < BATCH_STALE_HOURS * 3600 {
                 continue;
             }
             if let Some(items) = doc.value["items"].as_array() {
@@ -591,7 +591,7 @@ pub fn latest_sheet(store: &Arc<dyn TaskStore>) -> Result<String> {
 pub fn latest_answers(store: &Arc<dyn TaskStore>) -> Result<String> {
     for task in store.list(SCAN_LIMIT)? {
         if !task.request_key.starts_with("youtube:prep:")
-            || task.status != crate::domain::TaskStatus::Succeeded
+            || task.status != ru41::domain::TaskStatus::Succeeded
         {
             continue;
         }
@@ -624,7 +624,7 @@ fn promote_item(store: &Arc<dyn TaskStore>, id: &str) -> Result<()> {
     } else {
         let next = stage + 1;
         value["stage"] = next.into();
-        value["due_at"] = (crate::util::now() + INTERVAL_DAYS[next] * 86_400).into();
+        value["due_at"] = (ru41::util::now() + INTERVAL_DAYS[next] * 86_400).into();
     }
     store.put_document(VOCAB_KIND, id, Some(doc.revision), &value)?;
     Ok(())
@@ -638,7 +638,7 @@ fn demote_item(store: &Arc<dyn TaskStore>, id: &str) -> Result<()> {
     let mut value = doc.value.clone();
     value["stage"] = 0.into();
     value["known"] = false.into();
-    value["due_at"] = (crate::util::now() + INTERVAL_DAYS[0] * 86_400).into();
+    value["due_at"] = (ru41::util::now() + INTERVAL_DAYS[0] * 86_400).into();
     store.put_document(VOCAB_KIND, id, Some(doc.revision), &value)?;
     Ok(())
 }
@@ -693,8 +693,8 @@ pub fn apply_feedback(store: &Arc<dyn TaskStore>, arg: &str) -> Result<String> {
 
 fn latest_open_batch(
     store: &Arc<dyn TaskStore>,
-) -> Result<Option<crate::domain::records::Document>> {
-    let cutoff = crate::util::now() - BATCH_STALE_HOURS * 3600;
+) -> Result<Option<ru41::domain::records::Document>> {
+    let cutoff = ru41::util::now() - BATCH_STALE_HOURS * 3600;
     Ok(store
         .documents(BATCH_KIND, 30)?
         .into_iter()
@@ -979,7 +979,7 @@ fn latest_prep_summary(store: &Arc<dyn TaskStore>) -> Result<Option<String>> {
         .find(|task| {
             task.request_key.starts_with("youtube:prep:")
                 && !task.request_key.contains(":dead")
-                && task.status == crate::domain::TaskStatus::Succeeded
+                && task.status == ru41::domain::TaskStatus::Succeeded
                 && task.result.as_ref().is_some_and(|r| !r.summary.is_empty())
         })
         .and_then(|task| task.result.map(|r| r.summary)))
@@ -1004,7 +1004,7 @@ fn enqueue_with_route(
     prompt: &str,
     backend: &str,
     route: Option<&NotifyRoute>,
-) -> Result<crate::domain::EnqueueResult> {
+) -> Result<ru41::domain::EnqueueResult> {
     match route {
         Some(route) => service.enqueue_with_notify(key, prompt, backend, route),
         None => service.enqueue_for(key, prompt, backend),
@@ -1060,7 +1060,7 @@ impl PollJob for YoutubeReviewJob {
 /// 装配入口：从配置解析通知渠道，复习推送与 batch 反馈共用同一路由。
 pub fn review_job(
     store: Arc<dyn TaskStore>,
-    config: &crate::bootstrap::config::Config,
+    config: &ru41::bootstrap::config::Config,
     youtube: &YoutubeConfig,
 ) -> Result<YoutubeReviewJob> {
     let notifier = match &youtube.notify {

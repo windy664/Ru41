@@ -9,7 +9,6 @@ pub mod jwxt;
 pub mod obsidian;
 pub mod planner;
 pub mod teachermate;
-pub mod youtube;
 
 pub use ru41_plugin_api::module::*;
 

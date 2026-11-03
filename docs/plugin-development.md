@@ -81,9 +81,10 @@ cp target-docker/release/libru41_plugin_foo.so <服务器>:/etc/ru41/plugins/
 | 插件 | 目录 | 说明 |
 |---|---|---|
 | hello | `templates/plugin-hello/` | 最小模板 |
-| blog / competitions / compshare / ecard / homework / jobs / notices / pagewatch / papers / programs / projects / research / rss / zhihuishu | `plugins/*/` | 业务附属全部插件化（共 14 个，配置与运行细节见 `docs/sources-*.md`） |
+| blog / competitions / compshare / ecard / homework / jobs / lecture / notices / pagewatch / papers / programs / projects / research / rss / zhihuishu | `plugins/*/` | 业务附属全部插件化（共 15 个，配置与运行细节见 `docs/sources-*.md`） |
 | library | `plugins/library/` | 图书馆：CAS→超星统一认证→libsp，到期催还提醒（3/1/0 天分级）、`/借阅`、`/续借`（带按钮）、`/找书`（免登录公开馆藏检索，索书号+在架）；协议见 `docs/library-recon.md` |
 | events | `plugins/events/` | 活动日程：茶思屋会议日历 + 活动行大湾区三城 → 科技向筛选 → vault `Events-活动/活动总览.md`；只写 Obsidian 不推送 |
+| youtube | `plugins/youtube/` | YouTube 英语预习：频道轮询 + `/英语` QQ 命令 + `ru41 youtube prep` 专属 CLI（cli 钩子的参考实现） |
 
 ## 本地开发与测试
 
@@ -112,6 +113,9 @@ static DEF: ru41::modules::ModuleDef = ru41::modules::ModuleDef {
     tracker: |config, store, name| { /* 命中才构造 */ },
     qq_handlers: |config, backend| { /* QQ 命令 */ },
     image_consumers: ru41::modules::no_image_consumers,
+    // 专属 CLI（ru41 <name> <子命令>，poll|run 之外）才实现；签名
+    // (config, store, args)，注意返回的 future 必须 'static——先把配置克隆
+    // 成 owned 再进 async move。参考实现：plugins/youtube（prep）。
     cli: ru41::modules::no_cli,
 };
 ```
@@ -157,3 +161,33 @@ bump `crates/ru41-plugin-api/Cargo.toml` 的 version，全部插件需重编；
 > - 模块级接线（DEF 字面量里的闭包）是合并/重构最易被扫成 noop 的位置，
 >   chaoxing 照片签到曾因此断线——`tests/chaoxing_sources.rs` 的
 >   `def_image_consumers_wires_qr_signer_when_ready` 已钉住，同类接线照此加测试。
+
+## 附录：内建模块迁插件 checklist（2026-11-03 youtube 试点沉淀）
+
+目标：把 `src/modules/<m>/` 迁成 `plugins/<m>/`，核心只减不增。
+
+1. **机械搬移**：`./deploy/migrate-module-to-plugin.sh <m>`
+   （git mv + 引路改写 + 入口函数 + Cargo.toml 模板；已钉住 youtube 试点
+   发现的三个坑：lib.rs 自引用还原、子模块测试 `use super::*`、根级 `super::no_*`）。
+2. **Cargo.toml 补依赖**：模板只含常见依赖；正式代码用到的
+   （如 tempfile）必须进 `[dependencies]`，只测试用的进 `[dev-dependencies]`。
+3. **核心侧移除**（全是机械删）：
+   - `src/ingress/cli.rs`：删 `Command::<M>` 变体与 `<M>Command` 枚举
+     （`ru41 <m> poll|run` 由 external_subcommand 兜底，专属子命令走 cli 钩子）。
+   - `src/main.rs`：删 import 与对应 match 臂；专属命令逻辑搬进插件 cli 钩子。
+   - `src/bootstrap/assembly.rs`：删为该模块写的转发函数与 import。
+   - `src/modules/mod.rs`：删 `pub mod <m>;`（脚本已做）。
+   - `tests/schedule_jobs.rs`：该模块断言移除或换成其他内建模块。
+4. **集成测试搬家**：`git mv tests/<m>_sources.rs plugins/<m>/tests/`，
+   `ru41::modules::<m>` → `ru41_plugin_<m>`（注意多行 use 块里的残留要拆成独立 use）。
+5. **专属 CLI（如有）**：实现 `DEF.cli`（签名 `(config, store, args)`，
+   future 必须 `'static`：先把 section/参数克隆成 owned 再 `async move`）。
+   `main.rs` 的 Tracker 分发已泛化：`poll|run` 之外的参数一律进 cli 钩子。
+6. **ABI 门**：改了 ru41-plugin-api 任何公开项 → bump 它的 `version`
+   （旧 .so 会被握手正确拒载，部署时随镜像全量重编，无需手动）。
+7. **验证顺序**：`cd plugins/<m> && cargo test` → 根 `cargo test`
+   → `cargo build --release --features plugin-entry` 后 `nm -D` 看 `ru41_plugin_entry`
+   → 临时配置 `[plugins] dir = "plugins/target-plugins/release"` 跑
+   `schedule list`（看到本插件 job + 旧 .so 被拒日志）与 `ru41 <m> <cmd>` 端到端。
+8. **部署**：正常发版不用手动编 .so——镜像 CI 的 plugins stage 全量重编；
+   热更才 scp 单个 .so + 重启对应容器。
