@@ -58,7 +58,9 @@ impl PendingItem {
 
 /// 从录音文件名解析开录时刻（本地时区 unix 秒）。覆盖常见录音 app 命名：
 /// `20261103_143000`、`20261103143000`、`2026-11-03 14-30-05`、
-/// `Rec_2026.11.03-14.30`、`录音 2026年11月3日 14_30`。解析不出返回 None。
+/// `Rec_2026.11.03-14.30`、`录音 2026年11月3日 14_30`、
+/// `2026年11月04日 上午09点11分(1).mp3`（QQ 常见中文时刻格式）。
+/// 解析不出返回 None。
 pub fn parse_recorded_at(filename: &str) -> Option<i64> {
     use chrono::{Local, NaiveDate, TimeZone};
     // 去扩展名；时间串可能在任意位置（Rec_ 前缀、「录音 」等字样前后）。
@@ -67,8 +69,9 @@ pub fn parse_recorded_at(filename: &str) -> Option<i64> {
         .map(|(s, _)| s)
         .unwrap_or(filename);
     // 分隔符格式：2026-11-03 14-30-05 / 2026.11.03-14.30 / 2026年11月3日 14_30
+    // / 2026年11月4日 下午05点04分（上下午等时段字样可出现在日期与时刻之间）。
     let sep = regex::Regex::new(
-        r"(?P<y>\d{4})[-_.年](?P<m>\d{1,2})[-_.月](?P<d>\d{1,2})[日\s_-]*(?P<h>\d{1,2})[:：時._-](?P<min>\d{1,2})(?:[:：._-](?P<s>\d{1,2}))?",
+        r"(?P<y>\d{4})[-_.年](?P<m>\d{1,2})[-_.月](?P<d>\d{1,2})[日\s_-]*(?:(?P<ampm>上午|早上|凌晨|中午|午后|下午|晚上|傍晚)\s*)?(?P<h>\d{1,2})[点時:：._-](?P<min>\d{1,2})(?:(?:分)?(?:[:：._-](?P<s>\d{1,2}))?秒?)?",
     )
     .ok()?;
     // 紧凑格式：20261103_143000 / 20261103143000（纯数字时间戳）
@@ -93,6 +96,15 @@ pub fn parse_recorded_at(filename: &str) -> Option<i64> {
             continue;
         };
         let s = num(&caps, "s").unwrap_or(0);
+        // 下午/晚上等字样 + 12 小时制：小于 12 才加，避免「下午17点」变 29 点。
+        let mut h = h;
+        if matches!(
+            caps.name("ampm").map(|m| m.as_str()),
+            Some("下午") | Some("晚上") | Some("午后") | Some("傍晚")
+        ) && h < 12
+        {
+            h += 12;
+        }
         let Some(date) = NaiveDate::from_ymd_opt(y as i32, mo, d) else {
             continue;
         };
@@ -203,6 +215,35 @@ mod tests {
         assert_eq!(
             parse_recorded_at("录音 2026年11月3日 14_30.mp3"),
             Some(ts(2026, 11, 3, 14, 30, 0))
+        );
+    }
+
+    #[test]
+    fn recorded_at_parses_qq_chinese_time_names() {
+        use chrono::{Local, TimeZone};
+        let ts = |y, mo, d, h, mi: u32| {
+            Local
+                .with_ymd_and_hms(y, mo, d, h, mi, 0)
+                .single()
+                .unwrap()
+                .timestamp()
+        };
+        // QQ 传来的课堂录音常见命名：日期与时刻之间有上午/下午等时段字样。
+        assert_eq!(
+            parse_recorded_at("2026年11月04日 上午09点11分(1).mp3"),
+            Some(ts(2026, 11, 4, 9, 11))
+        );
+        assert_eq!(
+            parse_recorded_at("2026年11月04日 下午05点04分(1).mp3"),
+            Some(ts(2026, 11, 4, 17, 4))
+        );
+        assert_eq!(
+            parse_recorded_at("2026年11月04日 下午06点59分(1).mp3"),
+            Some(ts(2026, 11, 4, 18, 59))
+        );
+        assert_eq!(
+            parse_recorded_at("录音 2026年11月3日 晚上8点5分.mp3"),
+            Some(ts(2026, 11, 3, 20, 5))
         );
     }
 

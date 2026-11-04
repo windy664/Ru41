@@ -169,7 +169,7 @@ fn audio_file_is_downloaded_and_queued() {
 }
 
 #[test]
-fn course_matching_prefers_overlapping_class_then_nearest() {
+fn course_matching_by_interval_only() {
     let tmp = tempfile::tempdir().unwrap();
     let store: Arc<dyn TaskStore> =
         Arc::new(SqliteTaskStore::open(&tmp.path().join("state.db")).unwrap());
@@ -190,8 +190,10 @@ fn course_matching_prefers_overlapping_class_then_nearest() {
         .unwrap();
     // 上课中录音 → 该课。
     assert_eq!(w.course_at(t0 + 600), "高等数学");
-    // 课后 1.5 小时内录音 → 最近一节。
-    assert_eq!(w.course_at(t0 + 5400 + 300), "高等数学");
+    // 开课前 5 分钟起录 → 容差内，仍算该课。
+    assert_eq!(w.course_at(t0 - 300), "高等数学");
+    // 下课后不再就近猜课（猜错课比留兜底更伤归档）。
+    assert_eq!(w.course_at(t0 + 5400 + 300), "课堂录音");
     // 窗口外 → fallback。
     assert_eq!(w.course_at(t0 + 5 * 3600), "课堂录音");
     // 日程为空 → fallback。
