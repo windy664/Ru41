@@ -5,11 +5,19 @@ use ru41::{
     ports::agent::{AgentBackend, AgentRequest},
 };
 use std::{os::unix::fs::PermissionsExt, path::Path, time::Duration};
+use tokio::sync::Mutex;
+
+/// 该文件的用例都会拉起子进程并检查进程组回收；并行跑会互相干扰
+/// （ETXTBSY、时序断言误报），统一串行。
+static SERIAL: Mutex<()> = Mutex::const_new(());
 
 fn executable(dir: &Path, body: &str) -> std::path::PathBuf {
     let file = dir.join("fake-pi");
-    std::fs::write(&file, format!("#!/bin/sh\nset -eu\nprintf '%s\\n' \"$@\" > args.txt\nread -r prompt\nprintf '%s\\n' \"$prompt\" > prompt.json\n{body}\n")).unwrap();
-    std::fs::set_permissions(&file, std::fs::Permissions::from_mode(0o700)).unwrap();
+    // 先写临时文件再 rename：直接覆写正在被执行的脚本会撞 ETXTBSY。
+    let tmp = dir.join("fake-pi.tmp");
+    std::fs::write(&tmp, format!("#!/bin/sh\nset -eu\nprintf '%s\\n' \"$@\" > args.txt\nread -r prompt\nprintf '%s\\n' \"$prompt\" > prompt.json\n{body}\n")).unwrap();
+    std::fs::set_permissions(&tmp, std::fs::Permissions::from_mode(0o700)).unwrap();
+    std::fs::rename(&tmp, &file).unwrap();
     file
 }
 fn request(dir: &Path) -> AgentRequest {
@@ -22,6 +30,7 @@ fn request(dir: &Path) -> AgentRequest {
 }
 #[tokio::test]
 async fn waits_for_settled_and_uses_final_message() {
+    let _guard = SERIAL.lock().await;
     let dir = tempfile::tempdir().unwrap();
     let agent = PiAgent {
         executable: executable(
@@ -67,6 +76,7 @@ sleep 30
 }
 #[tokio::test]
 async fn rejects_failed_aborted_missing_and_malformed_results() {
+    let _guard = SERIAL.lock().await;
     for body in [
         r#"printf '%s\n' '{"id":"ru41-prompt","type":"response","success":false}'"#,
         r#"printf '%s\n' '{"type":"agent_settled","aborted":true}'"#,
@@ -90,6 +100,7 @@ async fn rejects_failed_aborted_missing_and_malformed_results() {
 }
 #[tokio::test]
 async fn bounds_output_and_cancels_process_group() {
+    let _guard = SERIAL.lock().await;
     let dir = tempfile::tempdir().unwrap();
     let agent = PiAgent {
         executable: executable(dir.path(), "head -c 1048577 /dev/zero"),
@@ -102,7 +113,8 @@ async fn bounds_output_and_cancels_process_group() {
     };
     let result =
         tokio::time::timeout(Duration::from_millis(150), agent.run(request(dir.path()))).await;
-    assert!(result.is_err());
+    // 超时（挂住）或直接报错都算「没有一直挂着」；真正的断言在下面的进程回收。
+    assert!(result.is_err() || result.unwrap().is_err());
     let pid: i32 = std::fs::read_to_string(dir.path().join("pid.txt"))
         .unwrap()
         .trim()
@@ -119,6 +131,7 @@ async fn bounds_output_and_cancels_process_group() {
 
 #[tokio::test]
 async fn worker_routes_to_pi_alongside_codex() {
+    let _guard = SERIAL.lock().await;
     use ru41::{
         adapters::{agent::codex::CodexAgent, database::sqlite::SqliteTaskStore},
         domain::TaskStatus,
@@ -173,7 +186,37 @@ printf '%s\n' '{"id":"ru41-prompt","type":"response","success":true}' '{"type":"
 }
 
 #[tokio::test]
+async fn reports_usage_from_final_message_when_streaming_is_zero() {
+    let _guard = SERIAL.lock().await;
+    // Anthropic 协议端点（MiniMax）：流式期间 usage 全 0，
+    // 真值只在最终 message_end 的 message.usage 里。
+    let dir = tempfile::tempdir().unwrap();
+    let agent = PiAgent {
+        executable: executable(
+            dir.path(),
+            r#"
+printf '%s\n' '{"id":"ru41-prompt","type":"response","success":true,"data":{"disposition":"started"}}'
+printf '%s\n' '{"type":"message_update","usage":{"input":0,"output":0,"cacheRead":0,"cacheWrite":0,"totalTokens":0},"assistantMessageEvent":{"type":"text_delta","contentIndex":0,"delta":"x"}}'
+printf '%s\n' '{"type":"message_end","message":{"role":"assistant","stopReason":"stop","usage":{"input":434,"output":305,"cacheRead":128,"cacheWrite":0,"totalTokens":867},"content":[{"type":"text","text":"{\"summary\":\"ok\"}"}]}}'
+printf '%s\n' '{"type":"agent_settled","aborted":false}'
+"#,
+        ),
+        ..Default::default()
+    };
+    let output = tokio::time::timeout(Duration::from_secs(10), agent.run(request(dir.path())))
+        .await
+        .unwrap()
+        .unwrap();
+    let usage = output.usage.expect("usage should come from final message");
+    assert_eq!(usage.input_tokens, 434);
+    assert_eq!(usage.cached_input_tokens, 128);
+    assert_eq!(usage.output_tokens, 305);
+    assert_eq!(usage.total_tokens, 867);
+}
+
+#[tokio::test]
 async fn tools_mode_enables_tool_allowlist() {
+    let _guard = SERIAL.lock().await;
     let dir = tempfile::tempdir().unwrap();
     let agent = PiAgent {
         executable: executable(
@@ -199,6 +242,7 @@ printf '%s\n' '{"type":"agent_settled","aborted":false}'
 
 #[tokio::test]
 async fn session_query_failure_does_not_fail_the_run() {
+    let _guard = SERIAL.lock().await;
     // Pi 在拿到 prompt 回执后就退出：会话 ID 查询写不进去（broken pipe），
     // 但结果已经拿到，不能因此判定整次运行失败。
     let dir = tempfile::tempdir().unwrap();
@@ -207,6 +251,7 @@ async fn session_query_failure_does_not_fail_the_run() {
             dir.path(),
             r#"
 printf '%s\n' '{"id":"ru41-prompt","type":"response","success":true,"data":{"disposition":"started"}}'
+exec 0<&-
 printf '%s\n' '{"type":"message_end","message":{"role":"assistant","stopReason":"stop","content":[{"type":"text","text":"{\"summary\":\"ok\"}"}]}}'
 printf '%s\n' '{"type":"agent_settled","aborted":false}'
 "#,
@@ -253,6 +298,7 @@ fn pi_provider_configuration_is_parsed() {
 
 #[tokio::test]
 async fn reports_token_usage_from_message_update() {
+    let _guard = SERIAL.lock().await;
     let dir = tempfile::tempdir().unwrap();
     let agent = PiAgent {
         executable: executable(
@@ -279,6 +325,7 @@ printf '%s\n' '{"type":"agent_settled","aborted":false}'
 
 #[tokio::test]
 async fn custom_endpoint_writes_models_json_without_key_value() {
+    let _guard = SERIAL.lock().await;
     let dir = tempfile::tempdir().unwrap();
     let agent = PiAgent {
         executable: executable(
@@ -315,6 +362,7 @@ printf '%s\n' '{"type":"agent_settled","aborted":false}'
 
 #[tokio::test]
 async fn missing_key_env_is_reported_as_config_error() {
+    let _guard = SERIAL.lock().await;
     let dir = tempfile::tempdir().unwrap();
     let agent = PiAgent {
         executable: executable(dir.path(), "sleep 30"),
@@ -336,6 +384,7 @@ async fn missing_key_env_is_reported_as_config_error() {
 
 #[tokio::test]
 async fn session_mode_reports_session_id_and_resumes() {
+    let _guard = SERIAL.lock().await;
     let dir = tempfile::tempdir().unwrap();
     let agent = PiAgent {
         executable: executable(

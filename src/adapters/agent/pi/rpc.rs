@@ -333,6 +333,11 @@ impl PiAgent {
                         }
                     }
                     Some("message_end") if event["message"]["role"] == "assistant" => {
+                        // 权威用量在最终消息上：Anthropic 协议端点（如 MiniMax）
+                        // 流式期间 message_update 一直是 0，只有收尾才给真值。
+                        if let Some(reported) = usage_from_event(&event["message"]) {
+                            usage = Some(reported);
+                        }
                         final_message = Some(event["message"].clone());
                     }
                     Some("agent_settled") => {
