@@ -51,6 +51,15 @@
 - [x] 水电费监控：ecard 平台接口逆向（docs/ecard-waterfee.md）、每日余额采集落库、低余额阈值提醒（充值识别与消耗趋势后续）
 - [x] 一个消息渠道（QQ 官方机器人）：记录想法入队任务、终态结果回复、固定命令（帮助/任务查询/取消）与口令身份绑定
 
+## P1 全量插件化（2026-11-03 完成）
+
+- [x] 23 个附属全部迁为 cdylib 插件（`plugins/<名>/`），`src/modules/` 清空为注册表空壳
+- [x] 边界收口 `crates/ru41-plugin-api`：ModuleDef/ports/domain/Config + 握手三硬门（magic/api 版本/deps stamp），宿主改业务代码不再要求插件重编
+- [x] 异步边界桥 `plugin_api::bridge`：插件 .so 静态链接自己的 tokio，一切异步入口过桥（QQ handler / PollJob / 核心 tracker 被插件实例化的情形，2026-11-04 补齐 ClassRemindTracker）
+- [x] 容器角色过滤 `RU41_PLUGINS` 白名单；插件技能包随镜像分发（热更 .so 不带技能）
+- [ ] 生产容器逐个配置插件白名单的 chore（默认全量加载，行为不变）
+- [ ] 每个插件补专属文档（当前以 docs/README.md 插件清单表导航）
+
 ## 后续
 
 水电、知到、X 情报、周报、机会匹配、财务和媒体。先跑通两个真实业务，再决定 crate 拆分、模块接口和插件安装机制。

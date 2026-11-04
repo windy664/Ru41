@@ -26,7 +26,7 @@
 | 学习通账密 | `[sources.chaoxing]` | `RU41_XXT_PHONE` / `RU41_XXT_PASSWORD` | 协议登录 → cookie |
 | 教务账密 | `[sources.jwxt]` | `RU41_JWXT_USERNAME` / `RU41_JWXT_PASSWORD` | CAS 登录 → TGT |
 | 校园卡 token | `[sources.ecard]` | `RU41_ECARD_TOKEN` | 水电查询 |
-| 雨课堂 openid | `[sources.teachermate]` | `RU41_WZJ_OPENID` | 作业轮询（人工投喂） |
+| 微助教 openid | `[sources.teachermate]` | `RU41_WZJ_OPENID` | 签到+作业轮询（微信服务号人工投喂） |
 | 恒源云 cookie | 仅环境变量 | `RU41_COMPSHARE_COOKIE` | GPU 库存监控 |
 | HTTP API token | `[api]` | `RU41_API_TOKEN` | `ingress/http` 鉴权 |
 | Vault git 凭证 | git credential helper | （git 标准） | Obsidian Vault 推送 |
@@ -37,9 +37,10 @@
 |---|---|---|
 | `.ru41/chaoxing/cookies.json` | 学习通 | 账密登录一次后复用；`cookies.qr.json` 是二维码签到独立会话 |
 | `.ru41/jwxt/session.json` | 教务 | TGT + cookie 持久化 |
-| `.ru41/teachermate/openid` | 雨课堂 | openid 落盘 |
+| `.ru41/teachermate/openid` | 微助教 | openid 落盘；失效时需人工从微信「微助教」服务号取新链接重新 `teachermate bind`（无账密自动重登路径） |
+| `.ru41/library/session.json` | 图书馆（libsp） | 凭证复用教务 CAS（同套账密），会话独立落盘 |
 
-会话失效时自动走账密重登并回写；`.ru41/` 目录必须 gitignore。
+会话失效时自动走账密重登并回写（微助教 openid 除外，见上表）；`.ru41/` 目录必须 gitignore。
 
 ## 换 key 的操作
 
