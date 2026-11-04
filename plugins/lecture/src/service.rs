@@ -177,24 +177,21 @@ impl LectureWorker {
     }
 
     /// 按录音时间猜课程（优先文件名里解析出的开录时刻，回退收到时刻）：
-    /// 优先包含该时刻的课，否则 2 小时窗内最近的一节；
-    /// 日程里没有匹配则回退 fallback_course。公开供集成测试。
+    /// 落在课区间内的课（允许开课前 10 分钟起录）；区间外一律回退 fallback。
+    /// 不再就近猜课：猜错课比留兜底更伤笔记归档（2026-11-04 形势与政策误归教训）。
+    /// 公开供集成测试。
     pub fn course_at(&self, recorded_at: i64) -> String {
-        let window = 2 * 3600;
+        let lead = 10 * 60;
         let service = ScheduleService::new(self.store.clone(), self.options);
         let Ok(occurrences) =
-            service.occurrences_between(recorded_at - window, recorded_at + window, 20)
+            service.occurrences_between(recorded_at - lead, recorded_at + lead, 20)
         else {
             return self.config.fallback_course.clone();
         };
         let containing = occurrences
             .iter()
-            .find(|o| o.starts_at <= recorded_at && recorded_at < o.ends_at);
-        let nearest = occurrences
-            .iter()
-            .min_by_key(|o| (recorded_at - o.starts_at).abs());
+            .find(|o| o.starts_at - lead <= recorded_at && recorded_at < o.ends_at);
         containing
-            .or(nearest)
             .map(|o| sanitize_name(&o.title))
             .filter(|s| !s.is_empty())
             .unwrap_or_else(|| self.config.fallback_course.clone())
@@ -220,18 +217,21 @@ impl LectureWorker {
             self.config.vault_dir.trim_end_matches('/'),
             course
         );
+        let course_line = if course == self.config.fallback_course {
+            format!("- 课表核对：录音时间没落在任何课的区间里，课程未知，归入「{course}」目录")
+        } else {
+            format!("- 课表核对课程：{course}（录音时间落在该课的课表区间内，以此为准）")
+        };
         let prompt = format!(
             "请把课堂录音转写整理成课堂笔记，用途只有一个：期末复习拿分。宁可短而实，不要长而空。\n\
-             - 录音时间：{recorded_label}（{recorded_source}；课程匹配与归档日期的依据，若与转写内容明显冲突以内容为准）\n\
-             - 课表猜测课程：{course}（按录音时间查课表得出，课表可能有调课/错位，仅供参考）\n\
+             - 录音时间：{recorded_label}（{recorded_source}；课程匹配与归档日期的依据）\n\
+             {course_line}\n\
              - 日期：{date}\n\
              - 目标文件（Vault）：{note_path}\n\
              要求：\n\
-             0. **先核实课程**：读一遍转写内容判断实际是哪门课，列一下 {vault_dir}/ 下现有课程目录名做对照。\
-             若内容与猜测课程明显不符，改用你判断的课程，目标文件变为对应课程目录下的 课堂笔记.md（目录不存在才新建），\
-             并在汇报里说明课程修正；内容无法判断时保持原目标。\
-             注意有些课程目录名带额外信息（如「高等数学I(理)」），以目录名为准，不要自造新名字。\n\
-             1. 目标文件不存在就创建（带 # <课程名> 课堂笔记 标题）；已存在就读取后**在末尾追加**新章节，已有内容一字不动。\n\
+             0. 课程归属以课表核对为准：直接写入上面的目标文件，**不要按转写内容改课程、不要新建其他课程目录**。\
+             若转写内容与核对课程明显对不上，笔记照常写入目标文件，并在汇报末尾加一行「⚠️ 课程核对异常：<内容更像哪门课>」交人工确认。\n\
+             1. 目标文件不存在就创建（带 # {course} 课堂笔记 标题）；已存在就读取后**在末尾追加**新章节，已有内容一字不动。\n\
              2. 新章节格式：`## {date} {stem}`。栏目按需取用，没有实质内容的栏目**整个省略不写**（不留空标题、不写「无」）：\
              ### 本课概览（2-4 条说清这节课实际讲了什么）、### 例题与讲解、### 题型与方法、### 公式与结论、### 考试线索、### 易错点、### 复习清单。\n\
              3. **宁缺毋滥**：每条内容都要能落到转写原文；教科书上本来就有的通用定义（如函数三要素、极限定义）只在老师当场强调时才记，并注明是老师强调；口语冗余、重复内容直接舍弃。\
@@ -246,7 +246,6 @@ impl LectureWorker {
              10. **不臆想**：只依据转写原文整理，课堂没讲的内容不补充、不外推；无法辨认或疑似转写错误的片段如实标注「待核对」，不要编造顺滑的假内容；若整段转写与学科无关（静音幻觉、字幕署名等），只写一行说明该段无可整理内容。\n\
              11. 完成后简单汇报本次笔记要点与最终写入路径（不超过 10 行），不要复述全文。\n\n\
              以下是本次转写原文：\n\n{transcript}",
-            vault_dir = self.config.vault_dir.trim_end_matches('/'),
             recorded_source = item.recorded_time_source(),
         );
         self.store.enqueue_with_notify(
