@@ -159,6 +159,16 @@ enum DispatchOutcome {
     Ingested,
 }
 
+/// 连接存活不足此时长视为「秒断」（凭据/权限问题的典型形态）。
+const QUICK_DISCONNECT_THRESHOLD: Duration = Duration::from_secs(5);
+/// 连续秒断达到此次数时输出诊断提示。
+const QUICK_DISCONNECT_LIMIT: u32 = 3;
+
+/// 重连退避：2^n 秒封顶 30；稳定会话（≥60s）由调用方把计数清零。
+fn reconnect_delay(retries: u32) -> Duration {
+    Duration::from_secs(u64::from(1_u32 << retries.min(5)).min(30))
+}
+
 impl QqBot {
     /// 长驻运行 gateway 事件循环，收到 shutdown 后优雅退出。
     pub async fn run(&self, mut shutdown: watch::Receiver<bool>) -> Result<()> {
@@ -190,10 +200,12 @@ impl QqBot {
     ) -> Result<()> {
         let mut session = GatewaySession::default();
         let mut retries = 0_u32;
+        let mut quick_disconnects = 0_u32;
         loop {
             if *shutdown.borrow() {
                 return Ok(());
             }
+            let session_started = std::time::Instant::now();
             let result = async {
                 let token = self.api.access_token().await?;
                 let url = self.api.gateway_url().await?;
@@ -203,9 +215,27 @@ impl QqBot {
             match result {
                 Ok(()) => return Ok(()),
                 Err(error) => {
+                    let uptime = session_started.elapsed();
+                    // 跑满 60s 的会话说明连接本身健康，退避计数清零；
+                    // 反之秒断的连接连续出现多半是凭据/权限问题，大声提示。
+                    if uptime >= Duration::from_secs(60) {
+                        retries = 0;
+                        quick_disconnects = 0;
+                    } else if uptime < QUICK_DISCONNECT_THRESHOLD {
+                        quick_disconnects += 1;
+                        if quick_disconnects == QUICK_DISCONNECT_LIMIT {
+                            eprintln!(
+                                "[qq] 连续 {quick_disconnects} 次秒级断线：检查 AppID/Secret \
+                                 与开放平台权限（intents 未授权会连上即断）"
+                            );
+                        }
+                    }
                     retries += 1;
-                    eprintln!("[qq] gateway disconnected: {error:#}");
-                    let delay = Duration::from_secs(u64::from(1_u32 << retries.min(5)).min(30));
+                    let delay = reconnect_delay(retries);
+                    eprintln!(
+                        "[qq] gateway disconnected after {uptime:?}: {error:#}; \
+                         {delay:?} 后重连。QQ 无消息重放，断线期间发来的消息不会补发"
+                    );
                     tokio::select! {
                         _ = shutdown.changed() => return Ok(()),
                         _ = tokio::time::sleep(delay) => {}
@@ -300,6 +330,20 @@ impl QqBot {
             attachments: &media,
             reply_channel: "qq",
         };
+        // 每条入站消息留一行痕迹：断线丢消息/附件被 QQ 静默吞掉时有据可查
+        // （2026-11-04 录音丢失排障教训：此前入站零日志，无法判断消息到没到）。
+        let attach_summary = media
+            .iter()
+            .map(|m| format!("{:?}:{}", m.kind, m.filename.as_deref().unwrap_or("?")))
+            .collect::<Vec<_>>()
+            .join(",");
+        eprintln!(
+            "[qq.in] {} msg_id={} content_chars={} attachments=[{}]",
+            if is_c2c { "c2c" } else { "group" },
+            msg_id,
+            content.chars().count(),
+            attach_summary,
+        );
         // 图片独立通道：模块消费者优先（如二维码照片签到）。都不认的图片
         // 保持原行为（image_url 已随 CommandContext 交 agent 处理）。
         if !self.image_consumers.is_empty()
@@ -601,5 +645,24 @@ impl IngestReceipt {
     pub fn interrupt_text(&self) -> Option<String> {
         (self.interrupted > 0)
             .then(|| format!("⏹ 已打断上一条未完成的任务（{} 个）", self.interrupted))
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{QUICK_DISCONNECT_THRESHOLD, reconnect_delay};
+    use std::time::Duration;
+
+    #[test]
+    fn reconnect_backoff_grows_and_caps() {
+        assert_eq!(reconnect_delay(1), Duration::from_secs(2));
+        assert_eq!(reconnect_delay(2), Duration::from_secs(4));
+        assert_eq!(reconnect_delay(5), Duration::from_secs(30));
+        assert_eq!(reconnect_delay(50), Duration::from_secs(30));
+    }
+
+    #[test]
+    fn quick_disconnect_threshold_is_tight() {
+        assert_eq!(QUICK_DISCONNECT_THRESHOLD, Duration::from_secs(5));
     }
 }
