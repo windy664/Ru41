@@ -65,19 +65,39 @@
 3. **state.db 定期备份**：把已有的 `deploy/backup.sh` 排进 cron（每日 04:21），
    保留 7 份滚动。宿主已经异常关机过两次，这是当前数据面最大的裸奔点。
 
-### L2 agent 辅助诊断（等 L1 跑一周数据后再评估）
+### L2 agent 自愈：issue + PR 闭环（等 L1 跑一周数据后再评估）
 
-- 崩溃时自动打包上下文（日志尾 50 行 + 退出码 + RestartCount + 近期变更 commit）
-  交给 agent 生成诊断报告推 QQ——**只诊断，不自动修复**。
-- 修复动作若要自动化，走审批按钮 + TTL 默认拒绝（复用审批转发底座，
-  与「凭据注入审批」同一个闸门模式）。
-- 发布后自动回滚：roll.sh 备份已有，缺的只是「发布后 N 分钟 restart 超阈值
-  → 切回上一镜像」的判定器。
+> 2026-11-04 修订：原方案「agent 出诊断报告 + 审批按钮收 patch」升级为
+> 「agent 直接对 GitHub 仓库开 issue + PR」。调研结论：这就是业界已验证的
+> 路径（Sentry Seer 的 Autofix：错误→根因分析→自动开 PR→CI+人工 review 把关），
+> 而 PR 相比自造审批按钮白送三层：CI 门禁、可视化 review 交互、git 审计记录。
+> ru41 全链路已齐活（开源仓库 + CI 出镜像 + roll.sh 部署），缺的只是接线。
+
+- 触发链：容器 die / 连续失败（L1 探测）→ 自动打包上下文（日志尾 50 行 +
+  退出码 + RestartCount + 近期变更 commit）→ agent（codex）根因分析 →
+  开 GitHub issue（诊断报告）→ 能定位的开分支 + patch + PR →
+  你 merge → roll.sh 部署闭环。
+- 学界背书与验收范式（SWE-bench / SWE-agent，普林斯顿）：agent 解决真实
+  GitHub issue 的通过标准不是「编译过」，而是「fail-to-pass 测试转绿 +
+  原有测试不回归」；SWE-bench Verified 当前解决率 ~80%——剩下 20% 就是
+  merge 权必须留在人手里的理由。
+  - SWE-agent 的核心贡献 ACI（Agent-Computer Interface）：agent 表现取决于
+    给它的工具接口，与模型同等重要——仓库的 AGENTS.md、技能包、ru41 CLI
+    子命令就是我们自己的 ACI，持续打磨。
+- 立项前置条件（依赖，不是可选项）：
+  1. **L1 先行**：PR 修不了正在 crash loop 的容器（延迟分钟级），
+     止血靠 restart/autoheal，PR 负责「别再犯」。
+  2. **CI 升级为 test-gate**：现在 CI 只验编译，而类型安全的死循环照样过
+     编译（obsidian 烧机先例）。PR 上必须跑 cargo test + 容器冒烟
+     （起容器验证 poll 一轮成功），对齐 SWE-bench 验收标准。
+  3. 降噪：同一根因去重，避免 issue/PR 刷屏。
 
 ## 4. 明确不做的事
 
-- **不做 agent 全自动修复生产**：agent 在开发期改挂过东西；自愈闭环必须有人
-  的闸门（审批按钮），否则自愈 bug 会变成比故障更大的故障。
+- **不做 agent 全自动修复生产**：编译器只担保类型与内存安全，不担保行为
+  正确——本仓库全部生产事故（obsidian 烧机、egress-audit/ClassRemind
+  未过桥、Dockerfile 缺插件）都是编译通过、CI 全绿状态下发生的。
+  修复的不可逆决策（merge、回滚）必须人在环：PR review 就是那个闸门。
 - **不逐容器写定制探针**：统一心跳文件方案，探针成本 O(1)。
 - **不做宿主级自愈**：宿主异常关机根因未明前，先靠「事件告警」观测，不自动
   动作（重启宿主这种事不能让程序自己决定）。
