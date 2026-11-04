@@ -51,6 +51,7 @@ echo 'diagnostic' >&2
 "#,
     );
     let agent = CodexAgent {
+        sandbox: ru41::adapters::agent::codex::SandboxMode::default(),
         config_overrides: Vec::new(),
         output_schema: true,
         executable: bin,
@@ -79,6 +80,7 @@ async fn rejects_nonzero_exit_bad_json_and_missing_completion() {
     for body in cases {
         let dir = tempfile::tempdir().unwrap();
         let agent = CodexAgent {
+            sandbox: ru41::adapters::agent::codex::SandboxMode::default(),
             config_overrides: Vec::new(),
             output_schema: true,
             executable: executable(dir.path(), body),
@@ -126,6 +128,7 @@ printf '%s' '{{"summary":"ok"}}' > "$output"
     for (bin, expect_modern) in [(modern, true), (legacy, false)] {
         std::fs::remove_file(&log).ok();
         let agent = CodexAgent {
+            sandbox: ru41::adapters::agent::codex::SandboxMode::default(),
             executable: bin.clone(),
             model: None,
             config_overrides: Vec::new(),
@@ -153,6 +156,7 @@ async fn turn_failed_surfaces_provider_error_message() {
 echo '{"type":"turn.failed","error":{"message":"unexpected status 402 Payment Required: Insufficient account balance"}}'
 exit 1"#;
     let agent = CodexAgent {
+        sandbox: ru41::adapters::agent::codex::SandboxMode::default(),
         config_overrides: Vec::new(),
         output_schema: true,
         executable: executable(dir.path(), body),
@@ -174,6 +178,7 @@ exit 1"#;
 async fn drains_stderr_concurrently_and_limits_log_size() {
     let dir = tempfile::tempdir().unwrap();
     let agent = CodexAgent {
+        sandbox: ru41::adapters::agent::codex::SandboxMode::default(),
         config_overrides: Vec::new(),
         output_schema: true,
         executable: executable(
@@ -200,6 +205,7 @@ sleep 60
 async fn dropping_run_terminates_subprocess_group() {
     let dir = tempfile::tempdir().unwrap();
     let agent = CodexAgent {
+        sandbox: ru41::adapters::agent::codex::SandboxMode::default(),
         config_overrides: Vec::new(),
         output_schema: true,
         executable: executable(dir.path(), "sleep 60 &\necho $! > child.pid\nwait"),
@@ -244,6 +250,7 @@ printf '%s' '{"summary":"ok"}' > "$output"
 "#,
     );
     let agent = CodexAgent {
+        sandbox: ru41::adapters::agent::codex::SandboxMode::default(),
         config_overrides: vec![
             "model_providers.x={name=\"x\",base_url=\"https://a.b\",wire_api=\"chat\"}".into(),
             "model_provider=\"x\"".into(),
@@ -288,6 +295,7 @@ printf '%s' '{"summary":"recovered"}' > "$output"
 "#,
     );
     let agent = CodexAgent {
+        sandbox: ru41::adapters::agent::codex::SandboxMode::default(),
         config_overrides: Vec::new(),
         output_schema: true,
         executable: bin,
@@ -308,6 +316,7 @@ printf '%s' 'plain text response' > "$output"
 "#,
     );
     let agent = CodexAgent {
+        sandbox: ru41::adapters::agent::codex::SandboxMode::default(),
         config_overrides: Vec::new(),
         output_schema: false,
         executable: bin,
@@ -331,6 +340,7 @@ printf '%s' '先说明一句<tool_call_x><function=exec_command>noop</function><
 "#,
     );
     let agent = CodexAgent {
+        sandbox: ru41::adapters::agent::codex::SandboxMode::default(),
         config_overrides: Vec::new(),
         output_schema: false,
         executable: bin,
@@ -373,6 +383,7 @@ printf '%s\n' '{"type":"thread.started","thread_id":"thread-abc"}' '{"type":"ite
 "#,
     );
     let agent = CodexAgent {
+        sandbox: ru41::adapters::agent::codex::SandboxMode::default(),
         config_overrides: Vec::new(),
         output_schema: false,
         executable: bin,
@@ -439,6 +450,7 @@ printf '%s' 'resumed-from-file' > "$output"
     .unwrap();
     std::fs::set_permissions(&bin, std::fs::Permissions::from_mode(0o700)).unwrap();
     let agent = CodexAgent {
+        sandbox: ru41::adapters::agent::codex::SandboxMode::default(),
         config_overrides: Vec::new(),
         output_schema: false,
         executable: bin,

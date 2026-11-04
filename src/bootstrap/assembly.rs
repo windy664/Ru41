@@ -35,10 +35,14 @@ pub fn notify_channels(
     let mut channels: Vec<Arc<dyn NotifyChannel>> = Vec::new();
     if let Some(api) = qq {
         let sequencer = qq_seq.unwrap_or_else(|| Arc::new(ReplySequencer::default()));
-        channels.push(Arc::new(QqNotifier::new(api, sequencer)));
+        channels.push(crate::channels::audit::AuditedNotifyChannel::wrap(
+            Arc::new(QqNotifier::new(api, sequencer)),
+        ));
     }
     if let Some(url) = feishu_webhook_url(config) {
-        channels.push(Arc::new(FeishuWebhookNotifier::new(url)));
+        channels.push(crate::channels::audit::AuditedNotifyChannel::wrap(
+            Arc::new(FeishuWebhookNotifier::new(url)),
+        ));
     }
     Ok(channels)
 }
@@ -135,23 +139,26 @@ pub fn vault_if_ready(config: &Config, enabled: bool) -> Result<Option<Arc<dyn V
 }
 
 /// 按 [notify] 渠道构造具体通知器；渠道知识只存在于装配层。
+/// 出口统一包 P2 审计层：红区命中即脱敏发送 + 当日去重告警。
 pub fn default_notifier(config: &Config, channel: &str) -> Result<Arc<dyn NotifyChannel>> {
     match channel {
-        "feishu" => Ok(Arc::new(FeishuWebhookNotifier::new(
-            feishu_webhook_url(config).context(
+        "feishu" => Ok(crate::channels::audit::AuditedNotifyChannel::wrap(Arc::new(
+            FeishuWebhookNotifier::new(feishu_webhook_url(config).context(
                 "feishu webhook required: RU41_FEISHU_WEBHOOK_URL or channel.feishu.webhook_url",
-            )?,
-        ))),
-        "qq" => Ok(Arc::new(QqNotifier::new(
-            Arc::new(qq_api(
-                &QqCredentials {
-                    app_id: None,
-                    app_secret: None,
-                },
-                config,
             )?),
-            // 跟踪器进程只发主动消息，序号器进程内独立即可。
-            Arc::new(ReplySequencer::default()),
+        ))),
+        "qq" => Ok(crate::channels::audit::AuditedNotifyChannel::wrap(Arc::new(
+            QqNotifier::new(
+                Arc::new(qq_api(
+                    &QqCredentials {
+                        app_id: None,
+                        app_secret: None,
+                    },
+                    config,
+                )?),
+                // 跟踪器进程只发主动消息，序号器进程内独立即可。
+                Arc::new(ReplySequencer::default()),
+            ),
         ))),
         other => anyhow::bail!("unknown notify channel: {other}"),
     }

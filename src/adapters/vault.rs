@@ -4,7 +4,6 @@ use std::fs::File;
 use std::os::unix::io::AsRawFd;
 use std::path::{Path, PathBuf};
 use std::process::Command;
-
 /// 空树 SHA（git 内置常量）：尚无基线时用它做 diff 起点，等价于「所有文件都是新增」。
 pub const EMPTY_TREE: &str = "4b825dc642cb6eb9a060e54bf8d69288fbee4904";
 
@@ -158,6 +157,7 @@ impl Vault for GitVault {
             if status.success() {
                 return Ok(false);
             }
+            audit_staged_diff(&vault.path);
             vault.git(&["commit", "-m", message])?;
             Ok(true)
         })
@@ -364,4 +364,50 @@ impl Vault for GitVault {
             Ok(relative)
         })
     }
+}
+
+/// P2 vault 提交审计：暂存区文本文件过红区扫描，命中输出当日去重告警。
+/// vault 是私有仓，只告警不拦截（拦截会卡死整理/待办等自动闭环）；
+/// 真正面向公网的博客发布走人工 review + 脱敏流程兜底。
+fn audit_staged_diff(root: &Path) {
+    let output = match Command::new("git")
+        .args(["diff", "--cached", "--name-only", "--diff-filter=ACMR"])
+        .current_dir(root)
+        .output()
+    {
+        Ok(output) if output.status.success() => output,
+        _ => return, // 拿不到清单就放行：审计失败不能阻断主流程。
+    };
+    let mut rules: Vec<&'static str> = Vec::new();
+    let mut flagged: Vec<String> = Vec::new();
+    for file in String::from_utf8_lossy(&output.stdout).lines() {
+        let Ok(text) = std::fs::read_to_string(root.join(file)) else {
+            continue; // 二进制或已删除的暂存项跳过。
+        };
+        let hits = crate::privacy::scan::scan_text(&text);
+        if hits.is_empty() {
+            continue;
+        }
+        for hit in &hits {
+            if !rules.contains(&hit.rule) {
+                rules.push(hit.rule);
+            }
+        }
+        flagged.push(file.to_owned());
+    }
+    if rules.is_empty() {
+        return;
+    }
+    rules.sort_unstable();
+    rules.dedup();
+    let signature = rules.join("+");
+    let sample: Vec<String> = flagged.iter().take(5).cloned().collect();
+    crate::channels::audit::alert_once(
+        &format!("vault:{signature}"),
+        &format!(
+            "vault 提交含红区内容 rules=[{signature}] files={} sample={:?}",
+            flagged.len(),
+            sample
+        ),
+    );
 }
