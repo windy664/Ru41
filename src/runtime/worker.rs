@@ -355,12 +355,19 @@ impl Worker {
                                 },
                                 session_id: output.session_id,
                                 usage: output.usage,
+                                model: output.model,
                             };
                             // 用量在终态判定前落库：即使后续校验/提交失败，token 也已消耗。
                             if let Some(usage) = output.usage
                                 && let Err(error) = self.store.record_usage(claim, &usage)
                             {
                                 eprintln!("[worker] record_usage failed: {error:#}");
+                            }
+                            // 实际使用的模型回写：底座带 fallback 链时，可能不是认领时那个。
+                            if let Some(model) = output.model.as_deref()
+                                && let Err(error) = self.store.set_attempt_model(claim.attempt_id, model)
+                            {
+                                eprintln!("[worker] set_attempt_model failed: {error:#}");
                             }
                             if let Err(error) = output.result.validate() {
                                 break Err(Ru41Error::InvalidOutput(error).into());

@@ -100,6 +100,7 @@ pub fn registry(
             session: false,
             session_dir: pi.session_dir.clone(),
             tools: pi.tools.clone(),
+            fallback_models: pi.fallback_models.clone(),
             id: "pi".into(),
         };
         backends.register(base)?;
@@ -118,6 +119,7 @@ pub fn registry(
                     session: false,
                     session_dir: pi.session_dir.clone(),
                     tools: pi.tools.clone(),
+                    fallback_models: pi.fallback_models.clone(),
                     id: "pi".into(),
                 }
             })?;

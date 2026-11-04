@@ -12,6 +12,8 @@ pub struct UsageRecord {
     pub attempt_id: i64,
     pub request_key: String,
     pub started_at: i64,
+    /// 本次运行实际使用的模型（底座 + 供应方组合，如 minimax/MiniMax-M3）。
+    pub model: Option<String>,
     pub input_tokens: i64,
     pub cached_input_tokens: i64,
     pub output_tokens: i64,
@@ -79,6 +81,12 @@ pub trait TaskStore: super::consumers::ConsumerStore {
         session: Option<&str>,
         now: i64,
     ) -> Result<bool>;
+    /// 回写本次运行实际使用的模型（底座带 fallback 链时与认领的模型可能不同）。
+    /// 默认实现返回 false（不支持回写）；实现方按 attempt_id 更新 model 列。
+    fn set_attempt_model(&self, attempt_id: i64, model: &str) -> Result<bool> {
+        let _ = (attempt_id, model);
+        Ok(false)
+    }
     /// 终态写入失败记录；`retryable=false` 时跳过重试预算直接 failed。
     /// `interrupted=true`（进程被关停打断）不算真实失败：无条件重排
     /// （实现侧带 sanity 上限），不消耗 max_attempts 的公平预算。
@@ -199,6 +207,9 @@ impl<T: TaskStore + ?Sized> TaskStore for Arc<T> {
     }
     fn mark_notified(&self, id: i64) -> Result<bool> {
         (**self).mark_notified(id)
+    }
+    fn set_attempt_model(&self, attempt_id: i64, model: &str) -> Result<bool> {
+        (**self).set_attempt_model(attempt_id, model)
     }
     fn succeed(
         &self,

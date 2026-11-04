@@ -49,6 +49,12 @@ ru41 --config ru41.toml worker --once
 - **会话与恢复**：`session = true` 时不再传 `--no-session`，运行结束通过 `get_state` 取会话 ID，
   后续按 `resume_session_id` 以 `--session <id>` 续跑；会话底座单独注册为 `pi-session`。
 - **网络**：不再强制 `--offline`——那会挡住模型调用；离网需求由部署环境的出口策略保证。
+- **用量分摊**：底座上报「实际使用的模型」，用量按模型聚合（`/用量` 的「7 天分模型」、
+  `ru41 task usage` 的 `by_model`）。换供应方或走 fallback 后，账目仍然对得上。
+- **fallback 链**：`fallback_models = ["供应方/模型", ...]` 列出备用模型；主模型因限流、
+  服务端错误或协议中断失败时按顺序切换，配置类/契约类错误不切换（换模型也救不了）。
+  pi 自身没有跨供应商 fallback（只有同模型的自动重试），链路由 Ru41 侧实现；
+  实际生效的模型会回写 attempts.model，用量据此分摊。
 
 ## 测试覆盖
 

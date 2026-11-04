@@ -166,6 +166,7 @@ impl AgentBackend for CapturingAgent {
                 },
                 session_id: None,
                 usage: None,
+                model: None,
             })
         })
     }

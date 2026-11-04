@@ -312,6 +312,7 @@ impl CodexAgent {
             result,
             session_id: thread_id,
             usage,
+            model: self.model.clone(),
         })
     }
 }
