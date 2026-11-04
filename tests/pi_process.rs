@@ -215,6 +215,26 @@ printf '%s\n' '{"type":"agent_settled","aborted":false}'
 }
 
 #[tokio::test]
+async fn accepts_json_wrapped_in_code_fence_or_prose() {
+    // Pi 没有输出 schema 强制：模型常把 JSON 包在 ```json 里或前后带说明。
+    for body in [
+        r#"printf '%s\n' '{"id":"ru41-prompt","type":"response","success":true,"data":{"disposition":"started"}}' '{"type":"message_end","message":{"role":"assistant","stopReason":"stop","content":[{"type":"text","text":"```json\n{\"summary\":\"完成\"}\n```"}]}}' '{"type":"agent_settled","aborted":false}'"#,
+        r#"printf '%s\n' '{"id":"ru41-prompt","type":"response","success":true,"data":{"disposition":"started"}}' '{"type":"message_end","message":{"role":"assistant","stopReason":"stop","content":[{"type":"text","text":"好的，结果如下：{\"summary\":\"完成\"}"}]}}' '{"type":"agent_settled","aborted":false}'"#,
+    ] {
+        let dir = tempfile::tempdir().unwrap();
+        let agent = PiAgent {
+            executable: executable(dir.path(), body),
+            ..Default::default()
+        };
+        let output = tokio::time::timeout(Duration::from_secs(10), agent.run(request(dir.path())))
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(output.result.summary, "完成");
+    }
+}
+
+#[tokio::test]
 async fn tools_mode_enables_tool_allowlist() {
     let _guard = SERIAL.lock().await;
     let dir = tempfile::tempdir().unwrap();
