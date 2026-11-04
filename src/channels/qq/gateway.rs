@@ -249,10 +249,12 @@ pub fn close_is_fatal(code: u16) -> bool {
     matches!(code, 4014 | 4914 | 4915)
 }
 
-/// 心跳活性判定：最近 ACK 超过 2 个心跳周期 + 10s 视为连接静默死亡，应主动断开重连。
+/// 心跳活性判定：最近 ACK 超过 1 个心跳周期 + 5s 视为连接静默死亡，应主动断开重连。
 /// 半开连接上 TCP 超时可能要几十分钟，靠 ACK 探测才能在分钟级发现。
+/// 阈值取一个周期：QQ 要求服务器在周期内回 ACK，没回就说明链路已死；
+/// 判得过松（旧值 2 周期+10s）会把断线僵尸窗口拖到两分钟，期间消息全丢。
 pub fn heartbeat_stalled(last_ack: Instant, now: Instant, interval: Duration) -> bool {
-    now.saturating_duration_since(last_ack) > interval.saturating_mul(2) + Duration::from_secs(10)
+    now.saturating_duration_since(last_ack) > interval + Duration::from_secs(5)
 }
 
 /// 运行一条 WebSocket 会话：HELLO→IDENTIFY/RESUME→心跳→事件经 events 送出。
@@ -286,14 +288,23 @@ pub async fn run(
         .and_then(Value::as_u64)
         .unwrap_or(41250);
     let login = match (&session.session_id, session.last_seq) {
-        (Some(id), Some(seq)) => resume_payload(token, id, seq),
-        _ => identify_payload(token),
+        (Some(id), Some(seq)) => {
+            eprintln!("[qq] RESUME session {id} seq={seq}（请求平台补发断线窗口事件）");
+            resume_payload(token, id, seq)
+        }
+        _ => {
+            eprintln!("[qq] IDENTIFY 新会话（无旧会话可续，断线窗口事件无法补发）");
+            identify_payload(token)
+        }
     };
     send_with_timeout(&mut sink, Message::text(login.to_string())).await?;
     // 心跳略提前，避免临界点超时。
     let heartbeat_interval = Duration::from_millis(heartbeat_ms.max(10_000) - 5_000);
     let mut heartbeat = tokio::time::interval(heartbeat_interval);
     heartbeat.tick().await;
+    // 僵尸链路看门狗：5s 一查，把断线发现延迟从「下个心跳点」压到最坏 interval+5s。
+    let mut watchdog = tokio::time::interval(Duration::from_secs(5));
+    watchdog.tick().await;
     let mut last_ack = Instant::now();
     loop {
         tokio::select! {
@@ -302,10 +313,12 @@ pub async fn run(
                 let _ = send_with_timeout(&mut sink, Message::Close(None)).await;
                 return Ok(());
             }
-            _ = heartbeat.tick() => {
+            _ = watchdog.tick() => {
                 if heartbeat_stalled(last_ack, Instant::now(), heartbeat_interval) {
                     bail!("QQ gateway heartbeat stalled, reconnecting");
                 }
+            }
+            _ = heartbeat.tick() => {
                 send_with_timeout(&mut sink, Message::text(heartbeat_payload(session.last_seq).to_string())).await?;
             }
             frame = stream.next() => {
@@ -326,8 +339,13 @@ pub async fn run(
                     Some(op) if op == OP_DISPATCH as u64 => {
                         let event = parse_dispatch(&frame);
                         match &event {
-                            GatewayEvent::Ready { session_id } => session.session_id = Some(session_id.clone()),
-                            GatewayEvent::Resumed => {}
+                            GatewayEvent::Ready { session_id } => {
+                                session.session_id = Some(session_id.clone());
+                                eprintln!("[qq] 会话建立（IDENTIFY）session={session_id}");
+                            }
+                            GatewayEvent::Resumed => {
+                                eprintln!("[qq] 会话已续接（RESUME 成功），断线窗口事件由平台补发");
+                            }
                             _ => {}
                         }
                         if events.send(event).await.is_err() {
