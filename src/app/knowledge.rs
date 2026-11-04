@@ -200,7 +200,7 @@ impl KnowledgeService {
     pub fn retrieval_context(&self, query: &str) -> Result<Option<String>> {
         let query = query.trim();
         let chars = query.chars().count();
-        if chars < RETRIEVAL_MIN_QUERY_CHARS || chars > RETRIEVAL_MAX_QUERY_CHARS {
+        if !(RETRIEVAL_MIN_QUERY_CHARS..=RETRIEVAL_MAX_QUERY_CHARS).contains(&chars) {
             return Ok(None);
         }
         let hits = self.search(query, RETRIEVAL_TOP_K)?;
