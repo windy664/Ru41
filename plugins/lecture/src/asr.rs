@@ -100,14 +100,14 @@ impl AsrClient {
             let status = response.status();
             let body = response.text().await.unwrap_or_default();
             if status.is_success() {
+                // 空文本是正常现象：切片末尾常是按停止键前的静音，
+                // 判失败会让已转完前面十几片的录音整条报废。
                 let text: String = serde_json::from_str::<serde_json::Value>(&body)
                     .ok()
                     .and_then(|v| {
                         v.get("text")
                             .and_then(|t| t.as_str())
-                            .map(str::trim)
-                            .filter(|t| !t.is_empty())
-                            .map(str::to_owned)
+                            .map(|t| t.trim().to_owned())
                     })
                     .with_context(|| format!("ASR 响应缺少 text 字段：{}", truncate(&body)))?;
                 return Ok(text);

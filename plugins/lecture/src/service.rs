@@ -118,7 +118,11 @@ impl LectureWorker {
                 .with_context(|| format!("转写第 {}/{} 片失败", index + 1, slices.len()))?;
             parts.push(text);
         }
-        Ok(parts.join("\n\n"))
+        Ok(parts
+            .into_iter()
+            .filter(|p| !p.is_empty())
+            .collect::<Vec<_>>()
+            .join("\n\n"))
     }
 
     /// 原始文件切片；已有切片则跳过（中断续跑不重复转码）。

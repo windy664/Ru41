@@ -62,9 +62,7 @@ impl LectureHandler {
             .iter()
             .filter_map(|doc| PendingItem::from_document(doc).ok())
             .filter(|other| {
-                other.msg_id != msg_id
-                    && other.status != "done"
-                    && other.status != "failed"
+                other.msg_id != msg_id && other.status != "done" && other.status != "failed"
             })
             .count();
         Ok((size, ahead))
@@ -163,7 +161,10 @@ impl CommandHandler for LectureHandler {
                 .then(|| format!("\n\n> 附言：{}", content.trim()))
                 .unwrap_or_default();
             let queue = if ahead > 0 {
-                format!("\n- 队列：前面还有 {} 节在排队，转写按收到顺序一节一节来", ahead)
+                format!(
+                    "\n- 队列：前面还有 {} 节在排队，转写按收到顺序一节一节来",
+                    ahead
+                )
             } else {
                 "\n- 队列：就这一节，马上开始".to_owned()
             };
