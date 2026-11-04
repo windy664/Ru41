@@ -153,15 +153,16 @@ fn heartbeat_stall_detection() {
     let interval = Duration::from_secs(30);
     let t0 = Instant::now();
     assert!(!heartbeat_stalled(t0, t0, interval));
-    // 阈值是 2 个周期 + 10s 宽限：70s 内仍视为存活。
+    // 阈值是一个周期 + 5s：35s 内仍视为存活。收紧是为了把僵尸链路的发现
+    // 时间从最坏两分钟压到 ~40s，缩小断线窗口内的丢消息机会。
     assert!(!heartbeat_stalled(
         t0,
-        t0 + Duration::from_secs(69),
+        t0 + Duration::from_secs(34),
         interval
     ));
     assert!(heartbeat_stalled(
         t0,
-        t0 + Duration::from_secs(71),
+        t0 + Duration::from_secs(36),
         interval
     ));
 }
