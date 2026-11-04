@@ -165,6 +165,7 @@ impl AgentBackend for CapturingAgent {
                     summary: format!("已回电 {}", self.seen.lock().unwrap().clone().unwrap()),
                 },
                 session_id: None,
+                usage: None,
             })
         })
     }

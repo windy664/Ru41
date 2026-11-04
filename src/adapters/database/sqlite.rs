@@ -1,8 +1,8 @@
 mod consumers;
 use super::TaskStatusCounts;
 use crate::{
-    domain::{AgentResult, Attempt, Claim, EnqueueResult, RunContract, Task},
-    ports::storage::TaskStore,
+    domain::{AgentResult, Attempt, Claim, EnqueueResult, RunContract, Task, TokenUsage},
+    ports::storage::{TaskStore, UsageRecord},
 };
 use anyhow::{Context, Result, bail};
 use rusqlite::{Connection, ErrorCode, OptionalExtension, Row, TransactionBehavior, params};
@@ -64,8 +64,8 @@ impl SqliteTaskStore {
                 tx.execute_batch(include_str!("../../../migrations/002_execution.sql"))?;
             }
             1 => tx.execute_batch(include_str!("../../../migrations/002_execution.sql"))?,
-            2..=7 => {}
-            other => bail!("unsupported database version {other}; expected 7"),
+            2..=8 => {}
+            other => bail!("unsupported database version {other}; expected 8"),
         }
         if version < 3 {
             tx.execute_batch(include_str!("../../../migrations/003_backends.sql"))?;
@@ -81,6 +81,9 @@ impl SqliteTaskStore {
         }
         if version < 7 {
             tx.execute_batch(include_str!("../../../migrations/007_consumers.sql"))?;
+        }
+        if version < 8 {
+            tx.execute_batch(include_str!("../../../migrations/008_usage.sql"))?;
         }
         tx.commit()?;
         Ok(Self {
@@ -468,6 +471,43 @@ impl TaskStore for SqliteTaskStore {
         }
         tx.commit()?;
         Ok(changed == 1)
+    }
+
+    fn record_usage(&self, claim: &Claim, usage: &TokenUsage) -> Result<()> {
+        let connection = self.connection()?;
+        connection.execute(
+            "UPDATE attempts SET input_tokens=?2, cached_input_tokens=?3, output_tokens=?4, total_tokens=?5 WHERE id=?1",
+            params![
+                claim.attempt_id,
+                usage.input_tokens as i64,
+                usage.cached_input_tokens as i64,
+                usage.output_tokens as i64,
+                usage.total_tokens as i64,
+            ],
+        )?;
+        Ok(())
+    }
+
+    fn usage_since(&self, since: i64) -> Result<Vec<UsageRecord>> {
+        let connection = self.connection()?;
+        let mut statement = connection.prepare(
+            "SELECT a.task_id, a.id, t.request_key, a.started_at, a.input_tokens, a.cached_input_tokens, a.output_tokens, a.total_tokens \
+             FROM attempts a JOIN tasks t ON a.task_id=t.id \
+             WHERE a.started_at>=?1 AND a.total_tokens IS NOT NULL ORDER BY a.started_at",
+        )?;
+        let rows = statement.query_map([since], |row| {
+            Ok(UsageRecord {
+                task_id: row.get(0)?,
+                attempt_id: row.get(1)?,
+                request_key: row.get(2)?,
+                started_at: row.get(3)?,
+                input_tokens: row.get(4)?,
+                cached_input_tokens: row.get(5)?,
+                output_tokens: row.get(6)?,
+                total_tokens: row.get(7)?,
+            })
+        })?;
+        Ok(rows.collect::<rusqlite::Result<Vec<_>>>()?)
     }
 }
 

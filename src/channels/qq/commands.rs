@@ -23,6 +23,7 @@ pub enum Command {
     Cancel(i64),
     Bind(String),
     Clear,
+    Usage,
 }
 
 const BUILTIN_HELP: &str = "## Ru41 机器人
@@ -32,6 +33,7 @@ const BUILTIN_HELP: &str = "## Ru41 机器人
 - `/任务` 或 `/tasks`：最近 10 条任务
 - `/任务 <id>` 或 `/task <id>`：查看任务详情
 - `/取消 <id>` 或 `/cancel <id>`：取消任务
+- `/用量` 或 `/usage`：token 用量统计（单聊绑定后可用）
 - `/绑定 <口令>` 或 `/bind <口令>`：绑定个人身份
 - `/新建` 或 `/clear`：开始新对话";
 
@@ -69,6 +71,9 @@ pub fn parse_command(content: &str) -> Option<Command> {
     let verb = parts.next()?.to_lowercase();
     let verb = verb.strip_prefix('/').unwrap_or(&verb);
     let arg = parts.next().map(str::trim).filter(|s| !s.is_empty());
+    if matches!(verb, "用量" | "usage") {
+        return Some(Command::Usage);
+    }
     match verb {
         "任务" | "task" | "show" => Some(Command::Show(arg?.parse().ok()?)),
         "取消" | "cancel" => Some(Command::Cancel(arg?.parse().ok()?)),
@@ -143,6 +148,18 @@ pub fn execute(command: &Command, ctx: &CommandContext) -> Result<Reply> {
                 }
             }
         },
+        Command::Usage => {
+            // 用量是全局个人数据，只在绑定身份的单聊里开放。
+            if !aggregate {
+                return Ok(Reply::text(
+                    "## 用量未开放\n\n请先在单聊中用 `/绑定 <口令>` 绑定身份后再查询。",
+                ));
+            }
+            let now = crate::util::now();
+            let day = crate::app::usage::report(ctx.store.as_ref(), now - 86_400)?;
+            let week = crate::app::usage::report(ctx.store.as_ref(), now - 7 * 86_400)?;
+            Ok(Reply::text(format_usage(&day, &week)))
+        }
         Command::Clear => {
             let key = format!("qq:{}", ctx.target);
             if let Some(doc) = ctx.store.document("conversation", &key)? {
@@ -186,6 +203,59 @@ fn task_rows_markup(tasks: &[Task]) -> ReplyMarkup {
         ]);
     }
     markup
+}
+
+/// token 数的人类可读格式：1.2M / 45.6K / 1234。
+fn human_tokens(count: u64) -> String {
+    if count >= 1_000_000 {
+        format!("{:.1}M", count as f64 / 1_000_000.0)
+    } else if count >= 10_000 {
+        format!("{:.1}K", count as f64 / 1_000.0)
+    } else {
+        count.to_string()
+    }
+}
+
+fn totals(summaries: &[crate::app::usage::UsageSummary]) -> (u32, u64) {
+    summaries.iter().fold((0, 0), |(runs, tokens), item| {
+        (runs + item.runs, tokens + item.total_tokens)
+    })
+}
+
+pub fn format_usage(
+    day: &[crate::app::usage::UsageSummary],
+    week: &[crate::app::usage::UsageSummary],
+) -> String {
+    let (day_runs, day_tokens) = totals(day);
+    let (week_runs, week_tokens) = totals(week);
+    let mut lines = vec![
+        "## Token 用量".to_owned(),
+        format!(
+            "- **最近 24 小时**：{} tokens（{} 次）",
+            human_tokens(day_tokens),
+            day_runs
+        ),
+        format!(
+            "- **最近 7 天**：{} tokens（{} 次）",
+            human_tokens(week_tokens),
+            week_runs
+        ),
+    ];
+    if !week.is_empty() {
+        lines.push(String::new());
+        lines.push("**7 天分来源**".to_owned());
+        for item in week {
+            lines.push(format!(
+                "- `{}`：{}（{} 次）",
+                item.source,
+                human_tokens(item.total_tokens),
+                item.runs
+            ));
+        }
+    }
+    lines.push(String::new());
+    lines.push("> 底座未上报用量的运行不计入。".to_owned());
+    lines.join("\n")
 }
 
 pub fn format_task_list(tasks: &[Task]) -> String {

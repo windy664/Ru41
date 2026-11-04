@@ -8,3 +8,4 @@ pub mod obsidian;
 pub mod schedule;
 pub mod task;
 pub mod todo;
+pub mod usage;

@@ -1,8 +1,10 @@
 mod consumers;
 use super::TaskStatusCounts;
 use crate::{
-    domain::{AgentResult, Attempt, Claim, EnqueueResult, RunContract, Task, TaskStatus},
-    ports::storage::TaskStore,
+    domain::{
+        AgentResult, Attempt, Claim, EnqueueResult, RunContract, Task, TaskStatus, TokenUsage,
+    },
+    ports::storage::{TaskStore, UsageRecord},
 };
 use anyhow::{Context, Result, bail};
 use postgres::{Client, NoTls, Row};
@@ -72,6 +74,10 @@ impl PostgresTaskStore {
                 "../../../migrations/postgres/005_consumers.sql"
             ))?;
             tx.execute("INSERT INTO schema_migrations(version) VALUES (5)", &[])?;
+        }
+        if version.unwrap_or(0) < 6 {
+            tx.batch_execute(include_str!("../../../migrations/postgres/006_usage.sql"))?;
+            tx.execute("INSERT INTO schema_migrations(version) VALUES (6)", &[])?;
         }
         tx.commit()?;
         Ok(Self {
@@ -491,6 +497,44 @@ impl TaskStore for PostgresTaskStore {
             }
             tx.commit()?;
             Ok(changed == 1)
+        })
+    }
+
+    fn record_usage(&self, claim: &Claim, usage: &TokenUsage) -> Result<()> {
+        outside_runtime(|| {
+            let input = usage.input_tokens as i64;
+            let cached = usage.cached_input_tokens as i64;
+            let output = usage.output_tokens as i64;
+            let total = usage.total_tokens as i64;
+            self.client()?.execute(
+                "UPDATE attempts SET input_tokens=$2, cached_input_tokens=$3, output_tokens=$4, total_tokens=$5 WHERE id=$1",
+                &[&claim.attempt_id, &input, &cached, &output, &total],
+            )?;
+            Ok(())
+        })
+    }
+
+    fn usage_since(&self, since: i64) -> Result<Vec<UsageRecord>> {
+        outside_runtime(|| {
+            let rows = self.client()?.query(
+                "SELECT a.task_id, a.id, t.request_key, a.started_at, a.input_tokens, a.cached_input_tokens, a.output_tokens, a.total_tokens \
+                 FROM attempts a JOIN tasks t ON a.task_id=t.id \
+                 WHERE a.started_at>=$1 AND a.total_tokens IS NOT NULL ORDER BY a.started_at",
+                &[&since],
+            )?;
+            Ok(rows
+                .iter()
+                .map(|row| UsageRecord {
+                    task_id: row.get(0),
+                    attempt_id: row.get(1),
+                    request_key: row.get(2),
+                    started_at: row.get(3),
+                    input_tokens: row.get(4),
+                    cached_input_tokens: row.get(5),
+                    output_tokens: row.get(6),
+                    total_tokens: row.get(7),
+                })
+                .collect())
         })
     }
 }

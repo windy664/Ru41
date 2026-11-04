@@ -1,6 +1,22 @@
-use crate::domain::{AgentResult, Attempt, Claim, EnqueueResult, NotifyRoute, RunContract, Task};
+use crate::domain::{
+    AgentResult, Attempt, Claim, EnqueueResult, NotifyRoute, RunContract, Task, TokenUsage,
+};
 use anyhow::Result;
 use std::sync::Arc;
+
+/// 一次尝试的 token 用量记录；用量聚合查询（`usage_since`）返回的行。
+/// 四个 token 数为 NULL（底座未上报）的尝试不会出现在查询结果里。
+#[derive(Clone, Debug, PartialEq, Eq, serde::Serialize)]
+pub struct UsageRecord {
+    pub task_id: i64,
+    pub attempt_id: i64,
+    pub request_key: String,
+    pub started_at: i64,
+    pub input_tokens: i64,
+    pub cached_input_tokens: i64,
+    pub output_tokens: i64,
+    pub total_tokens: i64,
+}
 
 /// 任务与尝试的持久化边界；SQLite 是默认适配器。
 /// 实现必须原子地执行 fencing 与租约规则；任务和审核状态变化的事件也必须同事务写入。
@@ -75,6 +91,20 @@ pub trait TaskStore: super::consumers::ConsumerStore {
         interrupted: bool,
         retryable: bool,
     ) -> Result<bool>;
+
+    /// 记录一次尝试的 token 用量（底座事件流上报）；仅宿主 worker 调用，
+    /// 插件桥接不经过此路径。默认空实现，存储适配器负责落库。
+    fn record_usage(&self, claim: &Claim, usage: &TokenUsage) -> Result<()> {
+        let _ = (claim, usage);
+        Ok(())
+    }
+
+    /// `started_at >= since` 且底座上报过用量的尝试，按 started_at 升序。
+    /// 默认空实现；SQLite/PostgreSQL 适配器负责实现。
+    fn usage_since(&self, since: i64) -> Result<Vec<UsageRecord>> {
+        let _ = since;
+        Ok(Vec::new())
+    }
 
     fn enqueue(&self, request_key: &str, prompt: &str) -> Result<EnqueueResult> {
         self.enqueue_for(request_key, prompt, "codex", RunContract::AnalysisV1)
@@ -189,5 +219,11 @@ impl<T: TaskStore + ?Sized> TaskStore for Arc<T> {
         retryable: bool,
     ) -> Result<bool> {
         (**self).fail(claim, error, now, delay_secs, interrupted, retryable)
+    }
+    fn record_usage(&self, claim: &Claim, usage: &TokenUsage) -> Result<()> {
+        (**self).record_usage(claim, usage)
+    }
+    fn usage_since(&self, since: i64) -> Result<Vec<UsageRecord>> {
+        (**self).usage_since(since)
     }
 }

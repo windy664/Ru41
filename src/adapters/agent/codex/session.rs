@@ -1,7 +1,7 @@
 use super::{super::process::ProcessGroup, SandboxMode};
 use crate::{
     domain::{AgentResult, RunContract, error::Ru41Error, records::Interaction},
-    ports::agent::{AgentBackend, AgentOutput, AgentRequest, BackendDescriptor},
+    ports::agent::{AgentBackend, AgentOutput, AgentRequest, BackendDescriptor, TokenUsage},
     runtime::worker::now,
 };
 use anyhow::{Context, Result, ensure};
@@ -154,6 +154,8 @@ impl CodexSession {
                     frame["params"]["turn"]["status"] == "completed",
                     "Codex turn did not complete"
                 );
+                // app-server 协议若在通知里带 usage 就收下；缺省不视为错误。
+                let usage = TokenUsage::from_event(&frame["params"]);
                 let result: AgentResult = if self.output_schema {
                     serde_json::from_str(&final_text).context("invalid structured agent result")?
                 } else {
@@ -168,6 +170,7 @@ impl CodexSession {
                 return Ok(AgentOutput {
                     result,
                     session_id: session,
+                    usage,
                 });
             }
         }
