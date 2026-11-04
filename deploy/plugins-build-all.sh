@@ -17,12 +17,12 @@ SCP="$HOME/bin/ru41-scp.py"
 PLUGIN_DIR_ON_SERVER="/home/windy2/ru41-plugins"
 
 # (crate 目录, 产物 so 文件名)：自动发现 plugins/*/Cargo.toml，
-# 新插件不再需要手工登记本列表（目录名即 so 名）。
+# 新插件不再需要手工登记本列表（目录名连字符转下划线 = so 名）。
 PLUGINS=()
 for manifest in plugins/*/Cargo.toml; do
   dir="$(dirname "$manifest")"
   name="$(basename "$dir")"
-  PLUGINS+=("$dir:libru41_plugin_${name}.so")
+  PLUGINS+=("$dir:libru41_plugin_${name//-/_}.so")
 done
 
 for entry in "${PLUGINS[@]}"; do
