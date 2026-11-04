@@ -114,10 +114,15 @@ P3 观望底座。各项互不阻塞，P0 做完前 P1/P2 已能显著降低暴�
 - [x] **P2 出站审计**：已实施（通知出口拦截 + vault 出口告警，细节见下）。
 - [x] **P3 沙箱收窄**：已实施（配置开关默认 bypass，细节见下）。
 
-### P2 实施细节（2026-11-04 落地）
+### P2 实施细节（2026-11-04 落地，同日重构收拢）
 
-- 通知出口：`src/channels/audit.rs` 的 `AuditedNotifyChannel` 包装全部对外渠道
-  （QQ/飞书，含 media 描述字段），发送前过 `scan_text`，命中即占位符替换 + 当日去重告警。
+- 审计核心收拢在 `src/privacy/egress.rs`（`audit_outbound`、`signature_of`、
+  `alert_once` 当日去重、可接线告警钩子）；渠道层 `channels/audit.rs` 只做
+  NotifyChannel 包装，vault 审计复用同一套签名与去重，adapters 不再依赖 channels。
+- 告警接线：装配层 `notify_pair` 把默认通知渠道注册为告警钩子，
+  命中红区当日首报直接推给用户（此前只落 stderr 无人可见）。
+- 通知出口：`AuditedNotifyChannel` 包装全部对外渠道（QQ/飞书，含 media 描述字段），
+  发送前过 `scan_text`，命中即占位符替换。
 - vault 出口：`adapters/vault.rs` `commit_all` 提交前审计 staged diff
   （`git diff --cached --name-only` 逐文件扫描），**只告警不拦截**——vault 是私有仓，
   拦截会卡死自动闭环；同一签名当日只报一次。
