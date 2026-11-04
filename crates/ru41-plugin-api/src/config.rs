@@ -377,4 +377,16 @@ pub struct PiSection {
     pub bin: Option<PathBuf>,
     pub model: Option<String>,
     pub provider: Option<String>,
+    /// 自定义端点：写入运行目录下的临时 agent 目录（models.json），
+    /// Pi 通过该文件识别兼容端点。密钥不写进文件。
+    pub base_url: Option<String>,
+    /// 端点协议：anthropic-messages（默认）/ openai-completions / openai-responses。
+    pub api: Option<String>,
+    /// 密钥来源的环境变量名：值只注入 Pi 子进程环境，
+    /// models.json 里只写 `$NAME` 引用，密钥不落配置与日志。
+    pub api_key_env: Option<String>,
+    /// 会话持久化：开启后可按 session_id 恢复上下文。
+    pub session: Option<bool>,
+    /// 会话存储目录（对应 Pi 的 --session-dir）。
+    pub session_dir: Option<PathBuf>,
 }
