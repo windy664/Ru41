@@ -13,7 +13,11 @@ bin = "pi"
 # api_key_env = "MINIMAX_API_KEY" # 密钥来源环境变量；值只进子进程环境
 # session = true # 会话持久化，可按 session_id 恢复
 # session_dir = "/data/pi-sessions"
+# tools = "read,write,edit,bash" # 工具白名单；留空则禁用全部工具
 ```
+
+切底座不需要改核心：QQ 入口的底座由 `[channel.qq] backend` 决定，
+填 `pi` 即走 Pi；worker 侧只需在 `[agent.pi]` 里配好模型与密钥变量。
 
 ```sh
 ru41 --config ru41.toml backends
