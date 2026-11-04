@@ -7,6 +7,7 @@
 use crate::ports::embedding::Embedder;
 use anyhow::{Context, Result};
 use rusqlite::Connection;
+use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
@@ -25,6 +26,13 @@ pub const RETRIEVAL_MAX_QUERY_CHARS: usize = 1200;
 /// 短于此的查询直接跳过自动检索：寒暄/单字短句的 embedding 命中基本是
 /// 噪声（实测「你好」也能过阈值注入），白烧输入 token 还可能带偏回答。
 pub const RETRIEVAL_MIN_QUERY_CHARS: usize = 6;
+/// BM25 召回的候选上限；只参与融合排序，结果条数仍由调用方的 limit 决定。
+const FTS_TOP_N: usize = 20;
+/// RRF 融合常数（业界惯用 60）：压制排名差异的噪声。
+const RRF_K: f32 = 60.0;
+/// FTS 精确词面命中的相关度下限：书名/课程名/错误码等精确词是 dense 检索的
+/// 天然盲区，词面匹配本身就是强证据。阈值语义不变（实测有效命中多在 0.55+）。
+const FTS_HIT_FLOOR: f32 = 0.62;
 
 pub struct KnowledgeService {
     embedder: Arc<dyn Embedder>,
@@ -83,8 +91,28 @@ impl KnowledgeService {
                 embedding BLOB NOT NULL,
                 PRIMARY KEY(path, idx)
             );
-            CREATE TABLE IF NOT EXISTS meta(key TEXT PRIMARY KEY, value TEXT NOT NULL);",
+            CREATE TABLE IF NOT EXISTS meta(key TEXT PRIMARY KEY, value TEXT NOT NULL);
+            CREATE VIRTUAL TABLE IF NOT EXISTS chunks_fts USING fts5(
+                text, content='chunks', content_rowid='rowid', tokenize='trigram'
+            );
+            CREATE TRIGGER IF NOT EXISTS chunks_ai AFTER INSERT ON chunks BEGIN
+                INSERT INTO chunks_fts(rowid, text) VALUES (new.rowid, new.text);
+            END;
+            CREATE TRIGGER IF NOT EXISTS chunks_ad AFTER DELETE ON chunks BEGIN
+                INSERT INTO chunks_fts(chunks_fts, rowid, text)
+                    VALUES ('delete', old.rowid, old.text);
+            END;
+            CREATE TRIGGER IF NOT EXISTS chunks_au AFTER UPDATE ON chunks BEGIN
+                INSERT INTO chunks_fts(chunks_fts, rowid, text)
+                    VALUES ('delete', old.rowid, old.text);
+                INSERT INTO chunks_fts(rowid, text) VALUES (new.rowid, new.text);
+            END;",
         )?;
+        // 老库升级：FTS 虚表首次启用时从 chunks 全量回填一次。
+        if meta_get(&conn, "fts_ready")?.is_none() {
+            conn.execute("INSERT INTO chunks_fts(chunks_fts) VALUES ('rebuild')", [])?;
+            meta_set(&conn, "fts_ready", "1")?;
+        }
         Ok(conn)
     }
 
@@ -152,7 +180,9 @@ impl KnowledgeService {
         })
     }
 
-    /// 语义检索：余弦相似度 top-k。全表扫描在万块级仍是个位数毫秒。
+    /// 混合检索：BM25 词面（FTS5 trigram）与向量余弦两路召回，RRF 融合排序。
+    /// 精确词（书名/课程名/错误码）走词面，语义改写走向量，互为补集。
+    /// 全表余弦扫描在万块级仍是毫秒级，向量路不做候选剪枝，召回不受损。
     pub fn search(&self, query: &str, limit: usize) -> Result<Vec<KnowledgeHit>> {
         let conn = self.open()?;
         let count: i64 = conn.query_row("SELECT COUNT(*) FROM chunks", [], |r| r.get(0))?;
@@ -165,33 +195,67 @@ impl KnowledgeService {
             .into_iter()
             .next()
             .context("embedder returned no vector")?;
-        let mut stmt = conn.prepare("SELECT path, heading, text, embedding FROM chunks")?;
+        let mut stmt = conn.prepare("SELECT rowid, path, heading, text, embedding FROM chunks")?;
         let rows = stmt.query_map([], |row| {
             Ok((
-                row.get::<_, String>(0)?,
+                row.get::<_, i64>(0)?,
                 row.get::<_, String>(1)?,
                 row.get::<_, String>(2)?,
-                row.get::<_, Vec<u8>>(3)?,
+                row.get::<_, String>(3)?,
+                row.get::<_, Vec<u8>>(4)?,
             ))
         })?;
-        let mut hits: Vec<KnowledgeHit> = Vec::new();
+        // rowid → (余弦得分, path/heading/snippet)，向量路满召回。
+        let mut rows_by_id: HashMap<i64, (f32, String, String, String)> = HashMap::new();
         for row in rows {
-            let (path, heading, text, blob) = row?;
+            let (rowid, path, heading, text, blob) = row?;
             let score = cosine(&query_vec, &blob);
-            hits.push(KnowledgeHit {
-                snippet: crate::util::truncate_chars(text.trim(), SNIPPET_CHARS),
-                path,
-                heading,
-                score,
-            });
+            let snippet = crate::util::truncate_chars(text.trim(), SNIPPET_CHARS);
+            rows_by_id.insert(rowid, (score, path, heading, snippet));
         }
-        hits.sort_by(|a, b| {
-            b.score
-                .partial_cmp(&a.score)
-                .unwrap_or(std::cmp::Ordering::Equal)
-        });
+        let fts_ranked = fts_search(&conn, query, FTS_TOP_N)?;
+        // RRF 融合：score(doc) = Σ 1/(k + rank)。向量路按余弦降序、词面路按
+        // bm25 降序各自给名次；对外展示的相关度仍是余弦值（阈值语义不变）。
+        let mut vec_ranked: Vec<(i64, f32)> = rows_by_id
+            .iter()
+            .map(|(rowid, (score, ..))| (*rowid, *score))
+            .collect();
+        vec_ranked.sort_by(|a, b| b.1.partial_cmp(&a.1).unwrap_or(std::cmp::Ordering::Equal));
+        let mut fused: HashMap<i64, f32> = HashMap::new();
+        for (index, (rowid, _)) in vec_ranked.iter().enumerate() {
+            *fused.entry(*rowid).or_default() += 1.0 / (RRF_K + index as f32 + 1.0);
+        }
+        for (rank, rowid) in fts_ranked.iter().enumerate() {
+            *fused.entry(*rowid).or_default() += 1.0 / (RRF_K + rank as f32 + 1.0);
+        }
+        let fts_hits: std::collections::HashSet<i64> = fts_ranked.into_iter().collect();
+        let mut hits: Vec<(f32, KnowledgeHit)> = fused
+            .into_iter()
+            .filter_map(|(rowid, rrf)| {
+                rows_by_id
+                    .remove(&rowid)
+                    .map(|(cosine, path, heading, snippet)| {
+                        // 词面精确命中抬到下限之上：这是证据，不是噪声。
+                        let score = if fts_hits.contains(&rowid) {
+                            cosine.max(FTS_HIT_FLOOR)
+                        } else {
+                            cosine
+                        };
+                        (
+                            rrf,
+                            KnowledgeHit {
+                                path,
+                                heading,
+                                score,
+                                snippet,
+                            },
+                        )
+                    })
+            })
+            .collect();
+        hits.sort_by(|a, b| b.0.partial_cmp(&a.0).unwrap_or(std::cmp::Ordering::Equal));
         hits.truncate(limit);
-        Ok(hits)
+        Ok(hits.into_iter().map(|(_, hit)| hit).collect())
     }
 
     /// 面向 worker 的自动上下文注入：用户消息进 agent 前先做语义检索，
@@ -206,6 +270,60 @@ impl KnowledgeService {
         let hits = self.search(query, RETRIEVAL_TOP_K)?;
         Ok(format_retrieval(&hits))
     }
+}
+
+/// BM25 词面召回：返回按 bm25 升序（越相关越前）的 chunk rowid。
+/// 查询构不出任何可匹配词项（全部 <3 字符）时返回空——trigram 词元
+/// 最短三字符，此时检索自然退化为纯向量路。
+fn fts_search(conn: &Connection, query: &str, limit: usize) -> Result<Vec<i64>> {
+    let Some(match_query) = fts_match_query(query) else {
+        return Ok(Vec::new());
+    };
+    let mut stmt = conn.prepare(
+        "SELECT rowid FROM chunks_fts WHERE chunks_fts MATCH ?1 \
+         ORDER BY bm25(chunks_fts) LIMIT ?2",
+    )?;
+    let rows = stmt.query_map(rusqlite::params![match_query, limit as i64], |row| {
+        row.get::<_, i64>(0)
+    })?;
+    let mut out = Vec::new();
+    for row in rows {
+        out.push(row?);
+    }
+    Ok(out)
+}
+
+/// 把自由文本查询转成 FTS5 MATCH 表达式：按字母数字/CJK 边界切词项，
+/// 双引号包裹（内部引号翻倍）防注入语法，词项间 OR 放宽召回。
+fn fts_match_query(query: &str) -> Option<String> {
+    let mut terms: Vec<String> = Vec::new();
+    let mut current = String::new();
+    for ch in query.chars() {
+        if ch.is_alphanumeric() {
+            current.push(ch);
+        } else if !current.is_empty() {
+            terms.push(std::mem::take(&mut current));
+        }
+    }
+    if !current.is_empty() {
+        terms.push(current);
+    }
+    let mut seen = std::collections::HashSet::new();
+    let terms: Vec<String> = terms
+        .into_iter()
+        .filter(|term| term.chars().count() >= 3 && seen.insert(term.clone()))
+        .take(8)
+        .collect();
+    if terms.is_empty() {
+        return None;
+    }
+    Some(
+        terms
+            .iter()
+            .map(|term| format!("\"{}\"", term.replace('"', "\"\"")))
+            .collect::<Vec<_>>()
+            .join(" OR "),
+    )
 }
 
 /// 达阈值的命中渲染成注入块；全部低于阈值返回 None。
@@ -360,6 +478,74 @@ fn meta_set(conn: &Connection, key: &str, value: &str) -> Result<()> {
 #[cfg(test)]
 mod tests {
     use super::{chunk_markdown, cosine, strip_frontmatter};
+
+    #[test]
+    fn fts_match_query_splits_quotes_and_drops_short_terms() {
+        use super::fts_match_query;
+        assert_eq!(
+            fts_match_query("rust 清华大学"),
+            Some("\"rust\" OR \"清华大学\"".to_owned())
+        );
+        // 短于 trigram 词元的词项丢弃，剩下的仍可匹配。
+        assert_eq!(fts_match_query("ai 是什么"), Some("\"是什么\"".to_owned()));
+        assert_eq!(fts_match_query("ok 好"), None);
+        // 引号等符号按词元边界切开不进词项；2 字符词项丢弃，≥3 字符保留。
+        assert_eq!(
+            fts_match_query("数据库\"引号\"测试一下"),
+            Some("\"数据库\" OR \"测试一下\"".to_owned())
+        );
+    }
+
+    #[test]
+    fn hybrid_search_promotes_exact_keyword_hits() {
+        use super::KnowledgeService;
+        use crate::ports::embedding::Embedder;
+        use anyhow::Result;
+        use std::sync::Arc;
+
+        // 含「高数」的文本与查询向量正交：命中只能来自 FTS 词面路，
+        // 以此验证 BM25 召回与相关度下限抬升，而不是被恒等余弦掩盖。
+        struct TopicEmbedder;
+        impl Embedder for TopicEmbedder {
+            fn embed(&self, texts: &[String]) -> Result<Vec<Vec<f32>>> {
+                Ok(texts
+                    .iter()
+                    .map(|text| {
+                        if text.contains("高数") {
+                            vec![1.0, 0.0, 0.0, 0.0]
+                        } else {
+                            vec![0.0, 1.0, 0.0, 0.0]
+                        }
+                    })
+                    .collect())
+            }
+            fn dim(&self) -> usize {
+                4
+            }
+            fn model_name(&self) -> &str {
+                "topic-test"
+            }
+        }
+
+        let vault = tempfile::tempdir().unwrap();
+        std::fs::write(
+            vault.path().join("math.md"),
+            "# 高数\n\n傅里叶变换考点：周期信号展开。\n",
+        )
+        .unwrap();
+        let db = tempfile::tempdir().unwrap().keep().join("knowledge.db");
+        let service = KnowledgeService::new(Arc::new(TopicEmbedder), db).unwrap();
+        service.index_vault(vault.path()).unwrap();
+
+        let hits = service.search("傅里叶变换考点", 3).unwrap();
+        assert!(
+            hits.iter()
+                .any(|hit| hit.path.contains("math.md") && hit.score >= 0.61),
+            "hits: {hits:?}"
+        );
+        let block = service.retrieval_context("傅里叶变换考点").unwrap();
+        assert!(block.unwrap().contains("math.md"));
+    }
 
     #[test]
     fn frontmatter_is_stripped() {
