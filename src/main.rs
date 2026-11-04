@@ -300,6 +300,7 @@ async fn main() -> Result<()> {
                     serde_json::json!({
                         "window_days": days,
                         "summaries": ru41::app::usage::report(&*store, since)?,
+                        "by_model": ru41::app::usage::report_by_model(&*store, since)?,
                     })
                 }
             }

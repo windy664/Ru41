@@ -29,6 +29,9 @@ pub struct AgentOutput {
     pub session_id: Option<String>,
     /// 本次运行消耗的 token 用量；底座未上报时为 None。
     pub usage: Option<TokenUsage>,
+    /// 本次运行实际使用的模型（供应方/模型 ID，如 minimax/MiniMax-M3）。
+    /// 底座带 fallback 链时这里报实际生效的那一个；未上报时为 None。
+    pub model: Option<String>,
 }
 
 /// 一个运行时底座，而不仅是文本补全 API。

@@ -447,6 +447,16 @@ impl TaskStore for PostgresTaskStore {
         })
     }
 
+    fn set_attempt_model(&self, attempt_id: i64, model: &str) -> Result<bool> {
+        outside_runtime(|| {
+            let changed = self.client()?.execute(
+                "UPDATE attempts SET model=$2 WHERE id=$1 AND (model IS NULL OR model<>$2)",
+                &[&attempt_id, &model],
+            )?;
+            Ok(changed == 1)
+        })
+    }
+
     fn succeed(
         &self,
         claim: &Claim,
@@ -517,7 +527,7 @@ impl TaskStore for PostgresTaskStore {
     fn usage_since(&self, since: i64) -> Result<Vec<UsageRecord>> {
         outside_runtime(|| {
             let rows = self.client()?.query(
-                "SELECT a.task_id, a.id, t.request_key, a.started_at, a.input_tokens, a.cached_input_tokens, a.output_tokens, a.total_tokens \
+                "SELECT a.task_id, a.id, t.request_key, a.started_at, a.model, a.input_tokens, a.cached_input_tokens, a.output_tokens, a.total_tokens \
                  FROM attempts a JOIN tasks t ON a.task_id=t.id \
                  WHERE a.started_at>=$1 AND a.total_tokens IS NOT NULL ORDER BY a.started_at",
                 &[&since],
@@ -529,10 +539,11 @@ impl TaskStore for PostgresTaskStore {
                     attempt_id: row.get(1),
                     request_key: row.get(2),
                     started_at: row.get(3),
-                    input_tokens: row.get(4),
-                    cached_input_tokens: row.get(5),
-                    output_tokens: row.get(6),
-                    total_tokens: row.get(7),
+                    model: row.get(4),
+                    input_tokens: row.get(5),
+                    cached_input_tokens: row.get(6),
+                    output_tokens: row.get(7),
+                    total_tokens: row.get(8),
                 })
                 .collect())
         })

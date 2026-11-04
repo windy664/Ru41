@@ -29,6 +29,7 @@ impl AgentBackend for TestBackend {
                 },
                 session_id: Some("opaque-session".into()),
                 usage: None,
+                model: None,
             })
         })
     }

@@ -158,7 +158,8 @@ pub fn execute(command: &Command, ctx: &CommandContext) -> Result<Reply> {
             let now = crate::util::now();
             let day = crate::app::usage::report(ctx.store.as_ref(), now - 86_400)?;
             let week = crate::app::usage::report(ctx.store.as_ref(), now - 7 * 86_400)?;
-            Ok(Reply::text(format_usage(&day, &week)))
+            let models = crate::app::usage::report_by_model(ctx.store.as_ref(), now - 7 * 86_400)?;
+            Ok(Reply::text(format_usage(&day, &week, &models)))
         }
         Command::Clear => {
             let key = format!("qq:{}", ctx.target);
@@ -225,6 +226,7 @@ fn totals(summaries: &[crate::app::usage::UsageSummary]) -> (u32, u64) {
 pub fn format_usage(
     day: &[crate::app::usage::UsageSummary],
     week: &[crate::app::usage::UsageSummary],
+    models: &[crate::app::usage::ModelUsage],
 ) -> String {
     let (day_runs, day_tokens) = totals(day);
     let (week_runs, week_tokens) = totals(week);
@@ -250,6 +252,20 @@ pub fn format_usage(
                 item.source,
                 human_tokens(item.total_tokens),
                 item.runs
+            ));
+        }
+    }
+    if !models.is_empty() {
+        lines.push(String::new());
+        lines.push("**7 天分模型**".to_owned());
+        for item in models {
+            lines.push(format!(
+                "- `{}`：{}（{} 次，入 {} / 出 {}）",
+                item.model,
+                human_tokens(item.total_tokens),
+                item.runs,
+                human_tokens(item.input_tokens),
+                human_tokens(item.output_tokens)
             ));
         }
     }

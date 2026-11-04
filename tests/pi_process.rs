@@ -235,6 +235,63 @@ async fn accepts_json_wrapped_in_code_fence_or_prose() {
 }
 
 #[tokio::test]
+async fn falls_back_to_next_model_and_reports_the_used_one() {
+    // 主模型直接退出（模拟限流/服务端错误），应自动切到备用模型，
+    // 并把「实际使用的模型」报回去，供用量按模型分摊。
+    let dir = tempfile::tempdir().unwrap();
+    let agent = PiAgent {
+        executable: executable(
+            dir.path(),
+            r#"
+if [ ! -f attempt.txt ]; then
+  touch attempt.txt
+  printf '%s\n' '{"id":"ru41-prompt","type":"response","success":true}' 
+  exit 1
+fi
+printf '%s\n' '{"id":"ru41-prompt","type":"response","success":true,"data":{"disposition":"started"}}'
+printf '%s\n' '{"type":"message_end","message":{"role":"assistant","stopReason":"stop","usage":{"input":10,"output":5,"cacheRead":0,"cacheWrite":0,"totalTokens":15},"content":[{"type":"text","text":"{\"summary\":\"ok\"}"}]}}'
+printf '%s\n' '{"type":"agent_settled","aborted":false}'
+while read -r _; do :; done
+"#,
+        ),
+        model: Some("minimax/MiniMax-M3".into()),
+        provider: Some("minimax".into()),
+        fallback_models: vec!["zhipu/glm-4.6".into()],
+        ..Default::default()
+    };
+    let output = tokio::time::timeout(Duration::from_secs(15), agent.run(request(dir.path())))
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(output.result.summary, "ok");
+    assert_eq!(output.model.as_deref(), Some("zhipu/glm-4.6"));
+}
+
+#[tokio::test]
+async fn fatal_config_error_does_not_switch_model() {
+    // 密钥变量缺失属于配置错误：换模型也救不了，不该白跑一遍备用链。
+    let dir = tempfile::tempdir().unwrap();
+    let agent = PiAgent {
+        executable: executable(dir.path(), "sleep 30"),
+        model: Some("minimax/MiniMax-M3".into()),
+        api_key_env: Some("RU41_TEST_PI_MISSING_KEY".into()),
+        fallback_models: vec!["zhipu/glm-4.6".into()],
+        ..Default::default()
+    };
+    let error = match tokio::time::timeout(Duration::from_secs(5), agent.run(request(dir.path())))
+        .await
+        .unwrap()
+    {
+        Ok(_) => panic!("missing key should fail"),
+        Err(error) => error,
+    };
+    assert!(
+        error.to_string().contains("RU41_TEST_PI_MISSING_KEY"),
+        "{error:#}"
+    );
+}
+
+#[tokio::test]
 async fn tools_mode_enables_tool_allowlist() {
     let _guard = SERIAL.lock().await;
     let dir = tempfile::tempdir().unwrap();
@@ -364,7 +421,9 @@ printf '%s\n' '{"type":"agent_settled","aborted":false}'
         ..Default::default()
     };
     // models.json 内容与写盘无关，直接断言结构：密钥只以环境变量引用出现。
-    let models = agent.models_json().unwrap();
+    let models = agent
+        .models_json("minimax/MiniMax-M3", Some("minimax"))
+        .unwrap();
     let provider = &models["providers"]["minimax"];
     assert_eq!(provider["baseUrl"], "https://api.minimaxi.chat/anthropic");
     assert_eq!(provider["api"], "anthropic-messages");
@@ -377,7 +436,10 @@ printf '%s\n' '{"type":"agent_settled","aborted":false}'
         api: Some("grpc".into()),
         ..Default::default()
     };
-    assert!(bad.models_json().is_err());
+    assert!(
+        bad.models_json("minimax/MiniMax-M3", Some("minimax"))
+            .is_err()
+    );
 }
 
 #[tokio::test]

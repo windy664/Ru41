@@ -14,6 +14,23 @@ use std::{
 };
 use tokio::io::{AsyncBufReadExt, AsyncReadExt, AsyncWriteExt, BufReader};
 
+/// 候选模型：供应方 + 模型 ID。fallback 链里逐个尝试。
+#[derive(Clone, Debug)]
+struct Candidate {
+    model: String,
+    provider: Option<String>,
+}
+
+impl Candidate {
+    /// 展示名（供应方/模型），用于日志与用量归属。
+    fn label(&self) -> String {
+        match &self.provider {
+            Some(provider) if !provider.is_empty() => format!("{provider}/{}", self.model),
+            _ => self.model.clone(),
+        }
+    }
+}
+
 /// Pi 支持的兼容端点协议。
 const SUPPORTED_APIS: [&str; 3] = [
     "anthropic-messages",
@@ -39,6 +56,9 @@ pub struct PiAgent {
     pub session_dir: Option<PathBuf>,
     /// 工具白名单（Pi 的 --tools）；为空则禁用全部工具，只做文本分析。
     pub tools: Option<String>,
+    /// 备用模型链：主模型失败（限流/服务端错误/协议中断）时按顺序切换。
+    /// 每项写 `供应方/模型` 或裸 `模型`（沿用主供应方）。
+    pub fallback_models: Vec<String>,
     /// 底座 ID（pi / pi-session）。
     pub id: String,
 }
@@ -54,6 +74,7 @@ impl Default for PiAgent {
             session: false,
             session_dir: None,
             tools: None,
+            fallback_models: Vec::new(),
             id: "pi".into(),
         }
     }
@@ -153,7 +174,7 @@ fn parse_agent_result(text: &str) -> Result<AgentResult> {
 
 impl PiAgent {
     /// 兼容端点配置：models.json 内容；密钥以 `$ENV` 引用写入，真实值只留在进程环境里。
-    pub fn models_json(&self) -> Result<Value> {
+    pub fn models_json(&self, model: &str, provider: Option<&str>) -> Result<Value> {
         let api = self.api.as_deref().unwrap_or("anthropic-messages");
         ensure!(
             SUPPORTED_APIS.contains(&api),
@@ -162,12 +183,11 @@ impl PiAgent {
                 SUPPORTED_APIS.join(", ")
             ))
         );
-        let provider_id = self.provider.clone().unwrap_or_else(|| "ru41".into());
-        let model_id = self
-            .model
-            .as_deref()
-            .map(|m| m.rsplit_once('/').map_or(m, |(_, id)| id))
-            .unwrap_or_default();
+        let provider_id = provider
+            .filter(|p| !p.is_empty())
+            .unwrap_or("ru41")
+            .to_owned();
+        let model_id = model.rsplit_once('/').map_or(model, |(_, id)| id);
         let mut provider = serde_json::Map::new();
         provider.insert(
             "baseUrl".into(),
@@ -187,8 +207,8 @@ impl PiAgent {
     }
 
     /// 把 models.json 写到运行目录下的临时 agent 目录，并返回该目录。
-    fn write_models_json(&self, run_dir: &Path) -> Result<PathBuf> {
-        let root = self.models_json()?;
+    fn write_models_json(&self, run_dir: &Path, candidate: &Candidate) -> Result<PathBuf> {
+        let root = self.models_json(&candidate.model, candidate.provider.as_deref())?;
         let agent_dir = run_dir.join(".pi-agent");
         std::fs::create_dir_all(&agent_dir)
             .with_context(|| format!("创建 Pi agent 目录失败 {}", agent_dir.display()))?;
@@ -200,6 +220,41 @@ impl PiAgent {
         .with_context(|| format!("写 models.json 失败 {}", models_path.display()))?;
         Ok(agent_dir)
     }
+    /// 候选链：主模型在前，备用模型按配置顺序在后。
+    fn candidates(&self) -> Vec<Candidate> {
+        let mut list = Vec::new();
+        match &self.model {
+            Some(model) => list.push(Candidate {
+                model: model.clone(),
+                provider: self.provider.clone(),
+            }),
+            // 没配模型时交给 Pi 用它自己的默认模型（候选的 model 为空表示不传 --model）。
+            None if self.fallback_models.is_empty() => list.push(Candidate {
+                model: String::new(),
+                provider: self.provider.clone(),
+            }),
+            None => {}
+        }
+        for fallback in &self.fallback_models {
+            let (provider, model) = match fallback.split_once('/') {
+                Some((provider, model)) => (Some(provider.to_owned()), model.to_owned()),
+                None => (self.provider.clone(), fallback.clone()),
+            };
+            list.push(Candidate { model, provider });
+        }
+        list
+    }
+
+    /// 换模型也救不了的错误：契约不支持、配置缺失、结果不合约。
+    fn is_fatal(error: &anyhow::Error) -> bool {
+        matches!(
+            error.downcast_ref::<Ru41Error>(),
+            Some(Ru41Error::UnsupportedContract(_))
+                | Some(Ru41Error::Config(_))
+                | Some(Ru41Error::InvalidOutput(_))
+        )
+    }
+
     async fn execute(&self, request: AgentRequest) -> Result<AgentOutput> {
         ensure!(
             request.contract == RunContract::AnalysisV1,
@@ -209,6 +264,40 @@ impl PiAgent {
             self.provider.is_none() || self.model.is_some(),
             Ru41Error::Config("Pi provider requires model".into())
         );
+        let candidates = self.candidates();
+        ensure!(
+            !candidates.is_empty(),
+            Ru41Error::Config("Pi requires a model".into())
+        );
+        if candidates.len() == 1 {
+            return self.run_candidate(&request, &candidates[0]).await;
+        }
+        let mut last_error = None;
+        for candidate in &candidates {
+            match self.run_candidate(&request, candidate).await {
+                Ok(output) => return Ok(output),
+                Err(error) => {
+                    if Self::is_fatal(&error) {
+                        return Err(error);
+                    }
+                    eprintln!(
+                        "[pi] model {} failed ({error:#}); trying next candidate",
+                        candidate.label()
+                    );
+                    last_error = Some(error);
+                }
+            }
+        }
+        Err(last_error.unwrap_or_else(|| {
+            Ru41Error::AgentProcess("Pi candidate chain exhausted".into()).into()
+        }))
+    }
+
+    async fn run_candidate(
+        &self,
+        request: &AgentRequest,
+        candidate: &Candidate,
+    ) -> Result<AgentOutput> {
         let mut command = tokio::process::Command::new(&self.executable);
         command
             .current_dir(&request.run_dir)
@@ -263,10 +352,10 @@ impl PiAgent {
         } else {
             command.arg("--no-session");
         }
-        if let Some(model) = &self.model {
-            command.args(["--model", model]);
+        if !candidate.model.is_empty() {
+            command.args(["--model", &candidate.model]);
         }
-        if let Some(provider) = &self.provider {
+        if let Some(provider) = &candidate.provider {
             command.args(["--provider", provider]);
         }
         // 密钥只走环境变量；配置与日志里只有变量名。
@@ -280,7 +369,7 @@ impl PiAgent {
         }
         // 自定义端点：临时 agent 目录 + models.json。
         if self.base_url.is_some() {
-            let agent_dir = self.write_models_json(&request.run_dir)?;
+            let agent_dir = self.write_models_json(&request.run_dir, candidate)?;
             command.env("PI_CODING_AGENT_DIR", agent_dir);
         }
         #[cfg(unix)]
@@ -423,6 +512,7 @@ impl PiAgent {
                         result,
                         session_id,
                         usage,
+                        model: Some(candidate.label()),
                     });
                 }
             }

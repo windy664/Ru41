@@ -34,6 +34,7 @@ impl AgentBackend for FakeAgent {
                 },
                 session_id: Some("test-thread".into()),
                 usage: None,
+                model: None,
             })
         })
     }
@@ -100,6 +101,7 @@ impl AgentBackend for EventfulAgent {
                 },
                 session_id: Some("t1".into()),
                 usage: None,
+                model: None,
             })
         })
     }
@@ -310,6 +312,7 @@ async fn conversation_session_is_saved_and_resumed() {
                     },
                     session_id: Some("thread-1".into()),
                     usage: None,
+                    model: None,
                 })
             })
         }
@@ -404,6 +407,7 @@ async fn conversation_resume_requires_matching_model() {
                     },
                     session_id: Some("thread-glm".into()),
                     usage: None,
+                    model: None,
                 })
             })
         }
@@ -510,6 +514,7 @@ impl AgentBackend for EchoAgent {
                 },
                 session_id: Some("test-thread".into()),
                 usage: None,
+                model: None,
             })
         })
     }

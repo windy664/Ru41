@@ -171,6 +171,7 @@ impl CodexSession {
                     result,
                     session_id: session,
                     usage,
+                    model: self.model.clone(),
                 });
             }
         }
