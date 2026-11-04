@@ -163,6 +163,7 @@ pub fn unknown_domains(
     out
 }
 
+#[derive(Clone)]
 pub struct EgressAuditConfig {
     pub data_dir: PathBuf,
     pub extra_allowlist: Vec<String>,
@@ -170,6 +171,7 @@ pub struct EgressAuditConfig {
     pub interval_secs: u64,
 }
 
+#[derive(Clone)]
 pub struct EgressAuditTracker {
     config: EgressAuditConfig,
     notifier: Option<Arc<dyn ru41::ports::channel::NotifyChannel>>,
@@ -349,10 +351,12 @@ impl ru41::ingress::schedule::PollJob for EgressAuditTracker {
     ) -> std::pin::Pin<
         Box<dyn std::future::Future<Output = anyhow::Result<serde_json::Value>> + Send + '_>,
     > {
-        let owned = self;
-        Box::pin(async move {
-            let value = owned.poll_once().await?;
-            Ok(value)
+        // 必须过 bridge：插件 .so 自带一份 tokio/reqwest 副本，直接在宿主线程
+        // poll 会因插件副本无运行时上下文 panic（no reactor）。bridge 把 future
+        // 派生到插件自己的 runtime，同时 panic 隔离不带崩宿主。
+        let owned = self.clone();
+        ru41::plugins::bridge(async move {
+            Ok(serde_json::to_value(owned.poll_once().await?)?)
         })
     }
 }
