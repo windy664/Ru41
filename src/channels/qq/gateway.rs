@@ -104,6 +104,12 @@ fn parse_attachments(d: &Value) -> Vec<MessageAttachment> {
             continue;
         };
         let Some(url) = url.map(|u| u.trim_start_matches("https://")) else {
+            // QQ 偶发给出无 URL 的附件（多媒体接口未就绪等）：丢弃必须有痕迹，
+            // 否则用户发的文件凭空消失且无从排查。
+            eprintln!(
+                "[qq.in] 附件丢弃（无 URL）：content_type={content_type:?} filename={:?}",
+                a.get("filename").and_then(Value::as_str)
+            );
             continue;
         };
         out.push(MessageAttachment {
