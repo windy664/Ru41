@@ -60,6 +60,17 @@
 - [ ] 生产容器逐个配置插件白名单的 chore（默认全量加载，行为不变）
 - [ ] 每个插件补专属文档（当前以 docs/README.md 插件清单表导航）
 
+## P1 隐私边界与自愈（设计已定，docs/privacy-llm-boundary.md / self-healing.md）
+
+- [ ] worker 容器摘除 `/etc/ru41` 挂载，改用剔除 sources 账密的裁剪配置
+- [ ] obsidian 整理任务改「快照收件箱」：正文内联进 prompt（过密码扫描），agent 不再直读 /vault 全仓
+- [ ] vault 明文密码一次性扫描迁移 + cron 周扫防回潮
+- [ ] RandomSanitizer 扩规则：password/token/Bearer/JWT/学号形态
+- [ ] 出站审计：通知与 vault 提交 diff 的红区正则拦截
+- [ ] `run_periodic` 单轮 poll panic 隔离 + 连续失败告警（消灭崩溃循环刷屏）
+- [ ] 确定性看门狗（唯一持 docker.sock）：崩溃循环检测 → 回滚 → 停用止损 runbook
+- [ ] agent 故障诊断任务（只提议不执行，复用审批链）
+
 ## 后续
 
 水电、知到、X 情报、周报、机会匹配、财务和媒体。先跑通两个真实业务，再决定 crate 拆分、模块接口和插件安装机制。
