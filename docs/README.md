@@ -16,6 +16,11 @@
 - [Docker 部署](../deploy/README.md)：单镜像多进程、持久化数据、备份恢复与重依赖扩展
 - [仓库协作契约（AGENTS.md）](../AGENTS.md)：目录边界、构建踩坑（共享 target、bridge、plugin-entry feature）、部署链与红线——**上手开发前必读**
 
+## 设计研究（待实施）
+
+- [敏感信息与 LLM 边界](privacy-llm-boundary.md)：脱敏现状缺口（agent 自主读盘不脱敏）、三色分级判据与 P0-P3 路线
+- [容器故障自愈](self-healing.md)：进程/看门狗/agent 诊断三层设计，agent 永不持有 docker.sock
+
 ## Agent 与核心运行时
 
 - [Agent 架构](agent-architecture.md)：底座注册、运行与宿主职责
