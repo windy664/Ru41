@@ -389,4 +389,8 @@ pub struct PiSection {
     pub session: Option<bool>,
     /// 会话存储目录（对应 Pi 的 --session-dir）。
     pub session_dir: Option<PathBuf>,
+    /// 工具白名单（Pi 的 --tools，逗号分隔，如 "read,write,edit,bash"）。
+    /// 留空则禁用全部工具：只做文本分析。启用后 Pi 的工具没有操作系统级沙箱，
+    /// 权限与 Codex 的 bypass 模式相当。
+    pub tools: Option<String>,
 }
