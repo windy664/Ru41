@@ -66,7 +66,10 @@ fn mock_file_server(payload: &'static [u8]) -> String {
             // 只读请求行就回包；读满请求体会等不到对端关写半边而卡死。
             let mut line = String::new();
             let _ = std::io::BufReader::new(&stream).read_line(&mut line);
-            let head = format!("HTTP/1.1 200 OK\r\nContent-Length: {}\r\nConnection: close\r\n\r\n", payload.len());
+            let head = format!(
+                "HTTP/1.1 200 OK\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
+                payload.len()
+            );
             stream.write_all(head.as_bytes()).unwrap();
             stream.write_all(payload).unwrap();
         }
@@ -95,9 +98,8 @@ fn worker(store: Arc<dyn TaskStore>, tmp: &tempfile::TempDir) -> LectureWorker {
 #[test]
 fn non_audio_attachments_are_not_intercepted() {
     let tmp = tempfile::tempdir().unwrap();
-    let store: Arc<dyn TaskStore> = Arc::new(
-        SqliteTaskStore::open(&tmp.path().join("state.db")).unwrap(),
-    );
+    let store: Arc<dyn TaskStore> =
+        Arc::new(SqliteTaskStore::open(&tmp.path().join("state.db")).unwrap());
     let handler = LectureHandler::new(config(tmp.path().to_path_buf()));
     let atts = vec![MediaRef::new(MediaKind::File, "https://x/doc.pdf")];
     let cx = ctx(&store, &atts, "user:U1", "U1", "m1", true);
@@ -118,13 +120,11 @@ where
     rt.block_on(f)
 }
 
-
 #[test]
 fn unbound_or_group_is_deflected() {
     let tmp = tempfile::tempdir().unwrap();
-    let store: Arc<dyn TaskStore> = Arc::new(
-        SqliteTaskStore::open(&tmp.path().join("state.db")).unwrap(),
-    );
+    let store: Arc<dyn TaskStore> =
+        Arc::new(SqliteTaskStore::open(&tmp.path().join("state.db")).unwrap());
     let handler = LectureHandler::new(config(tmp.path().to_path_buf()));
     let atts = audio_attachment("https://x/lec.m4a");
     // 未绑定单聊：提示绑定。
@@ -141,9 +141,8 @@ fn unbound_or_group_is_deflected() {
 #[test]
 fn audio_file_is_downloaded_and_queued() {
     let tmp = tempfile::tempdir().unwrap();
-    let store: Arc<dyn TaskStore> = Arc::new(
-        SqliteTaskStore::open(&tmp.path().join("state.db")).unwrap(),
-    );
+    let store: Arc<dyn TaskStore> =
+        Arc::new(SqliteTaskStore::open(&tmp.path().join("state.db")).unwrap());
     let handler = LectureHandler::new(config(tmp.path().to_path_buf()));
     let url = mock_file_server(AUDIO);
     let atts = audio_attachment(&url);
@@ -158,7 +157,10 @@ fn audio_file_is_downloaded_and_queued() {
     assert_eq!(docs.len(), 1);
     let item = ru41_plugin_lecture::pending::PendingItem::from_document(&docs[0]).unwrap();
     assert_eq!(item.status, "pending");
-    assert_eq!(PathBuf::from(&item.file).file_name().unwrap(), "高数 03-12.m4a");
+    assert_eq!(
+        PathBuf::from(&item.file).file_name().unwrap(),
+        "高数 03-12.m4a"
+    );
     assert_eq!(std::fs::read(&item.file).unwrap(), AUDIO);
     // 重复投递（同 msg_id）不覆盖文档。
     let cx = ctx(&store, &atts, "user:U1", "U1", "m-audio", true);
@@ -169,9 +171,8 @@ fn audio_file_is_downloaded_and_queued() {
 #[test]
 fn course_matching_prefers_overlapping_class_then_nearest() {
     let tmp = tempfile::tempdir().unwrap();
-    let store: Arc<dyn TaskStore> = Arc::new(
-        SqliteTaskStore::open(&tmp.path().join("state.db")).unwrap(),
-    );
+    let store: Arc<dyn TaskStore> =
+        Arc::new(SqliteTaskStore::open(&tmp.path().join("state.db")).unwrap());
     let w = worker(store.clone(), &tmp);
     let t0 = 1761891600; // 2026-10-31 10:00 +08:00
     ScheduleService::new(store.clone(), TodoOptions::default())
@@ -195,8 +196,6 @@ fn course_matching_prefers_overlapping_class_then_nearest() {
     assert_eq!(w.course_at(t0 + 5 * 3600), "课堂录音");
     // 日程为空 → fallback。
     let tmp2 = tempfile::tempdir().unwrap();
-    let store2 = Arc::new(
-        SqliteTaskStore::open(&tmp2.path().join("state.db")).unwrap(),
-    );
+    let store2 = Arc::new(SqliteTaskStore::open(&tmp2.path().join("state.db")).unwrap());
     assert_eq!(worker(store2, &tmp2).course_at(t0), "课堂录音");
 }

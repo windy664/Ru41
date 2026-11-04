@@ -1916,7 +1916,7 @@ dependencies = [
 
 [[package]]
 name = "ru41-plugin-api"
-version = "0.3.0"
+version = "0.4.0"
 dependencies = [
  "anyhow",
  "chrono",
@@ -1934,6 +1934,7 @@ version = "0.1.0"
 dependencies = [
  "anyhow",
  "chrono",
+ "regex",
  "reqwest",
  "ru41",
  "serde",
