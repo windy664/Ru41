@@ -312,15 +312,14 @@ impl PiAgent {
                         );
                         accepted = true;
                         // 会话模式下问一次会话 ID，供后续恢复使用。
+                        // Pi 若已退出，写入会 broken pipe；这只是可选查询，
+                        // 不能因此判定整次运行失败。
                         if self.session && !asked_state {
                             asked_state = true;
-                            stdin
-                                .write_all(
-                                    format!("{}\n", json!({"id":"ru41-state","type":"get_state"}))
-                                        .as_bytes(),
-                                )
-                                .await?;
-                            stdin.flush().await?;
+                            let query =
+                                format!("{}\n", json!({"id":"ru41-state","type":"get_state"}));
+                            let _ = stdin.write_all(query.as_bytes()).await;
+                            let _ = stdin.flush().await;
                         }
                     }
                     Some("response") if event["id"] == "ru41-state" => {

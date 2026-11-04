@@ -197,6 +197,30 @@ printf '%s\n' '{"type":"agent_settled","aborted":false}'
     assert!(!args.lines().any(|a| a == "--no-tools"));
 }
 
+#[tokio::test]
+async fn session_query_failure_does_not_fail_the_run() {
+    // Pi 在拿到 prompt 回执后就退出：会话 ID 查询写不进去（broken pipe），
+    // 但结果已经拿到，不能因此判定整次运行失败。
+    let dir = tempfile::tempdir().unwrap();
+    let agent = PiAgent {
+        executable: executable(
+            dir.path(),
+            r#"
+printf '%s\n' '{"id":"ru41-prompt","type":"response","success":true,"data":{"disposition":"started"}}'
+printf '%s\n' '{"type":"message_end","message":{"role":"assistant","stopReason":"stop","content":[{"type":"text","text":"{\"summary\":\"ok\"}"}]}}'
+printf '%s\n' '{"type":"agent_settled","aborted":false}'
+"#,
+        ),
+        session: true,
+        ..Default::default()
+    };
+    let output = tokio::time::timeout(Duration::from_secs(10), agent.run(request(dir.path())))
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(output.result.summary, "ok");
+}
+
 #[test]
 fn pi_configuration_is_opt_in() {
     use ru41::bootstrap::config::Config;
@@ -321,6 +345,7 @@ printf '%s\n' '{"id":"ru41-prompt","type":"response","success":true,"data":{"dis
 printf '%s\n' '{"id":"ru41-state","type":"response","success":true,"data":{"sessionId":"sess-42"}}'
 printf '%s\n' '{"type":"message_end","message":{"role":"assistant","stopReason":"stop","content":[{"type":"text","text":"{\"summary\":\"ok\"}"}]}}'
 printf '%s\n' '{"type":"agent_settled","aborted":false}'
+while read -r _; do :; done
 "#,
         ),
         session: true,
