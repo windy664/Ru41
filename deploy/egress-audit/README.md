@@ -18,6 +18,10 @@ ru41-egress-audit 插件容器 ── 每 6h 聚合 24h → digest-latest.md
    `* * * * * flock -n /tmp/egress-audit.lock python3 /home/windy2/egress-audit/collect.py >> /home/windy2/egress-audit/collect.log 2>&1`
 3. mihomo `log-level: info`（连接级日志是采集数据源；已持久化进 config.yaml）。
 4. `bash deploy/egress-audit/inject-proxy.sh`（仅存量容器需要，注入代理 env）。
+5. `bash deploy/egress-audit/run-collector-container.sh`（创建聚合插件容器
+   ru41-egress-audit，幂等；镜像取 ru41:local，先确保 plugins 目录里有
+   `libru41_plugin_egress_audit.so`——CI 镜像 5a29ec0 及更早版本因 Dockerfile
+   连字符 bug 缺该 so，需 717544d 之后的镜像）。
 
 ## 边界
 
