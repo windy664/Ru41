@@ -31,6 +31,7 @@ migrations/    数据库迁移（核心领地）
   **别在插件目录 `cargo clean`**，会把所有插件的共享产物一起清掉。
   本地产物路径：`plugins/target-plugins/release/libru41_plugin_<名>.so`（scp 部署用这条）。
 - 插件依赖主 crate 走 path；`ru41::ports::vault::Vault` 等公共 trait 变更会让所有插件的测试 fake 同步失编译（`sync` 返回 `SyncOutcome`，记得有 `resolve_conflict`/`rebase_continue`/`rebase_abort`）。
+- 插件一切异步入口（PollJob::poll_json / QQ handler / CLI poll）必须过 `ru41_plugin_api::bridge`——dylib 各静态链接一份 tokio，宿主 reactor 对插件不可见，不过桥在网络调用时 panic 并 abort 进程。**核心 tracker 类型被插件 tracker 闭包实例化进 .so 时同样适用**（2026-11-04 ClassRemindTracker 未过桥致 class-remind 容器崩溃循环、课前提醒全丢）。
 - 插件技能包在 `plugins/<名>/skills/<技能>/SKILL.md`，由 `src/skills/` 加载注入 agent prompt。
   容器内从镜像的 `/usr/share/ru41/{modules,plugins}/` 读（`/etc/ru41` 被宿主机
   bind mount 整体遮蔽，技能包放那里等于没有）；改技能必须走镜像部署，热更 .so 不带技能。
