@@ -105,7 +105,12 @@ impl TokenUsage {
     /// 从 codex 事件 JSON 提取 usage；字段缺失或全 0 视为底座未上报。
     pub fn from_event(event: &serde_json::Value) -> Option<TokenUsage> {
         let usage = event.get("usage")?;
-        let field = |name: &str| usage.get(name).and_then(serde_json::Value::as_u64).unwrap_or(0);
+        let field = |name: &str| {
+            usage
+                .get(name)
+                .and_then(serde_json::Value::as_u64)
+                .unwrap_or(0)
+        };
         let parsed = TokenUsage {
             input_tokens: field("input_tokens"),
             cached_input_tokens: field("cached_input_tokens"),
