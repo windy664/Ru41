@@ -105,6 +105,52 @@ fn session_id_from_state(data: &Value) -> Option<String> {
         .map(str::to_owned)
 }
 
+/// 从模型输出里取出 JSON 对象。
+/// Pi 没有 codex 那样的输出 schema 强制，模型常把 JSON 包在 ```json 代码块里
+/// 或前后加说明；这里取第一个配平的 `{...}` 再解析，别让格式噪声废掉整次运行。
+fn extract_json_object(text: &str) -> Option<&str> {
+    let start = text.find('{')?;
+    let bytes = text.as_bytes();
+    let mut depth = 0_usize;
+    let mut in_string = false;
+    let mut escaped = false;
+    for (offset, byte) in bytes.iter().enumerate().skip(start) {
+        let ch = *byte as char;
+        if in_string {
+            if escaped {
+                escaped = false;
+            } else if ch == '\\' {
+                escaped = true;
+            } else if ch == '"' {
+                in_string = false;
+            }
+            continue;
+        }
+        match ch {
+            '"' => in_string = true,
+            '{' => depth += 1,
+            '}' => {
+                depth -= 1;
+                if depth == 0 {
+                    return Some(&text[start..=offset]);
+                }
+            }
+            _ => {}
+        }
+    }
+    None
+}
+
+/// 解析 agent 结果：优先整体 JSON，其次取第一个配平的 JSON 对象。
+fn parse_agent_result(text: &str) -> Result<AgentResult> {
+    let trimmed = text.trim();
+    let candidate = extract_json_object(trimmed).unwrap_or(trimmed);
+    let result: AgentResult = serde_json::from_str(candidate)
+        .map_err(|_| Ru41Error::InvalidOutput("Pi result must be JSON with summary".into()))?;
+    result.validate().map_err(Ru41Error::InvalidOutput)?;
+    Ok(result)
+}
+
 impl PiAgent {
     /// 兼容端点配置：models.json 内容；密钥以 `$ENV` 引用写入，真实值只留在进程环境里。
     pub fn models_json(&self) -> Result<Value> {
@@ -371,10 +417,7 @@ impl PiAgent {
                             text.push_str(block["text"].as_str().context("Pi text missing")?);
                         }
                     }
-                    let result: AgentResult = serde_json::from_str(&text).map_err(|_| {
-                        Ru41Error::InvalidOutput("Pi result must be JSON with summary".into())
-                    })?;
-                    result.validate().map_err(Ru41Error::InvalidOutput)?;
+                    let result = parse_agent_result(&text)?;
                     stdin.shutdown().await?;
                     return Ok::<_, anyhow::Error>(AgentOutput {
                         result,
