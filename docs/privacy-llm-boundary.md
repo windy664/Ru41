@@ -138,13 +138,21 @@ P3 观望底座。各项互不阻塞，P0 做完前 P1/P2 已能显著降低暴�
 - workspace-write 下 agent 命令默认无网络；需联网的任务要在 codex 配置
   `[sandbox_workspace_write] network_access = true`，属任务级显式授权（对齐 P3 设计）。
 
-### P3+ 出口网关（实验项，未实施）
+### P3+ 出口网关（observe-only，2026-11-04 一期落地）
 
-- 网络层只能「管制」不能「脱敏」：docker internal network + 唯一代理出口可保证
-  所有出站流量经过检查点，内容级检查仍需 MITM。
-- 业界参照：Hermes 的 iron-proxy（自签 CA + HTTPS_PROXY + 域名白名单 + 默认拒绝
-  SSRF 网段，observe/log 起步）；企业/政务侧为 DLP 网关与网闸（协议剥离摆渡）。
-- 我们形态：mihomo 已在生产做规则出口，可叠一个 observe-only 审计代理
-  （记录出站域名/URL + 命中敏感正则告警，不阻断），验证误报率后再考虑强制。
-- 已知残留风险（见 iron-proxy 安全模型）：agent 持 allowlist 域名仍可在请求体里
-  夹带数据出站（该路径已被 P2 应用层审计覆盖大半）；裸 socket 绕过代理需网络策略兜底。
+- 拓扑实测：mihomo（host 网络，mixed-port 7890）TUN **未接管**容器网段——此前
+  日志里的容器连接全部来自 browserless 的显式 HTTP_PROXY。观察层的前提是让
+  容器流量真的经过检查点。
+- 一期方案：全部 ru41 容器注入 `HTTP(S)_PROXY=http://172.17.0.1:7890`
+  （compose 通用段 + 存量容器一次性 inject-proxy.sh）。mihomo 规则语义下
+  **GEOIP CN 直连在前**，国内出口 IP 不变（校园抓取/账单无影响），国外走既有
+  新加坡出口；mihomo 成为容器国际出站单点，属已接受取舍。
+- 采集层：mihomo `log-level: info`（连接级，含源 IP/嗅探域名/命中规则），
+  宿主 cron 每分钟增量解析（`deploy/egress-audit/collect.py`，flock + 游标续传
+  + 30 天滚动清理）→ `.ru41/egress/conns-*.jsonl`（借 /data 挂载免新增挂载）。
+- 报告层：`plugins/egress-audit`（compose profile `egress-audit`）每 6h 聚合
+  最近 24h → `/data/egress/digest-latest.md`；白名单外新域名当日首报（状态文件
+  去重），白名单内置默认 + `[sources.egress_audit] allowlist` 追加。
+- 已知边界：内容是 TLS 加密的，本层只看「谁连了哪个域名」；不走代理栈的裸
+  socket 采集不到（TUN 未接管容器网段）；MITM 内容级检查与强制出站（白名单
+  默认拒绝）留给后续，需要自签 CA + 观察期误报数据支撑。
