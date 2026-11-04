@@ -652,15 +652,8 @@ fn parse_frontmatter(content: &str) -> Option<std::collections::HashMap<String, 
 
 /// categories 校验：单个值，且在 Astro 集合枚举内（string 或 [单值] 都接受）。
 fn validate_categories(raw: &str) -> std::result::Result<(), String> {
-    const ALLOWED: [&str; 7] = [
-        "AI 应用",
-        "工程化",
-        "架构",
-        "思考",
-        "踩坑",
-        "后端基础",
-        "技术分享",
-    ];
+    // 分类是文章的书架坐标，只保留最粗的四格；主题细分交给标签（专题页按标签频率自动聚合）。
+    const ALLOWED: [&str; 4] = ["AI 应用", "技术分享", "踩坑", "思考"];
     let inner = raw
         .trim()
         .trim_matches(|c| c == '[' || c == ']')
