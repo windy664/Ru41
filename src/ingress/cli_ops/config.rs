@@ -23,6 +23,32 @@ pub(crate) async fn run(cli: &Cli, command: &ConfigCommand) -> OpsOutcome {
         },
         ConfigCommand::Show => show(cli),
         ConfigCommand::Check => check_config(cli),
+        ConfigCommand::Redact { out } => redact_to_file(cli, out),
+    }
+}
+
+/// 生成剔除 `sources` 段的配置副本：worker 容器只需要 agent/notify/knowledge/store，
+/// 不需要各数据源的账密。用 toml::Value 原文档操作，避免经过 serde 结构丢失注释外字段。
+fn redact_to_file(cli: &Cli, out: &Path) -> OpsOutcome {
+    let outcome = (|| -> Result<(std::path::PathBuf, bool)> {
+        let (_, located) = Config::load(cli.config.as_deref())?;
+        let path = located.ok_or_else(|| anyhow::anyhow!("未找到配置文件"))?;
+        let text = std::fs::read_to_string(&path)?;
+        let mut value: toml::Value = toml::from_str(&text)?;
+        let removed = value
+            .as_table_mut()
+            .and_then(|table| table.remove("sources"))
+            .is_some();
+        std::fs::write(out, toml::to_string_pretty(&value)?)?;
+        Ok((path, removed))
+    })();
+    match outcome {
+        Ok((source, removed_sources)) => OpsOutcome::success(json!({
+            "source": source.display().to_string(),
+            "out": out.display().to_string(),
+            "removed_sources": removed_sources,
+        })),
+        Err(error) => OpsOutcome::failure(error.to_string()),
     }
 }
 

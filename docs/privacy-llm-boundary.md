@@ -95,3 +95,21 @@
 P0.1（worker 摘 /etc/ru41）与 P0.2（快照收件箱）一次部署批次完成；
 P0.3 扫描立即可做（一次性任务）；P1 一个批次；P2 一个批次；
 P3 观望底座。各项互不阻塞，P0 做完前 P1/P2 已能显著降低暴露面。
+
+## 5. 实施状态（2026-11-04）
+
+- [x] **P1 规则扩容**：`RandomSanitizer` 新增 `secret_kv`（password/token/api_key 等
+  赋值形态，中文键含「的密码」边界修正）、`bearer_token`、`jwt`、`student_id` 四条规则；
+  假值生成器补 `ApiKey`/`Token` 两类。测试在 `tests/sanitize.rs`。
+- [x] **P0.3 密码扫描**：`ru41 vault scan-secrets [--vault <路径>] [--out <报告>]`，
+  形态库在 `src/privacy/scan.rs`（secret_kv/bearer/jwt + AKIA/xoxb/ghp_/sk-/私钥头/带凭证
+  连接串），报告只含 位置+规则名+脱敏预览。服务器 cron 周扫待部署批次注册。
+- [x] **P0.2 快照收件箱**：`organize_prompt` 内联待整理文件脱敏正文快照（单文件 2 万字符、
+  总量 6 万字符截断，先过 `redact_secrets`）；Agent 只输出 ```ru41-organize JSON 指令
+  （moves/deletes/todos/skipped），宿主经 Vault 落盘（重试轮幂等）、待办入库（同标题去重）。
+  Agent 侧 vault 全文与文件系统不可见。SKILL.md 同步改写，需镜像部署生效。
+- [x] **P0.1 config redact**：`ru41 config redact --out <路径>` 剔除 `sources` 段生成
+  worker 专用配置；compose worker 已改为挂载裁剪配置；生产 worker 容器的一次性重建
+  （摘全量 /etc/ru41 与 /vault）在部署批次执行。
+- [ ] **P2 出站审计**：未实施。
+- [ ] **P3 沙箱收窄**：未实施（观望底座）。

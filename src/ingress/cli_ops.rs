@@ -7,6 +7,7 @@ mod doctor;
 mod init;
 mod qq;
 mod status;
+mod vault;
 
 pub struct OpsOutcome {
     pub value: Value,
@@ -66,6 +67,7 @@ pub async fn try_run(cli: &Cli) -> Result<Option<OpsOutcome>> {
         } => Ok(Some(qq::onboard(cli).await)),
         Command::Status => Ok(Some(status::run(cli, false).await)),
         Command::Dump => Ok(Some(status::run(cli, true).await)),
+        Command::Vault { command } => Ok(Some(vault::run(cli, command).await)),
         _ => Ok(None),
     }
 }

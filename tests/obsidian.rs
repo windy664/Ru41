@@ -198,19 +198,13 @@ async fn succeeded_task_commits_and_pushes() {
     let report = tracker.poll_once().await.unwrap();
     assert_eq!(report.action, "enqueued");
 
-    // 模拟 Agent 完成整理：移动文件 + 任务标记成功。
-    std::fs::create_dir_all(fx.vault_path.join("03-Knowledge-知识")).unwrap();
-    std::fs::rename(
-        fx.vault_path.join("00-Inbox-收件箱/新想法.md"),
-        fx.vault_path.join("03-Knowledge-知识/新想法.md"),
-    )
-    .unwrap();
+    // 模拟 Agent 完成整理：只输出指令 JSON，落盘由宿主执行。
     let claim = fx.store.claim("worker", 100, 30).unwrap().unwrap();
     fx.store
         .succeed(
             &claim,
             &AgentResult {
-                summary: "done".into(),
+                summary: "```ru41-organize\n{\"moves\":[{\"from\":\"00-Inbox-收件箱/新想法.md\",\"to\":\"03-Knowledge-知识/新想法.md\"}],\"todos\":[],\"skipped\":[]}\n```".into(),
             },
             None,
             101,
@@ -293,7 +287,7 @@ async fn conflict_aborts_when_remote_moved() {
         .succeed(
             &claim,
             &AgentResult {
-                summary: "done".into(),
+                summary: "```ru41-organize\n{\"moves\":[{\"from\":\"00-Inbox-收件箱/新想法.md\",\"to\":\"03-Knowledge-知识/新想法.md\"}],\"todos\":[],\"skipped\":[]}\n```".into(),
             },
             None,
             101,
@@ -307,6 +301,34 @@ async fn conflict_aborts_when_remote_moved() {
     let report = tracker.poll_once().await.unwrap();
     assert_eq!(report.action, "enqueued");
     assert_eq!(fx.store.list(10).unwrap().len(), 2);
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn invalid_plan_output_reenqueues_retry() {
+    let fx = RepoFixture::new();
+    let tracker = fx.tracker();
+    fx.push_change("00-Inbox-收件箱/新想法.md", "一个想法", "想法");
+    tracker.poll_once().await.unwrap();
+    // Agent 没按协议输出：宿主解析失败，换 key 重入队（不落盘、不提交）。
+    let claim = fx.store.claim("worker", 100, 30).unwrap().unwrap();
+    fx.store
+        .succeed(
+            &claim,
+            &AgentResult {
+                summary: "我整理好了，但忘了按格式输出".into(),
+            },
+            None,
+            101,
+        )
+        .unwrap();
+    let report = tracker.poll_once().await.unwrap();
+    assert_eq!(report.action, "retry");
+    assert_eq!(fx.store.list(10).unwrap().len(), 2);
+    // 重入队的任务仍是 queued，等待 worker 领取。
+    let tasks = fx.store.list(10).unwrap();
+    assert!(tasks.iter().any(|t| t.request_key.contains("#r1")));
+    // 收件箱文件仍在原位：无效指令不允许改动工作区。
+    assert!(fx.vault_path.join("00-Inbox-收件箱/新想法.md").exists());
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
