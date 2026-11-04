@@ -261,6 +261,9 @@ impl Worker {
             },
             None => prompt,
         };
+        // 输出规范（Markdown + 公式用 LaTeX）在这里统一注入：底座无关，
+        // Codex 与 Pi 拿到同一份规范，避免各适配器各写一份。
+        let prompt = crate::markdown::with_output_style(&prompt);
         let conversation_id = claim
             .task
             .notify

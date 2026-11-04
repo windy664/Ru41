@@ -4,6 +4,7 @@ pub mod bootstrap;
 pub mod channels;
 pub mod domain;
 pub mod ingress;
+pub mod markdown;
 pub mod modules;
 pub mod plugins;
 pub mod ports;
