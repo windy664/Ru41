@@ -172,11 +172,12 @@ Worker 会真实调用 Agent 并消耗对应额度。`--once` 最多领取一个
 | [`src/domain/`](src/domain/) · [`src/app/`](src/app/) | 领域规则与公共用例 |
 | [`src/ports/`](src/ports/) · [`src/adapters/`](src/adapters/) | 能力接口与 Agent、数据库、来源适配 |
 | [`src/runtime/`](src/runtime/) · [`src/privacy/`](src/privacy/) | 执行机制、通知派发、脱敏与回填 |
-| [`plugins/`](plugins/) | 13 个业务附属（竞赛/论文/RSS/水电/实习等），独立编译热插拔 |
-| [`src/modules/`](src/modules/) · [`src/channels/`](src/channels/) | 保留内建的核心模块（obsidian/planner/jwxt 等）与消息渠道 |
+| [`plugins/`](plugins/) | 23 个业务附属（论文/RSS/水电/课表/作业/图书馆/课堂录音等），独立 crate 编译热插拔 |
+| [`src/channels/`](src/channels/) | 消息渠道（QQ 网关与飞书 webhook） |
 | [`src/ingress/`](src/ingress/) · [`src/bootstrap/`](src/bootstrap/) | 入口、配置与装配 |
+| [`src/modules/`](src/modules/) | 插件注册表空壳（2026-11-03 全量插件化后仅剩 linkme 定义与共享工具） |
 
-宿主架构是**动态插件（cdylib）+ 内建模块混合**：内建模块用 linkme 分布式注册随主二进制编译；插件编为 `.so` 由宿主启动时 dlopen 加载。边界类型统一住在 `ru41-plugin-api` crate（semver + 依赖 stamp 握手），宿主改业务代码不再要求插件重编。
+宿主架构是**纯动态插件（cdylib）**：全部附属编为 `.so` 由宿主启动时 dlopen 加载，注册表经 linkme 分布式切片聚合。边界类型统一住在 `ru41-plugin-api` crate（semver + 依赖 stamp 握手），宿主改业务代码不再要求插件重编；插件一切异步入口必须过 `plugins::bridge`（dylib 各自静态链接 tokio，reactor 不与宿主通用）。
 
 ```bash
 cargo fmt --all -- --check
@@ -184,13 +185,13 @@ cargo clippy --locked --all-targets -- -D warnings
 cargo test --locked
 ```
 
-测试使用模拟 Agent 或本地假进程，不调用付费模型。新增附属功能的目录约定与注册步骤见[插件开发指南](docs/plugin-development.md)（推荐）；少数常驻核心能力才走[内建模块指南](docs/module-development.md)。
+测试使用模拟 Agent 或本地假进程，不调用付费模型。新增附属功能一律走[动态插件指南](docs/plugin-development.md)（独立 crate 热插拔）；[内建模块指南](docs/module-development.md)已随全量插件化转为历史参考。
 
 ## 继续阅读
 
 | 了解方向 | 使用系统 | 扩展系统 |
 | :--- | :--- | :--- |
-| [产品设计](docs/product-design.md) | [使用与配置手册](docs/usage.md) | [模块开发](docs/module-development.md) |
+| [产品设计](docs/product-design.md) | [使用与配置手册](docs/usage.md) | [插件开发](docs/plugin-development.md) |
 | [开发路线](docs/roadmap.md) | [部署指南](deploy/README.md) | [Agent 接入](docs/agent-backends.md) |
 | [核心状态](docs/core-status.md) | [全部文档](docs/README.md) | [事件消费者](docs/event-consumers.md) |
 

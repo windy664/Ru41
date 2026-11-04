@@ -11,8 +11,9 @@
 - [开发路线](roadmap.md)：已完成能力与后续阶段
 - [核心宿主状态](core-status.md)：核心边界、并行开发约定和未完成项
 - [动态插件开发指南](plugin-development.md)：新附属的默认路线——cdylib 热插拔、ru41-plugin-api 边界与握手纪律
-- [内建模块开发指南](module-development.md)：仅常驻核心能力（obsidian/planner/jwxt 等）的静态装配约定
+- [内建模块开发指南](module-development.md)：**历史参考**——静态装配路线已随 2026-11-03 全量插件化弃用，仅当将来恢复内建形态时再看
 - [Docker 部署](../deploy/README.md)：单镜像多进程、持久化数据、备份恢复与重依赖扩展
+- [仓库协作契约（AGENTS.md）](../AGENTS.md)：目录边界、构建踩坑（共享 target、bridge、plugin-entry feature）、部署链与红线——**上手开发前必读**
 
 ## Agent 与核心运行时
 
@@ -36,10 +37,44 @@
 - [学习通签到监控](sources-chaoxing.md)：协议端直连、待签提醒与手动签到红线
 - [教务课表监控](sources-jwxt.md)：CAS 单点登录拉课表、变更检测与明日课表提醒
 - [恒源云 GPU 库存监控](sources-compshare.md)：light-gpu 容量接口、P40 有货提醒与会话过期告警
+- [微助教签到与作业](sources-teachermate.md)：openid 直连、作业临期/过期提醒（每日一次）
+- [课堂录音转写](sources-lecture.md)：Paraformer 自托管 ASR、笔记落课程目录
+- [图书馆检索逆向](library-recon.md)：libsp 检索协议、馆藏定位与追书
+
+## 插件清单（23 个，均在 `plugins/`）
+
+新开发者从这里对照找代码；标 📄 的有独立文档。
+
+| 插件 | 职责 | 备注 |
+| :--- | :--- | :--- |
+| 📄 papers | arXiv 论文 digest 与精读 | sources-arxiv.md |
+| 📄 rss | RSS/Atom 信息流精选 | sources-rss.md |
+| 📄 ecard | 校园卡余额与水电读数、低额提醒 | ecard-waterfee.md |
+| 📄 zhihuishu | 智慧树任务/作业监控 | sources-zhihuishu.md |
+| 📄 chaoxing | 学习通签到 + 作业监控 | sources-chaoxing.md |
+| 📄 teachermate | 微助教签到 + 作业监控 | sources-teachermate.md |
+| 📄 jwxt | 教务课表拉取、调停课、每日课表推送 | sources-jwxt.md |
+| 📄 compshare | 恒源云 GPU 有货监控 | sources-compshare.md |
+| 📄 lecture | 课堂录音转写整理为课程笔记 | sources-lecture.md |
+| 📄 library | 图书馆藏检索、找书、追书 | library-recon.md |
+| homework | 三平台作业聚合 → 学期「作业总表.md」 | 与 zhihuishu/chaoxing/teachermate 快照字段对齐 |
+| events | 活动/讲座/论坛日程抓取 → Obsidian | 偏科技/AI/安全，大湾区优先 |
+| notices | 通知规则抽取（标题+时间+地点锚点，不走 LLM） | 课群通知 → 行程 |
+| blog | Obsidian 博客发布（草稿→已发布→外部 Pages） | vault git 闭环 |
+| obsidian | Vault 同步与知识库索引容器 | 索引走 cron 03:23 宿主 CLI |
+| planner | 日程/行程与待办 QQ 命令 | 加行程带可取消按钮 |
+| youtube | YouTube 新视频字幕预习单 | 触网 handler 已过桥 |
+| jobs | 实习/校招技术岗（大湾区优先）筛选 | |
+| programs | OSPP 等年度窗口项目提醒 | 无公开 API，静态节奏 |
+| research | 科研项目（中科院科创等）窗口提醒 | |
+| competitions | 竞赛信息多源抓取 → Obsidian | |
+| projects | GitHub 个人项目动态归档 | |
+| pagewatch | 页面变化监控 | |
 
 ## 推荐阅读顺序
 
 1. 根目录 README：快速开始、配置与整体架构
-2. 核心宿主状态：确认哪些能力尚未完成
-3. 对应渠道或来源文档：搭建并运行一个真实闭环
-4. 动态插件开发指南：在不修改核心的前提下扩展新业务（独立 crate 热插拔）
+2. [AGENTS.md](../AGENTS.md)：构建踩坑与协作契约（插件不在 workspace、共享 target、bridge 纪律、部署链）
+3. 核心宿主状态：确认哪些能力尚未完成
+4. 上表找到对应插件 → 渠道或来源文档：搭建并运行一个真实闭环
+5. 动态插件开发指南：在不修改核心的前提下扩展新业务（独立 crate 热插拔）
