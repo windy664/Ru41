@@ -33,6 +33,7 @@ impl AgentBackend for FakeAgent {
                     summary: self.summary.into(),
                 },
                 session_id: Some("test-thread".into()),
+                usage: None,
             })
         })
     }
@@ -98,6 +99,7 @@ impl AgentBackend for EventfulAgent {
                     summary: "done".into(),
                 },
                 session_id: Some("t1".into()),
+                usage: None,
             })
         })
     }
@@ -307,6 +309,7 @@ async fn conversation_session_is_saved_and_resumed() {
                         summary: "done".into(),
                     },
                     session_id: Some("thread-1".into()),
+                    usage: None,
                 })
             })
         }
@@ -400,6 +403,7 @@ async fn conversation_resume_requires_matching_model() {
                         summary: "done".into(),
                     },
                     session_id: Some("thread-glm".into()),
+                    usage: None,
                 })
             })
         }

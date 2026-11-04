@@ -301,6 +301,12 @@ pub enum TaskCommand {
     Cancel {
         id: i64,
     },
+    /// Token 用量统计：按来源（request_key 前缀）分组。
+    Usage {
+        /// 统计窗口（天）。
+        #[arg(long, default_value_t = 7)]
+        days: u32,
+    },
 }
 
 #[derive(Subcommand)]

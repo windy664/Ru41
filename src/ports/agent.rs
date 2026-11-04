@@ -20,10 +20,15 @@ pub struct AgentRequest {
     pub contract: RunContract,
 }
 
+/// 一次 agent 运行的 token 用量，类型与提取逻辑见 [`crate::domain::TokenUsage`]。
+pub use crate::domain::TokenUsage;
+
 pub struct AgentOutput {
     pub result: AgentResult,
     /// 不透明的提供方标识；不能跨底座移植。
     pub session_id: Option<String>,
+    /// 本次运行消耗的 token 用量；底座未上报时为 None。
+    pub usage: Option<TokenUsage>,
 }
 
 /// 一个运行时底座，而不仅是文本补全 API。

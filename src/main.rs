@@ -294,6 +294,14 @@ async fn main() -> Result<()> {
                 TaskCommand::Cancel { id } => serde_json::to_value(service.cancel(id)?)?,
                 TaskCommand::Retry { id } => serde_json::to_value(service.retry(id)?)?,
                 TaskCommand::Attempts { id } => serde_json::to_value(service.attempts(id)?)?,
+                TaskCommand::Usage { days } => {
+                    let store = open_store(&store_config)?;
+                    let since = ru41::util::now() - i64::from(days) * 86_400;
+                    serde_json::json!({
+                        "window_days": days,
+                        "summaries": ru41::app::usage::report(&*store, since)?,
+                    })
+                }
             }
         }
         Command::Todo { command } => {

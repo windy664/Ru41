@@ -83,6 +83,40 @@ impl AgentResult {
     }
 }
 
+/// 一次 agent 运行的 token 用量；来自底座事件流（codex `turn.completed` 的
+/// usage 字段），底座不报就是 None。cached_input_tokens 计入 input_tokens。
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct TokenUsage {
+    pub input_tokens: u64,
+    pub cached_input_tokens: u64,
+    pub output_tokens: u64,
+    pub total_tokens: u64,
+}
+
+impl TokenUsage {
+    /// 多轮运行（resume 会话逐轮上报）的累加。
+    pub fn accumulate(&mut self, other: &TokenUsage) {
+        self.input_tokens += other.input_tokens;
+        self.cached_input_tokens += other.cached_input_tokens;
+        self.output_tokens += other.output_tokens;
+        self.total_tokens += other.total_tokens;
+    }
+
+    /// 从 codex 事件 JSON 提取 usage；字段缺失或全 0 视为底座未上报。
+    pub fn from_event(event: &serde_json::Value) -> Option<TokenUsage> {
+        let usage = event.get("usage")?;
+        let field = |name: &str| usage.get(name).and_then(serde_json::Value::as_u64).unwrap_or(0);
+        let parsed = TokenUsage {
+            input_tokens: field("input_tokens"),
+            cached_input_tokens: field("cached_input_tokens"),
+            output_tokens: field("output_tokens"),
+            total_tokens: field("total_tokens"),
+        };
+        (parsed.total_tokens > 0 || parsed.input_tokens > 0 || parsed.output_tokens > 0)
+            .then_some(parsed)
+    }
+}
+
 #[derive(Debug, Serialize)]
 pub struct Attempt {
     pub id: i64,

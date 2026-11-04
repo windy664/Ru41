@@ -180,6 +180,7 @@ impl PiAgent {
                     return Ok::<_, anyhow::Error>(AgentOutput {
                         result,
                         session_id: None,
+                        usage: None,
                     });
                 }
             }

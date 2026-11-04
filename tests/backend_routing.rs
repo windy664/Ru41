@@ -28,6 +28,7 @@ impl AgentBackend for TestBackend {
                     summary: format!("handled by {}", self.0),
                 },
                 session_id: Some("opaque-session".into()),
+                usage: None,
             })
         })
     }

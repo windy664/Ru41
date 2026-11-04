@@ -83,7 +83,7 @@ fn cli_caps(executable: &Path) -> CliCaps {
 use super::SandboxMode;
 use crate::{
     domain::{AgentResult, RunContract, error::Ru41Error},
-    ports::agent::{AgentBackend, AgentOutput, AgentRequest, BackendDescriptor},
+    ports::agent::{AgentBackend, AgentOutput, AgentRequest, BackendDescriptor, TokenUsage},
 };
 use std::{
     future::Future,
@@ -233,6 +233,8 @@ impl CodexAgent {
         let mut thread_id = None;
         let mut completed = false;
         let mut error_reported = false;
+        // resume 会话可能逐轮吐 turn.completed：逐轮累加成整次运行的用量。
+        let mut usage: Option<TokenUsage> = None;
         for line in events.split(|b| *b == b'\n').filter(|l| !l.is_empty()) {
             let event: serde_json::Value =
                 serde_json::from_slice(line).context("invalid Codex JSONL event")?;
@@ -243,7 +245,15 @@ impl CodexAgent {
                         .and_then(|v| v.as_str())
                         .map(str::to_owned)
                 }
-                Some("turn.completed") => completed = true,
+                Some("turn.completed") => {
+                    completed = true;
+                    if let Some(turn) = TokenUsage::from_event(&event) {
+                        match &mut usage {
+                            Some(accumulated) => accumulated.accumulate(&turn),
+                            None => usage = Some(turn),
+                        }
+                    }
+                }
                 Some("turn.failed") => {
                     return Err(Ru41Error::AgentProcess(format!(
                         "Codex turn failed{}",
@@ -301,6 +311,7 @@ impl CodexAgent {
         Ok(AgentOutput {
             result,
             session_id: thread_id,
+            usage,
         })
     }
 }

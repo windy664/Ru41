@@ -337,7 +337,14 @@ impl Worker {
                                     summary: self.sanitizer.restore(&output.result.summary, &mapping),
                                 },
                                 session_id: output.session_id,
+                                usage: output.usage,
                             };
+                            // 用量在终态判定前落库：即使后续校验/提交失败，token 也已消耗。
+                            if let Some(usage) = output.usage
+                                && let Err(error) = self.store.record_usage(claim, &usage)
+                            {
+                                eprintln!("[worker] record_usage failed: {error:#}");
+                            }
                             if let Err(error) = output.result.validate() {
                                 break Err(Ru41Error::InvalidOutput(error).into());
                             }
