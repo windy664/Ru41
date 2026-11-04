@@ -54,8 +54,8 @@ impl PostgresTaskStore {
                 tx.batch_execute(include_str!("../../../migrations/postgres/001_tasks.sql"))?;
                 tx.execute("INSERT INTO schema_migrations(version) VALUES (1)", &[])?;
             }
-            Some(1..=5) => {}
-            Some(other) => bail!("unsupported database version {other}; expected 5"),
+            Some(1..=6) => {}
+            Some(other) => bail!("unsupported database version {other}; expected 6"),
         }
         if version.unwrap_or(0) < 2 {
             tx.batch_execute(include_str!("../../../migrations/postgres/002_notify.sql"))?;
