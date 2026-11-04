@@ -2,7 +2,7 @@
 //! 写入待转写队列并即时回执；转写整理在 worker 侧异步完成。
 
 use crate::config::LectureConfig;
-use crate::pending::{is_audio_filename, sanitize_name, PendingItem, PENDING_KIND};
+use crate::pending::{PENDING_KIND, PendingItem, is_audio_filename, sanitize_name};
 use anyhow::{Context, Result};
 use ru41::ports::channel::MediaKind;
 use ru41::ports::commands::{CommandContext, CommandHandler, Reply};
@@ -26,6 +26,7 @@ impl LectureHandler {
     }
 
     /// 下载 + 入库（插件自己的 runtime 里跑，见 handle_message 的 bridge 说明）。
+    /// 返回（文件大小 MB 前的字节数, 前面排队节数）：排队数让回执告诉用户还要等几节。
     async fn run_job(
         &self,
         store: std::sync::Arc<dyn ru41::ports::storage::TaskStore>,
@@ -34,7 +35,7 @@ impl LectureHandler {
         channel: String,
         target: String,
         msg_id: String,
-    ) -> Result<u64> {
+    ) -> Result<(u64, usize)> {
         let filename = sanitize_name(&display_name);
         let raw_dir = self.config.workspace.join(&msg_id).join("raw");
         std::fs::create_dir_all(&raw_dir)?;
@@ -55,7 +56,18 @@ impl LectureHandler {
         };
         // put_document(None) insert-or-ignore：同 msg_id 重复投递不覆盖（幂等）。
         store.put_document(PENDING_KIND, &msg_id, None, &serde_json::to_value(&item)?)?;
-        Ok(size)
+        // 队列位置：除本条外仍未消化完的节数（worker 串行，按这个数报「前面还有几节」）。
+        let ahead = store
+            .documents(PENDING_KIND, 100)?
+            .iter()
+            .filter_map(|doc| PendingItem::from_document(doc).ok())
+            .filter(|other| {
+                other.msg_id != msg_id
+                    && other.status != "done"
+                    && other.status != "failed"
+            })
+            .count();
+        Ok((size, ahead))
     }
 
     /// 流式落盘，避免大文件整读进内存。
@@ -116,7 +128,8 @@ impl CommandHandler for LectureHandler {
             let Some(audio) = audio else {
                 return Ok(None);
             };
-            if let Some(note) = ctx.require_private("转写课堂录音", "课堂录音属于个人学习资料")? {
+            if let Some(note) = ctx.require_private("转写课堂录音", "课堂录音属于个人学习资料")?
+            {
                 return Ok(Some(Reply::text(note)));
             }
             // bridge：插件 cdylib 带独立 tokio 副本，reqwest 的 reactor TLS 跨不过
@@ -128,14 +141,14 @@ impl CommandHandler for LectureHandler {
             let channel = ctx.reply_channel.to_owned();
             let target = ctx.target.to_owned();
             let msg_id = ctx.msg_id.to_owned();
-            let size = match ru41::plugins::bridge(async move {
+            let (size, ahead) = match ru41::plugins::bridge(async move {
                 worker
                     .run_job(store, source, display_name, channel, target, msg_id)
                     .await
             })
             .await
             {
-                Ok(size) => size,
+                Ok(ok) => ok,
                 // 下载失败要回执（链接时效/网络故障用户需要知道并重发），
                 // 不能只在服务端日志里留个 handle failed。
                 Err(error) => {
@@ -149,12 +162,19 @@ impl CommandHandler for LectureHandler {
             let hint = (!content.trim().is_empty())
                 .then(|| format!("\n\n> 附言：{}", content.trim()))
                 .unwrap_or_default();
+            let queue = if ahead > 0 {
+                format!("\n- 队列：前面还有 {} 节在排队，转写按收到顺序一节一节来", ahead)
+            } else {
+                "\n- 队列：就这一节，马上开始".to_owned()
+            };
             Ok(Some(Reply::text(format!(
                 "## 课堂录音已接收\n\n《{}》（{:.1} MB）\n已下载并排队转写，每 {} 分钟一片逐段识别；\
-                 完成后会按当天课表归入对应课程，自动整理成课堂笔记存进 vault 并通知你。{hint}",
+                 完成后会按当天课表归入对应课程，自动整理成课堂笔记存进 vault 并通知你。{}{}",
                 audio.display_name(),
                 size as f64 / 1024.0 / 1024.0,
                 self.config.slice_secs / 60,
+                queue,
+                hint,
             ))))
         })
     }

@@ -39,6 +39,75 @@ impl PendingItem {
         serde_json::from_value(doc.value.clone())
             .with_context(|| format!("lecture.pending 文档 {} 解析失败", doc.id))
     }
+
+    /// 课程匹配与归档日期用的时间：优先文件名里解析出的开录时刻
+    /// （录音 app 命名通常带，比收到时刻更贴近实际上课时间），解析不出回退收到时间。
+    pub fn recorded_time(&self) -> i64 {
+        parse_recorded_at(&self.filename).unwrap_or(self.received_at)
+    }
+
+    /// 录音时间来源说明（提示词里向 agent 交代依据）。
+    pub fn recorded_time_source(&self) -> &'static str {
+        if parse_recorded_at(&self.filename).is_some() {
+            "来自录音文件名"
+        } else {
+            "文件名无时间，按收到时刻回退"
+        }
+    }
+}
+
+/// 从录音文件名解析开录时刻（本地时区 unix 秒）。覆盖常见录音 app 命名：
+/// `20261103_143000`、`20261103143000`、`2026-11-03 14-30-05`、
+/// `Rec_2026.11.03-14.30`、`录音 2026年11月3日 14_30`。解析不出返回 None。
+pub fn parse_recorded_at(filename: &str) -> Option<i64> {
+    use chrono::{Local, NaiveDate, TimeZone};
+    // 去扩展名；时间串可能在任意位置（Rec_ 前缀、「录音 」等字样前后）。
+    let stem = filename
+        .rsplit_once('.')
+        .map(|(s, _)| s)
+        .unwrap_or(filename);
+    // 分隔符格式：2026-11-03 14-30-05 / 2026.11.03-14.30 / 2026年11月3日 14_30
+    let sep = regex::Regex::new(
+        r"(?P<y>\d{4})[-_.年](?P<m>\d{1,2})[-_.月](?P<d>\d{1,2})[日\s_-]*(?P<h>\d{1,2})[:：時._-](?P<min>\d{1,2})(?:[:：._-](?P<s>\d{1,2}))?",
+    )
+    .ok()?;
+    // 紧凑格式：20261103_143000 / 20261103143000（纯数字时间戳）
+    let compact = regex::Regex::new(
+        r"(?P<y>\d{4})(?P<m>\d{2})(?P<d>\d{2})[_-]?(?P<h>\d{2})(?P<min>\d{2})(?:[_-]?(?P<s>\d{2}))?",
+    )
+    .ok()?;
+    let num = |caps: &regex::Captures<'_>, name: &str| {
+        caps.name(name).and_then(|m| m.as_str().parse::<u32>().ok())
+    };
+    for pattern in [&sep, &compact] {
+        let Some(caps) = pattern.captures(stem) else {
+            continue;
+        };
+        let (Some(y), Some(mo), Some(d), Some(h), Some(mi)) = (
+            num(&caps, "y"),
+            num(&caps, "m"),
+            num(&caps, "d"),
+            num(&caps, "h"),
+            num(&caps, "min"),
+        ) else {
+            continue;
+        };
+        let s = num(&caps, "s").unwrap_or(0);
+        let Some(date) = NaiveDate::from_ymd_opt(y as i32, mo, d) else {
+            continue;
+        };
+        let Some(naive) = date.and_hms_opt(h, mi, s) else {
+            continue;
+        };
+        let Some(local) = Local.from_local_datetime(&naive).single() else {
+            continue;
+        };
+        // 录音文件名里的时间不该落在未来（如误匹配到随机数字），明显异常就跳过。
+        if local.timestamp() <= chrono::Local::now().timestamp() + 3600 {
+            return Some(local.timestamp());
+        }
+    }
+    None
 }
 
 /// 文件名是否为常见音频扩展名（课堂录音通常以文件形式发送）。
@@ -50,7 +119,8 @@ pub fn is_audio_filename(name: &str) -> bool {
         .to_ascii_lowercase();
     matches!(
         ext.as_str(),
-        "m4a" | "mp3"
+        "m4a"
+            | "mp3"
             | "wav"
             | "aac"
             | "amr"
@@ -70,7 +140,9 @@ pub fn is_audio_filename(name: &str) -> bool {
 pub fn sanitize_name(name: &str) -> String {
     let cleaned: String = name
         .chars()
-        .filter(|c| !c.is_control() && !matches!(c, '/' | '\\' | ':' | '*' | '?' | '"' | '<' | '>' | '|'))
+        .filter(|c| {
+            !c.is_control() && !matches!(c, '/' | '\\' | ':' | '*' | '?' | '"' | '<' | '>' | '|')
+        })
         .collect();
     let trimmed = cleaned.trim();
     if trimmed.chars().count() > 80 {
@@ -99,5 +171,64 @@ mod tests {
         assert_eq!(sanitize_name("a/b\\c:d*e?f\"g<h>i|j"), "abcdefghij");
         assert_eq!(sanitize_name("  x  "), "x");
         assert_eq!(sanitize_name(&"长".repeat(100)).chars().count(), 80);
+    }
+
+    #[test]
+    fn recorded_at_parses_common_recorder_names() {
+        use chrono::{Local, TimeZone};
+        let ts = |y, mo, d, h, mi: u32, s| {
+            Local
+                .with_ymd_and_hms(y, mo, d, h, mi, s)
+                .single()
+                .unwrap()
+                .timestamp()
+        };
+        // 常见录音 app 命名：紧凑、分隔符、中文、带前缀。
+        assert_eq!(
+            parse_recorded_at("20261103_143000.m4a"),
+            Some(ts(2026, 11, 3, 14, 30, 0))
+        );
+        assert_eq!(
+            parse_recorded_at("20261103143000.mp3"),
+            Some(ts(2026, 11, 3, 14, 30, 0))
+        );
+        assert_eq!(
+            parse_recorded_at("2026-11-03 14-30-05.m4a"),
+            Some(ts(2026, 11, 3, 14, 30, 5))
+        );
+        assert_eq!(
+            parse_recorded_at("Rec_2026.11.03-14.30.m4a"),
+            Some(ts(2026, 11, 3, 14, 30, 0))
+        );
+        assert_eq!(
+            parse_recorded_at("录音 2026年11月3日 14_30.mp3"),
+            Some(ts(2026, 11, 3, 14, 30, 0))
+        );
+    }
+
+    #[test]
+    fn recorded_at_rejects_garbage() {
+        assert_eq!(parse_recorded_at("数学课录音.m4a"), None);
+        assert_eq!(parse_recorded_at("2026-13-40 99-99.m4a"), None);
+    }
+
+    #[test]
+    fn recorded_time_falls_back_to_received_at() {
+        let mut item = PendingItem {
+            file: "/tmp/x".into(),
+            filename: "数学课录音.m4a".into(),
+            size: 1,
+            channel: "qq".into(),
+            target: "u".into(),
+            msg_id: "m1".into(),
+            received_at: 1_700_000_000,
+            status: "pending".into(),
+            error: None,
+            course: None,
+        };
+        assert_eq!(item.recorded_time(), 1_700_000_000);
+        item.filename = "20261103_143000.m4a".into();
+        assert_ne!(item.recorded_time(), 1_700_000_000);
+        assert!(item.recorded_time() > 1_760_000_000);
     }
 }

@@ -8,12 +8,11 @@ pub mod handler;
 pub mod pending;
 pub mod service;
 
-
 pub use config::{LectureConfig, LectureSection};
 pub use handler::LectureHandler;
 pub use service::LectureWorker;
 
-use ru41::modules::{JobSchedule, ModuleDef, DEFAULT_PRIORITY, no_cli, no_image_consumers};
+use ru41::modules::{DEFAULT_PRIORITY, JobSchedule, ModuleDef, no_cli, no_image_consumers};
 
 /// 注册表定义：lecture 一个 worker job + 一个 QQ 自然语言拦截。
 pub static DEF: ModuleDef = ModuleDef {
@@ -35,10 +34,7 @@ pub static DEF: ModuleDef = ModuleDef {
             return Ok(None);
         }
         let lecture = config.sources.get::<LectureSection>("lecture")?;
-        anyhow::ensure!(
-            lecture.is_ready(),
-            "sources.lecture requires ASR api_key"
-        );
+        anyhow::ensure!(lecture.is_ready(), "sources.lecture requires ASR api_key");
         Ok(Some(Box::new(LectureWorker::new(
             store,
             config.todo.options()?,
@@ -50,9 +46,10 @@ pub static DEF: ModuleDef = ModuleDef {
         if !lecture.is_ready() {
             return Ok(Vec::new());
         }
-        Ok(vec![std::sync::Arc::new(LectureHandler::new(
-            lecture.resolved()?,
-        )) as std::sync::Arc<dyn ru41::ports::commands::CommandHandler>])
+        Ok(vec![
+            std::sync::Arc::new(LectureHandler::new(lecture.resolved()?))
+                as std::sync::Arc<dyn ru41::ports::commands::CommandHandler>,
+        ])
     },
     image_consumers: no_image_consumers,
     cli: no_cli,

@@ -4,7 +4,7 @@
 
 use crate::asr::AsrClient;
 use crate::config::LectureConfig;
-use crate::pending::{sanitize_name, PendingItem, PENDING_KIND};
+use crate::pending::{PENDING_KIND, PendingItem, sanitize_name};
 use anyhow::{Context, Result};
 use chrono::{Local, TimeZone};
 use ru41::app::schedule::ScheduleService;
@@ -55,7 +55,7 @@ impl LectureWorker {
             return Ok(serde_json::json!({"processed": null}));
         };
         let item = PendingItem::from_document(&doc)?;
-        let course = self.course_at(item.received_at);
+        let course = self.course_at(item.recorded_time());
         match self.transcribe(&item).await {
             Ok(transcript) => {
                 // 转写只存在于内存与 agent prompt，不落 vault。
@@ -126,10 +126,7 @@ impl LectureWorker {
         let mut existing: Vec<PathBuf> = std::fs::read_dir(slices_dir)?
             .filter_map(|e| e.ok())
             .map(|e| e.path())
-            .filter(|p| {
-                p.extension()
-                    .is_some_and(|e| e.eq_ignore_ascii_case("mp3"))
-            })
+            .filter(|p| p.extension().is_some_and(|e| e.eq_ignore_ascii_case("mp3")))
             .collect();
         existing.sort();
         if !existing.is_empty() {
@@ -169,31 +166,29 @@ impl LectureWorker {
         let mut slices: Vec<PathBuf> = std::fs::read_dir(slices_dir)?
             .filter_map(|e| e.ok())
             .map(|e| e.path())
-            .filter(|p| {
-                p.extension()
-                    .is_some_and(|e| e.eq_ignore_ascii_case("mp3"))
-            })
+            .filter(|p| p.extension().is_some_and(|e| e.eq_ignore_ascii_case("mp3")))
             .collect();
         slices.sort();
         Ok(slices)
     }
 
-    /// 按收到录音的时刻猜课程：优先包含该时刻的课，否则 2 小时窗内最近的一节；
+    /// 按录音时间猜课程（优先文件名里解析出的开录时刻，回退收到时刻）：
+    /// 优先包含该时刻的课，否则 2 小时窗内最近的一节；
     /// 日程里没有匹配则回退 fallback_course。公开供集成测试。
-    pub fn course_at(&self, received_at: i64) -> String {
+    pub fn course_at(&self, recorded_at: i64) -> String {
         let window = 2 * 3600;
         let service = ScheduleService::new(self.store.clone(), self.options);
         let Ok(occurrences) =
-            service.occurrences_between(received_at - window, received_at + window, 20)
+            service.occurrences_between(recorded_at - window, recorded_at + window, 20)
         else {
             return self.config.fallback_course.clone();
         };
         let containing = occurrences
             .iter()
-            .find(|o| o.starts_at <= received_at && received_at < o.ends_at);
-        let nearest = occurrences.iter().min_by_key(|o| {
-            (received_at - o.starts_at).abs()
-        });
+            .find(|o| o.starts_at <= recorded_at && recorded_at < o.ends_at);
+        let nearest = occurrences
+            .iter()
+            .min_by_key(|o| (recorded_at - o.starts_at).abs());
         containing
             .or(nearest)
             .map(|o| sanitize_name(&o.title))
@@ -211,6 +206,11 @@ impl LectureWorker {
         transcript: &str,
     ) -> Result<ru41::domain::EnqueueResult> {
         let (date, stem) = archive_name(item);
+        let recorded_label = Local
+            .timestamp_opt(item.recorded_time(), 0)
+            .single()
+            .map(|t| t.format("%Y-%m-%d %H:%M").to_string())
+            .unwrap_or_default();
         let note_path = format!(
             "{}/{}/课堂笔记.md",
             self.config.vault_dir.trim_end_matches('/'),
@@ -218,7 +218,8 @@ impl LectureWorker {
         );
         let prompt = format!(
             "请把课堂录音转写整理成课堂笔记，用途只有一个：期末复习拿分。宁可短而实，不要长而空。\n\
-             - 课表猜测课程：{course}（按收到录音的时刻查课表得出，课表可能有调课/错位，仅供参考）\n\
+             - 录音时间：{recorded_label}（{recorded_source}；课程匹配与归档日期的依据，若与转写内容明显冲突以内容为准）\n\
+             - 课表猜测课程：{course}（按录音时间查课表得出，课表可能有调课/错位，仅供参考）\n\
              - 日期：{date}\n\
              - 目标文件（Vault）：{note_path}\n\
              要求：\n\
@@ -242,6 +243,7 @@ impl LectureWorker {
              11. 完成后简单汇报本次笔记要点与最终写入路径（不超过 10 行），不要复述全文。\n\n\
              以下是本次转写原文：\n\n{transcript}",
             vault_dir = self.config.vault_dir.trim_end_matches('/'),
+            recorded_source = item.recorded_time_source(),
         );
         self.store.enqueue_with_notify(
             &format!("lecture:notes:{}", item.msg_id),
@@ -291,10 +293,10 @@ impl ru41::ingress::schedule::PollJob for LectureWorker {
     }
 }
 
-/// 归档命名：日期取本地时区收到录音的日期；stem 来自原始文件名。
+/// 归档命名：日期取录音时间（文件名解析出的开录时刻，回退收到时间）的本地日期；stem 来自原始文件名。
 fn archive_name(item: &PendingItem) -> (String, String) {
     let date = Local
-        .timestamp_opt(item.received_at, 0)
+        .timestamp_opt(item.recorded_time(), 0)
         .single()
         .map(|t| t.format("%Y-%m-%d").to_string())
         .unwrap_or_default();

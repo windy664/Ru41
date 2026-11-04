@@ -78,9 +78,8 @@ impl LectureSection {
             .api_key_env
             .clone()
             .unwrap_or_else(|| Self::DEFAULT_API_KEY_ENV.into());
-        (!self.is_ready()).then(|| {
-            format!("缺 ASR key：配置 sources.lecture.api_key 或环境变量 {name}")
-        })
+        (!self.is_ready())
+            .then(|| format!("缺 ASR key：配置 sources.lecture.api_key 或环境变量 {name}"))
     }
 
     pub fn resolved(&self) -> Result<LectureConfig> {

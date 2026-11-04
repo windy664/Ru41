@@ -18,7 +18,9 @@ impl AsrApi {
         match value.trim() {
             "openai" => Ok(Self::OpenAi),
             "whispercpp" => Ok(Self::WhisperCpp),
-            other => anyhow::bail!("sources.lecture.asr_api 只支持 openai / whispercpp，收到 {other:?}"),
+            other => {
+                anyhow::bail!("sources.lecture.asr_api 只支持 openai / whispercpp，收到 {other:?}")
+            }
         }
     }
 }
@@ -110,7 +112,8 @@ impl AsrClient {
                     .with_context(|| format!("ASR 响应缺少 text 字段：{}", truncate(&body)))?;
                 return Ok(text);
             }
-            let error = anyhow::anyhow!("ASR HTTP {status}（第 {attempt} 次）：{}", truncate(&body));
+            let error =
+                anyhow::anyhow!("ASR HTTP {status}（第 {attempt} 次）：{}", truncate(&body));
             if status.as_u16() < 500 {
                 return Err(error);
             }
