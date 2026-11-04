@@ -378,31 +378,25 @@ fn audit_staged_diff(root: &Path) {
         Ok(output) if output.status.success() => output,
         _ => return, // 拿不到清单就放行：审计失败不能阻断主流程。
     };
-    let mut rules: Vec<&'static str> = Vec::new();
+    let mut hits: Vec<crate::privacy::scan::SecretHit> = Vec::new();
     let mut flagged: Vec<String> = Vec::new();
     for file in String::from_utf8_lossy(&output.stdout).lines() {
         let Ok(text) = std::fs::read_to_string(root.join(file)) else {
             continue; // 二进制或已删除的暂存项跳过。
         };
-        let hits = crate::privacy::scan::scan_text(&text);
-        if hits.is_empty() {
+        let file_hits = crate::privacy::scan::scan_text(&text);
+        if file_hits.is_empty() {
             continue;
         }
-        for hit in &hits {
-            if !rules.contains(&hit.rule) {
-                rules.push(hit.rule);
-            }
-        }
+        hits.extend(file_hits);
         flagged.push(file.to_owned());
     }
-    if rules.is_empty() {
+    if hits.is_empty() {
         return;
     }
-    rules.sort_unstable();
-    rules.dedup();
-    let signature = rules.join("+");
+    let signature = crate::privacy::egress::signature_of(&hits);
     let sample: Vec<String> = flagged.iter().take(5).cloned().collect();
-    crate::channels::audit::alert_once(
+    crate::privacy::egress::alert_once(
         &format!("vault:{signature}"),
         &format!(
             "vault 提交含红区内容 rules=[{signature}] files={} sample={:?}",

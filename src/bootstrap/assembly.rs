@@ -121,12 +121,31 @@ pub fn notify_pair(
     enabled: Option<bool>,
 ) -> Result<(Option<Arc<dyn NotifyChannel>>, String)> {
     match source_notify(config, enabled)? {
-        Some(route) => Ok((
-            Some(default_notifier(config, &route.channel)?),
-            route.target,
-        )),
+        Some(route) => {
+            let notifier = default_notifier(config, &route.channel)?;
+            wire_audit_sink(&route, notifier.clone());
+            Ok((Some(notifier), route.target))
+        }
         None => Ok((None, String::new())),
     }
+}
+
+/// 审计告警接线：隐私出站审计（通知/vault）命中红区时，经默认通知渠道推送当日首报，
+/// 不再只落 stderr 没人看见。多进程各自装配，privacy::egress 侧先到先得。
+fn wire_audit_sink(route: &NotifyRoute, notifier: Arc<dyn NotifyChannel>) {
+    let target = route.target.clone();
+    crate::privacy::egress::set_alert_sink(Arc::new(move |message: String| {
+        let notifier = notifier.clone();
+        let target = target.clone();
+        // 审计可能发生在运行时线程外的同步路径：拿不到 reactor 就只留 stderr 日志。
+        if let Ok(handle) = tokio::runtime::Handle::try_current() {
+            handle.spawn(async move {
+                if let Err(e) = notifier.send(&target, None, &message).await {
+                    eprintln!("[audit] 告警推送失败：{e}");
+                }
+            });
+        }
+    }));
 }
 
 /// Obsidian Vault 句柄：开关打开且 [obsidian] 已配置时才接线，否则不同步。
