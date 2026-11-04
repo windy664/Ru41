@@ -32,13 +32,15 @@ printf '%s\n' '{"type":"message_end","message":{"role":"assistant","stopReason":
 printf '%s\n' '{"type":"agent_end"}'
 printf '%s\n' '{"type":"message_end","message":{"role":"assistant","stopReason":"stop","content":[{"type":"text","text":"{\"summary\":\"完成\"}"}]}}'
 printf '%s\n' '{"type":"agent_settled","aborted":false}'
-sleep 10
+sleep 30
 "#,
         ),
         model: Some("test-model".into()),
         provider: Some("test-provider".into()),
     };
-    let output = tokio::time::timeout(Duration::from_secs(3), agent.run(request(dir.path())))
+    // 断言 agent 在 agent_settled 后即返回、不等进程退出：超时上限需远小于
+    // fake 脚本的 sleep 时长才有效，但又得给 CI 并行负载留足拉起余量。
+    let output = tokio::time::timeout(Duration::from_secs(10), agent.run(request(dir.path())))
         .await
         .unwrap()
         .unwrap();
