@@ -63,7 +63,7 @@ Claude Code 的 [auto-memory](https://www.mindstudio.ai/blog/what-is-claude-code
 
 现状盘点：
 
-- **档案层已具备**：`knowledge` 服务（fastembed + vault RAG）在
+- **档案层已具备**：`knowledge` 服务（fastembed + FTS5/BM25 向量混合检索，RRF 融合）在
   `worker.rs run_claim` 里对每条消息自动 `retrieval_context()` 注入。
 - **核心记忆层缺失**：run_dir 是一次性 tempdir（`ephemeral:true`），
   agent 每次失忆；没有可持久读写的工作区记忆。

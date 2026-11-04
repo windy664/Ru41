@@ -7,9 +7,13 @@
 
 ### 已有防线
 
-- **prompt 脱敏**：`src/privacy/` 的 `RandomSanitizer`，5 条正则规则
-  （身份证/手机号/邮箱/银行卡/姓名），命中替换为随机同类假值；
-  映射表**只存宿主内存**，仅对 `result.summary` 回填（`runtime/worker.rs:221/337`）。
+- **prompt 脱敏**：`src/privacy/` 的 `RandomSanitizer`，9 条正则规则
+  （身份证/手机号/邮箱/银行卡/姓名/键值密码/Bearer 头/JWT/学号），
+  命中替换为随机同类假值；映射表**只存宿主内存**，仅对 `result.summary` 回填
+  （`runtime/worker.rs:221/352`）。
+- **知识库注入脱敏**（2026-11-04 补）：RAG 自动注入的检索块来自 vault 原文，
+  与用户消息同过 sanitizer，映射并入回填表——vault 内敏感值不再经 RAG
+  旁路直达 LLM（`runtime/worker.rs:236` 附近）。
 - **技能约定**：`obsidian-organize` SKILL.md 要求 agent「只处理列出的文件，
   不翻阅其他目录，不访问网络」。
 
