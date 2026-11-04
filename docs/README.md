@@ -4,6 +4,7 @@
 
 - [使用与配置手册](usage.md)：完整命令、配置、部署与 HTTP API 示例
 - [凭证与密钥总览](credentials.md)：cookie/token/key 的注入路径、环境变量清单与更换方法
+- **[开发者上手（接手指南）](onboarding.md)：从 clone 到第一次插件上线的一半天路径、生产拓扑速查与排障表**
 
 ## 产品、状态与规划
 
@@ -72,6 +73,8 @@
 | pagewatch | 页面变化监控 | |
 
 ## 推荐阅读顺序
+
+**赶时间直接看 [onboarding.md](onboarding.md)**——半天接手路径 + 排障速查表。完整顺序：
 
 1. 根目录 README：快速开始、配置与整体架构
 2. [AGENTS.md](../AGENTS.md)：构建踩坑与协作契约（插件不在 workspace、共享 target、bridge 纪律、部署链）

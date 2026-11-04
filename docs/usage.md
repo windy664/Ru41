@@ -356,7 +356,13 @@ src/
 
 ### 附属模块如何接入
 
-业务代码按功能放在 `src/modules/<name>/`，消息渠道放在 `src/channels/`；核心不反向依赖业务模块。当前采用**编译期静态装配**，不是放入目录就自动加载的插件系统：`bootstrap/config.rs` 聚合配置，`bootstrap/assembly.rs` 构造 tracker、注册 QQ 命令与通知渠道，`main.rs` 负责命令分发。新增模块的目录约定、注册清单和测试要求见 [附属模块开发指南](module-development.md)。
+2026-11-03 起**全部附属为 cdylib 动态插件**（`plugins/<名>/`，独立 crate 编译
+成 .so，宿主启动时 dlopen）：核心不依赖任何业务代码，附属上线**不重编主二进制**。
+宿主侧只保留装配知识：`bootstrap/config.rs` 聚合配置树，`bootstrap/assembly.rs`
+构造通知渠道等公共能力，`main.rs` 命令分发经 `ru41-plugin-api` 的 ModuleDef
+注册表统一分发给插件。插件一切异步入口必须过 `plugins::bridge`。
+新增附属见[动态插件开发指南](plugin-development.md)；旧的静态装配路线
+（[module-development.md](module-development.md)）已弃用，仅作历史参考。
 
 ## 自定义模型 API
 
