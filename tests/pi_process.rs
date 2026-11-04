@@ -37,6 +37,7 @@ sleep 30
         ),
         model: Some("test-model".into()),
         provider: Some("test-provider".into()),
+        ..Default::default()
     };
     // 断言 agent 在 agent_settled 后即返回、不等进程退出：超时上限需远小于
     // fake 脚本的 sleep 时长才有效，但又得给 CI 并行负载留足拉起余量。
@@ -180,4 +181,134 @@ fn pi_configuration_is_opt_in() {
         toml::from_str("[agent.pi]\nenabled=true\nbin='pi'\nmodel='test/model'\n").unwrap();
     assert!(config.agent.pi.enabled);
     assert_eq!(config.agent.pi.model.as_deref(), Some("test/model"));
+}
+
+#[test]
+fn pi_provider_configuration_is_parsed() {
+    use ru41::bootstrap::config::Config;
+    let config: Config = toml::from_str(
+        "[agent.pi]\nenabled=true\nmodel='minimax/MiniMax-M3'\nprovider='minimax'\n\
+         base_url='https://api.minimaxi.chat/anthropic'\napi='anthropic-messages'\n\
+         api_key_env='MINIMAX_API_KEY'\nsession=true\n",
+    )
+    .unwrap();
+    let pi = config.agent.pi;
+    assert_eq!(
+        pi.base_url.as_deref(),
+        Some("https://api.minimaxi.chat/anthropic")
+    );
+    assert_eq!(pi.api.as_deref(), Some("anthropic-messages"));
+    assert_eq!(pi.api_key_env.as_deref(), Some("MINIMAX_API_KEY"));
+    assert_eq!(pi.session, Some(true));
+}
+
+#[tokio::test]
+async fn reports_token_usage_from_message_update() {
+    let dir = tempfile::tempdir().unwrap();
+    let agent = PiAgent {
+        executable: executable(
+            dir.path(),
+            r#"
+printf '%s\n' '{"id":"ru41-prompt","type":"response","success":true,"data":{"disposition":"started"}}'
+printf '%s\n' '{"type":"message_update","usage":{"input":120,"output":30,"cacheRead":40,"cacheWrite":0,"totalTokens":190},"assistantMessageEvent":{"type":"text_delta","contentIndex":0,"delta":"x"}}'
+printf '%s\n' '{"type":"message_end","message":{"role":"assistant","stopReason":"stop","content":[{"type":"text","text":"{\"summary\":\"ok\"}"}]}}'
+printf '%s\n' '{"type":"agent_settled","aborted":false}'
+"#,
+        ),
+        ..Default::default()
+    };
+    let output = tokio::time::timeout(Duration::from_secs(10), agent.run(request(dir.path())))
+        .await
+        .unwrap()
+        .unwrap();
+    let usage = output.usage.expect("usage should be reported");
+    assert_eq!(usage.input_tokens, 120);
+    assert_eq!(usage.cached_input_tokens, 40);
+    assert_eq!(usage.output_tokens, 30);
+    assert_eq!(usage.total_tokens, 190);
+}
+
+#[tokio::test]
+async fn custom_endpoint_writes_models_json_without_key_value() {
+    let dir = tempfile::tempdir().unwrap();
+    let agent = PiAgent {
+        executable: executable(
+            dir.path(),
+            r#"
+printf '%s\n' '{"id":"ru41-prompt","type":"response","success":true,"data":{"disposition":"started"}}'
+printf '%s\n' '{"type":"message_end","message":{"role":"assistant","stopReason":"stop","content":[{"type":"text","text":"{\"summary\":\"ok\"}"}]}}'
+printf '%s\n' '{"type":"agent_settled","aborted":false}'
+"#,
+        ),
+        model: Some("minimax/MiniMax-M3".into()),
+        provider: Some("minimax".into()),
+        base_url: Some("https://api.minimaxi.chat/anthropic".into()),
+        api: Some("anthropic-messages".into()),
+        api_key_env: Some("RU41_TEST_PI_KEY".into()),
+        ..Default::default()
+    };
+    // models.json 内容与写盘无关，直接断言结构：密钥只以环境变量引用出现。
+    let models = agent.models_json().unwrap();
+    let provider = &models["providers"]["minimax"];
+    assert_eq!(provider["baseUrl"], "https://api.minimaxi.chat/anthropic");
+    assert_eq!(provider["api"], "anthropic-messages");
+    assert_eq!(provider["apiKey"], "$RU41_TEST_PI_KEY");
+    assert_eq!(provider["models"][0]["id"], "MiniMax-M3");
+    let raw = serde_json::to_string(&models).unwrap();
+    assert!(!raw.contains("sk-"));
+    // 端点协议不支持时直接报错。
+    let bad = PiAgent {
+        api: Some("grpc".into()),
+        ..Default::default()
+    };
+    assert!(bad.models_json().is_err());
+}
+
+#[tokio::test]
+async fn missing_key_env_is_reported_as_config_error() {
+    let dir = tempfile::tempdir().unwrap();
+    let agent = PiAgent {
+        executable: executable(dir.path(), "sleep 30"),
+        api_key_env: Some("RU41_TEST_PI_ABSENT_KEY".into()),
+        ..Default::default()
+    };
+    let error = match tokio::time::timeout(Duration::from_secs(5), agent.run(request(dir.path())))
+        .await
+        .unwrap()
+    {
+        Ok(_) => panic!("missing key env should fail"),
+        Err(error) => error,
+    };
+    assert!(
+        error.to_string().contains("RU41_TEST_PI_ABSENT_KEY"),
+        "{error:#}"
+    );
+}
+
+#[tokio::test]
+async fn session_mode_reports_session_id_and_resumes() {
+    let dir = tempfile::tempdir().unwrap();
+    let agent = PiAgent {
+        executable: executable(
+            dir.path(),
+            r#"
+printf '%s\n' '{"id":"ru41-prompt","type":"response","success":true,"data":{"disposition":"started"}}'
+printf '%s\n' '{"id":"ru41-state","type":"response","success":true,"data":{"sessionId":"sess-42"}}'
+printf '%s\n' '{"type":"message_end","message":{"role":"assistant","stopReason":"stop","content":[{"type":"text","text":"{\"summary\":\"ok\"}"}]}}'
+printf '%s\n' '{"type":"agent_settled","aborted":false}'
+"#,
+        ),
+        session: true,
+        id: "pi-session".into(),
+        ..Default::default()
+    };
+    assert!(agent.descriptor().supports_resume);
+    let output = tokio::time::timeout(Duration::from_secs(10), agent.run(request(dir.path())))
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(output.session_id.as_deref(), Some("sess-42"));
+    let args = std::fs::read_to_string(dir.path().join("args.txt")).unwrap();
+    // 会话模式不再传 --no-session。
+    assert!(!args.lines().any(|a| a == "--no-session"));
 }

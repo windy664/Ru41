@@ -90,11 +90,36 @@ pub fn registry(
         } else {
             bin
         };
-        backends.register(crate::adapters::agent::pi::PiAgent {
+        let base = crate::adapters::agent::pi::PiAgent {
             executable,
             model: pi.model.clone(),
             provider: pi.provider.clone(),
-        })?;
+            base_url: pi.base_url.clone(),
+            api: pi.api.clone(),
+            api_key_env: pi.api_key_env.clone(),
+            session: false,
+            session_dir: pi.session_dir.clone(),
+            id: "pi".into(),
+        };
+        backends.register(base)?;
+        // 会话底座单独注册：持久化会话并支持按 session_id 恢复。
+        if pi.session.unwrap_or(false) {
+            backends.register(crate::adapters::agent::pi::PiAgent {
+                id: "pi-session".into(),
+                session: true,
+                ..crate::adapters::agent::pi::PiAgent {
+                    executable: pi.bin.clone().unwrap_or_else(|| PathBuf::from("pi")),
+                    model: pi.model.clone(),
+                    provider: pi.provider.clone(),
+                    base_url: pi.base_url.clone(),
+                    api: pi.api.clone(),
+                    api_key_env: pi.api_key_env.clone(),
+                    session: false,
+                    session_dir: pi.session_dir.clone(),
+                    id: "pi".into(),
+                }
+            })?;
+        }
     }
     Ok(backends)
 }

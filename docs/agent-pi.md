@@ -8,6 +8,11 @@ enabled = true
 bin = "pi"
 # model = "提供方/模型ID"
 # provider = "提供方" # 指定 provider 时必须同时指定 model
+# base_url = "https://example.com/anthropic" # 自定义兼容端点
+# api = "anthropic-messages" # anthropic-messages / openai-completions / openai-responses
+# api_key_env = "MINIMAX_API_KEY" # 密钥来源环境变量；值只进子进程环境
+# session = true # 会话持久化，可按 session_id 恢复
+# session_dir = "/data/pi-sessions"
 ```
 
 ```sh
@@ -26,6 +31,22 @@ ru41 --config ru41.toml worker --once
 - 超时、取消、租约与回填复用 Worker；取消时终止进程组并回收直接子进程。
 - stdout 按有界 JSONL 读取，stderr 持续排空并限制总量。
 - 关闭工具属于 Pi 启动配置，不是独立的操作系统沙箱；不可信可执行程序仍可能读取宿主环境。
+
+## 与 Codex 底座的对等项
+
+两个底座共用 `AgentBackend` 抽象（契约、描述符、结果与用量口径一致），差异只在协议：
+
+- **token 用量**：Pi 在 `message_update` 事件里上报累计用量（input/output/cacheRead/totalTokens），
+  适配器折算成统一的 `TokenUsage`；Codex 走 `token_count` 事件，字段名不同但口径一致。
+- **自定义端点**：`base_url` + `api` 写进运行目录下的临时 agent 目录（`models.json`），
+  Pi 通过 `PI_CODING_AGENT_DIR` 读取；密钥只以 `$ENV` 引用出现在文件里，真实值只留在子进程环境。
+- **密钥**：`api_key_env` 指定变量名，宿主从自身环境取值注入子进程；配置、日志、错误信息里只有变量名。
+  Pi 原生 provider（如 MiniMax 用 `MINIMAX_API_KEY`）也直接认同名环境变量。
+- **会话与恢复**：`session = true` 时不再传 `--no-session`，运行结束通过 `get_state` 取会话 ID，
+  后续按 `resume_session_id` 以 `--session <id>` 续跑；会话底座单独注册为 `pi-session`。
+- **网络**：不再强制 `--offline`——那会挡住模型调用；离网需求由部署环境的出口策略保证。
+
+## 测试覆盖
 
 测试覆盖正常完成、重试中间事件、失败/中止、非法结果、输出上限、取消和同一 Worker 多底座路由。
 本机 Pi 1.2.0 已通过真实 get_state RPC 握手，未调用模型；模型推理和提供方认证不在离线测试验证范围内。
