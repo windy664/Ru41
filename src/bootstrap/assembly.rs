@@ -35,14 +35,10 @@ pub fn notify_channels(
     let mut channels: Vec<Arc<dyn NotifyChannel>> = Vec::new();
     if let Some(api) = qq {
         let sequencer = qq_seq.unwrap_or_else(|| Arc::new(ReplySequencer::default()));
-        channels.push(crate::channels::audit::AuditedNotifyChannel::wrap(
-            Arc::new(QqNotifier::new(api, sequencer)),
-        ));
+        channels.push(Arc::new(QqNotifier::new(api, sequencer)));
     }
     if let Some(url) = feishu_webhook_url(config) {
-        channels.push(crate::channels::audit::AuditedNotifyChannel::wrap(
-            Arc::new(FeishuWebhookNotifier::new(url)),
-        ));
+        channels.push(Arc::new(FeishuWebhookNotifier::new(url)));
     }
     Ok(channels)
 }
@@ -123,29 +119,10 @@ pub fn notify_pair(
     match source_notify(config, enabled)? {
         Some(route) => {
             let notifier = default_notifier(config, &route.channel)?;
-            wire_audit_sink(&route, notifier.clone());
             Ok((Some(notifier), route.target))
         }
         None => Ok((None, String::new())),
     }
-}
-
-/// 审计告警接线：隐私出站审计（通知/vault）命中红区时，经默认通知渠道推送当日首报，
-/// 不再只落 stderr 没人看见。多进程各自装配，privacy::egress 侧先到先得。
-fn wire_audit_sink(route: &NotifyRoute, notifier: Arc<dyn NotifyChannel>) {
-    let target = route.target.clone();
-    crate::privacy::egress::set_alert_sink(Arc::new(move |message: String| {
-        let notifier = notifier.clone();
-        let target = target.clone();
-        // 审计可能发生在运行时线程外的同步路径：拿不到 reactor 就只留 stderr 日志。
-        if let Ok(handle) = tokio::runtime::Handle::try_current() {
-            handle.spawn(async move {
-                if let Err(e) = notifier.send(&target, None, &message).await {
-                    eprintln!("[audit] 告警推送失败：{e}");
-                }
-            });
-        }
-    }));
 }
 
 /// Obsidian Vault 句柄：开关打开且 [obsidian] 已配置时才接线，否则不同步。
@@ -158,26 +135,23 @@ pub fn vault_if_ready(config: &Config, enabled: bool) -> Result<Option<Arc<dyn V
 }
 
 /// 按 [notify] 渠道构造具体通知器；渠道知识只存在于装配层。
-/// 出口统一包 P2 审计层：红区命中即脱敏发送 + 当日去重告警。
 pub fn default_notifier(config: &Config, channel: &str) -> Result<Arc<dyn NotifyChannel>> {
     match channel {
-        "feishu" => Ok(crate::channels::audit::AuditedNotifyChannel::wrap(Arc::new(
-            FeishuWebhookNotifier::new(feishu_webhook_url(config).context(
+        "feishu" => Ok(Arc::new(FeishuWebhookNotifier::new(
+            feishu_webhook_url(config).context(
                 "feishu webhook required: RU41_FEISHU_WEBHOOK_URL or channel.feishu.webhook_url",
-            )?),
+            )?,
         ))),
-        "qq" => Ok(crate::channels::audit::AuditedNotifyChannel::wrap(Arc::new(
-            QqNotifier::new(
-                Arc::new(qq_api(
-                    &QqCredentials {
-                        app_id: None,
-                        app_secret: None,
-                    },
-                    config,
-                )?),
-                // 跟踪器进程只发主动消息，序号器进程内独立即可。
-                Arc::new(ReplySequencer::default()),
-            ),
+        "qq" => Ok(Arc::new(QqNotifier::new(
+            Arc::new(qq_api(
+                &QqCredentials {
+                    app_id: None,
+                    app_secret: None,
+                },
+                config,
+            )?),
+            // 跟踪器进程只发主动消息，序号器进程内独立即可。
+            Arc::new(ReplySequencer::default()),
         ))),
         other => anyhow::bail!("unknown notify channel: {other}"),
     }

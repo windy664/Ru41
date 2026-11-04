@@ -3,7 +3,6 @@ use regex::Regex;
 use serde::{Deserialize, Serialize};
 use std::{collections::HashMap, sync::Arc};
 
-pub mod egress;
 pub mod scan;
 
 /// 一条脱敏映射：假值 → 真值。只存本地，绝不发给 Agent。
