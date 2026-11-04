@@ -516,6 +516,25 @@ impl AgentBackend for EchoAgent {
 }
 
 #[tokio::test]
+async fn output_style_rule_reaches_every_backend() {
+    // 输出规范统一在 Worker 注入：Codex 与 Pi 拿到的必须是同一份
+    // （数学公式一律 LaTeX）。
+    let dir = tempfile::tempdir().unwrap();
+    let seen = Arc::new(std::sync::Mutex::new(String::new()));
+    let mut w = worker_with(dir.path(), EchoAgent(seen.clone()));
+    w.store
+        .enqueue("event", "推导一下泰勒展开的余项估计")
+        .unwrap();
+    let (_sender, receiver) = watch::channel(false);
+    let report = w.run_once(receiver).await.unwrap().unwrap();
+    assert_eq!(report.status, TaskStatus::Succeeded);
+    let prompt = seen.lock().unwrap().clone();
+    assert!(prompt.contains("LaTeX"), "prompt: {prompt}");
+    assert!(prompt.contains("$...$"), "prompt: {prompt}");
+    assert!(prompt.contains("$$...$$"), "prompt: {prompt}");
+}
+
+#[tokio::test]
 async fn knowledge_injection_passes_sanitizer_and_restores() {
     let dir = tempfile::tempdir().unwrap();
     let vault = tempfile::tempdir().unwrap();
