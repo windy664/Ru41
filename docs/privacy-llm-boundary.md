@@ -138,21 +138,19 @@ P3 观望底座。各项互不阻塞，P0 做完前 P1/P2 已能显著降低暴�
 - workspace-write 下 agent 命令默认无网络；需联网的任务要在 codex 配置
   `[sandbox_workspace_write] network_access = true`，属任务级显式授权（对齐 P3 设计）。
 
-### P3+ 出口网关（observe-only，2026-11-04 一期落地）
+### P3+ 出口网关（2026-11-04 落地当日拆除，待重新探讨）
 
-- 拓扑实测：mihomo（host 网络，mixed-port 7890）TUN **未接管**容器网段——此前
-  日志里的容器连接全部来自 browserless 的显式 HTTP_PROXY。观察层的前提是让
-  容器流量真的经过检查点。
-- 一期方案：全部 ru41 容器注入 `HTTP(S)_PROXY=http://172.17.0.1:7890`
-  （compose 通用段 + 存量容器一次性 inject-proxy.sh）。mihomo 规则语义下
-  **GEOIP CN 直连在前**，国内出口 IP 不变（校园抓取/账单无影响），国外走既有
-  新加坡出口；mihomo 成为容器国际出站单点，属已接受取舍。
-- 采集层：mihomo `log-level: info`（连接级，含源 IP/嗅探域名/命中规则），
-  宿主 cron 每分钟增量解析（`deploy/egress-audit/collect.py`，flock + 游标续传
-  + 30 天滚动清理）→ `.ru41/egress/conns-*.jsonl`（借 /data 挂载免新增挂载）。
-- 报告层：`plugins/egress-audit`（compose profile `egress-audit`）每 6h 聚合
-  最近 24h → `/data/egress/digest-latest.md`；白名单外新域名当日首报（状态文件
-  去重），白名单内置默认 + `[sources.egress_audit] allowlist` 追加。
-- 已知边界：内容是 TLS 加密的，本层只看「谁连了哪个域名」；不走代理栈的裸
-  socket 采集不到（TUN 未接管容器网段）；MITM 内容级检查与强制出站（白名单
-  默认拒绝）留给后续，需要自签 CA + 观察期误报数据支撑。
+一期（域名级 observe-only）当日部署当日下线。拆除原因：主目标是「防信息
+穿越」，而本层只能看到域名、看不到 TLS 加密内容——白名单内域名夹带数据
+完全不可见，对防泄露主目标无实质贡献；对主目标真正起作用的是 P0/P1（入口
+脱敏）与 P2（出口内容审计）。域名级审计保留的价值只剩通道发现与出站地图，
+属低优先辅助能力。
+
+- 曾实现：容器统一注入 `HTTP(S)_PROXY` 走 mihomo + mihomo info 连接日志 +
+  宿主 cron 采集（`deploy/egress-audit/collect.py`）→ `.ru41/egress/*.jsonl` +
+  `plugins/egress-audit` 每 6h 聚合出日报与白名单外新域名首报。
+- 代码留存 git 历史（`5a29ec0..39fecb7`），生产侧容器/采集器 cron/env 注入/
+  mihomo info 级日志均已回滚（仅保留 rss/pagewatch 等 7 个容器原有的代理 env）。
+- 后续若重启：两个方向——TPROXY 只接管容器网段（无死角域名审计，fail-open）；
+  MITM 自签 CA（内容级，信任模型质变，最高价值攻击面，需慎重）。
+
