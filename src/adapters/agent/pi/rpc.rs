@@ -37,6 +37,8 @@ pub struct PiAgent {
     pub session: bool,
     /// 会话存储目录。
     pub session_dir: Option<PathBuf>,
+    /// 工具白名单（Pi 的 --tools）；为空则禁用全部工具，只做文本分析。
+    pub tools: Option<String>,
     /// 底座 ID（pi / pi-session）。
     pub id: String,
 }
@@ -51,6 +53,7 @@ impl Default for PiAgent {
             api_key_env: None,
             session: false,
             session_dir: None,
+            tools: None,
             id: "pi".into(),
         }
     }
@@ -161,14 +164,44 @@ impl PiAgent {
             Ru41Error::Config("Pi provider requires model".into())
         );
         let mut command = tokio::process::Command::new(&self.executable);
-        command.current_dir(&request.run_dir).args([
-            "--mode", "rpc", "--no-tools", "--no-extensions",
-            "--no-mcp", "--no-skills", "--no-prompt-templates", "--no-themes",
-            "--no-context-files", "--no-approve",
-            "--system-prompt", "Analyze only the supplied request. Return exactly a JSON object with one nonempty string field named summary. Do not claim to have performed external actions.",
-        ]).env("PI_TELEMETRY", "0")
-            .stdin(Stdio::piped()).stdout(Stdio::piped()).stderr(Stdio::piped())
+        command
+            .current_dir(&request.run_dir)
+            .args([
+                "--mode",
+                "rpc",
+                "--no-extensions",
+                "--no-mcp",
+                "--no-skills",
+                "--no-prompt-templates",
+                "--no-themes",
+                "--no-context-files",
+                "--no-approve",
+            ])
+            .env("PI_TELEMETRY", "0")
+            .stdin(Stdio::piped())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped())
             .kill_on_drop(true);
+        // 工具：给了白名单就按白名单开放，否则禁用全部工具（只做文本分析）。
+        // 带工具时不能用「只输出 JSON summary」的分析用系统提示。
+        match self.tools.as_deref().filter(|t| !t.trim().is_empty()) {
+            Some(tools) => {
+                // 带工具时仍要满足 analysis_v1 的结果契约：最后一条消息是 JSON summary。
+                command.args([
+                    "--tools",
+                    tools,
+                    "--system-prompt",
+                    "Carry out the task in the request using the available tools. When finished, your last message must be a JSON object with one nonempty string field named summary.",
+                ]);
+            }
+            None => {
+                command.args([
+                    "--no-tools",
+                    "--system-prompt",
+                    "Analyze only the supplied request. Return exactly a JSON object with one nonempty string field named summary. Do not claim to have performed external actions.",
+                ]);
+            }
+        }
         // 会话持久化：--no-session 是内存会话；恢复已有会话时用 --session。
         if self.session {
             if let Some(dir) = &self.session_dir {

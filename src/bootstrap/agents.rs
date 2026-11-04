@@ -99,6 +99,7 @@ pub fn registry(
             api_key_env: pi.api_key_env.clone(),
             session: false,
             session_dir: pi.session_dir.clone(),
+            tools: pi.tools.clone(),
             id: "pi".into(),
         };
         backends.register(base)?;
@@ -116,6 +117,7 @@ pub fn registry(
                     api_key_env: pi.api_key_env.clone(),
                     session: false,
                     session_dir: pi.session_dir.clone(),
+                    tools: pi.tools.clone(),
                     id: "pi".into(),
                 }
             })?;

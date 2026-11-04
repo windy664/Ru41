@@ -172,6 +172,31 @@ printf '%s\n' '{"id":"ru41-prompt","type":"response","success":true}' '{"type":"
     );
 }
 
+#[tokio::test]
+async fn tools_mode_enables_tool_allowlist() {
+    let dir = tempfile::tempdir().unwrap();
+    let agent = PiAgent {
+        executable: executable(
+            dir.path(),
+            r#"
+printf '%s\n' '{"id":"ru41-prompt","type":"response","success":true,"data":{"disposition":"started"}}'
+printf '%s\n' '{"type":"message_end","message":{"role":"assistant","stopReason":"stop","content":[{"type":"text","text":"{\"summary\":\"ok\"}"}]}}'
+printf '%s\n' '{"type":"agent_settled","aborted":false}'
+"#,
+        ),
+        tools: Some("read,write".into()),
+        ..Default::default()
+    };
+    let output = tokio::time::timeout(Duration::from_secs(10), agent.run(request(dir.path())))
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(output.result.summary, "ok");
+    let args = std::fs::read_to_string(dir.path().join("args.txt")).unwrap();
+    assert!(args.lines().any(|a| a == "read,write"));
+    assert!(!args.lines().any(|a| a == "--no-tools"));
+}
+
 #[test]
 fn pi_configuration_is_opt_in() {
     use ru41::bootstrap::config::Config;
