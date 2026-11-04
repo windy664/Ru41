@@ -22,6 +22,9 @@ pub const RETRIEVAL_TOP_K: usize = 3;
 pub const RETRIEVAL_MIN_SCORE: f32 = 0.45;
 /// 超过该长度的 prompt 视为机器生成（digest 等批量任务），跳过自动检索注入。
 pub const RETRIEVAL_MAX_QUERY_CHARS: usize = 1200;
+/// 短于此的查询直接跳过自动检索：寒暄/单字短句的 embedding 命中基本是
+/// 噪声（实测「你好」也能过阈值注入），白烧输入 token 还可能带偏回答。
+pub const RETRIEVAL_MIN_QUERY_CHARS: usize = 6;
 
 pub struct KnowledgeService {
     embedder: Arc<dyn Embedder>,
@@ -196,7 +199,8 @@ impl KnowledgeService {
     /// 而不是指望它主动调 vault-search skill。检索失败由调用方降级，不阻断任务。
     pub fn retrieval_context(&self, query: &str) -> Result<Option<String>> {
         let query = query.trim();
-        if query.is_empty() || query.chars().count() > RETRIEVAL_MAX_QUERY_CHARS {
+        let chars = query.chars().count();
+        if chars < RETRIEVAL_MIN_QUERY_CHARS || chars > RETRIEVAL_MAX_QUERY_CHARS {
             return Ok(None);
         }
         let hits = self.search(query, RETRIEVAL_TOP_K)?;
