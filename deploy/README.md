@@ -26,6 +26,14 @@ docker build -t ru41:local .
 
 ## 2. 配置 Codex 并启动 Worker
 
+Worker 挂载的是**裁剪配置**（`sources` 段账密已剔除——Agent 底座在容器里全量可读挂载文件，
+不应看到各数据源凭证）。每次改完 `ru41.toml` 后重新生成一次：
+
+```bash
+docker run --rm -v "$PWD:/host" -w /host ru41:local \
+  config redact --config /host/ru41.toml --out /host/.ru41/ru41-worker.toml
+```
+
 复用宿主机已有的 Codex 登录：
 
 ```bash

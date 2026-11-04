@@ -209,3 +209,61 @@ async fn agent_sees_masked_prompt_and_store_keeps_restored_result() {
         std::path::Path::new(attempts[0].run_dir.as_deref().unwrap()).join("mapping.json");
     assert!(!mapping_file.exists());
 }
+
+#[test]
+fn secret_kv_replaces_value_but_keeps_key() {
+    let text = "数据库连接：password=Sup3r$ecret!; host=db.local";
+    let (masked, mapping) = sanitizer().sanitize(text);
+    assert!(!masked.contains("Sup3r$ecret!"));
+    assert!(
+        masked.contains("password="),
+        "键名必须保留给 LLM 语义: {masked}"
+    );
+    let entry = mapping
+        .entries
+        .iter()
+        .find(|e| e.rule == "secret_kv")
+        .expect("secret_kv entry missing");
+    assert_eq!(sanitizer().restore(&masked, &mapping), text);
+    assert!(entry.fake.starts_with("key_"));
+}
+
+#[test]
+fn bearer_token_and_jwt_are_masked() {
+    let text =
+        "curl -H 'Authorization: Bearer sk-live-9f8e7d6c5b4a3210fedcba' https://api.example.com";
+    let (masked, mapping) = sanitizer().sanitize(text);
+    assert!(!masked.contains("sk-live-9f8e7d6c5b4a3210fedcba"));
+    assert!(
+        masked.contains("Authorization: Bearer "),
+        "Bearer 前缀保留: {masked}"
+    );
+    assert!(mapping.entries.iter().any(|e| e.rule == "bearer_token"));
+
+    // 裸 JWT（无键名赋值上下文）走 jwt 规则；带键名的会被 secret_kv 先收走。
+    let jwt = "eyJhbGciOiJIUzI1NiJ9.eyJzdWIiOiIxMjM0NTY3ODkwIn0.SflKxwRJSMeKKF2QT4fwpMeJf36POk6yJV_adQssw5c";
+    let (masked, mapping) = sanitizer().sanitize(&format!("登录态 {jwt} 已过期"));
+    assert!(!masked.contains(jwt));
+    assert!(mapping.entries.iter().any(|e| e.rule == "jwt"));
+    // 键名形态的 JWT 值由 secret_kv 覆盖。
+    let (_, mapping) = sanitizer().sanitize(&format!("token={jwt}"));
+    assert!(mapping.entries.iter().any(|e| e.rule == "secret_kv"));
+}
+
+#[test]
+fn student_id_is_masked_in_context() {
+    let text = "学号: 2640243101 的选课记录";
+    let (masked, mapping) = sanitizer().sanitize(text);
+    assert!(!masked.contains("2640243101"));
+    assert!(masked.contains("学号: "), "上下文保留: {masked}");
+    assert_eq!(sanitizer().restore(&masked, &mapping), text);
+}
+
+#[test]
+fn plain_words_do_not_trigger_secret_kv() {
+    // 「token」作为普通英文词出现、无赋值形态时不应误伤。
+    let text = "the token bucket algorithm limits request rates";
+    let (masked, mapping) = sanitizer().sanitize(text);
+    assert_eq!(masked, text);
+    assert!(mapping.is_empty());
+}

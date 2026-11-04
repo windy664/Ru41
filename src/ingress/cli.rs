@@ -106,6 +106,24 @@ pub enum Command {
         #[command(subcommand)]
         command: KnowledgeCommand,
     },
+    /// Vault 内容安全：扫描笔记中的明文密码/密钥/令牌。
+    Vault {
+        #[command(subcommand)]
+        command: VaultCommand,
+    },
+}
+
+#[derive(Subcommand)]
+pub enum VaultCommand {
+    /// 扫描 vault 笔记中的明文密钥；报告只含位置与规则名，不输出原值。
+    ScanSecrets {
+        /// vault 路径；缺省取 [obsidian].vault_path。
+        #[arg(long)]
+        vault: Option<PathBuf>,
+        /// 报告写入该 JSON 文件；缺省打印到 stdout。
+        #[arg(long)]
+        out: Option<PathBuf>,
+    },
 }
 
 #[derive(Subcommand)]
@@ -154,6 +172,12 @@ pub enum ConfigCommand {
     Show,
     /// 校验配置和供应商装配，不访问网络或数据库。
     Check,
+    /// 生成剔除 sources 账密段后的配置文件，供 worker 容器只读挂载。
+    Redact {
+        /// 裁剪配置写入路径。
+        #[arg(long)]
+        out: PathBuf,
+    },
 }
 
 #[derive(Subcommand, Clone, Copy)]

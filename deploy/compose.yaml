@@ -21,7 +21,9 @@ services:
   worker:
     <<: *ru41-common
     volumes:
-      - ../ru41.toml:/etc/ru41/ru41.toml:ro
+      # 裁剪配置（sources 账密已剔除，agent 视野里没有各数据源凭证）：
+      # 部署时先生成：ru41 --config ../ru41.toml config redact --out ../.ru41/ru41-worker.toml
+      - ../.ru41/ru41-worker.toml:/etc/ru41/ru41.toml:ro
       - ../.ru41:/data
       - ../.ru41/plugins:/etc/ru41/plugins:ro
       - ${RU41_CODEX_HOME:-../.ru41/codex-home}:/home/node/.codex

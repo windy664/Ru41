@@ -3,6 +3,8 @@ use regex::Regex;
 use serde::{Deserialize, Serialize};
 use std::{collections::HashMap, sync::Arc};
 
+pub mod scan;
+
 /// 一条脱敏映射：假值 → 真值。只存本地，绝不发给 Agent。
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct MappingEntry {
@@ -66,6 +68,10 @@ enum Generator {
     Email,
     BankCard,
     Name,
+    /// `key_<24位hex>`，语法上像 key 但显然是占位。
+    ApiKey,
+    /// 16-24 位无语义字母数字串（token/JWT 片段/密码占位）。
+    Token,
 }
 
 struct Rule {
@@ -120,6 +126,46 @@ impl Default for RandomSanitizer {
                         .unwrap(),
                     group: 1,
                     generator: Generator::Name,
+                    enabled: true,
+                },
+                // 密钥类：赋值/键值形态（password=xxx、token: xxx、api_key="xxx"）。
+                // 只替换值，保留键名——LLM 需要知道字段语义，不需要知道真值。
+                Rule {
+                    name: "secret_kv",
+                    // 前导不用 \b：中文键（如「的密码:」）前是汉字时 \b 不成立，
+                    // 改为可选的非字母数字前缀；只替换捕获组，宽松无害。
+                    pattern: Regex::new(
+                        r#"(?i)(?:^|[^0-9A-Za-z_])?(?:password|passwd|pwd|密码|口令|secret|api[_-]?key|apikey|access[_-]?token|refresh[_-]?token|client[_-]?secret|token)\b\W*[:：=]\W*(?:"|')?([!-~]{6,})(?:"|')?"#,
+                    )
+                    .unwrap(),
+                    group: 1,
+                    generator: Generator::ApiKey,
+                    enabled: true,
+                },
+                // Bearer 头与裸 JWT：结构特征明显，不依赖键名。
+                Rule {
+                    name: "bearer_token",
+                    pattern: Regex::new(r"\b[Bb]earer\s+([A-Za-z0-9._~+/=-]{10,})").unwrap(),
+                    group: 1,
+                    generator: Generator::Token,
+                    enabled: true,
+                },
+                Rule {
+                    name: "jwt",
+                    pattern: Regex::new(
+                        r"\beyJ[A-Za-z0-9_-]{8,}\.[A-Za-z0-9_-]{8,}\.[A-Za-z0-9_-]{8,}",
+                    )
+                    .unwrap(),
+                    group: 0,
+                    generator: Generator::Token,
+                    enabled: true,
+                },
+                // 学号：只在明确「学号」上下文里收窄命中（裸 8-12 位数字误报太多）。
+                Rule {
+                    name: "student_id",
+                    pattern: Regex::new(r"(?:学号|考号|工号)\s*[:：]?\s*(\d{8,12})").unwrap(),
+                    group: 1,
+                    generator: Generator::Phone, // 等长数字假值，回填安全
                     enabled: true,
                 },
             ],
@@ -228,6 +274,20 @@ fn generate(generator: Generator, rng: &mut impl Rng) -> String {
                 .map(|_| GIVEN[rng.random_range(0..GIVEN.len())])
                 .collect();
             format!("{surname}{given}")
+        }
+        Generator::ApiKey => {
+            let hex: String = (0..24)
+                .map(|_| format!("{:x}", rng.random_range(0..16)))
+                .collect();
+            format!("key_{hex}")
+        }
+        Generator::Token => {
+            const ALPHABET: &[u8] =
+                b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789";
+            let token: String = (0..rng.random_range(16..=24))
+                .map(|_| ALPHABET[rng.random_range(0..ALPHABET.len())] as char)
+                .collect();
+            token
         }
     }
 }

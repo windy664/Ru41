@@ -117,6 +117,7 @@ async fn main() -> Result<()> {
         Command::Init { .. }
         | Command::Doctor { .. }
         | Command::Config { .. }
+        | Command::Vault { .. }
         | Command::Status
         | Command::Dump => {
             unreachable!("handled by cli_ops")
