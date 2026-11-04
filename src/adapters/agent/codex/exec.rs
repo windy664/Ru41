@@ -80,6 +80,7 @@ fn cli_caps(executable: &Path) -> CliCaps {
     caps
 }
 
+use super::SandboxMode;
 use crate::{
     domain::{AgentResult, RunContract, error::Ru41Error},
     ports::agent::{AgentBackend, AgentOutput, AgentRequest, BackendDescriptor},
@@ -98,6 +99,7 @@ pub struct CodexAgent {
     /// 附加的 `-c key=value` 覆盖项（自定义 provider 等）。
     pub config_overrides: Vec<String>,
     pub output_schema: bool,
+    pub sandbox: SandboxMode,
 }
 
 impl Default for CodexAgent {
@@ -107,6 +109,7 @@ impl Default for CodexAgent {
             model: None,
             config_overrides: Vec::new(),
             output_schema: true,
+            sandbox: SandboxMode::default(),
         }
     }
 }
@@ -161,11 +164,13 @@ impl CodexAgent {
         if let Some(session_id) = resume_session_id {
             cmd.arg("resume").arg(session_id);
         }
-        cmd.args([
-            "--json",
-            "--skip-git-repo-check",
-            "--dangerously-bypass-approvals-and-sandbox",
-        ]);
+        cmd.arg("--json").arg("--skip-git-repo-check");
+        // WorkspaceWrite 模式下 agent 命令默认无网络：需联网时在 codex 配置
+        // `[sandbox_workspace_write] network_access = true`。
+        match self.sandbox {
+            SandboxMode::Bypass => cmd.arg("--dangerously-bypass-approvals-and-sandbox"),
+            SandboxMode::WorkspaceWrite => cmd.arg("--sandbox").arg("workspace-write"),
+        };
         if caps.ignore_user_config {
             cmd.arg("--ignore-user-config");
         }

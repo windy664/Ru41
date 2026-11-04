@@ -199,6 +199,10 @@ pub struct CodexSection {
     pub output_schema: Option<bool>,
     pub config_overrides: Vec<String>,
     pub provider: Option<CodexProviderSection>,
+    /// 底座沙箱：「bypass」（默认，维持全权限）或「workspace-write」
+    /// （限制为工作区写入；agent 命令需要联网时还需在 codex 配置
+    /// `[sandbox_workspace_write] network_access = true`）。
+    pub sandbox: Option<String>,
 }
 
 /// 自定义模型提供方：写入 codex 的 model_providers.<id>，

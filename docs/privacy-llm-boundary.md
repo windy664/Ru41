@@ -111,5 +111,35 @@ P3 观望底座。各项互不阻塞，P0 做完前 P1/P2 已能显著降低暴�
 - [x] **P0.1 config redact**：`ru41 config redact --out <路径>` 剔除 `sources` 段生成
   worker 专用配置；compose worker 已改为挂载裁剪配置；生产 worker 容器的一次性重建
   （摘全量 /etc/ru41 与 /vault）在部署批次执行。
-- [ ] **P2 出站审计**：未实施。
-- [ ] **P3 沙箱收窄**：未实施（观望底座）。
+- [x] **P2 出站审计**：已实施（通知出口拦截 + vault 出口告警，细节见下）。
+- [x] **P3 沙箱收窄**：已实施（配置开关默认 bypass，细节见下）。
+
+### P2 实施细节（2026-11-04 落地）
+
+- 通知出口：`src/channels/audit.rs` 的 `AuditedNotifyChannel` 包装全部对外渠道
+  （QQ/飞书，含 media 描述字段），发送前过 `scan_text`，命中即占位符替换 + 当日去重告警。
+- vault 出口：`adapters/vault.rs` `commit_all` 提交前审计 staged diff
+  （`git diff --cached --name-only` 逐文件扫描），**只告警不拦截**——vault 是私有仓，
+  拦截会卡死自动闭环；同一签名当日只报一次。
+
+### P3 实施细节（2026-11-04 落地）
+
+- 配置开关 `agents.codex.sandbox`：`bypass`（默认，历史行为零变化）| `workspace-write`。
+- `CodexAgent`（codex exec）：bypass 走 `--dangerously-bypass-approvals-and-sandbox`，
+  workspace-write 走 `--sandbox workspace-write`（codex exec 非交互，approvals 默认 never）。
+- `CodexSession`（app-server）：thread/start 的 `sandbox` 参数在
+  `danger-full-access` / `workspace-write` 间切换；越权写/网络命令会触发
+  requestApproval，已有交互通道会把它转给用户。
+- workspace-write 下 agent 命令默认无网络；需联网的任务要在 codex 配置
+  `[sandbox_workspace_write] network_access = true`，属任务级显式授权（对齐 P3 设计）。
+
+### P3+ 出口网关（实验项，未实施）
+
+- 网络层只能「管制」不能「脱敏」：docker internal network + 唯一代理出口可保证
+  所有出站流量经过检查点，内容级检查仍需 MITM。
+- 业界参照：Hermes 的 iron-proxy（自签 CA + HTTPS_PROXY + 域名白名单 + 默认拒绝
+  SSRF 网段，observe/log 起步）；企业/政务侧为 DLP 网关与网闸（协议剥离摆渡）。
+- 我们形态：mihomo 已在生产做规则出口，可叠一个 observe-only 审计代理
+  （记录出站域名/URL + 命中敏感正则告警，不阻断），验证误报率后再考虑强制。
+- 已知残留风险（见 iron-proxy 安全模型）：agent 持 allowlist 域名仍可在请求体里
+  夹带数据出站（该路径已被 P2 应用层审计覆盖大半）；裸 socket 绕过代理需网络策略兜底。

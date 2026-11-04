@@ -1,5 +1,8 @@
 //! 根据启动配置装配底座；入口层无需了解协议或具体构造细节。
-use crate::{adapters::agent::codex::CodexAgent, ports::agent::BackendRegistry};
+use crate::{
+    adapters::agent::codex::{CodexAgent, SandboxMode},
+    ports::agent::BackendRegistry,
+};
 use anyhow::Result;
 use std::path::PathBuf;
 
@@ -9,6 +12,7 @@ fn codex_agent(
     provider: Option<&crate::bootstrap::config::CodexProviderSection>,
     extra_overrides: &[String],
     output_schema: bool,
+    sandbox: SandboxMode,
 ) -> Result<CodexAgent> {
     // 在切换子进程工作目录前，先解析显式的相对可执行路径。
     let executable = if bin.components().count() > 1 {
@@ -26,6 +30,7 @@ fn codex_agent(
         model,
         config_overrides,
         output_schema,
+        sandbox,
     })
 }
 
@@ -50,6 +55,7 @@ pub fn registry(
         agents.codex.provider.as_ref(),
         &agents.codex.config_overrides,
         agents.codex.output_schema.unwrap_or(true),
+        SandboxMode::parse(agents.codex.sandbox.as_deref())?,
     )?;
     let pi = &agents.pi;
     let mut backends = BackendRegistry::default();
@@ -64,12 +70,14 @@ pub fn registry(
         model: codex.model.clone(),
         config_overrides: codex.config_overrides.clone(),
         output_schema: codex.output_schema,
+        sandbox: codex.sandbox,
     })?;
     backends.register(crate::adapters::agent::codex::CodexSession {
         executable: codex.executable.clone(),
         model: codex.model.clone(),
         config_overrides: codex.config_overrides.clone(),
         output_schema: codex.output_schema,
+        sandbox: codex.sandbox,
     })?;
     if pi.enabled {
         anyhow::ensure!(

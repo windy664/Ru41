@@ -1,4 +1,4 @@
-use super::super::process::ProcessGroup;
+use super::{super::process::ProcessGroup, SandboxMode};
 use crate::{
     domain::{AgentResult, RunContract, error::Ru41Error, records::Interaction},
     ports::agent::{AgentBackend, AgentOutput, AgentRequest, BackendDescriptor},
@@ -15,6 +15,7 @@ pub struct CodexSession {
     /// 附加的 `-c key=value` 覆盖项（自定义 provider 等）。
     pub config_overrides: Vec<String>,
     pub output_schema: bool,
+    pub sandbox: SandboxMode,
 }
 impl AgentBackend for CodexSession {
     fn descriptor(&self) -> BackendDescriptor {
@@ -75,7 +76,14 @@ impl CodexSession {
             match frame.get("id").and_then(Value::as_u64) {
                 Some(1) if frame.get("method").is_none() => {
                     send(&mut writer, json!({"method":"initialized"})).await?;
-                    send(&mut writer,json!({"id":2,"method":"thread/start","params":{"model":self.model,"cwd":request.run_dir,"approvalPolicy":"never","sandbox":"danger-full-access","ephemeral":true}})).await?;
+                    // 会话审批已转发宿主交互（approvalPolicy never + 交互通道），
+                    // 沙箱按配置在 workspace-write（越权写/网络触发审批请求）与
+                    // danger-full-access（历史行为）之间切换。
+                    let sandbox = match self.sandbox {
+                        SandboxMode::Bypass => "danger-full-access",
+                        SandboxMode::WorkspaceWrite => "workspace-write",
+                    };
+                    send(&mut writer,json!({"id":2,"method":"thread/start","params":{"model":self.model,"cwd":request.run_dir,"approvalPolicy":"never","sandbox":sandbox,"ephemeral":true}})).await?;
                 }
                 Some(2) if frame.get("method").is_none() => {
                     let id = frame["result"]["thread"]["id"]
