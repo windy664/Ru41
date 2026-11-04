@@ -418,19 +418,20 @@ impl crate::ingress::schedule::PollJob for ClassRemindTracker {
         std::time::Duration::from_secs(self.fallback_interval_secs)
     }
 
+    /// 本 tracker 会被插件（jwxt）实例化进 .so：dylib 里静态链接的 tokio 对宿主
+    /// reactor 不可见，poll 必须过 plugin-api 的桥，真实工作落到本副本自己的
+    /// runtime 上（与各附属 tracker 的 poll_json 同一纪律）。
     fn poll_json(
         &self,
     ) -> std::pin::Pin<
         Box<dyn std::future::Future<Output = anyhow::Result<serde_json::Value>> + Send + '_>,
     > {
-        Box::pin(async move {
-            let report = send_event_reminders(
-                &self.service,
-                self.notifier.as_ref(),
-                &self.route,
-                self.service.options(),
-            )
-            .await?;
+        let service = ScheduleService::new(self.service.store().clone(), self.service.options());
+        let notifier = self.notifier.clone();
+        let route = self.route.clone();
+        let options = self.service.options();
+        crate::plugins::bridge(async move {
+            let report = send_event_reminders(&service, notifier.as_ref(), &route, options).await?;
             Ok(report)
         })
     }
