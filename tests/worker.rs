@@ -471,3 +471,86 @@ async fn conversation_resume_requires_matching_model() {
         vec![None, Some("thread-glm".into())]
     );
 }
+
+/// 恒定向量假嵌入：所有文本相似度恒为 1，检索必命中，专注测注入链路而非语义。
+struct ConstantEmbedder;
+impl ru41::ports::embedding::Embedder for ConstantEmbedder {
+    fn embed(&self, texts: &[String]) -> anyhow::Result<Vec<Vec<f32>>> {
+        Ok(texts.iter().map(|_| vec![1.0, 0.0, 0.0, 0.0]).collect())
+    }
+    fn dim(&self) -> usize {
+        4
+    }
+    fn model_name(&self) -> &str {
+        "constant-test"
+    }
+}
+
+/// 回显收到的 prompt（summary 同样回显），供断言注入块的脱敏与回填。
+struct EchoAgent(Arc<std::sync::Mutex<String>>);
+impl AgentBackend for EchoAgent {
+    fn descriptor(&self) -> BackendDescriptor {
+        BackendDescriptor {
+            id: "codex".into(),
+            model: None,
+            contracts: vec![RunContract::AnalysisV1],
+            supports_resume: false,
+        }
+    }
+    fn run(
+        &self,
+        request: AgentRequest,
+    ) -> Pin<Box<dyn Future<Output = anyhow::Result<AgentOutput>> + Send + '_>> {
+        let seen = self.0.clone();
+        Box::pin(async move {
+            *seen.lock().unwrap() = request.prompt.clone();
+            Ok(AgentOutput {
+                result: AgentResult {
+                    summary: request.prompt.clone(),
+                },
+                session_id: Some("test-thread".into()),
+                usage: None,
+            })
+        })
+    }
+}
+
+#[tokio::test]
+async fn knowledge_injection_passes_sanitizer_and_restores() {
+    let dir = tempfile::tempdir().unwrap();
+    let vault = tempfile::tempdir().unwrap();
+    std::fs::write(
+        vault.path().join("credentials.md"),
+        "# 凭据\n\n数据库 password=Sup3rSecret99 仅自用\n",
+    )
+    .unwrap();
+    let knowledge = Arc::new(
+        ru41::app::knowledge::KnowledgeService::new(
+            Arc::new(ConstantEmbedder),
+            dir.path().join("knowledge.db"),
+        )
+        .unwrap(),
+    );
+    let indexed = knowledge.index_vault(vault.path()).unwrap();
+    assert!(indexed.chunks >= 1);
+
+    let seen = Arc::new(std::sync::Mutex::new(String::new()));
+    let mut w = worker_with(dir.path(), EchoAgent(seen.clone()));
+    w.knowledge = Some(knowledge);
+    w.store
+        .enqueue("event", "帮我看一下笔记里记录的数据库密码是多少")
+        .unwrap();
+    let (_sender, receiver) = watch::channel(false);
+    let report = w.run_once(receiver).await.unwrap().unwrap();
+    assert_eq!(report.status, TaskStatus::Succeeded);
+
+    let prompt = seen.lock().unwrap().clone();
+    // 命中注入进了 prompt，但真密码不得出站——检索块也必须过脱敏。
+    assert!(prompt.contains("知识库自动检索结果"), "prompt: {prompt}");
+    assert!(!prompt.contains("Sup3rSecret99"), "prompt: {prompt}");
+    assert!(prompt.contains("key_"), "prompt: {prompt}");
+    // 回复里的假值经合并后的映射回填为真值，落库与通知是真实内容。
+    let attempts = w.store.attempts(report.task_id).unwrap();
+    let summary = &attempts[0].result.as_ref().unwrap().summary;
+    assert!(summary.contains("Sup3rSecret99"), "summary: {summary}");
+}

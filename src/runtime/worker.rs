@@ -218,7 +218,7 @@ impl Worker {
         self.store
             .attach_run(claim, &run_dir.to_string_lossy(), now())?;
         // 映射仅留宿主内存，不作为 Agent 工作目录中的文件暴露。
-        let (prompt, mapping) = self.sanitizer.sanitize(&claim.task.prompt);
+        let (prompt, mut mapping) = self.sanitizer.sanitize(&claim.task.prompt);
         if !mapping.is_empty() {
             eprintln!(
                 "[sanitize] task {} masked rules: {:?}",
@@ -232,6 +232,10 @@ impl Worker {
         let prompt = match &self.knowledge {
             Some(knowledge) => match knowledge.retrieval_context(&prompt) {
                 Ok(Some(context)) => {
+                    // 检索块来自 vault 原文：与用户消息走同一条脱敏链路，
+                    // 映射并入回填表——否则库内敏感值经注入直达 LLM，绕过入口脱敏。
+                    let (context, context_mapping) = self.sanitizer.sanitize(&context);
+                    mapping.extend(context_mapping);
                     eprintln!(
                         "[knowledge] task {} injected retrieval context ({}ms)",
                         claim.task.id,

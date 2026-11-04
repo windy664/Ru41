@@ -33,6 +33,11 @@ impl Mapping {
         counts.sort();
         counts
     }
+
+    /// 并入另一份映射（假值按次随机生成，两边不会撞车）。
+    pub fn extend(&mut self, other: Mapping) {
+        self.entries.extend(other.entries);
+    }
 }
 
 /// 出站脱敏与入站回填边界；映射表只留在调用侧。
