@@ -228,16 +228,25 @@ impl Worker {
         }
         // RAG 自动注入：每条消息先查知识库，命中达阈值就把资料前置进 prompt，
         // 模型不必自己想到去调 vault-search。检索故障降级为无注入，不影响任务。
+        let knowledge_start = std::time::Instant::now();
         let prompt = match &self.knowledge {
             Some(knowledge) => match knowledge.retrieval_context(&prompt) {
                 Ok(Some(context)) => {
                     eprintln!(
-                        "[knowledge] task {} injected retrieval context",
-                        claim.task.id
+                        "[knowledge] task {} injected retrieval context ({}ms)",
+                        claim.task.id,
+                        knowledge_start.elapsed().as_millis()
                     );
                     format!("{context}\n---\n用户消息：\n{prompt}")
                 }
-                Ok(None) => prompt,
+                Ok(None) => {
+                    eprintln!(
+                        "[knowledge] task {} retrieval skipped/below-threshold ({}ms)",
+                        claim.task.id,
+                        knowledge_start.elapsed().as_millis()
+                    );
+                    prompt
+                }
                 Err(error) => {
                     eprintln!(
                         "[knowledge] task {} retrieval failed: {error:#}",
@@ -306,6 +315,7 @@ impl Worker {
             max_chunks: 40,
         };
         let stream_handle = tokio::spawn(async move { streamer.run(activity_stop_rx).await });
+        let agent_start = std::time::Instant::now();
         let execution = agent.run(request);
         tokio::pin!(execution);
         let timeout = tokio::time::sleep(self.config.timeout);
@@ -359,6 +369,16 @@ impl Worker {
                 }
             }
         };
+        eprintln!(
+            "[worker] task {} agent run {} in {:.1}s",
+            claim.task.id,
+            if outcome.is_ok() {
+                "succeeded"
+            } else {
+                "failed"
+            },
+            agent_start.elapsed().as_secs_f64()
+        );
         // 停活动流并等它 flush 完剩余行（丢弃 handle 会让最后的 chunk 丢失）。
         let _ = activity_stop.send(true);
         let _ = tokio::time::timeout(Duration::from_secs(6), stream_handle).await;
