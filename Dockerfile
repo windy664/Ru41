@@ -48,7 +48,7 @@ RUN set -e; for d in plugins/*/; do cp Cargo.lock "$d/Cargo.lock"; done \
  # set -e 对 && 链中间的循环体不生效（2026-11-04 egress-audit 事故：cp 失败被
  # 吞、镜像缺插件但 CI 照绿），循环内必须显式 || exit。
  && for d in plugins/*/; do n=$(basename "$d"); \
-      cp ".plugins-target/release/libru41_plugin_${n//-/_}.so" /plugins-dist/ || exit 9; done \
+      cp ".plugins-target/release/libru41_plugin_$(printf '%s' "$n" | tr - _).so" /plugins-dist/ || exit 9; done \
  && mkdir -p /plugins-skills \
  && for d in plugins/*/; do n=$(basename "$d"); \
       if [ -d "$d/skills" ]; then mkdir -p "/plugins-skills/$n" && cp -r "$d/skills" "/plugins-skills/$n/"; fi; done
