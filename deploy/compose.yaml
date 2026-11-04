@@ -10,6 +10,13 @@ x-ru41: &ru41-common
   environment:
     RU41_CONFIG: /etc/ru41/ru41.toml
     RU41_DB: /data/state.db
+    # P3+ 出口审计（observe-only）：容器 HTTP 出站统一经 mihomo（docker0 网关
+    # mixed-port），mihomo GEOIP CN 直连语义不变（国内出口 IP 无变化），国外走
+    # 既有规则出口；info 级连接日志由宿主 cron 采集到 .ru41/egress/。
+    # 注意：mihomo 因此成为容器国际出站的单点，属已接受的取舍。
+    HTTP_PROXY: http://172.17.0.1:7890
+    HTTPS_PROXY: http://172.17.0.1:7890
+    NO_PROXY: localhost,127.0.0.1,::1,ru41-browser,172.17.0.1
 
 x-ru41-volumes: &ru41-volumes
   - ../ru41.toml:/etc/ru41/ru41.toml:ro
@@ -242,6 +249,15 @@ services:
       - ../.ru41/plugins:/etc/ru41/plugins:ro
       - ${RU41_VAULT_PATH:?set RU41_VAULT_PATH to the vault clone dir}:/vault
     command: ["--config", "/etc/ru41/ru41.toml", "--db", "/data/state.db", "competitions", "run"]
+
+  # 出站审计（P3+ observe-only）：聚合宿主采集器写入的 mihomo 连接日志
+  # （.ru41/egress/conns-*.jsonl，无内容只有 域名/规则/容器），白名单外
+  # 新域名当日首报，日报写 /data/egress/digest-latest.md。只观察不阻断。
+  egress-audit:
+    <<: *ru41-common
+    profiles: [egress-audit]
+    volumes: *ru41-volumes
+    command: ["--config", "/etc/ru41/ru41.toml", "--db", "/data/state.db", "schedule", "run", "egress-audit"]
 
   # GitHub 项目卡片：拉 README 生成项目笔记，超期未动自动归档 → vault，需挂载 Vault。
   projects:
