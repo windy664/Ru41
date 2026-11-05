@@ -84,6 +84,7 @@ fn audio_attachment(url: &str) -> Vec<MediaRef> {
         kind: MediaKind::File,
         source: url.to_owned(),
         filename: Some("高数 03-12.m4a".into()),
+        auth: None,
     }]
 }
 
