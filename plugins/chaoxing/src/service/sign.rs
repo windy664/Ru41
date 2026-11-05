@@ -539,7 +539,7 @@ impl ChaoxingTracker {
                     let (advice, retry) = if activity.is_gesture() {
                         (
                             format!(
-                                "→ 手势签到需带 signCode，机器人签不了，点链接打开学习通手动签（PC 端可画手势）：{}",
+                                "→ 手势签到必须带轨迹（signCode）：本次尝试的轨迹平台不认。点链接打开学习通手动签（PC 端可画手势）：{}",
                                 self.sign_page_url(course, activity)
                             ),
                             None,
