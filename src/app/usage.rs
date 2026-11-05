@@ -364,6 +364,13 @@ pub fn source_label(source: &str) -> &'static str {
         "plan" | "planner" => "行程",
         "obsidian" => "知识库整理",
         "digest" => "每日简报",
+        "youtube" => "YouTube 精听",
+        "research" => "研究调研",
+        "papers" => "论文追踪",
+        "programs" => "实习招聘",
+        "projects" => "项目情报",
+        "competitions" => "赛事追踪",
+        "mimo" => "Mimo 智能体",
         _ => "",
     }
 }
