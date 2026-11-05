@@ -105,4 +105,32 @@ pub trait Vault: Send + Sync {
     /// 近 N 天从 Inbox 移出/删除的文件记录，按日期倒序、同名去重（只留最终去向）。
     /// 供收件箱整理索引生成。
     fn recent_inbox_moves(&self, inbox_dir: &str, days: u32) -> Result<Vec<InboxMove>>;
+
+    // ---- 远端合并队列（PR 模型）----
+    //
+    // 本地电脑和服务器都是写者，却共用一个分支：本地直接推 master 会被拒，
+    // rebase 又会撞冲突（冲突标记会插进笔记正文，而且本地没有 AI 合并能力）。
+    // 改用成熟的 PR 模型：本地把自己的提交推到「待合并分支」，服务器把它
+    // merge 进 master（冲突由服务器的 AI 语义合并解决），本地再取回结果。
+    // 全程保留同一仓库的历史——gitee 既是传输通道也是备份。
+
+    /// 远端某分支的 SHA；分支不存在返回 None（需先 fetch）。
+    fn remote_branch_sha(&self, branch: &str) -> Result<Option<String>>;
+    /// 把本地 HEAD 推到远端任意 ref（`force` 时覆盖）。
+    fn push_head_to(&self, remote_ref: &str, force: bool) -> Result<()>;
+    /// 删除远端分支。
+    fn delete_remote_branch(&self, branch: &str) -> Result<()>;
+    /// 当前 HEAD 的 SHA。
+    fn head_sha(&self) -> Result<String>;
+    /// 把指定提交 merge 进当前分支；冲突保留现场（配 `resolve_conflict` +
+    /// `merge_continue`），非冲突失败照常报错。
+    fn merge_commit(&self, sha: &str) -> Result<SyncOutcome>;
+    /// 结束一次进行中的合并（冲突已解决后提交）。
+    fn merge_continue(&self) -> Result<()>;
+    /// 中止进行中的合并，恢复原状。
+    fn merge_abort(&self) -> Result<()>;
+    /// 当前合并/变基冲突中的文件列表。
+    fn conflict_files(&self) -> Result<Vec<String>>;
+    /// `ancestor` 是否是 `other` 的祖先（`other` 可以是 HEAD 或远端引用）。
+    fn is_ancestor(&self, ancestor: &str, other: &str) -> Result<bool>;
 }

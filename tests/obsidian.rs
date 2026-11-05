@@ -493,3 +493,104 @@ fn vault_sync_conflict_abort_restores() {
         "本地\n"
     );
 }
+
+/// PR 模型全流程：本地把提交推到「待合并分支」，服务器 merge 进 master，
+/// 冲突由调用方 AI 合并后完成合并；本地提交原样留在 master 历史里。
+#[test]
+fn pending_branch_merges_into_master_and_keeps_local_commit() {
+    use ru41::ports::vault::SyncOutcome;
+    let fx = RepoFixture::new();
+
+    std::fs::write(fx.seed.join("note.md"), "行1\n行2\n").unwrap();
+    git(&fx.seed, &["add", "-A"]);
+    git(&fx.seed, &["commit", "-m", "base"]);
+    git(&fx.seed, &["push", "origin", "master"]);
+    fx.vault().sync().unwrap();
+
+    // 本地（seed 扮演笔记本）改文件并推到待合并分支。
+    std::fs::write(fx.seed.join("note.md"), "行1\n本地改\n").unwrap();
+    git(&fx.seed, &["add", "-A"]);
+    git(&fx.seed, &["commit", "-m", "[local] 本地编辑"]);
+    let local_sha = git(&fx.seed, &["rev-parse", "HEAD"]).trim().to_string();
+    git(&fx.seed, &["push", "origin", "HEAD:refs/heads/ru41/local"]);
+
+    // 服务器侧：fetch 后能看到待合并分支。
+    fx.vault().fetch().unwrap();
+    let pending = fx.vault().remote_branch_sha("ru41/local").unwrap();
+    assert_eq!(pending.as_deref(), Some(local_sha.as_str()));
+
+    // 服务器把待合并分支 merge 进 master（不冲突）。
+    fx.vault().sync().unwrap();
+    assert_eq!(
+        fx.vault().merge_commit(&local_sha).unwrap(),
+        SyncOutcome::Clean
+    );
+    fx.vault().push().unwrap();
+
+    // master 里保留了本地提交（SHA 不变 → 本地能用祖先判断「已被吸收」）。
+    let master_head = git(&fx.seed, &["rev-parse", "origin/master"])
+        .trim()
+        .to_string();
+    assert_ne!(master_head, local_sha, "应是合并提交而非快进");
+    assert!(
+        fx.vault().is_ancestor(&local_sha, "origin/master").unwrap(),
+        "本地提交应留在 master 历史里"
+    );
+
+    // 清掉待合并分支（服务器合并完就删）。
+    fx.vault().delete_remote_branch("ru41/local").unwrap();
+    fx.vault().fetch().unwrap();
+    assert!(
+        fx.vault()
+            .remote_branch_sha("ru41/local")
+            .unwrap()
+            .is_none()
+    );
+}
+
+/// 待合并分支与 master 改同一行 → merge 冲突 → 调用方合并后完成。
+#[test]
+fn pending_branch_conflict_is_reported_and_resolvable() {
+    use ru41::ports::vault::SyncOutcome;
+    let fx = RepoFixture::new();
+
+    std::fs::write(fx.seed.join("note.md"), "行1\n行2\n").unwrap();
+    git(&fx.seed, &["add", "-A"]);
+    git(&fx.seed, &["commit", "-m", "base"]);
+    git(&fx.seed, &["push", "origin", "master"]);
+    fx.vault().sync().unwrap();
+
+    // 本地改同一行，推待合并分支。
+    std::fs::write(fx.seed.join("note.md"), "行1\n本地改\n").unwrap();
+    git(&fx.seed, &["add", "-A"]);
+    git(&fx.seed, &["commit", "-m", "[local] 本地编辑"]);
+    let local_sha = git(&fx.seed, &["rev-parse", "HEAD"]).trim().to_string();
+    git(&fx.seed, &["push", "origin", "HEAD:refs/heads/ru41/local"]);
+
+    // 服务器这边也改同一行并提交。
+    std::fs::write(fx.vault_path.join("note.md"), "行1\n服务器改\n").unwrap();
+    fx.vault().commit_all("[ru41] 服务器改").unwrap();
+    fx.vault().push().unwrap();
+
+    // merge 待合并分支 → 冲突现场。
+    fx.vault().fetch().unwrap();
+    match fx.vault().merge_commit(&local_sha).unwrap() {
+        SyncOutcome::Conflict(files) => assert_eq!(files, vec!["note.md".to_string()]),
+        other => panic!("expected Conflict, got {other:?}"),
+    }
+    let conflicted = std::fs::read_to_string(fx.vault_path.join("note.md")).unwrap();
+    assert!(conflicted.contains("<<<<<<<"));
+
+    // AI 合并结果写入 → 完成合并 → 推送。
+    fx.vault()
+        .resolve_conflict("note.md", "行1\n本地改+服务器改\n")
+        .unwrap();
+    fx.vault().merge_continue().unwrap();
+    fx.vault().push().unwrap();
+
+    git(&fx.seed, &["pull", "-q", "origin", "master"]);
+    assert_eq!(
+        std::fs::read_to_string(fx.seed.join("note.md")).unwrap(),
+        "行1\n本地改+服务器改\n"
+    );
+}
