@@ -10,9 +10,13 @@ pub fn fallback_photo_bytes() -> &'static [u8] {
 /// 签到方式：统一走 stuSignajax，类型差异只体现在参数填充上。
 #[derive(Debug, Clone, PartialEq)]
 pub enum SignMethod {
-    /// 普通 / 手势 / 签到码（历史实测平台不校验额外参数；
-    /// 手势直签会触发 90002 风控，client 层自动过滑块重签，见 [ChaoxingActivity::is_gesture]）。
+    /// 普通签到（历史实测平台不校验额外参数）。
     Normal,
+    /// 手势签到：轨迹以数字串形式作为 signCode 参数提交
+    /// （社区实现：手势轨迹形如 "123654789"，即网格坐标序列）。
+    /// 平台只在签到窗口内下发正确轨迹（getPPTActiveInfo 的 data.signCode），
+    /// 缺参数或轨迹不对都回 `签到失败[90002]`。
+    Gesture { code: String },
     /// 位置签到：经纬度 + 地址文本（address 参数，教师端可见）。
     Location { lat: f64, lon: f64, addr: String },
     /// 二维码签到：enc 为现场二维码内容里的时效 token，过期需重新扫。

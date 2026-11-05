@@ -340,6 +340,84 @@ impl ChaoxingClient {
         Ok(decode_course_list(&html))
     }
 
+    /// 平台在签到窗口内下发的签到码 / 手势轨迹（getPPTActiveInfo 的 data.signCode）。
+    ///
+    /// 活动结束后再取恒为空（2026-11-05 实测 6 条历史活动全空），
+    /// 所以只能在窗口内取——这正好符合签到窗口只有 2 分钟、必须当场签的现实。
+    pub async fn activity_sign_code(
+        &self,
+        course: &ChaoxingCourse,
+        activity: &ChaoxingActivity,
+    ) -> Result<Option<String>> {
+        let response = self
+            .http
+            .get(format!(
+                "{}/v2/apis/active/getPPTActiveInfo",
+                self.mobilelearn_base
+            ))
+            .query(&[
+                ("activeId", activity.id.to_string()),
+                ("courseId", course.course_id.clone()),
+                ("classId", course.clazz_id.clone()),
+            ])
+            .send()
+            .await
+            .context("签到活动详情请求失败")?
+            .text()
+            .await
+            .context("签到活动详情响应读取失败")?;
+        let value: serde_json::Value = serde_json::from_str(&response).unwrap_or_default();
+        let code = value
+            .get("data")
+            .and_then(|d| d.get("signCode"))
+            .and_then(|c| c.as_str())
+            .unwrap_or("")
+            .trim()
+            .to_owned();
+        Ok((!code.is_empty()).then_some(code))
+    }
+
+    /// 签到页复核：这个活动到底签没签。
+    ///
+    /// activelist 的 userStatus 不可靠——2026-11-05 实测：用户 15:31:33 在手机上
+    /// 手动签成功，activelist 直到 15:41 仍报 userStatus=1（未签），机器人据此
+    /// 误报「已结束，仍未签到」。PC 签到页才是准的（绿字「签到成功」+ 时间）。
+    pub async fn confirm_signed(
+        &self,
+        course: &ChaoxingCourse,
+        activity: &ChaoxingActivity,
+    ) -> Result<bool> {
+        let response = self
+            .http
+            .get(format!(
+                "{MOBILELEARN_BASE}/widget/sign/pcStuSignController/signIn"
+            ))
+            .query(&[
+                ("courseId", course.course_id.clone()),
+                ("classId", course.clazz_id.clone()),
+                ("activeId", activity.id.to_string()),
+                ("signCode", String::new()),
+                ("validate", String::new()),
+            ])
+            .send()
+            .await
+            .context("签到页请求失败")?
+            .text()
+            .await
+            .context("签到页响应读取失败")?;
+        // 绿字「签到成功」= 已签；出现「签到失败」或「未签到」= 没签。
+        if response.contains("签到成功") {
+            return Ok(true);
+        }
+        if response.contains("签到失败")
+            || response.contains("未签到")
+            || response.contains("已结束")
+        {
+            return Ok(false);
+        }
+        anyhow::bail!("签到页内容无法判定签到状态")
+    }
+
     /// 某门课程的活动列表（含非签到活动，调用方按 is_sign 过滤）。
     pub async fn activity_list(&self, course: &ChaoxingCourse) -> Result<Vec<ChaoxingActivity>> {
         let response: ActivityListResponse = self
@@ -382,11 +460,11 @@ impl ChaoxingClient {
         let uid = self.uid()?;
         // 拍照/位置/二维码的教师端展示名用真实姓名，普通类传空即可。
         let display_name = match method {
-            SignMethod::Normal => String::new(),
+            SignMethod::Normal | SignMethod::Gesture { .. } => String::new(),
             _ => self.realname().await.unwrap_or_default(),
         };
 
-        if matches!(method, SignMethod::Normal) {
+        if matches!(method, SignMethod::Normal | SignMethod::Gesture { .. }) {
             // preSign 是平台流程的一部分，缺失会被部分课程判为异常签到
             self.pre_sign(course, &activity_id, &uid).await?;
         }
@@ -405,6 +483,14 @@ impl ChaoxingClient {
                 params.push(("name".into(), String::new()));
                 params.push(("latitude".into(), "-1".into()));
                 params.push(("longitude".into(), "-1".into()));
+            }
+            // 手势：轨迹数字串作为 signCode 提交。缺它或轨迹不对，平台回 90002。
+            SignMethod::Gesture { code } => {
+                params.push(("objectId".into(), "aaa".into()));
+                params.push(("name".into(), String::new()));
+                params.push(("latitude".into(), "-1".into()));
+                params.push(("longitude".into(), "-1".into()));
+                params.push(("signCode".into(), code.clone()));
             }
             SignMethod::Location { lat, lon, addr } => {
                 params.push(("name".into(), display_name));

@@ -1,3 +1,4 @@
+use std::collections::BTreeMap;
 use std::{
     future::Future,
     net::SocketAddr,
@@ -98,6 +99,8 @@ struct FixtureState {
     work_list_hits: Mutex<usize>,
     /// stuSignajax 返回体（默认 success，可注入失败文本）。
     sign_response: Mutex<String>,
+    /// 平台在签到窗口内下发的 signCode（手势轨迹）；置空则模拟「没下发」。
+    gesture_sign_code: Mutex<String>,
     /// 风控模式：开启后 stuSignajax 无 validate 参数一律回 90002，带 validate 才放行。
     captcha_mode: Mutex<bool>,
     /// captcha check 是否放行（false 模拟识别位置被拒）。
@@ -126,6 +129,7 @@ impl FixtureState {
             work_detail_html: Mutex::new(String::new()),
             work_list_hits: Mutex::new(0),
             sign_response: Mutex::new("success".into()),
+            gesture_sign_code: Mutex::new("123654789".to_string()),
             captcha_mode: Mutex::new(false),
             captcha_pass: Mutex::new(true),
             last_captcha_x: Mutex::new(None),
@@ -256,6 +260,14 @@ async fn spawn_fixture(state: Arc<FixtureState>) -> SocketAddr {
             "/v2/apis/active/student/activelist",
             get(|State(state): State<Arc<FixtureState>>| async move {
                 state.activities.lock().unwrap().clone()
+            }),
+        )
+        // 平台在签到窗口内下发的手势轨迹（data.signCode）
+        .route(
+            "/v2/apis/active/getPPTActiveInfo",
+            get(|State(state): State<Arc<FixtureState>>| async move {
+                let code = state.gesture_sign_code.lock().unwrap().clone();
+                Json(json!({"result": 1, "msg": "success", "data": {"signCode": code}}))
             }),
         )
         .route(
@@ -456,6 +468,7 @@ fn make_tracker_full(
             interval_secs: 60,
             notify_target: "user:mock".into(),
             auto_sign,
+            gesture_sign_codes: BTreeMap::new(),
             default_location,
             photo_path,
             work_poll_secs: 1800,
@@ -1026,6 +1039,35 @@ async fn gesture_sign_90002_solved_by_slider_captcha() {
     assert!(sent[0].contains("自动签到成功"));
 }
 
+/// 手势签到：平台在窗口内下发轨迹（data.signCode）→ 带上它提交，平台收下。
+/// 社区实现里手势轨迹形如 "123654789"；缺它或轨迹不对，平台一律回 90002。
+#[tokio::test]
+async fn gesture_sign_submits_platform_provided_trajectory() {
+    let state = Arc::new(FixtureState::new(pending_of_type(2, "手势签到")));
+    *state.gesture_sign_code.lock().unwrap() = "123654789".to_string();
+    let addr = spawn_fixture(state.clone()).await;
+    let dir = tempfile::tempdir().unwrap();
+    let store = Arc::new(SqliteTaskStore::open(&dir.path().join("state.db")).unwrap());
+    let channel = mock_channel();
+    let tracker = make_tracker_full(
+        store,
+        &format!("http://{addr}"),
+        dir.path().join("cookies.json"),
+        Some(channel.clone()),
+        None,
+        None,
+        true,
+    );
+
+    let report = tracker.poll_once().await.unwrap();
+    assert_eq!(report.auto_signed, 1);
+    // 提交的请求里必须带着 signCode（轨迹），否则平台回 90002。
+    let query = state.last_query.lock().unwrap().clone();
+    assert!(query.contains("signCode=123654789"), "{query}");
+    let sent = channel.sent.lock().unwrap();
+    assert!(sent[0].contains("签到成功"), "{sent:?}");
+}
+
 /// 滑块重签仍被拒（识别失败/平台继续拦）→ ❌ 回执指路手动签，手势窗口只有约 2 分钟。
 #[tokio::test]
 async fn gesture_sign_captcha_failure_falls_back_to_manual_advice() {
@@ -1238,6 +1280,7 @@ fn make_work_tracker(
             interval_secs: 60,
             notify_target: "user:mock".into(),
             auto_sign: false,
+            gesture_sign_codes: BTreeMap::new(),
             default_location: None,
             photo_path: None,
             work_poll_secs: 1800,

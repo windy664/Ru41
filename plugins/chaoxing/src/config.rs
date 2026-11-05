@@ -14,6 +14,9 @@ pub struct ChaoxingConfig {
     /// 自动签到：poll 发现待签活动时当场尝试（全类型；二维码 enc 为伪造值，
     /// 平台不校验真实性，被拒时打标记并回执）。
     pub auto_sign: bool,
+    /// 课程 id → 手势轨迹（网格坐标数字串，如 "123654789"）。
+    /// 平台只在签到窗口内下发正确轨迹；这里给的是老师长期用同一图案时的兜底。
+    pub gesture_sign_codes: std::collections::BTreeMap<String, String>,
     /// 默认位置（坐标 + 地址文本）：位置/二维码签到的坐标缺省来源。
     pub default_location: Option<(f64, f64, String)>,
     /// 拍照签到默认照片路径；未配置且命令行未给 --photo 时用内置兜底照片。
@@ -55,6 +58,9 @@ pub struct ChaoxingSection {
     /// 自动签到：poll 发现待签活动时当场尝试签到（除二维码外全类型）。
     /// 平台拒绝后不自动重试；网络错误下轮自然重试。默认 false。
     pub auto_sign: Option<bool>,
+    /// 课程 id → 手势轨迹（网格坐标数字串，如 "123654789"）。
+    /// 平台只在签到窗口内下发正确轨迹；这里给的是老师长期用同一图案时的兜底。
+    pub gesture_sign_codes: Option<std::collections::BTreeMap<String, String>>,
     /// 默认纬度（位置/二维码签到的坐标缺省来源，如教学楼）。
     pub default_lat: Option<f64>,
     /// 默认经度。
@@ -123,6 +129,7 @@ impl ChaoxingSection {
             interval_secs: self.interval_secs.unwrap_or(Self::DEFAULT_INTERVAL_SECS),
             notify_target,
             auto_sign: self.auto_sign.unwrap_or(false),
+            gesture_sign_codes: self.gesture_sign_codes.clone().unwrap_or_default(),
             default_location: match (
                 self.default_lat,
                 self.default_lon,

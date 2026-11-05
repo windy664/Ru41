@@ -129,6 +129,10 @@ app_secret = ""
 # interval_secs = 60       # 签到窗口常为 1-2 分钟，默认 60s
 # notify = true
 # auto_sign = false        # true = agent 模式：发现待签当场自动签（二维码除外）
+# 手势签到：平台只在签到窗口内下发轨迹（getPPTActiveInfo 的 data.signCode），
+# 机器人窗口内取到就自动签（轨迹形如 "123654789"）。取不到时用这里配的固定轨迹兜底：
+# [sources.chaoxing.gesture_sign_codes]
+# "268129408" = "123654789"   # 课程 id → 手势轨迹（老师长期用同一图案时）
 # work_poll_secs = 1800    # 作业轮询间隔（作业列表请求重，务必低频）
 # work_due_days = 3        # 截止前 N 天临期提醒
 # work_todo_sync = true    # 未交作业自动进待办、已交自动回勾
