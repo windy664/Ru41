@@ -456,6 +456,19 @@ impl ChaoxingClient {
         activity: &ChaoxingActivity,
         method: &SignMethod,
     ) -> Result<String> {
+        self.sign_with(course, activity, method, true).await
+    }
+
+    /// 提交签到。`allow_captcha=false` 时不做滑块重签——
+    /// 枚举手势轨迹时用：每条轨迹再叠两次滑块重试会瞬间打出几十个请求，
+    /// 既慢又容易撞上平台的「请勿频繁操作」限流。
+    pub async fn sign_with(
+        &self,
+        course: &ChaoxingCourse,
+        activity: &ChaoxingActivity,
+        method: &SignMethod,
+        allow_captcha: bool,
+    ) -> Result<String> {
         let activity_id = activity.id.to_string();
         let uid = self.uid()?;
         // 拍照/位置/二维码的教师端展示名用真实姓名，普通类传空即可。
@@ -523,7 +536,7 @@ impl ChaoxingClient {
         }
 
         let text = self.send_sign(&params).await?;
-        if !sign_needs_captcha(&text) {
+        if !allow_captcha || !sign_needs_captcha(&text) {
             return Ok(text);
         }
         // 风控拦截（2026-10-30 实测手势直签稳定 90002；社区记录 validate_* 形态）：

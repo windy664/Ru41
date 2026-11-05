@@ -2,6 +2,7 @@
 //! 对外路径保持 `chaoxing::service::*` 不变。
 
 mod enc_sample;
+mod gesture;
 mod qr;
 mod sign;
 mod work;
