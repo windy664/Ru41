@@ -176,6 +176,38 @@ impl QqApiClient {
         .await
     }
 
+    /// C2C「正在输入」指示（msg_type=6）：agent 处理期间让 QQ 显示输入状态，
+    /// 60 秒有效期；失败静默——指示器只是体验增强，不该打扰任务链路。
+    pub async fn send_input_notify(
+        &self,
+        user_openid: &str,
+        msg_id: &str,
+        msg_seq: i64,
+    ) -> Result<()> {
+        let body = serde_json::json!({
+            "msg_type": 6,
+            "msg_id": msg_id,
+            "msg_seq": msg_seq,
+            "input_notify": { "input_type": 1, "input_second": 60 },
+        });
+        let response = self
+            .authorized(self.http.post(format!(
+                "{api_base}/v2/users/{user_openid}/messages",
+                api_base = self.api_base
+            )))
+            .await?
+            .json(&body)
+            .send()
+            .await
+            .context("cannot send QQ input notify")?;
+        let status = response.status();
+        if !status.is_success() {
+            // 响应体不解析：指示器失败无后续动作，状态码足够定位。
+            bail!("QQ input notify failed with {status}");
+        }
+        Ok(())
+    }
+
     /// 被动回复单聊消息，附带快捷按钮（markdown + keyboard）。
     pub async fn send_c2c_markup(
         &self,

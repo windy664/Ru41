@@ -21,6 +21,8 @@ use ru41::{
     runtime::dispatcher::NotifyDispatcher,
     runtime::worker::{Worker, WorkerConfig},
 };
+use std::collections::HashMap;
+use std::sync::Mutex;
 use std::{path::PathBuf, sync::Arc, time::Duration};
 use tokio::sync::watch;
 
@@ -213,6 +215,7 @@ async fn main() -> Result<()> {
                     command_handlers,
                     image_consumers,
                     sequencer: sequencer.clone(),
+                    typing_sent_at: Mutex::new(HashMap::new()),
                 };
                 let dispatcher = NotifyDispatcher {
                     store,

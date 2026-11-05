@@ -20,7 +20,7 @@ use std::{
     future::Future,
     pin::Pin,
     sync::{Arc, Mutex},
-    time::Duration,
+    time::{Duration, Instant},
 };
 use tokio::sync::{mpsc, watch};
 
@@ -151,6 +151,8 @@ pub struct QqBot {
     pub image_consumers: Vec<Arc<dyn crate::ports::commands::ImageConsumer>>,
     /// 与 QqNotifier 共享的被动回复序号器，防止同 msg_id 下 seq 撞车。
     pub sequencer: Arc<ReplySequencer>,
+    /// 「正在输入」指示的发送时间（按 user_openid 去抖，平台指示有效 60s）。
+    pub typing_sent_at: Mutex<HashMap<String, Instant>>,
 }
 
 /// 单条消息的分发结果：立即回复（含可选按钮），或已幂等入队。
@@ -170,6 +172,28 @@ fn reconnect_delay(retries: u32) -> Duration {
 }
 
 impl QqBot {
+    /// 「正在输入」指示去抖：同一用户 50 秒内不重复发（平台指示有效 60s）。
+    async fn maybe_input_notify(&self, msg_id: &str, user_openid: &str) {
+        const TYPING_DEBOUNCE: Duration = Duration::from_secs(50);
+        let now = Instant::now();
+        {
+            let mut sent = self
+                .typing_sent_at
+                .lock()
+                .unwrap_or_else(|poisoned| poisoned.into_inner());
+            if let Some(last) = sent.get(user_openid)
+                && now.saturating_duration_since(*last) < TYPING_DEBOUNCE
+            {
+                return;
+            }
+            sent.insert(user_openid.to_owned(), now);
+        }
+        let seq = self.sequencer.next(msg_id);
+        if let Err(error) = self.api.send_input_notify(user_openid, msg_id, seq).await {
+            eprintln!("[qq] input notify skipped: {error:#}");
+        }
+    }
+
     /// 长驻运行 gateway 事件循环，收到 shutdown 后优雅退出。
     pub async fn run(&self, mut shutdown: watch::Receiver<bool>) -> Result<()> {
         let (events, mut receiver) = mpsc::channel::<GatewayEvent>(256);
@@ -254,6 +278,17 @@ impl QqBot {
             tokio::runtime::Handle::current().block_on(self.dispatch(event))
         })?;
         let DispatchOutcome::Reply(reply) = outcome else {
+            // 消息已入队成任务：agent 要跑一会儿，先亮「正在输入」告诉用户
+            // 这边活着。仅单聊（平台 input_notify 只支持 C2C）；去抖 50s；
+            // 失败静默——体验增强不侵入任务链路。
+            if let GatewayEvent::C2cMessage {
+                msg_id,
+                user_openid,
+                ..
+            } = event
+            {
+                self.maybe_input_notify(msg_id, user_openid).await;
+            }
             return Ok(());
         };
         let (msg_id, target) = match event {
