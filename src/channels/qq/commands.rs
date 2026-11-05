@@ -508,6 +508,7 @@ mod tests {
             by_day: Vec::new(),
         };
         let text = format_usage_overview(&day, &week);
+        eprintln!("{text}");
         // 运行次数是主指标。
         assert!(text.contains("123 次运行"), "{text}");
         assert!(text.contains("11.5K token"), "{text}");

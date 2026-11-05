@@ -215,10 +215,12 @@ pub fn overview(runs: &[crate::ports::storage::UsageRun], days: u32) -> UsageOve
         total_tokens: 0,
     };
     for run in runs {
-        let model = run
-            .model
-            .clone()
-            .unwrap_or_else(|| format!("{}/（未记录）", run.backend_id));
+        // 模型名带底座前缀（codex/glm-4.6、pi/MiniMax-M3），免得同名不同底座看不清。
+        let model = match run.model.clone() {
+            Some(model) if model.contains('/') => model,
+            Some(model) => format!("{}/{model}", run.backend_id),
+            None => format!("{}/（未记录模型）", run.backend_id),
+        };
         let source = source_of(&run.request_key).to_owned();
         let day = day_label(run.started_at);
         let reported = run.total_tokens.is_some();
