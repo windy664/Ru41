@@ -161,6 +161,7 @@ async fn main() -> Result<()> {
                     eprintln!("[knowledge] disabled: {error:#}");
                     None
                 }),
+                silent_sources: config.notify.silent_sources.clone().unwrap_or_default(),
                 config: WorkerConfig {
                     worker_id: format!("worker-{}", std::process::id()),
                     runs_dir: runs_dir
@@ -222,6 +223,7 @@ async fn main() -> Result<()> {
                     channels: notify_channels(&config, Some(api), Some(sequencer))?,
                     batch: 20,
                     interval: Duration::from_secs(2),
+                    silent_sources: config.notify.silent_sources.clone().unwrap_or_default(),
                 };
                 let receiver = shutdown_channel()?;
                 tokio::select! {
@@ -263,6 +265,7 @@ async fn main() -> Result<()> {
                 channels,
                 batch: 20,
                 interval: Duration::from_secs(2),
+                silent_sources: config.notify.silent_sources.clone().unwrap_or_default(),
             };
             dispatcher.run_loop(shutdown_channel()?).await?;
             return Ok(());

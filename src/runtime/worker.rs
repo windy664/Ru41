@@ -52,6 +52,8 @@ pub struct Worker {
     pub sanitizer: Arc<dyn Sanitizer>,
     /// 配置了 [knowledge] 时挂载：每条用户消息执行前自动检索知识库并注入上下文。
     pub knowledge: Option<Arc<crate::app::knowledge::KnowledgeService>>,
+    /// 静默来源（后台服务）：这些任务不推活动流（终态通知由 dispatcher 侧同样静默）。
+    pub silent_sources: Vec<String>,
     pub config: WorkerConfig,
 }
 
@@ -311,17 +313,28 @@ impl Worker {
         };
         // 活动流推送器：尾随底座的 events.jsonl，把执行过程实时写进 store，
         // QQ 网关的通知循环扫描后发回会话（像正常使用 codex 那样可见）。
+        // 静默来源（后台服务）不推——过程照留档，只是不打扰用户。
         let (activity_stop, activity_stop_rx) = watch::channel(false);
-        let streamer = crate::runtime::activity::ActivityStreamer {
-            store: self.store.clone(),
-            run_id: run_id.clone(),
-            task_id: claim.task.id,
-            attempt_id: claim.attempt_id,
-            path: run_dir.join("events.jsonl"),
-            interval: Duration::from_secs(4),
-            max_chunks: 40,
+        let silent = crate::runtime::dispatcher::is_silent_source(
+            &claim.task.request_key,
+            &self.silent_sources,
+        );
+        let stream_handle = if silent {
+            None
+        } else {
+            let streamer = crate::runtime::activity::ActivityStreamer {
+                store: self.store.clone(),
+                run_id: run_id.clone(),
+                task_id: claim.task.id,
+                attempt_id: claim.attempt_id,
+                path: run_dir.join("events.jsonl"),
+                interval: Duration::from_secs(4),
+                max_chunks: 40,
+            };
+            Some(tokio::spawn(
+                async move { streamer.run(activity_stop_rx).await },
+            ))
         };
-        let stream_handle = tokio::spawn(async move { streamer.run(activity_stop_rx).await });
         let agent_start = std::time::Instant::now();
         let execution = agent.run(request);
         tokio::pin!(execution);
@@ -395,7 +408,9 @@ impl Worker {
         );
         // 停活动流并等它 flush 完剩余行（丢弃 handle 会让最后的 chunk 丢失）。
         let _ = activity_stop.send(true);
-        let _ = tokio::time::timeout(Duration::from_secs(6), stream_handle).await;
+        if let Some(handle) = stream_handle {
+            let _ = tokio::time::timeout(Duration::from_secs(6), handle).await;
+        }
         // 自愈：本次是续接旧会话且执行失败，说明供应商侧会话可能已失效
         // （换 provider、会话过期等），清掉会话让下一条消息从头开始。
         if outcome.is_err()

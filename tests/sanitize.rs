@@ -182,6 +182,7 @@ async fn agent_sees_masked_prompt_and_store_keeps_restored_result() {
         .register(CapturingAgent { seen: seen.clone() })
         .unwrap();
     let mut worker = Worker {
+        silent_sources: Vec::new(),
         store: store.clone() as Arc<dyn TaskStore>,
         backends: Arc::new(backends),
         sanitizer: Arc::new(RandomSanitizer::default()),
