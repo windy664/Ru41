@@ -44,14 +44,17 @@ migrations/    数据库迁移（核心领地）
 - 插件一切异步入口（PollJob::poll_json / QQ handler / CLI poll）必须过 `ru41_plugin_api::bridge`——dylib 各静态链接一份 tokio，宿主 reactor 对插件不可见，不过桥在网络调用时 panic 并 abort 进程。**核心 tracker 类型被插件 tracker 闭包实例化进 .so 时同样适用**（2026-11-04 ClassRemindTracker 未过桥致 class-remind 容器崩溃循环、课前提醒全丢）。
 - 插件技能包在 `plugins/<名>/skills/<技能>/SKILL.md`，由 `src/skills/` 加载注入 agent prompt。
   容器内从镜像的 `/usr/share/ru41/{modules,plugins}/` 读（`/etc/ru41` 被宿主机
-  bind mount 整体遮蔽，技能包放那里等于没有）；改技能必须走镜像部署，热更 .so 不带技能。
+  bind mount 整体遮蔽，技能包放那里等于没有）。**2026-11-05 起技能包也改为宿主目录
+  bind mount**：生产机 `~/ru41-mimo-smoke/skills` 挂到 `/usr/share/ru41/plugins`，
+  目录形状必须是 `<插件>/skills/<技能>/SKILL.md`（加载器按这个结构找），
+  热更脚本会连带同步，改技能不必再重建镜像。
 
 ## 部署链（生产机 backup238 / 192.168.1.223，目录 /home/windy2/ru41-mimo-smoke）
 
-**只改了插件代码时走热更（几十秒，别等 CI）**：`deploy/hot-patch.sh <插件名> [容器名...]`
-——本地 `cargo build --release --features plugin-entry` → scp .so → `docker restart` 该容器。
+**只改了插件代码或技能包时走热更（几十秒，别等 CI）**：`deploy/hot-patch.sh <插件名> [容器名...]`
+——本地 `cargo build --release --features plugin-entry` → scp .so + 技能包 → `docker restart` 该容器。
 插件是 cdylib，容器启动时从 `/etc/ru41/plugins` 加载，替换 .so 重启即生效。
-不适用：改了 `src/`（宿主二进制变了，插件 ABI 对不上）、改了插件 `skills/`（技能包在镜像里）、要重建 sidecar。
+不适用：改了 `src/`（宿主二进制变了，插件 ABI 对不上）、要重建 sidecar。
 
 **改了核心代码或要出正式镜像时走完整链**：
 
