@@ -2,7 +2,7 @@ mod consumers;
 use super::TaskStatusCounts;
 use crate::{
     domain::{AgentResult, Attempt, Claim, EnqueueResult, RunContract, Task, TokenUsage},
-    ports::storage::{TaskStore, UsageRecord},
+    ports::storage::{TaskStore, UsageRecord, UsageRun},
 };
 use anyhow::{Context, Result, bail};
 use rusqlite::{Connection, ErrorCode, OptionalExtension, Row, TransactionBehavior, params};
@@ -495,6 +495,31 @@ impl TaskStore for SqliteTaskStore {
             ],
         )?;
         Ok(())
+    }
+
+    fn usage_runs_since(&self, since: i64) -> Result<Vec<UsageRun>> {
+        let connection = self.connection()?;
+        let mut statement = connection.prepare(
+            "SELECT a.task_id, a.id, t.request_key, a.started_at, a.backend_id, a.model, \
+                    a.input_tokens, a.cached_input_tokens, a.output_tokens, a.total_tokens \
+             FROM attempts a JOIN tasks t ON a.task_id=t.id \
+             WHERE a.started_at>=?1 ORDER BY a.started_at",
+        )?;
+        let rows = statement.query_map([since], |row| {
+            Ok(UsageRun {
+                task_id: row.get(0)?,
+                attempt_id: row.get(1)?,
+                request_key: row.get(2)?,
+                started_at: row.get(3)?,
+                backend_id: row.get(4)?,
+                model: row.get(5)?,
+                input_tokens: row.get(6)?,
+                cached_input_tokens: row.get(7)?,
+                output_tokens: row.get(8)?,
+                total_tokens: row.get(9)?,
+            })
+        })?;
+        Ok(rows.collect::<rusqlite::Result<Vec<_>>>()?)
     }
 
     fn usage_since(&self, since: i64) -> Result<Vec<UsageRecord>> {

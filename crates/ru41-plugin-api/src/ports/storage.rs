@@ -20,6 +20,26 @@ pub struct UsageRecord {
     pub total_tokens: i64,
 }
 
+/// 窗口内的一次运行（含底座未上报用量的）。
+///
+/// 与 [UsageRecord] 的区别：这里不筛掉没上报 token 的运行——统计"跑了多少次"
+/// 与"花了多少 token"是两件事，只统计后者会让报告看起来空空如也。
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize)]
+pub struct UsageRun {
+    pub task_id: i64,
+    pub attempt_id: i64,
+    pub request_key: String,
+    pub started_at: i64,
+    /// 运行使用的底座（codex / pi）。
+    pub backend_id: String,
+    /// 实际使用的模型（底座 + 供应方组合，如 minimax/MiniMax-M3）。
+    pub model: Option<String>,
+    pub input_tokens: Option<i64>,
+    pub cached_input_tokens: Option<i64>,
+    pub output_tokens: Option<i64>,
+    pub total_tokens: Option<i64>,
+}
+
 /// 任务与尝试的持久化边界；SQLite 是默认适配器。
 /// 实现必须原子地执行 fencing 与租约规则；任务和审核状态变化的事件也必须同事务写入。
 pub trait TaskStore: super::consumers::ConsumerStore {
@@ -105,6 +125,13 @@ pub trait TaskStore: super::consumers::ConsumerStore {
     fn record_usage(&self, claim: &Claim, usage: &TokenUsage) -> Result<()> {
         let _ = (claim, usage);
         Ok(())
+    }
+
+    /// 窗口内的全部运行（含底座未上报用量的），按 started_at 升序。
+    /// 默认空实现；SQLite/PostgreSQL 适配器负责实现。
+    fn usage_runs_since(&self, since: i64) -> Result<Vec<UsageRun>> {
+        let _ = since;
+        Ok(Vec::new())
     }
 
     /// `started_at >= since` 且底座上报过用量的尝试，按 started_at 升序。
@@ -233,6 +260,9 @@ impl<T: TaskStore + ?Sized> TaskStore for Arc<T> {
     }
     fn record_usage(&self, claim: &Claim, usage: &TokenUsage) -> Result<()> {
         (**self).record_usage(claim, usage)
+    }
+    fn usage_runs_since(&self, since: i64) -> Result<Vec<UsageRun>> {
+        (**self).usage_runs_since(since)
     }
     fn usage_since(&self, since: i64) -> Result<Vec<UsageRecord>> {
         (**self).usage_since(since)

@@ -5,6 +5,7 @@
 
 use crate::ports::storage::{TaskStore, UsageRecord};
 use anyhow::Result;
+use std::collections::BTreeMap;
 
 /// 单个来源的用量小计。
 #[derive(Debug, Clone, PartialEq, Eq, serde::Serialize)]
@@ -151,5 +152,169 @@ mod tests {
         assert_eq!(models[1].model, "zhipu/glm-4.6");
         assert_eq!(models[2].model, "未知模型");
         assert_eq!(models[2].total_tokens, 10);
+    }
+}
+
+/// 一次分组小计（模型 / 来源 / 天）。
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize)]
+pub struct UsageStat {
+    /// 分组名（模型 ID / 来源前缀 / 日期）。
+    pub key: String,
+    /// 该组内的运行总次数（含未上报用量的）。
+    pub runs: u32,
+    /// 其中上报了用量的次数。
+    pub reported_runs: u32,
+    pub input_tokens: u64,
+    pub cached_input_tokens: u64,
+    pub output_tokens: u64,
+    pub total_tokens: u64,
+}
+
+impl UsageStat {
+    /// 该组是否完全没有 token 数据（底座未上报）。
+    pub fn unreported(&self) -> bool {
+        self.reported_runs == 0
+    }
+}
+
+/// 用量总览：以"跑了多少次"为主指标，token 为副指标。
+///
+/// 之前只统计上报过 token 的运行，于是底座不上报用量时（codex 走 GLM 的 chat
+/// 接口不返回 usage）报告几乎空白——近 7 天 123 次运行里只有 1 次有数字。
+/// 现在把运行次数、覆盖率、分来源/模型/天都列出来，空不空一眼可见。
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize)]
+pub struct UsageOverview {
+    /// 统计窗口（天）。
+    pub days: u32,
+    pub runs: u32,
+    pub reported_runs: u32,
+    pub input_tokens: u64,
+    pub cached_input_tokens: u64,
+    pub output_tokens: u64,
+    pub total_tokens: u64,
+    /// 按模型分组（用量多的在前）。
+    pub by_model: Vec<UsageStat>,
+    /// 按功能来源分组（用量多的在前）。
+    pub by_source: Vec<UsageStat>,
+    /// 按天分组（最近的在前）。
+    pub by_day: Vec<UsageStat>,
+}
+
+/// 从窗口内的全部运行算出总览。
+pub fn overview(runs: &[crate::ports::storage::UsageRun], days: u32) -> UsageOverview {
+    let mut models: BTreeMap<String, UsageStat> = BTreeMap::new();
+    let mut sources: BTreeMap<String, UsageStat> = BTreeMap::new();
+    let mut days_map: BTreeMap<String, UsageStat> = BTreeMap::new();
+    let mut totals = UsageStat {
+        key: String::new(),
+        runs: 0,
+        reported_runs: 0,
+        input_tokens: 0,
+        cached_input_tokens: 0,
+        output_tokens: 0,
+        total_tokens: 0,
+    };
+    for run in runs {
+        let model = run
+            .model
+            .clone()
+            .unwrap_or_else(|| format!("{}/（未记录）", run.backend_id));
+        let source = source_of(&run.request_key).to_owned();
+        let day = day_label(run.started_at);
+        let reported = run.total_tokens.is_some();
+        let (input, cached, output, total) = match run.total_tokens {
+            Some(total) => (
+                run.input_tokens.unwrap_or(0).max(0) as u64,
+                run.cached_input_tokens.unwrap_or(0).max(0) as u64,
+                run.output_tokens.unwrap_or(0).max(0) as u64,
+                total.max(0) as u64,
+            ),
+            None => (0, 0, 0, 0),
+        };
+        for (map, key) in [
+            (&mut models, model.clone()),
+            (&mut sources, source.clone()),
+            (&mut days_map, day.clone()),
+        ] {
+            let entry = map.entry(key.clone()).or_insert_with(|| UsageStat {
+                key: key.clone(),
+                runs: 0,
+                reported_runs: 0,
+                input_tokens: 0,
+                cached_input_tokens: 0,
+                output_tokens: 0,
+                total_tokens: 0,
+            });
+            entry.runs += 1;
+            if reported {
+                entry.reported_runs += 1;
+                entry.input_tokens += input;
+                entry.cached_input_tokens += cached;
+                entry.output_tokens += output;
+                entry.total_tokens += total;
+            }
+        }
+        totals.runs += 1;
+        if reported {
+            totals.reported_runs += 1;
+            totals.input_tokens += input;
+            totals.cached_input_tokens += cached;
+            totals.output_tokens += output;
+            totals.total_tokens += total;
+        }
+    }
+    let by_sort = |mut items: Vec<UsageStat>| {
+        items.sort_by(|a, b| {
+            b.reported_runs
+                .cmp(&a.reported_runs)
+                .then(b.runs.cmp(&a.runs))
+                .then(a.key.cmp(&b.key))
+        });
+        items
+    };
+    UsageOverview {
+        days,
+        runs: totals.runs,
+        reported_runs: totals.reported_runs,
+        input_tokens: totals.input_tokens,
+        cached_input_tokens: totals.cached_input_tokens,
+        output_tokens: totals.output_tokens,
+        total_tokens: totals.total_tokens,
+        by_model: by_sort(models.into_values().collect()),
+        by_source: by_sort(sources.into_values().collect()),
+        by_day: {
+            let mut items: Vec<UsageStat> = days_map.into_values().collect();
+            items.sort_by(|a, b| b.key.cmp(&a.key));
+            items
+        },
+    }
+}
+
+/// 本地日期标签（东八区，服务器时区即本地时区）。
+fn day_label(started_at: i64) -> String {
+    use chrono::TimeZone;
+    chrono::Local
+        .timestamp_opt(started_at, 0)
+        .single()
+        .map(|t| t.format("%m-%d").to_string())
+        .unwrap_or_default()
+}
+
+/// 来源前缀的中文说明（request_key 的第一段）。
+pub fn source_label(source: &str) -> &'static str {
+    match source {
+        "qq" => "QQ 消息",
+        "lecture" => "课堂录音整理",
+        "rss" => "RSS 日报",
+        "homework" => "作业提醒",
+        "chaoxing" => "学习通作业",
+        "zhihuishu" => "智慧树作业",
+        "jwxt" => "教务课表",
+        "library" => "图书馆",
+        "ecard" => "水电",
+        "plan" | "planner" => "行程",
+        "obsidian" => "知识库整理",
+        "digest" => "每日简报",
+        _ => "",
     }
 }
