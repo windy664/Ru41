@@ -21,6 +21,12 @@ struct Candidate {
     provider: Option<String>,
 }
 
+/// 单次运行的工具调用硬上限。pi 无原生迭代上限，放任下去模型会在
+/// 「下载大文件/装依赖/逐页渲染」这类黑洞任务上烧满整个执行预算
+/// （实测：为查一项奖学金条款去下载 61MB 手册 PDF 并逐页渲染）。
+/// 超限按 InvalidOutput 归类为永久失败——同样的提示词重试只会重蹈覆辙。
+const TOOL_EXECUTION_BUDGET: usize = 24;
+
 impl Candidate {
     /// 展示名（供应方/模型），用于日志与用量归属。
     fn label(&self) -> String {
@@ -326,7 +332,15 @@ impl PiAgent {
                     "--tools",
                     tools,
                     "--system-prompt",
-                    "Carry out the task in the request using the available tools. When finished, your last message must be a JSON object with one nonempty string field named summary.",
+                    "Carry out the task in the request using the available tools. \
+                     Prefer answering from the request context itself; use tools only when \
+                     the context is genuinely insufficient. Keep tool use to a few calls: \
+                     never download large files, never install packages or dependencies, \
+                     never render or OCR documents page by page. \
+                     When finished, your last message must be a JSON object with one \
+                     nonempty string field named summary. If the information cannot be \
+                     found with minimal effort, say so in the summary instead of searching \
+                     extensively.",
                 ]);
             }
             None => {
@@ -413,6 +427,7 @@ impl PiAgent {
             let mut accepted = false;
             let mut settled = false;
             let mut total = 0_usize;
+            let mut tool_calls = 0_usize;
             let mut usage: Option<TokenUsage> = None;
             let mut session_id: Option<String> = None;
             let mut asked_state = false;
@@ -434,6 +449,15 @@ impl PiAgent {
                 let event: Value = serde_json::from_slice(&line)
                     .map_err(|_| Ru41Error::AgentProcess("invalid Pi JSONL record".into()))?;
                 match event["type"].as_str() {
+                    Some("tool_execution_start") => {
+                        tool_calls += 1;
+                        ensure!(
+                            tool_calls <= TOOL_EXECUTION_BUDGET,
+                            Ru41Error::InvalidOutput(format!(
+                                "Pi exhausted its tool budget ({tool_calls} tool calls) without finishing"
+                            ))
+                        );
+                    }
                     Some("response") if event["id"] == "ru41-prompt" => {
                         ensure!(
                             event["success"] == true,
