@@ -156,10 +156,10 @@ pub fn execute(command: &Command, ctx: &CommandContext) -> Result<Reply> {
                 ));
             }
             let now = crate::util::now();
-            let day = crate::app::usage::report(ctx.store.as_ref(), now - 86_400)?;
-            let week = crate::app::usage::report(ctx.store.as_ref(), now - 7 * 86_400)?;
-            let models = crate::app::usage::report_by_model(ctx.store.as_ref(), now - 7 * 86_400)?;
-            Ok(Reply::text(format_usage(&day, &week, &models)))
+            let day = crate::app::usage::overview(&ctx.store.usage_runs_since(now - 86_400)?, 1);
+            let week =
+                crate::app::usage::overview(&ctx.store.usage_runs_since(now - 7 * 86_400)?, 7);
+            Ok(Reply::text(format_usage_overview(&day, &week)))
         }
         Command::Clear => {
             let key = format!("qq:{}", ctx.target);
@@ -221,6 +221,96 @@ fn totals(summaries: &[crate::app::usage::UsageSummary]) -> (u32, u64) {
     summaries.iter().fold((0, 0), |(runs, tokens), item| {
         (runs + item.runs, tokens + item.total_tokens)
     })
+}
+
+/// 新版用量渲染：以运行次数为主指标，token 为副；三种分组 + 覆盖率说明。
+///
+/// QQ 的 markdown 不支持表格，用分组标题 + 缩进列表呈现。
+pub fn format_usage_overview(
+    day: &crate::app::usage::UsageOverview,
+    week: &crate::app::usage::UsageOverview,
+) -> String {
+    let mut lines = vec!["## 📊 Token 用量".to_owned()];
+    lines.push(String::new());
+    lines.push(format!(
+        "**近 24 小时** · {} 次运行 · {} 次上报 · {}",
+        day.runs,
+        day.reported_runs,
+        token_phrase(day.total_tokens, day.reported_runs)
+    ));
+    lines.push(format!(
+        "**近 7 天** · {} 次运行 · {} 次上报 · {}",
+        week.runs,
+        week.reported_runs,
+        token_phrase(week.total_tokens, week.reported_runs)
+    ));
+    if week.reported_runs > 0 {
+        lines.push(format!(
+            "　└ 输入 {} · 缓存命中 {} · 输出 {}",
+            human_tokens(week.input_tokens),
+            human_tokens(week.cached_input_tokens),
+            human_tokens(week.output_tokens)
+        ));
+    }
+
+    if !week.by_model.is_empty() {
+        lines.push(String::new());
+        lines.push("**按模型**".to_owned());
+        for item in &week.by_model {
+            lines.push(format!(
+                "- `{}` · {} 次 · {}",
+                item.key,
+                item.runs,
+                token_phrase(item.total_tokens, item.reported_runs)
+            ));
+        }
+    }
+    if !week.by_source.is_empty() {
+        lines.push(String::new());
+        lines.push("**按功能来源**".to_owned());
+        for item in &week.by_source {
+            let label = crate::app::usage::source_label(&item.key);
+            let name = if label.is_empty() {
+                item.key.clone()
+            } else {
+                format!("{label}（{}）", item.key)
+            };
+            lines.push(format!(
+                "- {name} · {} 次 · {}",
+                item.runs,
+                token_phrase(item.total_tokens, item.reported_runs)
+            ));
+        }
+    }
+    if !week.by_day.is_empty() {
+        lines.push(String::new());
+        lines.push("**近 7 天趋势**".to_owned());
+        for item in &week.by_day {
+            lines.push(format!(
+                "- {} · {} 次 · {}",
+                item.key,
+                item.runs,
+                token_phrase(item.total_tokens, item.reported_runs)
+            ));
+        }
+    }
+    if week.runs > week.reported_runs {
+        lines.push(String::new());
+        lines.push(format!(
+            "> ⚠️ {} 次运行没有 token 数据（codex 走 GLM 的 chat 接口不返回 usage，只报 0）。             想看每次运行具体做了什么：`ru41 task trace <任务号>`",
+            week.runs - week.reported_runs
+        ));
+    }
+    lines.join("\n")
+}
+
+/// token 部分的措辞：没有数据时说清"未上报"，不要显示 0 冒充真实值。
+fn token_phrase(total: u64, reported_runs: u32) -> String {
+    if reported_runs == 0 {
+        "未上报 token".to_owned()
+    } else {
+        format!("{} token", human_tokens(total))
+    }
 }
 
 pub fn format_usage(
@@ -379,6 +469,56 @@ mod tests {
             output_tokens: output,
             total_tokens: total,
         }
+    }
+
+    #[test]
+    fn usage_overview_shows_runs_coverage_and_unreported() {
+        use crate::app::usage::{UsageOverview, UsageStat};
+        let stat = |key: &str, runs: u32, reported: u32, total: u64| UsageStat {
+            key: key.to_owned(),
+            runs,
+            reported_runs: reported,
+            input_tokens: 0,
+            cached_input_tokens: 0,
+            output_tokens: 0,
+            total_tokens: total,
+        };
+        let week = UsageOverview {
+            days: 7,
+            runs: 123,
+            reported_runs: 1,
+            input_tokens: 154,
+            cached_input_tokens: 10_500,
+            output_tokens: 850,
+            total_tokens: 11_500,
+            by_model: vec![stat("minimax/MiniMax-M3", 6, 1, 11_500)],
+            by_source: vec![stat("qq", 6, 1, 11_500), stat("lecture", 24, 0, 0)],
+            by_day: vec![stat("11-05", 30, 1, 11_500)],
+        };
+        let day = UsageOverview {
+            days: 1,
+            runs: 30,
+            reported_runs: 1,
+            input_tokens: 154,
+            cached_input_tokens: 10_500,
+            output_tokens: 850,
+            total_tokens: 11_500,
+            by_model: Vec::new(),
+            by_source: Vec::new(),
+            by_day: Vec::new(),
+        };
+        let text = format_usage_overview(&day, &week);
+        // 运行次数是主指标。
+        assert!(text.contains("123 次运行"), "{text}");
+        assert!(text.contains("11.5K token"), "{text}");
+        // 没上报的一组要说清"未上报"，不能显示 0。
+        assert!(text.contains("未上报 token"), "{text}");
+        // 覆盖率与追查入口。
+        assert!(text.contains("122 次运行没有 token 数据"), "{text}");
+        assert!(text.contains("ru41 task trace"), "{text}");
+        // 来源分组带中文名。
+        assert!(text.contains("QQ 消息（qq）"), "{text}");
+        assert!(text.contains("课堂录音整理（lecture）"), "{text}");
     }
 
     #[test]

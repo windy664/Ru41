@@ -4,7 +4,7 @@ use crate::{
     domain::{
         AgentResult, Attempt, Claim, EnqueueResult, RunContract, Task, TaskStatus, TokenUsage,
     },
-    ports::storage::{TaskStore, UsageRecord},
+    ports::storage::{TaskStore, UsageRecord, UsageRun},
 };
 use anyhow::{Context, Result, bail};
 use postgres::{Client, NoTls, Row};
@@ -521,6 +521,33 @@ impl TaskStore for PostgresTaskStore {
                 &[&claim.attempt_id, &input, &cached, &output, &total],
             )?;
             Ok(())
+        })
+    }
+
+    fn usage_runs_since(&self, since: i64) -> Result<Vec<UsageRun>> {
+        outside_runtime(|| {
+            let rows = self.client()?.query(
+                "SELECT a.task_id, a.id, t.request_key, a.started_at, a.backend_id, a.model, \
+                        a.input_tokens, a.cached_input_tokens, a.output_tokens, a.total_tokens \
+                 FROM attempts a JOIN tasks t ON a.task_id=t.id \
+                 WHERE a.started_at>=$1 ORDER BY a.started_at",
+                &[&since],
+            )?;
+            Ok(rows
+                .iter()
+                .map(|row| UsageRun {
+                    task_id: row.get(0),
+                    attempt_id: row.get(1),
+                    request_key: row.get(2),
+                    started_at: row.get(3),
+                    backend_id: row.get(4),
+                    model: row.get(5),
+                    input_tokens: row.get(6),
+                    cached_input_tokens: row.get(7),
+                    output_tokens: row.get(8),
+                    total_tokens: row.get(9),
+                })
+                .collect())
         })
     }
 
