@@ -28,10 +28,12 @@ impl LectureHandler {
 
     /// 下载 + 入库（插件自己的 runtime 里跑，见 handle_message 的 bridge 说明）。
     /// 返回（文件大小 MB 前的字节数, 前面排队节数）：排队数让回执告诉用户还要等几节。
+    #[allow(clippy::too_many_arguments)]
     async fn run_job(
         &self,
         store: std::sync::Arc<dyn ru41::ports::storage::TaskStore>,
         source: String,
+        auth: Option<String>,
         display_name: String,
         channel: String,
         target: String,
@@ -42,7 +44,7 @@ impl LectureHandler {
         std::fs::create_dir_all(&raw_dir)?;
         let dest = raw_dir.join(&filename);
         // QQ CDN 链接有时效，必须当场下载完。
-        let size = self.download(&source, &dest).await?;
+        let size = self.download(&source, auth.as_deref(), &dest).await?;
         let item = PendingItem {
             file: dest.display().to_string(),
             filename: display_name,
@@ -72,13 +74,14 @@ impl LectureHandler {
     /// 流式落盘，避免大文件整读进内存。
     /// 连接类失败重试 3 次（2s/6s 退避）：家宽到腾讯云 CDN 段偶发整段劣化，
     /// 单次尝试会把好链接白白判死；HTTP 状态错误不重试（rkey 失效重试也没用）。
-    async fn download(&self, url: &str, dest: &std::path::Path) -> Result<u64> {
+    /// auth 是渠道 CDN 认证头值（QQ 要求 `Authorization: QQBot <token>`）。
+    async fn download(&self, url: &str, auth: Option<&str>, dest: &std::path::Path) -> Result<u64> {
         let mut last_err = None;
         for attempt in 0..3 {
             if attempt > 0 {
                 tokio::time::sleep(Duration::from_secs(2 * attempt as u64 + 1)).await;
             }
-            match self.try_download(url, dest).await {
+            match self.try_download(url, auth, dest).await {
                 Ok(size) => return Ok(size),
                 Err(err) => {
                     let retriable = err.chain().any(|cause| {
@@ -98,10 +101,17 @@ impl LectureHandler {
             .context(format!("下载录音失败（已重试 3 次）：{url}")))
     }
 
-    async fn try_download(&self, url: &str, dest: &std::path::Path) -> Result<u64> {
-        let mut response = self
-            .http
-            .get(url)
+    async fn try_download(
+        &self,
+        url: &str,
+        auth: Option<&str>,
+        dest: &std::path::Path,
+    ) -> Result<u64> {
+        let mut request = self.http.get(url);
+        if let Some(auth) = auth {
+            request = request.header(reqwest::header::AUTHORIZATION, auth);
+        }
+        let mut response = request
             .send()
             .await
             .with_context(|| format!("下载录音失败：{url}"))?
@@ -164,13 +174,14 @@ impl CommandHandler for LectureHandler {
             let worker = self.clone();
             let store = ctx.store.clone();
             let source = audio.source.clone();
+            let auth = audio.auth.clone();
             let display_name = audio.display_name().to_owned();
             let channel = ctx.reply_channel.to_owned();
             let target = ctx.target.to_owned();
             let msg_id = ctx.msg_id.to_owned();
             let (size, ahead) = match ru41::plugins::bridge(async move {
                 worker
-                    .run_job(store, source, display_name, channel, target, msg_id)
+                    .run_job(store, source, auth, display_name, channel, target, msg_id)
                     .await
             })
             .await

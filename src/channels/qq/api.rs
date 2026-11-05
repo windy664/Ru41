@@ -95,6 +95,14 @@ impl QqApiClient {
         Ok(token)
     }
 
+    /// 同步读缓存 token（ingest 热路径给媒体下载头用）：
+    /// 只在已有未过期缓存时给值，缺失即 None，绝不触发网络刷新。
+    pub fn cached_access_token(&self) -> Option<String> {
+        let cache = self.token.try_lock().ok()?;
+        let cached = cache.as_ref()?;
+        (Instant::now() < cached.expire_at).then(|| cached.value.clone())
+    }
+
     /// GET /gateway 拿 WebSocket 地址。
     pub async fn gateway_url(&self) -> Result<String> {
         let body: serde_json::Value = self

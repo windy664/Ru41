@@ -317,6 +317,12 @@ impl QqBot {
                 },
                 source: format!("https://{}", a.url),
                 filename: a.filename.clone(),
+                // CDN 下载认证快照：token 由 WS 连接时刷新，ingest 是同步热路径
+                // 不做网络刷新，取缓存值即可（下载发生在收到消息的数秒内）。
+                auth: self
+                    .api
+                    .cached_access_token()
+                    .map(|token| format!("QQBot {token}")),
             })
             .collect();
         let ctx = crate::ports::commands::CommandContext {
