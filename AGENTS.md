@@ -68,6 +68,35 @@ cd plugins/<名> && cargo test              # 插件各测各的（不在 worksp
   目录形状必须是 `<插件>/skills/<技能>/SKILL.md`（加载器按这个结构找），
   热更脚本会连带同步，改技能不必再重建镜像。
 
+## Vault 双向同步（PR 模型：本地与服务器都是写者）
+
+笔记本和服务器都会改 vault，直接共用一个分支必然打架：本地推 master 被拒，
+rebase 会把冲突标记插进笔记正文，而本地没有 AI 合并能力（密钥只在服务器）。
+
+现在的做法（成熟 PR 模型，同构于 GitHub PR）：
+
+- **本地**：编辑在本地分支 `ru41/local` 上，脚本 `~/.local/bin/obsidian-sync.sh`
+  （cron 每 2 分钟）只做「commit → 推 `ru41/local` → 取回 master」。
+  **本地永远不做 merge/rebase/abort**，所以不会有冲突标记、不会停摆。
+- **服务器**：`app::obsidian` 的合并队列检测远端 `ru41/local`，merge 进 master，
+  冲突走已有的 AI 语义合并（`app::merge`），合完删除待合并分支。
+  用 merge 不用 rebase——保留本地提交 SHA，历史里 `[local]`/`[ru41]` 都还在，
+  **gitee 既是传输通道也是备份**。
+- 合并用的是底座供应商同一份配置（`[agent.pi]` 的 base_url/api/api_key_env/model）；
+  直连端点时模型名要去掉供应方前缀（`minimax/MiniMax-M3` → `MiniMax-M3`）。
+
+坑（都踩过）：
+
+- **容器里的 git 凭据**：全局 gitconfig 的 `credential.helper = store` 指向
+  bind mount 的 `~/.git-credentials` 时，git 改写它会 `EBUSY`（rename 覆盖挂载点），
+  **所有 fetch 全挂**。现在统一用 `store --file=/data/git-credentials`（普通文件，
+  可原子替换），全局配置里先写空 `helper =` 清掉默认列表再加回。
+- **`obsidian` 容器要自己带 key 和代理**：它跑 AI 合并，需要 `MINIMAX_API_KEY`
+  和出网代理；这些原本只在 worker 容器里，用 `deploy/roll-set-env.sh` 补。
+- **`.obsidian/workspace.json` 必须 gitignore**：每次开 Obsidian 都变，入 git
+  只会制造无谓提交与冲突。
+- 服务器聚合文件里的时间戳（如「最近巡查」）每轮都变 → 每轮必提交 → 无谓冲突面。
+
 ## 部署链（生产机 backup238 / 192.168.1.223，目录 /home/windy2/ru41-mimo-smoke）
 
 ### 先分层，再选路（默认热更，别默认 CI）
