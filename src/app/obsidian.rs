@@ -171,6 +171,9 @@ pub struct ObsidianPollReport {
     /// 本轮自动合并掉的同步冲突副本（原文件路径）。
     #[serde(default)]
     pub merged_conflicts: Vec<String>,
+    /// 本轮从远端待合并分支并入 master 的提交数。
+    #[serde(default)]
+    pub merged_remote_commits: u32,
 }
 
 /// 在 vault 目录里找同步冲突副本（`名字.sync-conflict-<时间戳>-<设备>.md`），
@@ -221,6 +224,9 @@ fn find_sync_conflicts(root: &std::path::Path) -> Result<Vec<SyncConflictFile>> 
     }
     Ok(found)
 }
+
+/// 本地电脑推送待合并内容的远端分支名（PR 模型的「待合并分支」）。
+pub const PENDING_BRANCH: &str = "ru41/local";
 
 /// 一个同步冲突副本：副本路径 + 原文件路径（原文件可能被另一端删了）。
 struct SyncConflictFile {
@@ -376,6 +382,8 @@ impl ObsidianService {
         // `名字.sync-conflict-<时间戳>-<设备>.md`。这里自动把两份合并回原文件、
         // 删掉副本——不必人工去认这些怪文件。
         let merged_conflicts = self.resolve_sync_conflicts().await?;
+        // 远端合并队列：本地电脑推来的待合并分支，由服务器并进 master。
+        let merged_remote_commits = self.merge_remote_pending().await?;
         let mut report = ObsidianPollReport {
             action: "idle",
             remote_head: target.clone(),
@@ -383,6 +391,7 @@ impl ObsidianService {
             committed: false,
             notified: false,
             merged_conflicts,
+            merged_remote_commits,
         };
 
         if let Some(pending) = state.pending.clone() {
@@ -1005,6 +1014,108 @@ impl ObsidianService {
         Ok(())
     }
 
+    /// 远端合并队列：把本地电脑推来的待合并分支并进 master。
+    ///
+    /// 本地电脑和服务器都是写者，却共用一个分支：本地直接推 master 会被拒，
+    /// rebase 又会撞冲突（冲突标记会插进笔记正文，而本地没有 AI 合并能力）。
+    /// 改用 PR 模型——本地把自己的提交推到「待合并分支」，服务器 merge 进 master，
+    /// 冲突由这里已有的 AI 语义合并解决，合并后删掉待合并分支。
+    /// 本地随后把 master 取回（reset --hard），全程本地不做 merge/rebase。
+    ///
+    /// 返回并入的提交数。
+    async fn merge_remote_pending(&self) -> Result<u32> {
+        let branch = PENDING_BRANCH;
+        let vault = self.vault.clone();
+        // fetch 后远端分支的 SHA 才能读到。
+        let pending_sha = tokio::task::spawn_blocking({
+            let vault = vault.clone();
+            let branch = branch.to_owned();
+            move || -> Result<Option<String>> {
+                vault.fetch()?;
+                vault.remote_branch_sha(&branch)
+            }
+        })
+        .await??;
+        let Some(pending_sha) = pending_sha else {
+            return Ok(0);
+        };
+        // 已经在 master 里（上一轮合过）→ 只清掉远端分支，不重复合并。
+        let already = tokio::task::spawn_blocking({
+            let vault = vault.clone();
+            let sha = pending_sha.clone();
+            move || -> Result<bool> { vault.is_ancestor(&sha, "HEAD") }
+        })
+        .await??;
+        if already {
+            let vault = self.vault.clone();
+            tokio::task::spawn_blocking(move || vault.delete_remote_branch(branch)).await??;
+            return Ok(0);
+        }
+        // master 的最新 SHA 作为合并基准。
+        let master_sha = tokio::task::spawn_blocking({
+            let vault = self.vault.clone();
+            move || vault.remote_head()
+        })
+        .await??;
+        let _ = master_sha;
+        let vault = self.vault.clone();
+        let pending = pending_sha.clone();
+        let outcome = tokio::task::spawn_blocking(move || vault.merge_commit(&pending)).await??;
+        // 冲突由 AI 逐文件语义合并后继续（复用已有的合并器）。
+        let conflicts = match outcome {
+            crate::ports::vault::SyncOutcome::Conflict(files) => files,
+            _ => Vec::new(),
+        };
+        if !conflicts.is_empty() {
+            if let Err(error) = self.merge_pending_conflicts(&conflicts).await {
+                eprintln!("[obsidian] pending merge failed: {error:#}");
+                let vault = self.vault.clone();
+                let _ = tokio::task::spawn_blocking(move || vault.merge_abort()).await;
+                return Ok(0);
+            }
+        }
+        // 推送合并结果并清掉待合并分支。
+        let vault = self.vault.clone();
+        let pending = pending_sha.clone();
+        tokio::task::spawn_blocking(move || -> Result<()> {
+            vault.push()?;
+            vault.delete_remote_branch(branch)?;
+            Ok(())
+        })
+        .await??;
+        eprintln!("[obsidian] merged remote pending {pending} into master");
+        Ok(1)
+    }
+
+    /// 待合并分支的冲突 → AI 逐文件语义合并 → 完成合并提交。
+    async fn merge_pending_conflicts(&self, files: &[String]) -> Result<()> {
+        let settings = self
+            .config
+            .merge
+            .clone()
+            .context("AI 合并未启用或无 key（[agent.pi] 供应商配置）")?;
+        let resolver = crate::app::merge::MergeResolver::new(
+            &settings.base_url,
+            &settings.model,
+            &settings.api_key,
+            settings.api,
+        );
+        for file in files {
+            let vault = self.vault.clone();
+            let path = file.clone();
+            let conflicted = tokio::task::spawn_blocking(move || vault.read_file(&path))
+                .await??
+                .with_context(|| format!("冲突文件读取失败 {file}"))?;
+            let merged = resolver.resolve(file, &conflicted).await?;
+            let vault = self.vault.clone();
+            let path = file.clone();
+            tokio::task::spawn_blocking(move || vault.resolve_conflict(&path, &merged)).await??;
+        }
+        let vault = self.vault.clone();
+        tokio::task::spawn_blocking(move || vault.merge_continue()).await??;
+        Ok(())
+    }
+
     /// rebase 冲突现场 → AI 逐文件语义合并 → continue → push → QQ 告知。
     /// 任何一步失败都 Err，由调用方 abort 现场并通知人工。
     async fn merge_conflicts(&self, files: &[String]) -> Result<()> {
@@ -1492,6 +1603,34 @@ mod tests {
     }
 
     impl Vault for FakeVault {
+        fn remote_branch_sha(&self, _branch: &str) -> Result<Option<String>> {
+            Ok(None)
+        }
+        fn push_head_to(&self, _remote_ref: &str, _force: bool) -> Result<()> {
+            Ok(())
+        }
+        fn delete_remote_branch(&self, _branch: &str) -> Result<()> {
+            Ok(())
+        }
+        fn head_sha(&self) -> Result<String> {
+            Ok("0".repeat(40))
+        }
+        fn merge_commit(&self, _sha: &str) -> Result<crate::ports::vault::SyncOutcome> {
+            Ok(crate::ports::vault::SyncOutcome::Clean)
+        }
+        fn merge_continue(&self) -> Result<()> {
+            Ok(())
+        }
+        fn merge_abort(&self) -> Result<()> {
+            Ok(())
+        }
+        fn conflict_files(&self) -> Result<Vec<String>> {
+            Ok(Vec::new())
+        }
+        fn is_ancestor(&self, _ancestor: &str, _other: &str) -> Result<bool> {
+            Ok(true)
+        }
+
         fn fetch(&self) -> Result<()> {
             Ok(())
         }

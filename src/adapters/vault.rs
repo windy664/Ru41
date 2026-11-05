@@ -295,6 +295,92 @@ impl Vault for GitVault {
         })
     }
 
+    fn remote_branch_sha(&self, branch: &str) -> Result<Option<String>> {
+        // for-each-ref：分支不存在时退出码仍是 0（输出为空），
+        // rev-parse --verify 会以 1 退出，不能直接用。
+        let out = self.git(&[
+            "for-each-ref",
+            "--format=%(objectname)",
+            &format!("refs/remotes/{}/{branch}", self.remote),
+        ])?;
+        let sha = out.lines().next().unwrap_or("").trim();
+        if sha.is_empty() {
+            return Ok(None);
+        }
+        Ok(Some(sha.to_owned()))
+    }
+
+    fn push_head_to(&self, remote_ref: &str, force: bool) -> Result<()> {
+        self.locked(|vault| {
+            let mut args = vec!["push"];
+            if force {
+                args.push("--force");
+            }
+            args.push(&vault.remote);
+            let target = format!("HEAD:{remote_ref}");
+            args.push(&target);
+            vault.git(&args).map(|_| ())
+        })
+    }
+
+    fn delete_remote_branch(&self, branch: &str) -> Result<()> {
+        self.locked(|vault| {
+            vault
+                .git(&["push", &vault.remote, "--delete", branch])
+                .map(|_| ())
+        })
+    }
+
+    fn head_sha(&self) -> Result<String> {
+        self.git(&["rev-parse", "HEAD"])
+    }
+
+    fn merge_commit(&self, sha: &str) -> Result<SyncOutcome> {
+        self.locked(|vault| {
+            // --no-ff：保留双方提交（本地 [local] 提交原样进 master，历史可追溯），
+            // 且合并结果一眼能看出是「本地改动并入」。
+            if let Err(error) = vault.git(&["merge", "--no-ff", "--no-edit", sha]) {
+                let conflicts = vault.conflict_files().unwrap_or_default();
+                if conflicts.is_empty() {
+                    let _ = vault.git(&["merge", "--abort"]);
+                    return Err(error).context("vault merge failed (aborted)");
+                }
+                return Ok(SyncOutcome::Conflict(conflicts));
+            }
+            Ok(SyncOutcome::Clean)
+        })
+    }
+
+    fn merge_continue(&self) -> Result<()> {
+        self.locked(|vault| vault.git(&["commit", "--no-edit"]).map(|_| ()))
+    }
+
+    fn merge_abort(&self) -> Result<()> {
+        self.locked(|vault| vault.git(&["merge", "--abort"]).map(|_| ()))
+    }
+
+    fn conflict_files(&self) -> Result<Vec<String>> {
+        self.conflict_files()
+    }
+
+    fn is_ancestor(&self, ancestor: &str, other: &str) -> Result<bool> {
+        let output = Command::new("git")
+            .args(["merge-base", "--is-ancestor", ancestor, other])
+            .current_dir(&self.path)
+            .env("GIT_TERMINAL_PROMPT", "0")
+            .output()
+            .context("cannot run git merge-base")?;
+        // 退出码 0 = 是祖先；1 = 不是；其他 = 真错误。
+        match output.status.code() {
+            Some(0) => Ok(true),
+            Some(1) => Ok(false),
+            _ => bail!(
+                "git merge-base failed: {}",
+                String::from_utf8_lossy(&output.stderr).trim()
+            ),
+        }
+    }
+
     fn recent_inbox_moves(&self, inbox_dir: &str, days: u32) -> Result<Vec<InboxMove>> {
         let inbox_prefix = format!("{inbox_dir}/");
         // -M 开重命名检测：agent 归档是「旧路径删 + 新路径增」，相似内容会被识别为 R。
