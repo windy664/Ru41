@@ -181,6 +181,36 @@ fn scan_skills(text: &str, skills: &mut BTreeMap<String, ()>) {
     }
 }
 
+/// 取 `bash -lc "脚本"` 里的脚本原文。
+///
+/// 不能按空白切：引号里的脚本含空格（"printf x; rg -n foo /vault"），
+/// 按 token 切只会拿到第一段。这里在原串上扫到开关 token（-c / -lc / -lic），
+/// 再按引号取整段。
+fn shell_inner_script(command: &str) -> Option<String> {
+    let mut rest = command.trim();
+    loop {
+        rest = rest.trim_start();
+        if rest.is_empty() {
+            return None;
+        }
+        let (token, tail) = match rest.find(char::is_whitespace) {
+            Some(index) => (&rest[..index], &rest[index..]),
+            None => (rest, ""),
+        };
+        if token.starts_with('-') && token.contains('c') {
+            let tail = tail.trim_start();
+            for quote in ['"', '\''] {
+                if let Some(stripped) = tail.strip_prefix(quote) {
+                    let end = stripped.find(quote).unwrap_or(stripped.len());
+                    return Some(stripped[..end].to_string());
+                }
+            }
+            return tail.split_whitespace().next().map(str::to_string);
+        }
+        rest = tail;
+    }
+}
+
 /// 记一条命令：工具名按命令首词计，技能包从路径里认。
 fn record_command(
     command: &str,
@@ -196,18 +226,24 @@ fn record_command(
     let head = parts.first().copied().unwrap_or(trimmed);
     // bash -lc "..." 这类包装，真实命令在引号里。注意开关可能是 -c / -lc / -lic，
     // 不能按 "-c" 子串切（"-lc" 里并没有 "-c"）。
-    let head = if matches!(head, "bash" | "sh" | "zsh") {
-        parts
-            .iter()
-            .position(|token| token.starts_with('-') && token.contains('c'))
-            .and_then(|idx| parts.get(idx + 1))
-            .map(|token| token.trim_matches(['"', '\'', '\'', '`']))
-            .filter(|token| !token.is_empty())
-            .unwrap_or(head)
+    // 里面的命令常用 ';' 串多条（printf ...; rg ...; find ...），逐条记，
+    // 否则只统计到第一条，"它搜了什么"就看不出来了。
+    if matches!(head, "bash" | "sh" | "zsh") {
+        if let Some(inner) = shell_inner_script(trimmed) {
+            for segment in inner.split(';') {
+                let segment = segment.trim();
+                if segment.is_empty() {
+                    continue;
+                }
+                let first = segment.split_whitespace().next().unwrap_or(segment);
+                *tools.entry(first.to_string()).or_default() += 1;
+            }
+        } else {
+            *tools.entry(head.to_string()).or_default() += 1;
+        }
     } else {
-        head
-    };
-    *tools.entry(head.to_string()).or_default() += 1;
+        *tools.entry(head.to_string()).or_default() += 1;
+    }
     for part in trimmed.split_whitespace() {
         let cleaned = part.trim_matches(['"', '\'', ',', ';']);
         if let Some(rest) = cleaned.strip_suffix("SKILL.md") {
@@ -303,6 +339,27 @@ mod tests {
         assert!(summary.tools.iter().any(|(n, c)| n == "rg" && *c == 2));
         assert_eq!(summary.changed_files, vec!["/vault/a.md".to_string()]);
         assert!(!summary.commands.is_empty());
+    }
+
+    #[test]
+    fn compound_shell_commands_are_counted_separately() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("events.jsonl");
+        std::fs::write(
+            &path,
+            concat!(
+                r#"{"type":"item.completed","item":{"type":"command_execution","command":"bash -lc \"printf x; rg -n foo /vault; find /vault -maxdepth 1\""}}"#,
+                "\n",
+            ),
+        )
+        .unwrap();
+        let summary = summarize_events(&path).unwrap();
+        let names: Vec<&str> = summary.tools.iter().map(|(n, _)| n.as_str()).collect();
+        assert!(names.contains(&"printf"), "{:?}", summary.tools);
+        assert!(names.contains(&"rg"), "{:?}", summary.tools);
+        assert!(names.contains(&"find"), "{:?}", summary.tools);
+        // 不能把 bash 自己也算成一个工具。
+        assert!(!names.contains(&"bash"), "{:?}", summary.tools);
     }
 
     #[test]
