@@ -551,12 +551,22 @@ impl ChaoxingClient {
         }
         let referer = self.pre_sign_url(course, &activity_id, &uid);
         for _ in 0..2 {
-            let Ok(validate) = self.solve_slider_captcha(&referer).await else {
-                break;
+            // 滑块失败原因必须留痕：原来 `let Ok(..) else { break }` 把错误丢了，
+            // 上层只能笼统说「滑块重签仍被拒」，分不清是没解开还是解开了仍被拒。
+            let validate = match self.solve_slider_captcha(&referer).await {
+                Ok(validate) => validate,
+                Err(err) => {
+                    eprintln!("[chaoxing] 滑块未通过：{err:#}");
+                    break;
+                }
             };
             let mut retry = params.clone();
             retry.push(("validate".into(), validate));
             let retry_text = self.send_sign(&retry).await?;
+            eprintln!(
+                "[chaoxing] 滑块已解出并重签，平台仍回：{}",
+                retry_text.trim()
+            );
             if !sign_needs_captcha(&retry_text) {
                 return Ok(retry_text);
             }

@@ -44,23 +44,25 @@ if [[ ! -d "$plugin_dir" ]]; then
 fi
 
 echo "==> 在 rust:1.98-trixie 里编译 $name（与镜像同一工具链）"
+# 内层脚本用单引号包裹：外层双引号会被内层 " 提前截断，导致 export 之后
+# 的内容变成命令（构建静默变成空跑，部署的还是旧 .so）。
 docker run --rm \
   -v "$repo_root:/build" \
-  -v ru41-plugin-target:/build/plugins/target-plugins \
+  -v "$repo_root/plugins/target-plugins:/build/plugins/target-plugins" \
   -w /build/plugins/"$name" \
   rust:1.98-trixie \
-  bash -c "
+  bash -c '
     set -e
-    export PATH=/usr/local/cargo/bin:\$PATH
+    export PATH=/usr/local/cargo/bin:$PATH
     # plugins/.cargo/config.toml 要求 clang+lld，镜像构建里被 .dockerignore 排除了，
-    # 这里同样用默认链接器（保持与 CI 产物一致）；空 rustflags 会被当成未设置，给个等价值。
-    export CARGO_BUILD_RUSTFLAGS="-C opt-level=3"
+    # 这里同样用默认链接器（与 CI 产物一致）。RUSTFLAGS 优先级高于 build.rustflags。
+    export RUSTFLAGS="-C opt-level=3"
     cp ../../Cargo.lock Cargo.lock
-    CARGO_TARGET_DIR=/build/plugins/target-plugins \
-      cargo build --release --features plugin-entry
+    CARGO_TARGET_DIR=/build/plugins/target-plugins cargo build --release --features plugin-entry
+    # 产物必须在宿主可见（$so 从宿主路径取），所以 target 目录挂宿主路径而非命名卷。
     # 构建会把插件目录的 Cargo.lock 改写（与根锁对齐），别留脏改动。
-    git -C /build checkout -- plugins/$name/Cargo.lock 2>/dev/null || true
-  "
+    git -C /build checkout -- "plugins/$1/Cargo.lock" 2>/dev/null || true
+  ' _ "$name"
 
 if [[ ! -f "$so" ]]; then
   echo "产物不存在: $so" >&2
