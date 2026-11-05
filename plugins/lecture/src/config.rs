@@ -21,6 +21,9 @@ pub struct LectureSection {
     /// ASR base URL（OpenAI 兼容时不含 /audio/transcriptions）。
     /// 默认 https://open.bigmodel.cn/api/paas/v4，可换 Groq 等兼容服务。
     pub asr_base_url: Option<String>,
+    /// 整理笔记用的 agent 底座（codex / pi）。默认 codex；
+    /// 供应方限流时（如智谱 429）改用 pi 更稳。
+    pub backend: Option<String>,
     /// ASR 模型名，默认 glm-asr-2512。
     pub asr_model: Option<String>,
     /// 切片时长（秒），默认 600；转写按片顺序执行后拼接。
@@ -49,6 +52,8 @@ impl LectureSection {
     pub const DEFAULT_VAULT_DIR: &str = "01-Courses-课程";
     pub const DEFAULT_VAULT_ROOT: &str = "/vault";
     pub const DEFAULT_INBOX_DIR: &str = "00-Inbox-收件箱";
+    /// 整理笔记默认底座（codex / pi）。
+    pub const DEFAULT_BACKEND: &str = "codex";
     pub const DEFAULT_FALLBACK_COURSE: &str = "课堂录音";
     /// worker 轮询间隔（秒）。
     pub const DEFAULT_INTERVAL_SECS: u64 = 60;
@@ -152,6 +157,11 @@ impl LectureSection {
                 .clone()
                 .filter(|v| !v.trim().is_empty())
                 .unwrap_or_else(|| Self::DEFAULT_INBOX_DIR.into()),
+            backend: self
+                .backend
+                .clone()
+                .filter(|v| !v.trim().is_empty())
+                .unwrap_or_else(|| Self::DEFAULT_BACKEND.into()),
         })
     }
 }
@@ -169,4 +179,6 @@ pub struct LectureConfig {
     pub vault_root: String,
     pub inbox_dir: String,
     pub fallback_course: String,
+    /// 整理笔记用的 agent 底座（codex / pi）。
+    pub backend: String,
 }

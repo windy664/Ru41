@@ -323,7 +323,7 @@ impl LectureWorker {
         self.store.enqueue_with_notify(
             &format!("lecture:notes:{}", item.msg_id),
             &prompt,
-            "codex",
+            &self.config.backend,
             ru41::domain::RunContract::AnalysisV1,
             &ru41::domain::NotifyRoute {
                 channel: item.channel.clone(),
