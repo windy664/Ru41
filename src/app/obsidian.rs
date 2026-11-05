@@ -1066,13 +1066,13 @@ impl ObsidianService {
             crate::ports::vault::SyncOutcome::Conflict(files) => files,
             _ => Vec::new(),
         };
-        if !conflicts.is_empty() {
-            if let Err(error) = self.merge_pending_conflicts(&conflicts).await {
-                eprintln!("[obsidian] pending merge failed: {error:#}");
-                let vault = self.vault.clone();
-                let _ = tokio::task::spawn_blocking(move || vault.merge_abort()).await;
-                return Ok(0);
-            }
+        if !conflicts.is_empty()
+            && let Err(error) = self.merge_pending_conflicts(&conflicts).await
+        {
+            eprintln!("[obsidian] pending merge failed: {error:#}");
+            let vault = self.vault.clone();
+            let _ = tokio::task::spawn_blocking(move || vault.merge_abort()).await;
+            return Ok(0);
         }
         // 推送合并结果并清掉待合并分支。
         let vault = self.vault.clone();
