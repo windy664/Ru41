@@ -99,23 +99,7 @@ impl MergeResolver {
         if !status.is_success() {
             bail!("合并 HTTP {status}：{}", &text[..text.len().min(200)]);
         }
-        serde_json::from_str::<serde_json::Value>(&text)
-            .ok()
-            .and_then(|v| {
-                v.get("content")
-                    .and_then(|c| c.as_array())
-                    .and_then(|blocks| {
-                        blocks
-                            .iter()
-                            .find(|block| {
-                                block.get("type").and_then(|t| t.as_str()) == Some("text")
-                            })
-                            .and_then(|block| block.get("text"))
-                            .and_then(|t| t.as_str())
-                            .map(str::to_owned)
-                    })
-            })
-            .context("合并响应缺 content[].text")
+        anthropic_text(&text).context("合并响应缺 content[].text")
     }
 
     /// OpenAI Chat Completions 协议（备用；底座本身不用这条）。
@@ -138,15 +122,33 @@ impl MergeResolver {
         if !status.is_success() {
             bail!("合并 HTTP {status}：{}", &text[..text.len().min(200)]);
         }
-        serde_json::from_str::<serde_json::Value>(&text)
-            .ok()
-            .and_then(|v| {
-                v.pointer("/choices/0/message/content")
-                    .and_then(|c| c.as_str())
-                    .map(str::to_owned)
-            })
-            .context("合并响应缺 choices[0].message.content")
+        openai_text(&text).context("合并响应缺 choices[0].message.content")
     }
+}
+
+/// Anthropic Messages 响应里的文本块。
+fn anthropic_text(body: &str) -> Option<String> {
+    serde_json::from_str::<serde_json::Value>(body)
+        .ok()?
+        .get("content")
+        .and_then(|c| c.as_array())
+        .and_then(|blocks| {
+            blocks
+                .iter()
+                .find(|block| block.get("type").and_then(|t| t.as_str()) == Some("text"))
+                .and_then(|block| block.get("text"))
+                .and_then(|t| t.as_str())
+                .map(str::to_owned)
+        })
+}
+
+/// OpenAI Chat Completions 响应里的正文。
+fn openai_text(body: &str) -> Option<String> {
+    serde_json::from_str::<serde_json::Value>(body)
+        .ok()?
+        .pointer("/choices/0/message/content")
+        .and_then(|c| c.as_str())
+        .map(str::to_owned)
 }
 
 fn build_prompt(path: &str, conflicted: &str) -> String {
@@ -231,6 +233,34 @@ mod tests {
         assert!(validate("<<<<<<< HEAD\n内容", "原文").is_err());
         assert!(validate("", "原文").is_err());
         assert!(validate(&"长".repeat(10000), "短").is_err());
+    }
+
+    #[test]
+    fn parses_both_provider_protocols() {
+        let anthropic = r#"{"content":[{"type":"text","text":"合并结果"}]}"#;
+        assert_eq!(anthropic_text(anthropic).as_deref(), Some("合并结果"));
+        // 第一个块不是文本时要找文本块，而不是整个失败。
+        let mixed =
+            r#"{"content":[{"type":"thinking","thinking":"..."},{"type":"text","text":"正文"}]}"#;
+        assert_eq!(anthropic_text(mixed).as_deref(), Some("正文"));
+        assert!(anthropic_text(r#"{"content":[]}"#).is_none());
+
+        let openai = r#"{"choices":[{"message":{"content":"合并结果"}}]}"#;
+        assert_eq!(openai_text(openai).as_deref(), Some("合并结果"));
+        assert!(openai_text("{}").is_none());
+    }
+
+    #[test]
+    fn api_parsing_defaults_to_anthropic() {
+        assert_eq!(
+            MergeApi::parse("anthropic-messages"),
+            MergeApi::AnthropicMessages
+        );
+        assert_eq!(
+            MergeApi::parse("openai-completions"),
+            MergeApi::OpenAiCompletions
+        );
+        assert_eq!(MergeApi::parse(""), MergeApi::AnthropicMessages);
     }
 
     #[test]
