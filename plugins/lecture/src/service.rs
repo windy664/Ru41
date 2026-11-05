@@ -44,12 +44,11 @@ impl LectureWorker {
         let docs = self.store.documents(PENDING_KIND, 50)?;
         let doc = docs
             .iter()
-            .filter(|d| {
+            .find(|d| {
                 PendingItem::from_document(d)
                     .map(|i| i.status != "done" && i.status != "failed")
                     .unwrap_or(false)
             })
-            .next()
             .cloned();
         let Some(doc) = doc else {
             return Ok(serde_json::json!({"processed": null}));
