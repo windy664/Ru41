@@ -297,7 +297,7 @@ pub fn format_usage_overview(
     if week.runs > week.reported_runs {
         lines.push(String::new());
         lines.push(format!(
-            "> ⚠️ {} 次运行没有 token 数据（codex 走 GLM 的 chat 接口不返回 usage，只报 0）。             想看每次运行具体做了什么：`ru41 task trace <任务号>`",
+            "> ⚠️ {} 次运行没有 token 数据（codex 走 GLM 的 chat 接口不返回 usage，只报 0）。\n想看每次运行具体做了什么：`ru41 task trace <任务号>`",
             week.runs - week.reported_runs
         ));
     }
