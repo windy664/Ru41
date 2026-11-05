@@ -98,7 +98,7 @@ impl MergeResolver {
     /// Anthropic Messages 协议（MiniMax 原生端点）。
     async fn anthropic_request(&self, prompt: &str) -> Result<String> {
         let body = serde_json::json!({
-            "model": self.model,
+            "model": bare_model(&self.model),
             "max_tokens": 8192,
             "temperature": 0.2,
             "messages": [{"role": "user", "content": prompt}],
@@ -123,7 +123,7 @@ impl MergeResolver {
     /// OpenAI Chat Completions 协议（备用；底座本身不用这条）。
     async fn openai_request(&self, prompt: &str) -> Result<String> {
         let body = serde_json::json!({
-            "model": self.model,
+            "model": bare_model(&self.model),
             "temperature": 0.2,
             "messages": [{"role": "user", "content": prompt}],
         });
@@ -142,6 +142,14 @@ impl MergeResolver {
         }
         openai_text(&text).context("合并响应缺 choices[0].message.content")
     }
+}
+
+/// 去掉模型名里的供应方前缀。
+///
+/// 底座（pi）用「供应方/模型」写法（`minimax/MiniMax-M3`），那是 pi 内部标识；
+/// 直连供应商端点只认裸模型名（`MiniMax-M3`），带前缀会报 unknown model。
+fn bare_model(model: &str) -> &str {
+    model.rsplit_once('/').map_or(model, |(_, id)| id)
 }
 
 /// Anthropic Messages 响应里的文本块。
@@ -293,6 +301,13 @@ mod tests {
         let openai = r#"{"choices":[{"message":{"content":"合并结果"}}]}"#;
         assert_eq!(openai_text(openai).as_deref(), Some("合并结果"));
         assert!(openai_text("{}").is_none());
+    }
+
+    #[test]
+    fn bare_model_drops_provider_prefix() {
+        assert_eq!(bare_model("minimax/MiniMax-M3"), "MiniMax-M3");
+        assert_eq!(bare_model("MiniMax-M3"), "MiniMax-M3");
+        assert_eq!(bare_model("zhipu/glm-4.6"), "glm-4.6");
     }
 
     #[test]
