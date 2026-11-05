@@ -43,6 +43,16 @@ migrations/    数据库迁移（核心领地）
 
 ## 构建与测试（容易踩坑）
 
+提交前本地先过一遍 CI 查的两条，省一轮 6 分钟镜像构建：
+
+```bash
+cargo fmt --all -- --check                 # CI 的 fmt 检查
+cargo clippy --all-targets -- -D warnings  # CI 的 clippy 检查
+cargo test                                 # 核心测试
+cd plugins/<名> && cargo test              # 插件各测各的（不在 workspace）
+```
+
+
 - 主 crate 是**唯一 workspace 成员**：`cargo build` / `cargo test` 只覆盖 `src/` + `tests/`。
 - 插件**不在 workspace 里**，`cargo test -p <名>` 找不到包；进插件目录单独跑：`cd plugins/zhihuishu && cargo test`。
 - 插件共享 target：`plugins/.cargo/config.toml` 把 target-dir 指到
