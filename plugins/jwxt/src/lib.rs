@@ -74,12 +74,9 @@ pub static DEF: ru41::modules::ModuleDef = ru41::modules::ModuleDef {
                 "jwxt-courses",
                 jwxt.courses_interval_secs
                     .unwrap_or(config::JwxtSection::DEFAULT_COURSES_INTERVAL_SECS),
-                jwxt.is_ready() && config.obsidian.is_ready(),
-                if !jwxt.is_ready() {
-                    Some("需 sources.jwxt 凭证（随 jwxt 启用）".into())
-                } else {
-                    Some("需 [obsidian] vault 已配置（课程目录写在 vault 里）".into())
-                },
+                config.obsidian.is_ready(),
+                (!config.obsidian.is_ready())
+                    .then(|| "需 [obsidian] vault 已配置（课程目录写在 vault 里）".into()),
             ),
             ru41::modules::JobSchedule {
                 run_command: Some("schedule run class-remind"),
@@ -105,17 +102,10 @@ pub static DEF: ru41::modules::ModuleDef = ru41::modules::ModuleDef {
             "jwxt-courses" => {
                 let vault = ru41::bootstrap::assembly::vault_if_ready(config, true)?
                     .context("jwxt-courses 需要 [obsidian] vault 已配置")?;
-                let resolved = jwxt.resolved(String::new())?;
-                let Some(vault_dir) = resolved.vault_course_dir.clone() else {
-                    return Ok(None);
-                };
                 Ok(Some(Box::new(crate::courses::CourseSyncService::new(
                     store,
                     vault,
-                    crate::courses::CourseSyncConfig {
-                        vault_dir,
-                        aliases: resolved.course_aliases.clone(),
-                    },
+                    jwxt.course_sync_config()?,
                 ))))
             }
             "class-remind" => {
