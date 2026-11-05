@@ -140,6 +140,17 @@ impl JwxtSection {
         })
     }
 
+    /// 课程目录同步配置（不需要教务凭证：只读已存的课表快照）。
+    pub fn course_sync_config(&self) -> Result<crate::courses::CourseSyncConfig> {
+        Ok(crate::courses::CourseSyncConfig {
+            vault_dir: self
+                .vault_course_dir
+                .clone()
+                .unwrap_or_else(|| "01-Courses-课程/2026-Fall-大一上".to_owned()),
+            aliases: self.course_aliases.clone().unwrap_or_default(),
+        })
+    }
+
     /// 节次时刻表（不需要凭证即可解析，QQ 命令装配与 `resolved` 共用）。
     /// 未配置 section_times 返回 None，消息回退到节次文本。
     pub fn section_clock(&self) -> Result<Option<SectionClock>> {
