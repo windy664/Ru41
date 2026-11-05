@@ -7,9 +7,7 @@
 use std::future::Future;
 use std::pin::Pin;
 
-use crate::source::{
-    ChaoxingActivity, ChaoxingClient, ChaoxingCourse, SignMethod,
-};
+use crate::source::{ChaoxingActivity, ChaoxingClient, ChaoxingCourse, SignMethod};
 use ru41::ports::commands::ImageConsumer;
 
 use super::enc_sample::{EncSample, EncSampleLogger};

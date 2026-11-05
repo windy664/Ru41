@@ -172,9 +172,9 @@ impl ChaoxingActivity {
         self.sign_kind() == ChaoxingSignKind::Gesture
     }
     pub fn type_label(&self) -> String {
-        self.name_one.clone().unwrap_or_else(|| {
-            crate::service::sign_type_name(self.sign_type).to_owned()
-        })
+        self.name_one
+            .clone()
+            .unwrap_or_else(|| crate::service::sign_type_name(self.sign_type).to_owned())
     }
 }
 

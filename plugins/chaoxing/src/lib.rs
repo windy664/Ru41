@@ -12,16 +12,14 @@ pub use source::{
     fallback_photo_bytes,
 };
 
+use anyhow::Result;
 use ru41::bootstrap::config::Config;
 use ru41::ports::storage::TaskStore;
-use anyhow::Result;
 use std::sync::Arc;
 
 /// 签到 tracker 的具体类型构造：DEF 注册表与 main.rs 的 sign/login 分支共用。
 pub fn build_tracker(config: &Config, store: Arc<dyn TaskStore>) -> Result<ChaoxingTracker> {
-    let chaoxing = config
-        .sources
-        .get::<crate::ChaoxingSection>("chaoxing")?;
+    let chaoxing = config.sources.get::<crate::ChaoxingSection>("chaoxing")?;
     let (notifier, notify_target) =
         ru41::bootstrap::assembly::notify_pair(config, chaoxing.notify)?;
     let resolved = chaoxing.resolved(notify_target)?;
@@ -38,9 +36,7 @@ pub fn build_work_tracker(
     config: &Config,
     store: Arc<dyn TaskStore>,
 ) -> Result<ChaoxingWorkTracker> {
-    let chaoxing = config
-        .sources
-        .get::<crate::ChaoxingSection>("chaoxing")?;
+    let chaoxing = config.sources.get::<crate::ChaoxingSection>("chaoxing")?;
     let (notifier, notify_target) =
         ru41::bootstrap::assembly::notify_pair(config, chaoxing.notify)?;
     let resolved = chaoxing.resolved(notify_target.clone())?;
@@ -104,9 +100,7 @@ pub static DEF: ru41::modules::ModuleDef = ru41::modules::ModuleDef {
     image_consumers: |config| {
         // QQ 图片消费者：把二维码照片发给机器人即签（enc 只在二维码图片里）。
         // 与签到轮询各用一份 cookie 文件，避免两进程争写同一会话文件。
-        let section = config
-            .sources
-            .get::<crate::ChaoxingSection>("chaoxing")?;
+        let section = config.sources.get::<crate::ChaoxingSection>("chaoxing")?;
         if !section.is_ready() {
             return Ok(Vec::new());
         }
@@ -131,8 +125,9 @@ fn chaoxing_cli(
     config: &ru41::bootstrap::config::Config,
     store: std::sync::Arc<dyn ru41::ports::storage::TaskStore>,
     args: &[String],
-) -> std::pin::Pin<Box<dyn std::future::Future<Output = anyhow::Result<Option<serde_json::Value>>> + Send>>
-{
+) -> std::pin::Pin<
+    Box<dyn std::future::Future<Output = anyhow::Result<Option<serde_json::Value>>> + Send>,
+> {
     use anyhow::Context as _;
     enum Job {
         Work(ChaoxingWorkTracker),
@@ -167,7 +162,9 @@ fn chaoxing_cli(
                                 .next()
                                 .map(String::clone)
                                 .with_context(|| format!("{flag} 缺值"))?;
-                            let parsed: f64 = value.parse().with_context(|| format!("{flag} 必须是数字"))?;
+                            let parsed: f64 = value
+                                .parse()
+                                .with_context(|| format!("{flag} 必须是数字"))?;
                             if flag == "--lat" {
                                 lat = Some(parsed);
                             } else {
@@ -195,7 +192,9 @@ fn chaoxing_cli(
                                     .with_context(|| format!("{flag} 缺值"))?,
                             )
                         }
-                        other => anyhow::bail!("未知参数 {other}（支持 --lat/--lon/--addr/--enc/--photo）"),
+                        other => anyhow::bail!(
+                            "未知参数 {other}（支持 --lat/--lon/--addr/--enc/--photo）"
+                        ),
                     }
                 }
                 Ok(Job::Sign(
@@ -208,7 +207,9 @@ fn chaoxing_cli(
                     photo,
                 ))
             }
-            _ => anyhow::bail!("用法: ru41 chaoxing work|sign <活动ID> [--lat x] [--lon y] [--addr t] [--enc e] [--photo p]"),
+            _ => anyhow::bail!(
+                "用法: ru41 chaoxing work|sign <活动ID> [--lat x] [--lon y] [--addr t] [--enc e] [--photo p]"
+            ),
         }
     })();
     Box::pin(ru41::plugins::bridge(async move {
@@ -216,7 +217,14 @@ fn chaoxing_cli(
             Job::Work(tracker) => serde_json::to_value(tracker.poll_once().await?)?,
             Job::Sign(tracker, activity_id, lat, lon, addr, enc, photo) => serde_json::to_value(
                 tracker
-                    .sign_manual(&activity_id, lat, lon, addr.as_deref(), enc.as_deref(), photo.as_deref())
+                    .sign_manual(
+                        &activity_id,
+                        lat,
+                        lon,
+                        addr.as_deref(),
+                        enc.as_deref(),
+                        photo.as_deref(),
+                    )
                     .await?,
             )?,
         };
