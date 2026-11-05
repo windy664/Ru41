@@ -2,8 +2,8 @@
 //! 逻辑属于附属本身；main.rs 只做参数路由，不再认识 jwxt 内部。
 
 use crate::JwxtTracker;
-use ru41::ports::storage::TaskStore;
 use anyhow::{Context, Result};
+use ru41::ports::storage::TaskStore;
 use std::sync::Arc;
 
 use crate::{JwxtSection, describe_day_from_store};

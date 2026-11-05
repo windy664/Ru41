@@ -1,7 +1,7 @@
-use ru41::domain::timetable::*;
-use ru41::ports::{channel::NotifyChannel, storage::TaskStore};
 use anyhow::Result;
 use chrono::{Duration, NaiveDate, TimeZone, Timelike};
+use ru41::domain::timetable::*;
+use ru41::ports::{channel::NotifyChannel, storage::TaskStore};
 use serde::Serialize;
 use std::collections::HashSet;
 use std::sync::Arc;
@@ -36,6 +36,12 @@ pub struct JwxtConfig {
     pub clock: Option<SectionClock>,
     /// 提醒投递目标（装配层按 [notify] 渠道解析）。
     pub notify_target: String,
+    /// Vault 内课程学期目录；None 表示不做课程目录同步。
+    pub vault_course_dir: Option<String>,
+    /// 课表课程名 → Vault 课程目录名。
+    pub course_aliases: std::collections::BTreeMap<String, String>,
+    /// 课程目录同步间隔（秒）。
+    pub courses_interval_secs: u64,
 }
 
 impl Default for JwxtConfig {
@@ -58,10 +64,12 @@ impl Default for JwxtConfig {
             sync_schedule: false,
             clock: None,
             notify_target: String::new(),
+            vault_course_dir: None,
+            course_aliases: std::collections::BTreeMap::new(),
+            courses_interval_secs: 3_600,
         }
     }
 }
-
 
 /// 一轮轮询的报告。
 #[derive(Debug, Serialize)]

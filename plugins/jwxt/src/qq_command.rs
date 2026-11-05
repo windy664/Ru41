@@ -1,6 +1,6 @@
-use ru41::ports::commands::{CommandContext, CommandHandler, Reply};
 use anyhow::Result;
 use chrono::{Datelike, Duration, NaiveDate};
+use ru41::ports::commands::{CommandContext, CommandHandler, Reply};
 
 use ru41::domain::timetable::SectionClock;
 use std::future::Future;

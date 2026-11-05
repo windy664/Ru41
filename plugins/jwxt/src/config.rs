@@ -45,11 +45,22 @@ pub struct JwxtSection {
     pub class_duration_mins: Option<u64>,
     /// 检测到课表变更/登录失效是否经默认通知出口提醒；默认 true。
     pub notify: Option<bool>,
+    /// Vault 内课程学期目录；课程目录同步按它写；默认 01-Courses-课程/2026-Fall-大一上。
+    pub vault_course_dir: Option<String>,
+    /// 课表课程名 → Vault 课程目录名。同一门课在 Vault 里已有别的叫法时用它归一，
+    /// 避免动用户已写好的笔记。
+    pub course_aliases: Option<std::collections::BTreeMap<String, String>>,
+    /// 是否把课表课程同步成 Vault 课程目录与索引；默认 true（需 vault 已配置）。
+    pub courses_vault_sync: Option<bool>,
+    /// 课程目录同步间隔（秒），默认 3600（每小时一次）。
+    pub courses_interval_secs: Option<u64>,
 }
 
 impl JwxtSection {
     /// run 的轮询间隔（秒）默认值；tracker 装配与 schedule list 共用这一份。
     pub const DEFAULT_INTERVAL_SECS: u64 = 3_600;
+    /// 课程目录同步间隔（秒）默认值。
+    pub const DEFAULT_COURSES_INTERVAL_SECS: u64 = 3_600;
     /// 明日课表推送时刻默认值（本地小时）。
     pub const DEFAULT_REMIND_HOUR: u8 = 21;
     /// 单节课时长默认值（分钟）。
@@ -117,6 +128,15 @@ impl JwxtSection {
             sync_schedule: self.sync_schedule.unwrap_or(false),
             clock: self.section_clock()?,
             notify_target,
+            vault_course_dir: self.vault_course_dir.clone().or_else(|| {
+                self.courses_vault_sync
+                    .unwrap_or(true)
+                    .then(|| "01-Courses-课程/2026-Fall-大一上".to_owned())
+            }),
+            course_aliases: self.course_aliases.clone().unwrap_or_default(),
+            courses_interval_secs: self
+                .courses_interval_secs
+                .unwrap_or(Self::DEFAULT_COURSES_INTERVAL_SECS),
         })
     }
 

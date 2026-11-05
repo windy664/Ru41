@@ -2,21 +2,23 @@ pub mod captcha;
 mod captcha_templates;
 pub mod cli;
 pub mod config;
+pub mod courses;
 pub mod qq_command;
 pub mod service;
 pub mod source;
 
 pub use config::JwxtSection;
+pub use qq_command::JwxtQqCommand;
 pub use ru41::domain::timetable::{
     CourseMeeting, SectionClock, StoredMeeting, TimetableSnapshot, courses_summary_from_store,
     describe_day_from_store, infer_term, meetings_on, resolve_term, week_of,
 };
-pub use qq_command::JwxtQqCommand;
 pub use service::{JwxtConfig, JwxtPollReport, JwxtTracker};
 pub use source::{JwxtClient, JwxtError};
 
 use anyhow::Context as _;
 use anyhow::Result;
+use ru41::app::obsidian::ObsidianSectionExt;
 use std::sync::Arc;
 
 /// 课表 tracker 的具体类型构造：DEF 注册表与 main.rs 的 login 分支共用。
@@ -24,9 +26,7 @@ pub fn build_tracker(
     config: &ru41::bootstrap::config::Config,
     store: Arc<dyn ru41::ports::storage::TaskStore>,
 ) -> Result<JwxtTracker> {
-    let jwxt = config
-        .sources
-        .get::<crate::JwxtSection>("jwxt")?;
+    let jwxt = config.sources.get::<crate::JwxtSection>("jwxt")?;
     let (notifier, notify_target) = ru41::bootstrap::assembly::notify_pair(config, jwxt.notify)?;
     let resolved = jwxt.resolved(notify_target)?;
     let client = JwxtClient::new(
@@ -48,9 +48,7 @@ pub static DEF: ru41::modules::ModuleDef = ru41::modules::ModuleDef {
     priority: ru41::modules::DEFAULT_PRIORITY,
     config_key: Some("jwxt"),
     schedule: |config| {
-        let jwxt = config
-            .sources
-            .get_or_default::<crate::JwxtSection>("jwxt");
+        let jwxt = config.sources.get_or_default::<crate::JwxtSection>("jwxt");
         let todo_route_ready = ru41::bootstrap::assembly::default_notify_route(config)
             .ok()
             .flatten()
@@ -72,6 +70,17 @@ pub static DEF: ru41::modules::ModuleDef = ru41::modules::ModuleDef {
                     None
                 },
             ),
+            ru41::modules::JobSchedule::simple(
+                "jwxt-courses",
+                jwxt.courses_interval_secs
+                    .unwrap_or(config::JwxtSection::DEFAULT_COURSES_INTERVAL_SECS),
+                jwxt.is_ready() && config.obsidian.is_ready(),
+                if !jwxt.is_ready() {
+                    Some("需 sources.jwxt 凭证（随 jwxt 启用）".into())
+                } else {
+                    Some("需 [obsidian] vault 已配置（课程目录写在 vault 里）".into())
+                },
+            ),
             ru41::modules::JobSchedule {
                 run_command: Some("schedule run class-remind"),
                 ..ru41::modules::JobSchedule::simple(
@@ -90,11 +99,25 @@ pub static DEF: ru41::modules::ModuleDef = ru41::modules::ModuleDef {
         ]
     },
     tracker: |config, store, name| {
-        let jwxt = config
-            .sources
-            .get::<crate::JwxtSection>("jwxt")?;
+        let jwxt = config.sources.get::<crate::JwxtSection>("jwxt")?;
         match name {
             "jwxt" => Ok(Some(Box::new(build_tracker(config, store)?))),
+            "jwxt-courses" => {
+                let vault = ru41::bootstrap::assembly::vault_if_ready(config, true)?
+                    .context("jwxt-courses 需要 [obsidian] vault 已配置")?;
+                let resolved = jwxt.resolved(String::new())?;
+                let Some(vault_dir) = resolved.vault_course_dir.clone() else {
+                    return Ok(None);
+                };
+                Ok(Some(Box::new(crate::courses::CourseSyncService::new(
+                    store,
+                    vault,
+                    crate::courses::CourseSyncConfig {
+                        vault_dir,
+                        aliases: resolved.course_aliases.clone(),
+                    },
+                ))))
+            }
             "class-remind" => {
                 jwxt.is_ready().then_some(()).context(
                     "class-remind requires sources.jwxt credentials (RU41_JWXT_USERNAME/RU41_JWXT_PASSWORD)",
@@ -102,8 +125,7 @@ pub static DEF: ru41::modules::ModuleDef = ru41::modules::ModuleDef {
                 let route = ru41::bootstrap::assembly::default_notify_route(config)?.context(
                     "class-remind requires a default notify route ([notify] or --target)",
                 )?;
-                let notifier =
-                    ru41::bootstrap::assembly::default_notifier(config, &route.channel)?;
+                let notifier = ru41::bootstrap::assembly::default_notifier(config, &route.channel)?;
                 Ok(Some(Box::new(
                     ru41::app::schedule::ClassRemindTracker::new(
                         store,
@@ -142,15 +164,36 @@ fn jwxt_cli(
     config: &ru41::bootstrap::config::Config,
     store: std::sync::Arc<dyn ru41::ports::storage::TaskStore>,
     args: &[String],
-) -> std::pin::Pin<Box<dyn std::future::Future<Output = anyhow::Result<Option<serde_json::Value>>> + Send>>
-{
+) -> std::pin::Pin<
+    Box<dyn std::future::Future<Output = anyhow::Result<Option<serde_json::Value>>> + Send>,
+> {
     use anyhow::Context as _;
     enum Job {
         Classes(crate::JwxtSection, String),
         Login(crate::JwxtTracker, Option<String>),
+        Courses(crate::courses::CourseSyncService),
     }
     let prepared = (|| -> anyhow::Result<Job> {
         match args.first().map(String::as_str) {
+            Some("courses") => {
+                // 课程目录同步（按课表生成 vault 课程目录与索引）。
+                let vault = ru41::bootstrap::assembly::vault_if_ready(config, true)?
+                    .context("jwxt courses 需要 [obsidian] vault 已配置")?;
+                let section = config.sources.get::<crate::JwxtSection>("jwxt")?;
+                let resolved = section.resolved(String::new())?;
+                let vault_dir = resolved
+                    .vault_course_dir
+                    .clone()
+                    .unwrap_or_else(|| "01-Courses-课程/2026-Fall-大一上".to_owned());
+                Ok(Job::Courses(crate::courses::CourseSyncService::new(
+                    store.clone(),
+                    vault,
+                    crate::courses::CourseSyncConfig {
+                        vault_dir,
+                        aliases: resolved.course_aliases.clone(),
+                    },
+                )))
+            }
             Some("classes") => Ok(Job::Classes(
                 config.sources.get::<crate::JwxtSection>("jwxt")?,
                 args.get(1).cloned().unwrap_or_else(|| "today".into()),
@@ -173,7 +216,7 @@ fn jwxt_cli(
                 Ok(Job::Login(build_tracker(config, store.clone())?, captcha))
             }
             _ => anyhow::bail!(
-                "用法: ru41 jwxt classes [today|tomorrow|week|YYYY-MM-DD] | login [--captcha x]"
+                "用法: ru41 jwxt classes [today|tomorrow|week|YYYY-MM-DD] | login [--captcha x] | courses"
             ),
         }
     })();
@@ -181,6 +224,7 @@ fn jwxt_cli(
         let value = match prepared? {
             Job::Classes(section, when) => cli::classes_json(store, &section, &when)?,
             Job::Login(tracker, captcha) => cli::login_json(&tracker, captcha.as_deref()).await?,
+            Job::Courses(service) => serde_json::to_value(service.sync().await?)?,
         };
         Ok(Some(value))
     }))

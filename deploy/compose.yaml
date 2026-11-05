@@ -258,16 +258,6 @@ services:
       - ${RU41_VAULT_PATH:?set RU41_VAULT_PATH to the vault clone dir}:/vault
     command: ["--config", "/etc/ru41/ru41.toml", "--db", "/data/state.db", "projects", "run"]
 
-  # 课程索引：课表 + 智慧树 + 学习通交叉枚举，在 vault 里为每门课建目录并写课程索引。
-  course-index:
-    <<: *ru41-common
-    profiles: [course-index]
-    volumes:
-      - ../ru41.toml:/etc/ru41/ru41.toml:ro
-      - ../.ru41:/data
-      - ../.ru41/plugins:/etc/ru41/plugins:ro
-      - ${RU41_VAULT_PATH:?set RU41_VAULT_PATH to the vault clone dir}:/vault
-    command: ["--config", "/etc/ru41/ru41.toml", "--db", "/data/state.db", "course-index", "run"]
 
   # 作业聚合：汇总各课程平台（超星/智慧树/微助教）作业状态，QQ 命令与提醒。
   homework:

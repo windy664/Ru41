@@ -508,13 +508,9 @@ async fn remind_and_describe_use_clock_times_and_markdown() {
         duration_mins: 40,
     };
     let store_dyn: Arc<dyn ru41::ports::storage::TaskStore> = store.clone();
-    let reply = ru41_plugin_jwxt::describe_day_from_store(
-        &store_dyn,
-        Some(monday),
-        Some(&clock),
-        target,
-    )
-    .unwrap();
+    let reply =
+        ru41_plugin_jwxt::describe_day_from_store(&store_dyn, Some(monday), Some(&clock), target)
+            .unwrap();
     // markdown 标题 + 每行课程带具体时间区间
     assert!(reply.starts_with("## 📅"), "{reply}");
     assert!(
@@ -526,8 +522,7 @@ async fn remind_and_describe_use_clock_times_and_markdown() {
 
     // 未配置作息表时回退到节次文本
     let fallback =
-        ru41_plugin_jwxt::describe_day_from_store(&store_dyn, Some(monday), None, target)
-            .unwrap();
+        ru41_plugin_jwxt::describe_day_from_store(&store_dyn, Some(monday), None, target).unwrap();
     assert!(fallback.contains("- **3-4节** 大学英语"), "{fallback}");
 }
 
