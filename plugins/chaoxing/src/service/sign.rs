@@ -290,9 +290,9 @@ impl ChaoxingTracker {
                 };
                 SignMethod::Photo { path }
             }
-            // 手势：轨迹作为 signCode 提交。优先用平台在窗口内下发的正确轨迹
-            // （getPPTActiveInfo 的 data.signCode，活动结束后恒为空）；
-            // 平台没下发时退到配置里按课程固定的轨迹（老师用同一图案时的兜底）。
+            // 手势：轨迹作为 signCode 提交。优先级：
+            // 平台在窗口内下发的正确轨迹 → 配置里按课程固定的轨迹 → 九键轨迹枚举。
+            // 单条轨迹不行时（平台回 90002），由 try_auto_sign 换下一条继续试。
             ChaoxingSignKind::Gesture => {
                 let live = self
                     .client
@@ -300,18 +300,18 @@ impl ChaoxingTracker {
                     .await
                     .ok()
                     .flatten();
-                let code = live.or_else(|| {
-                    self.config
-                        .gesture_sign_codes
-                        .get(&course.course_id)
-                        .filter(|c| !c.trim().is_empty())
-                        .cloned()
-                });
+                let configured = self
+                    .config
+                    .gesture_sign_codes
+                    .get(&course.course_id)
+                    .filter(|c| !c.trim().is_empty())
+                    .cloned();
+                let code = live
+                    .or(configured)
+                    .or_else(|| super::gesture::candidates().into_iter().next());
                 match code {
                     Some(code) => SignMethod::Gesture { code },
-                    None => anyhow::bail!(
-                        "手势签到需要轨迹：平台未在窗口内下发 signCode，且配置里没有该课程的固定轨迹"
-                    ),
+                    None => anyhow::bail!("手势签到需要轨迹：平台未下发、配置也没有"),
                 }
             }
             // 普通 / 签到码及未知类型都走普通参数。
@@ -418,11 +418,94 @@ impl ChaoxingTracker {
         )
     }
 
+    /// 手势签到：轨迹作为 signCode 提交，错了平台回 90002。
+    ///
+    /// 候选顺序：平台在窗口内下发的轨迹 → 配置里按课程固定的轨迹 →
+    /// 九键规律轨迹枚举（从 1 出发，按"一笔写出来"的顺滑度排序）。
+    /// 枚举段不做滑块重试（否则一条轨迹要打三次请求，窗口只有 2 分钟，
+    /// 还容易撞上限流）；平台下发的那条照常走滑块流程。
+    async fn try_auto_sign_gesture(
+        &self,
+        course: &crate::source::ChaoxingCourse,
+        activity: &crate::source::ChaoxingActivity,
+    ) -> AutoSignOutcome {
+        let mut candidates: Vec<String> = Vec::new();
+        if let Ok(Some(code)) = self.client.activity_sign_code(course, activity).await {
+            candidates.push(code);
+        }
+        if let Some(code) = self
+            .config
+            .gesture_sign_codes
+            .get(&course.course_id)
+            .filter(|c| !c.trim().is_empty())
+        {
+            if !candidates.contains(code) {
+                candidates.push(code.clone());
+            }
+        }
+        let from_platform = candidates.len();
+        for code in super::gesture::candidates() {
+            if !candidates.contains(&code) {
+                candidates.push(code);
+            }
+        }
+        let started = std::time::Instant::now();
+        let mut last = String::new();
+        let mut tried = 0usize;
+        for (index, code) in candidates
+            .into_iter()
+            .take(super::gesture::MAX_ATTEMPTS)
+            .enumerate()
+        {
+            // 窗口只有 2 分钟：留 25 秒给人工兜底，枚举不能占满。
+            if started.elapsed().as_secs() > 75 {
+                break;
+            }
+            let method = crate::source::SignMethod::Gesture { code: code.clone() };
+            let response = match self
+                .client
+                .sign_with(course, activity, &method, index < from_platform)
+                .await
+            {
+                Ok(response) => response,
+                Err(_) => return AutoSignOutcome::Transient,
+            };
+            tried += 1;
+            if sign_response_ok(&response) {
+                self.mark_signed(course, activity, "auto");
+                return AutoSignOutcome::Signed(format!(
+                    "- ✅{}｜{}｜自动签到成功（轨迹 {}）",
+                    course.title,
+                    activity.type_label(),
+                    code
+                ));
+            }
+            last = response.trim().to_string();
+            if last.contains("请勿频繁操作") {
+                // 平台限流：立刻停手，别把账号打进去。
+                break;
+            }
+        }
+        self.mark_auto_attempted(course, activity, &last);
+        AutoSignOutcome::Rejected {
+            line: format!(
+                "- ❌{}｜{}｜自动签到被平台拒绝（试了 {tried} 条轨迹，响应：{last}）→ 点链接打开学习通手动签：{}",
+                course.title,
+                activity.type_label(),
+                self.sign_page_url(course, activity)
+            ),
+            retry: None,
+        }
+    }
+
     async fn try_auto_sign(
         &self,
         course: &crate::source::ChaoxingCourse,
         activity: &crate::source::ChaoxingActivity,
     ) -> AutoSignOutcome {
+        if activity.is_gesture() {
+            return self.try_auto_sign_gesture(course, activity).await;
+        }
         let method = match self
             .resolve_method(course, activity, None, None, None, None, None)
             .await
