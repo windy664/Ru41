@@ -1074,16 +1074,29 @@ impl ObsidianService {
             let _ = tokio::task::spawn_blocking(move || vault.merge_abort()).await;
             return Ok(0);
         }
-        // 推送合并结果并清掉待合并分支。
+        // 推送合并结果并清掉待合并分支——但只在分支仍指向刚合并的那个提交时才删：
+        // 本地在这期间推了新提交上来，删了就等于把人家的工作扔了（下一轮会重推，
+        // 但那要等一个轮询周期）。指向别的提交就留着，下一轮继续合。
         let vault = self.vault.clone();
+        let pending_for_log = pending_sha.clone();
         let pending = pending_sha.clone();
+        let branch = branch.to_owned();
         tokio::task::spawn_blocking(move || -> Result<()> {
             vault.push()?;
-            vault.delete_remote_branch(branch)?;
+            vault.fetch()?;
+            let current = vault.remote_branch_sha(&branch)?;
+            if current.as_deref() == Some(pending.as_str()) {
+                vault.delete_remote_branch(&branch)?;
+            } else {
+                eprintln!(
+                    "[obsidian] pending branch moved while merging ({} → {current:?}), keep it",
+                    &pending[..pending.len().min(8)]
+                );
+            }
             Ok(())
         })
         .await??;
-        eprintln!("[obsidian] merged remote pending {pending} into master");
+        eprintln!("[obsidian] merged remote pending {pending_for_log} into master");
         Ok(1)
     }
 
