@@ -31,6 +31,9 @@ migrations/    数据库迁移（核心领地）
   Obsidian AI 合并默认端点（现默认 MiniMax OpenAI 兼容端点 `https://api.minimax.io/v1`）都换掉了。
 - codex 适配器代码还在仓库里（`src/adapters/agent/codex`），但生产**没启用**；
   要重新启用得同时配 `[agent.codex]`（bin/model/provider）与对应密钥环境变量。
+- **供应商只在一处定义**：`[agent.pi]` 的 `base_url` / `api` / `api_key_env` / `model`。
+  Obsidian 的 AI 合并（`app::merge`）复用同一份配置与同一套协议（Anthropic Messages），
+  `obsidian.merge_*` 只是覆盖项——不再单开一个 chat 接口。
 - 换底座不用改核心：`AgentBackend` 抽象（契约、描述符、结果与用量口径一致）不变，
   底座配置在 `[agent.codex]` 与 `[agent.pi]`。
 - 镜像内置两个 CLI：`@openai/codex` 与 `@earendil-works/pi-coding-agent`（Dockerfile 顶部 ARG 钉版本）。

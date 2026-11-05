@@ -65,11 +65,20 @@ pub struct ObsidianConfig {
 /// ru41-plugin-api（配置属于插件边界），产出物 ObsidianConfig 是宿主
 /// 运行时概念，解析逻辑以扩展 trait 留在宿主。
 pub trait ObsidianSectionExt {
-    fn resolved(&self, notify: Option<NotifyRoute>) -> Result<ObsidianConfig>;
+    /// 解析运行时配置；`agent` 段提供默认底座供应商（AI 合并复用同一份配置）。
+    fn resolved(
+        &self,
+        notify: Option<NotifyRoute>,
+        agent: &crate::bootstrap::config::AgentSection,
+    ) -> Result<ObsidianConfig>;
 }
 
 impl ObsidianSectionExt for crate::bootstrap::config::ObsidianSection {
-    fn resolved(&self, notify: Option<NotifyRoute>) -> Result<ObsidianConfig> {
+    fn resolved(
+        &self,
+        notify: Option<NotifyRoute>,
+        agent: &crate::bootstrap::config::AgentSection,
+    ) -> Result<ObsidianConfig> {
         use crate::bootstrap::config::ObsidianSection as S;
         let vault_path = self
             .vault_path
@@ -96,37 +105,49 @@ impl ObsidianSectionExt for crate::bootstrap::config::ObsidianSection {
                 .clone()
                 .unwrap_or_else(|| crate::bootstrap::config::AgentSection::DEFAULT_BACKEND.into()),
             notify,
-            merge: resolve_merge(self),
+            merge: resolve_merge(self, agent),
         })
     }
 }
 
-/// AI 合并设置：显式 merge_ai=false 关闭；其余情况 key 就位即启用，
-/// key 缺失不阻断启动（冲突时降级为通知人工）。
+/// AI 合并设置：默认直接复用底座供应商（[agent.pi]）的端点、模型、协议与密钥
+/// 变量——供应商只在一处定义，obsidian.merge_* 只是覆盖项。
+/// 显式 merge_ai=false 关闭；key 缺失不阻断启动（冲突时降级为通知人工）。
 fn resolve_merge(
     section: &crate::bootstrap::config::ObsidianSection,
+    agent: &crate::bootstrap::config::AgentSection,
 ) -> Option<crate::app::merge::MergeSettings> {
-    use crate::bootstrap::config::ObsidianSection as S;
     if section.merge_ai == Some(false) {
         return None;
     }
+    let pi = &agent.pi;
     let env = section
         .merge_api_key_env
         .clone()
-        .unwrap_or_else(|| S::DEFAULT_MERGE_KEY_ENV.into());
+        .or_else(|| pi.api_key_env.clone())
+        .unwrap_or_else(|| "MINIMAX_API_KEY".into());
     let api_key = std::env::var(&env).ok().filter(|v| !v.trim().is_empty())?;
+    let base_url = section
+        .merge_base_url
+        .clone()
+        .or_else(|| pi.base_url.clone())
+        .filter(|u| !u.trim().is_empty())?;
+    let model = section
+        .merge_model
+        .clone()
+        .or_else(|| pi.model.clone())
+        .filter(|m| !m.trim().is_empty())?;
+    let api = section
+        .merge_api
+        .as_deref()
+        .or(pi.api.as_deref())
+        .map(crate::app::merge::MergeApi::parse)
+        .unwrap_or(crate::app::merge::MergeApi::AnthropicMessages);
     Some(crate::app::merge::MergeSettings {
-        base_url: section
-            .merge_base_url
-            .clone()
-            .filter(|u| !u.trim().is_empty())
-            .unwrap_or_else(|| S::DEFAULT_MERGE_BASE_URL.into()),
-        model: section
-            .merge_model
-            .clone()
-            .filter(|m| !m.trim().is_empty())
-            .unwrap_or_else(|| S::DEFAULT_MERGE_MODEL.into()),
+        base_url,
+        model,
         api_key,
+        api,
     })
 }
 
@@ -799,6 +820,7 @@ impl ObsidianService {
             &settings.base_url,
             &settings.model,
             &settings.api_key,
+            settings.api,
         );
         let mut pending: Vec<String> = files.to_vec();
         // 一批解完 continue 后，下一个提交可能再冲突；封顶 8 批防死循环。
