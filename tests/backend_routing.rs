@@ -62,6 +62,7 @@ async fn two_backends_share_worker_but_never_take_each_others_tasks() {
     assert!(registry.get("missing").is_err());
     let (_sender, receiver) = watch::channel(false);
     let mut worker = Worker {
+        silent_sources: Vec::new(),
         store: Arc::new(SqliteTaskStore::open(&path).unwrap()),
         backends: Arc::new(registry),
         sanitizer: Arc::new(ru41::privacy::RandomSanitizer::default()),

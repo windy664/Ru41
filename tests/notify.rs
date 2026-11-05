@@ -79,6 +79,7 @@ fn dispatcher(
     channels: Vec<Arc<dyn NotifyChannel>>,
 ) -> NotifyDispatcher {
     NotifyDispatcher {
+        silent_sources: Vec::new(),
         store,
         channels,
         batch: 10,

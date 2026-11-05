@@ -13,6 +13,21 @@ pub struct NotifyDispatcher {
     pub channels: Vec<Arc<dyn NotifyChannel>>,
     pub batch: u32,
     pub interval: Duration,
+    /// 静默来源（后台服务）：这些任务不向用户汇报——终态通知、进度通知、活动流全不推，
+    /// 但任务照跑、产物照写。匹配 request_key 的前缀段。
+    pub silent_sources: Vec<String>,
+}
+
+/// request_key 是否命中静默来源（前缀段匹配，段数不限）。
+pub fn is_silent_source(request_key: &str, silent_sources: &[String]) -> bool {
+    silent_sources.iter().any(|entry| {
+        let entry = entry.trim();
+        !entry.is_empty()
+            && (request_key == entry
+                || request_key
+                    .strip_prefix(entry)
+                    .is_some_and(|rest| rest.starts_with(':')))
+    })
 }
 
 impl NotifyDispatcher {
@@ -28,6 +43,11 @@ impl NotifyDispatcher {
         let mut sent = 0;
         for task in tasks {
             let Some(route) = &task.notify else { continue };
+            // 后台服务静默：消化掉但不发。
+            if is_silent_source(&task.request_key, &self.silent_sources) {
+                self.store.mark_notified(task.id)?;
+                continue;
+            }
             // 雷达日报空报不推送：digest 判"无值得关注"时静默消化。
             // prompt 的"只回一行 📭"纪律 LLM 不总遵守（会展开舍弃说明），程序兜底。
             if task.request_key.starts_with("rss:digest:")
@@ -135,6 +155,10 @@ impl NotifyDispatcher {
                 self.mark_doc("progress", &doc, "done")?;
                 continue;
             };
+            if is_silent_source(&task.request_key, &self.silent_sources) {
+                self.mark_doc("progress", &doc, "done")?;
+                continue;
+            }
             if terminal {
                 self.mark_doc("progress", &doc, "done")?;
                 continue;
@@ -190,6 +214,10 @@ impl NotifyDispatcher {
                 self.mark_doc("activity", &doc, "done")?;
                 continue;
             };
+            if is_silent_source(&task.request_key, &self.silent_sources) {
+                self.mark_doc("activity", &doc, "done")?;
+                continue;
+            }
             // 终态收口后不再补发流式过程，避免晚到的 chunk 盖过最终结果。
             let terminal = matches!(
                 task.status,
@@ -330,6 +358,28 @@ fn effective_msg_id(task: &Task, now: i64) -> Option<&str> {
 mod tests {
     use super::*;
     use crate::domain::{NotifyRoute, TaskStatus};
+
+    #[test]
+    fn silent_source_matches_by_prefix_segment() {
+        let silent = vec![
+            "obsidian".to_string(),
+            "rss:opportunities".to_string(),
+            "papers".to_string(),
+        ];
+        // 后台服务：命中。
+        assert!(is_silent_source("obsidian:organize:abc123", &silent));
+        assert!(is_silent_source("rss:opportunities:2026-11-05", &silent));
+        assert!(is_silent_source("papers:digest", &silent));
+        // 用户要看的：不能误伤。
+        assert!(!is_silent_source("rss:digest:morning:2026-11-05", &silent));
+        assert!(!is_silent_source("qq:msg:abc", &silent));
+        assert!(!is_silent_source("youtube:prep:x", &silent));
+        assert!(!is_silent_source("lecture:notes:x", &silent));
+        // 前缀相同但不是段边界，不算命中。
+        assert!(!is_silent_source("obsidianly:organize:x", &silent));
+        // 空列表不静默任何东西。
+        assert!(!is_silent_source("obsidian:organize:x", &[]));
+    }
 
     #[test]
     fn quiet_digest_detection_looks_at_head_only() {

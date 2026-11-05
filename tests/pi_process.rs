@@ -160,6 +160,7 @@ printf '%s\n' '{"id":"ru41-prompt","type":"response","success":true}' '{"type":"
         .unwrap()
         .task;
     let mut worker = Worker {
+        silent_sources: Vec::new(),
         store: store.clone(),
         backends: Arc::new(registry),
         sanitizer: Arc::new(NoopSanitizer),

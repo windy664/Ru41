@@ -51,6 +51,7 @@ fn worker_with(dir: &std::path::Path, agent: impl AgentBackend + 'static) -> Wor
         backends: Arc::new(backends),
         sanitizer: Arc::new(ru41::privacy::RandomSanitizer::default()),
         knowledge: None,
+        silent_sources: Vec::new(),
         config: WorkerConfig {
             worker_id: "test".into(),
             runs_dir: dir.join("runs"),
@@ -252,6 +253,7 @@ async fn permanent_failure_skips_retry_budget() {
     let mut backends = BackendRegistry::default();
     backends.register(BadOutput).unwrap();
     let mut worker = Worker {
+        silent_sources: Vec::new(),
         store: store.clone(),
         backends: Arc::new(backends),
         sanitizer: Arc::new(NoopSanitizer),
@@ -336,6 +338,7 @@ async fn conversation_session_is_saved_and_resumed() {
         files: vec![],
     }];
     let mut worker = Worker {
+        silent_sources: Vec::new(),
         store: store.clone(),
         backends: Arc::new(backends),
         sanitizer: Arc::new(NoopSanitizer),
@@ -424,6 +427,7 @@ async fn conversation_resume_requires_matching_model() {
         })
         .unwrap();
     let mut worker = Worker {
+        silent_sources: Vec::new(),
         store: store.clone(),
         backends: Arc::new(backends),
         sanitizer: Arc::new(NoopSanitizer),

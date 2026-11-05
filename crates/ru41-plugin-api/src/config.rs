@@ -253,6 +253,10 @@ pub struct FeishuSection {
 pub struct NotifySection {
     /// 渠道标识（feishu / qq）；缺省表示无默认出口，简报类任务只入队不推送。
     pub channel: Option<String>,
+    /// 静默来源：这些后台服务的 agent 过程不向用户汇报（终态通知 + 活动流都不推）。
+    /// 匹配 request_key 的前缀段（段数不限）：配 "obsidian" 命中
+    /// "obsidian:organize:xxx"；配 "rss:opportunities" 只命中机会雷达那类。
+    pub silent_sources: Option<Vec<String>>,
 }
 
 /// 附属来源配置按模块名分布式解析：新增模块不再往这里加字段，
