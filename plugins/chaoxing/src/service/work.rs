@@ -75,6 +75,15 @@ impl ChaoxingWorkTracker {
         }
     }
 
+    /// 课表短名：平台课名先过映射表（与课程目录同名），对外展示用课表名。
+    fn display_course(&self, title: &str) -> String {
+        self.config
+            .vault_courses
+            .get(title)
+            .cloned()
+            .unwrap_or_else(|| title.to_owned())
+    }
+
     pub async fn poll_once(&self) -> Result<ChaoxingWorkPollReport> {
         use ru41::domain::todo::{TodoInput, TodoPriority, TodoSource};
         let now = ru41::util::now();
@@ -163,7 +172,7 @@ impl ChaoxingWorkTracker {
                 match existing {
                     None => {
                         let mut snapshot = serde_json::json!({
-                            "course": course.title,
+                            "course": self.display_course(&course.title),
                             "title": work.title,
                             "status": work.status,
                             "end_at": deadline,
@@ -175,7 +184,7 @@ impl ChaoxingWorkTracker {
                             new_opens += 1;
                             lines.push(format!(
                                 "- 📝{}｜{}｜{}｜截止 {}",
-                                course.title,
+                                self.display_course(&course.title),
                                 work.title,
                                 work.status,
                                 deadline.as_deref().unwrap_or("未知"),
@@ -189,7 +198,11 @@ impl ChaoxingWorkTracker {
                                     .unwrap_or(false);
                                 match self.todos.add(
                                     TodoInput {
-                                        title: format!("学习通｜{}｜{}", course.title, work.title),
+                                        title: format!(
+                                            "学习通｜{}｜{}",
+                                            self.display_course(&course.title),
+                                            work.title
+                                        ),
                                         priority: if due_soon_flag {
                                             TodoPriority::High
                                         } else {
@@ -288,7 +301,7 @@ impl ChaoxingWorkTracker {
                                         overdue_total += 1;
                                         lines.push(format!(
                                             "- ⚠️{}｜{}｜已过期未交（截止 {}）",
-                                            course.title,
+                                            self.display_course(&course.title),
                                             work.title,
                                             deadline.as_deref().unwrap_or("未知"),
                                         ));
@@ -296,7 +309,7 @@ impl ChaoxingWorkTracker {
                                         due_soon += 1;
                                         lines.push(format!(
                                             "- ⏰{}｜{}｜{}内截止（{}）",
-                                            course.title,
+                                            self.display_course(&course.title),
                                             work.title,
                                             self.config.work_due_days,
                                             deadline.as_deref().unwrap_or("未知"),
