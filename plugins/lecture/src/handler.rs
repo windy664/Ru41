@@ -19,6 +19,7 @@ impl LectureHandler {
         Self {
             config,
             http: reqwest::Client::builder()
+                .connect_timeout(Duration::from_secs(15))
                 .timeout(Duration::from_secs(600))
                 .build()
                 .expect("lecture http client"),
@@ -69,7 +70,35 @@ impl LectureHandler {
     }
 
     /// 流式落盘，避免大文件整读进内存。
+    /// 连接类失败重试 3 次（2s/6s 退避）：家宽到腾讯云 CDN 段偶发整段劣化，
+    /// 单次尝试会把好链接白白判死；HTTP 状态错误不重试（rkey 失效重试也没用）。
     async fn download(&self, url: &str, dest: &std::path::Path) -> Result<u64> {
+        let mut last_err = None;
+        for attempt in 0..3 {
+            if attempt > 0 {
+                tokio::time::sleep(Duration::from_secs(2 * attempt as u64 + 1)).await;
+            }
+            match self.try_download(url, dest).await {
+                Ok(size) => return Ok(size),
+                Err(err) => {
+                    let retriable = err.chain().any(|cause| {
+                        cause
+                            .downcast_ref::<reqwest::Error>()
+                            .is_some_and(|e| e.is_connect() || e.is_timeout())
+                    });
+                    last_err = Some(err);
+                    if !retriable {
+                        break;
+                    }
+                }
+            }
+        }
+        Err(last_err
+            .unwrap()
+            .context(format!("下载录音失败（已重试 3 次）：{url}")))
+    }
+
+    async fn try_download(&self, url: &str, dest: &std::path::Path) -> Result<u64> {
         let mut response = self
             .http
             .get(url)
@@ -157,9 +186,11 @@ impl CommandHandler for LectureHandler {
                     ))));
                 }
             };
-            let hint = (!content.trim().is_empty())
-                .then(|| format!("\n\n> 附言：{}", content.trim()))
-                .unwrap_or_default();
+            let hint = if !content.trim().is_empty() {
+                format!("\n\n> 附言：{}", content.trim())
+            } else {
+                Default::default()
+            };
             let queue = if ahead > 0 {
                 format!(
                     "\n- 队列：前面还有 {} 节在排队，转写按收到顺序一节一节来",
