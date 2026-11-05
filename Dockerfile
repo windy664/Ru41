@@ -49,7 +49,7 @@ COPY migrations ./migrations
 COPY --parents plugins/*/Cargo.toml ./
 ENV CARGO_TARGET_DIR=/build/.plugins-target
 # 依赖层：ru41 与全部插件用空壳 lib 预编译，外部依赖进缓存。
-RUN --mount=type=cache,id=sccache,target=/build/.sccache \
+RUN --mount=type=cache,id=sccache,target=/build/.sccache set -e \
  && mkdir -p src && echo 'fn main() {}' > src/main.rs && touch src/lib.rs \
  && for d in plugins/*/; do cp Cargo.lock "$d/Cargo.lock"; mkdir -p "$d/src"; touch "$d/src/lib.rs"; done \
  && for d in plugins/*/; do (cd "$d" && SCCACHE_DIR=/build/.sccache cargo build --release --features plugin-entry); done
