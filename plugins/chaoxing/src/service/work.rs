@@ -243,7 +243,7 @@ impl ChaoxingWorkTracker {
                             }
                         }
                     }
-                    Some(doc) => {
+                    Some(mut doc) => {
                         let prev_status = doc
                             .value
                             .get("status")
@@ -251,6 +251,30 @@ impl ChaoxingWorkTracker {
                             .unwrap_or_default()
                             .to_owned();
                         let was_open = prev_status.contains('未');
+                        // 存量快照里的平台课名刷成课表名（映射表改了才需要改一次），
+                        // 否则作业总表里一直显示平台旧名。
+                        let mapped = self.display_course(&course.title);
+                        let stored = doc
+                            .value
+                            .get("course")
+                            .and_then(serde_json::Value::as_str)
+                            .unwrap_or_default();
+                        if stored != mapped {
+                            let mut value = doc.value.clone();
+                            value["course"] = serde_json::json!(mapped);
+                            if self.store.put_document(
+                                "chaoxing_work",
+                                &key,
+                                Some(doc.revision),
+                                &value,
+                            )? {
+                                // 后续 CAS 用新 revision。
+                                if let Ok(Some(fresh)) = self.store.document("chaoxing_work", &key)
+                                {
+                                    doc = fresh;
+                                }
+                            }
+                        }
                         if was_open && !open {
                             // 未交 → 已交：更新快照 + 回勾待办（一次性）
                             submitted += 1;
