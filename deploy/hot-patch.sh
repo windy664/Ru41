@@ -1,13 +1,19 @@
 #!/usr/bin/env bash
-# 插件热更：本地编译 → 传 .so → 重启对应容器。
+# 插件热更：容器内编译 → 传 .so → 重启对应容器。
 #
 # 什么时候用：只改了 plugins/<名>/ 里的代码（没动 src/ 核心、没改插件的技能包）。
 # 这时不必等 CI 出镜像——整镜像 2.7GB，搬运 + 构建要 10 分钟以上，
 # 而插件是 cdylib，容器启动时从 /etc/ru41/plugins 加载，替换 .so 重启即可。
 #
+# 为什么在容器里编译：.so 是 cdylib，和宿主二进制在同一个进程里跑。
+# 本机编的 .so（Ubuntu/glibc）与镜像里的（Debian trixie）不是同一套运行库，
+# 线上出现过段错误。统一用 rust:1.98-trixie（镜像 Dockerfile 同款）编译，
+# 并沿用仓库根 Cargo.lock（插件 crate 依赖主 crate，锁文件必须一致）。
+#
 # 什么时候不能用：
 #   - 改了 src/（宿主二进制变了，插件 ABI 与旧二进制对不上，必须走完整 CI 部署）；
-#   - 改了 plugins/<名>/skills/（技能包打在镜像的 /usr/share/ru41/plugins/，热更带不上）；
+#   - 改了插件的 skills/（技能包在镜像的 /usr/share/ru41/plugins，已改为宿主目录挂载，
+#     但仍需与镜像内版本一致时以 CI 为准）；
 #   - 插件有配套的 compose 服务需要重建（那是 sidecar，不在此脚本范围）。
 #
 # 用法：deploy/hot-patch.sh <插件名> [容器名 ...]
@@ -37,9 +43,24 @@ if [[ ! -d "$plugin_dir" ]]; then
   exit 2
 fi
 
-echo "==> 编译 $name（release + plugin-entry）"
-cd "$plugin_dir"
-cargo build --release --features plugin-entry
+echo "==> 在 rust:1.98-trixie 里编译 $name（与镜像同一工具链）"
+docker run --rm \
+  -v "$repo_root:/build" \
+  -v ru41-plugin-target:/build/plugins/target-plugins \
+  -w /build/plugins/"$name" \
+  rust:1.98-trixie \
+  bash -c "
+    set -e
+    export PATH=/usr/local/cargo/bin:\$PATH
+    # plugins/.cargo/config.toml 要求 clang+lld，镜像构建里被 .dockerignore 排除了，
+    # 这里同样用默认链接器（保持与 CI 产物一致）；空 rustflags 会被当成未设置，给个等价值。
+    export CARGO_BUILD_RUSTFLAGS="-C opt-level=3"
+    cp ../../Cargo.lock Cargo.lock
+    CARGO_TARGET_DIR=/build/plugins/target-plugins \
+      cargo build --release --features plugin-entry
+    # 构建会把插件目录的 Cargo.lock 改写（与根锁对齐），别留脏改动。
+    git -C /build checkout -- plugins/$name/Cargo.lock 2>/dev/null || true
+  "
 
 if [[ ! -f "$so" ]]; then
   echo "产物不存在: $so" >&2
