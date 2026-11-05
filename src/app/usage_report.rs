@@ -149,10 +149,7 @@ fn render_doc(dashboard: &Dashboard<'_>) -> String {
         "| 账面总 Token | {} |\n",
         cn_tokens(week.total_tokens)
     ));
-    out.push_str(&format!(
-        "| 实际消耗 Token | **{}** |\n",
-        cn_tokens(real)
-    ));
+    out.push_str(&format!("| 实际消耗 Token | **{}** |\n", cn_tokens(real)));
     out.push_str(&format!(
         "| 缓存命中 Token | {} |\n",
         cn_tokens(week.cached_input_tokens)
@@ -346,11 +343,7 @@ fn render_chat(dashboard: &Dashboard<'_>) -> String {
     }
     lines.push(format!(
         "**成功率** · {}/{} 次成功 · 失败 {} 次 · 平均 {}s（最长 {}s）",
-        week.succeeded,
-        week.runs,
-        week.failed,
-        week.avg_seconds,
-        week.max_seconds
+        week.succeeded, week.runs, week.failed, week.avg_seconds, week.max_seconds
     ));
 
     if !week.by_model.is_empty() {
