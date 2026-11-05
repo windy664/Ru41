@@ -230,6 +230,7 @@ pub fn format_usage(
 ) -> String {
     let (day_runs, day_tokens) = totals(day);
     let (week_runs, week_tokens) = totals(week);
+    let (week_input, week_cached, week_output) = split_totals(week);
     let mut lines = vec![
         "## Token 用量".to_owned(),
         format!(
@@ -242,36 +243,73 @@ pub fn format_usage(
             human_tokens(week_tokens),
             week_runs
         ),
+        format!(
+            "- 其中：输入 {} / 缓存命中 {} / 输出 {}",
+            human_tokens(week_input),
+            human_tokens(week_cached),
+            human_tokens(week_output)
+        ),
     ];
+    if !models.is_empty() {
+        lines.push(String::new());
+        lines.push("**7 天分模型**（每个模型各花了多少）".to_owned());
+        for item in models {
+            lines.push(format!(
+                "- `{}`：{}（{} 次）｜输入 {}、缓存 {}、输出 {}",
+                item.model,
+                human_tokens(item.total_tokens),
+                item.runs,
+                human_tokens(item.input_tokens),
+                human_tokens(item.cached_input_tokens),
+                human_tokens(item.output_tokens)
+            ));
+        }
+    }
     if !week.is_empty() {
         lines.push(String::new());
-        lines.push("**7 天分来源**".to_owned());
+        lines.push("**7 天按功能来源**（哪类任务发起的）".to_owned());
         for item in week {
             lines.push(format!(
-                "- `{}`：{}（{} 次）",
+                "- `{}` {}：{}（{} 次）",
                 item.source,
+                source_hint(&item.source),
                 human_tokens(item.total_tokens),
                 item.runs
             ));
         }
     }
-    if !models.is_empty() {
-        lines.push(String::new());
-        lines.push("**7 天分模型**".to_owned());
-        for item in models {
-            lines.push(format!(
-                "- `{}`：{}（{} 次，入 {} / 出 {}）",
-                item.model,
-                human_tokens(item.total_tokens),
-                item.runs,
-                human_tokens(item.input_tokens),
-                human_tokens(item.output_tokens)
-            ));
-        }
-    }
     lines.push(String::new());
-    lines.push("> 底座未上报用量的运行不计入。".to_owned());
+    lines.push(
+        "> 缓存命中的输入按更低单价计费，不等于花了同等的钱；底座未上报用量的运行不计入。"
+            .to_owned(),
+    );
     lines.join("\n")
+}
+
+/// 来源前缀的中文说明：让人知道这一行是哪类任务。
+fn source_hint(source: &str) -> &str {
+    match source {
+        "qq" => "（QQ 消息）",
+        "lecture" => "（课堂录音笔记）",
+        "obsidian" => "（Obsidian 整理）",
+        "digest" => "（每日资讯摘要）",
+        "youtube" => "（YouTube 精听）",
+        "probe" => "（临时测试，可忽略）",
+        _ => "",
+    }
+}
+
+/// 输入 / 缓存命中 / 输出 三个口径的合计。
+fn split_totals(summaries: &[crate::app::usage::UsageSummary]) -> (u64, u64, u64) {
+    summaries
+        .iter()
+        .fold((0, 0, 0), |(input, cached, output), item| {
+            (
+                input + item.input_tokens,
+                cached + item.cached_input_tokens,
+                output + item.output_tokens,
+            )
+        })
 }
 
 pub fn format_task_list(tasks: &[Task]) -> String {
@@ -325,4 +363,43 @@ fn truncate(text: &str, max_chars: usize) -> String {
     let mut out: String = trimmed.chars().take(max_chars).collect();
     out.push('…');
     out
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::app::usage::{ModelUsage, UsageSummary};
+
+    fn summary(source: &str, total: u64, input: u64, cached: u64, output: u64) -> UsageSummary {
+        UsageSummary {
+            source: source.to_owned(),
+            runs: 1,
+            input_tokens: input,
+            cached_input_tokens: cached,
+            output_tokens: output,
+            total_tokens: total,
+        }
+    }
+
+    #[test]
+    fn usage_report_shows_input_cache_and_output() {
+        let week = vec![summary("qq", 11500, 154, 10496, 850)];
+        let models = vec![ModelUsage {
+            model: "minimax/MiniMax-M3".into(),
+            runs: 1,
+            input_tokens: 154,
+            cached_input_tokens: 10496,
+            output_tokens: 850,
+            total_tokens: 11500,
+        }];
+        let text = format_usage(&week, &week, &models);
+        // 三个口径必须分开显示：只给总数会让人以为一次花了 1.1 万。
+        assert!(text.contains("输入 154"), "{text}");
+        assert!(text.contains("缓存命中 10.5K"), "{text}");
+        assert!(text.contains("输出 850"), "{text}");
+        assert!(text.contains("minimax/MiniMax-M3"), "{text}");
+        // 来源要说明是哪类任务。
+        assert!(text.contains("按功能来源"), "{text}");
+        assert!(text.contains("QQ 消息"), "{text}");
+    }
 }
