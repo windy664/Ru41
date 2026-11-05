@@ -327,10 +327,21 @@ async fn main() -> Result<()> {
                 TaskCommand::Usage { days } => {
                     let store = open_store(&store_config)?;
                     let since = ru41::util::now() - i64::from(days) * 86_400;
+                    let overview = ru41::app::usage::overview(
+                        &store.usage_runs_since(since)?,
+                        days,
+                    );
                     serde_json::json!({
                         "window_days": days,
-                        "summaries": ru41::app::usage::report(&*store, since)?,
-                        "by_model": ru41::app::usage::report_by_model(&*store, since)?,
+                        "runs": overview.runs,
+                        "reported_runs": overview.reported_runs,
+                        "input_tokens": overview.input_tokens,
+                        "cached_input_tokens": overview.cached_input_tokens,
+                        "output_tokens": overview.output_tokens,
+                        "total_tokens": overview.total_tokens,
+                        "by_model": overview.by_model,
+                        "by_source": overview.by_source,
+                        "by_day": overview.by_day,
                     })
                 }
             }
