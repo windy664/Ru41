@@ -25,6 +25,8 @@ use std::sync::Arc;
 pub struct ApiState {
     pub store: Arc<dyn TaskStore>,
     pub backends: Arc<BackendRegistry>,
+    /// 请求体不写 backend 时用的默认底座（配置里的统一入口）。
+    pub default_backend: String,
     token: Arc<str>,
 }
 impl ApiState {
@@ -34,6 +36,16 @@ impl ApiState {
         backends: Arc<BackendRegistry>,
         token: String,
     ) -> anyhow::Result<Self> {
+        Self::with_default_backend(store, backends, token, "pi".to_owned())
+    }
+
+    /// 同上，但显式给出默认底座。
+    pub fn with_default_backend(
+        store: Arc<dyn TaskStore>,
+        backends: Arc<BackendRegistry>,
+        token: String,
+        default_backend: String,
+    ) -> anyhow::Result<Self> {
         anyhow::ensure!(
             token.len() >= 24,
             "API token must contain at least 24 bytes"
@@ -41,6 +53,7 @@ impl ApiState {
         Ok(Self {
             store,
             backends,
+            default_backend,
             token: token.into(),
         })
     }
@@ -112,7 +125,9 @@ async fn blocking<T: Send + 'static>(
 struct CreateTask {
     key: String,
     prompt: String,
-    backend: String,
+    /// 不写就用配置的默认底座（[agent].default_backend）。
+    #[serde(default)]
+    backend: Option<String>,
 }
 #[derive(Serialize, schemars::JsonSchema)]
 struct TaskDto {
@@ -142,11 +157,12 @@ async fn create_task(
     {
         return Err(ApiError(StatusCode::BAD_REQUEST, "invalid_input"));
     }
-    if s.backends.get(&input.backend).is_err() {
+    let backend = input.backend.unwrap_or_else(|| s.default_backend.clone());
+    if s.backends.get(&backend).is_err() {
         return Err(ApiError(StatusCode::BAD_REQUEST, "unknown_backend"));
     }
     let result = blocking(move || {
-        TaskService::new(s.store).enqueue_for(&input.key, &input.prompt, &input.backend)
+        TaskService::new(s.store).enqueue_for(&input.key, &input.prompt, &backend)
     })
     .await?;
     Ok((

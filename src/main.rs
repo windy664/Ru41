@@ -102,10 +102,11 @@ async fn main() -> Result<()> {
                 .unwrap_or_else(|| "127.0.0.1:4141".into());
             let listen: std::net::SocketAddr =
                 listen.parse().context("invalid api listen address")?;
-            let state = ru41::ingress::http::ApiState::new(
+            let state = ru41::ingress::http::ApiState::with_default_backend(
                 open_store(&store_config)?,
                 Arc::new(registry(&config.agent, AgentOverrides::default())?),
                 token,
+                config.agent.default_backend().to_owned(),
             )?;
             let listener = tokio::net::TcpListener::bind(listen).await?;
             let mut shutdown = shutdown_channel()?;
