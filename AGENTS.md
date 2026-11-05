@@ -48,9 +48,16 @@ migrations/    数据库迁移（核心领地）
 
 ## 部署链（生产机 backup238 / 192.168.1.223，目录 /home/windy2/ru41-mimo-smoke）
 
+**只改了插件代码时走热更（几十秒，别等 CI）**：`deploy/hot-patch.sh <插件名> [容器名...]`
+——本地 `cargo build --release --features plugin-entry` → scp .so → `docker restart` 该容器。
+插件是 cdylib，容器启动时从 `/etc/ru41/plugins` 加载，替换 .so 重启即生效。
+不适用：改了 `src/`（宿主二进制变了，插件 ABI 对不上）、改了插件 `skills/`（技能包在镜像里）、要重建 sidecar。
+
+**改了核心代码或要出正式镜像时走完整链**：
+
 1. commit + `git push origin main main:exp/plugin-api`。
-2. CI（单一 workflow，check→image 两个 job）构建 `ghcr.io/windy664/ru41:<40位SHA>`（约 10 分钟，后台轮询 `gh run view <id>`）。
-3. 本机 `docker pull` → `docker save | ssh windy2@192.168.1.223 docker load`。
+2. CI（单一 workflow，check 与 image 两个 job **并行**）构建 `ghcr.io/windy664/ru41:<40位SHA>`（约 5-6 分钟，后台轮询 `gh run view <id>`）。
+3. 本机 `docker pull` → `docker save | ssh windy2@192.168.1.223 docker load`（镜像约 2.7GB，这一步 100-140 秒）。
 4. 服务器：`docker tag ...:SHA ru41:local` → `docker create` + `docker cp CID:/etc/ru41/plugins/. ~/ru41-mimo-smoke/plugins/` + `docker rm` → `bash ~/ru41-roll.sh`（自动发现全部 ru41 容器——名字前缀 `ru41-` 且 entrypoint 是 ru41，无手写名单；滚动重建到 `ru41:local`，自动备份到 ~/roll-backup-*；仓库同源副本在 `deploy/roll.sh`）。
 5. 验证：`docker ps | grep -c Up`（应 ~32）、`docker logs ru41-<插件> --since 5m`。
 

@@ -55,9 +55,10 @@ jobs:
       - run: cargo +1.99 test --locked
 
   # 构建完整镜像（二进制 + 16 插件）推到 GHCR，服务器只需 docker pull。
-  # check 红了不浪费构建；PR 不推镜像。
+  # 与 check 并行：check 约 2.5 分钟、镜像约 5 分钟，串行要等 8 分钟。
+  # 代价是 check 红了镜像照推——但镜像推了也不会自动部署，部署仍以 CI 全绿为准。
+  # PR 不推镜像。
   image:
-    needs: check
     if: github.event_name != 'pull_request'
     runs-on: ubuntu-latest
     steps:
