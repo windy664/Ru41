@@ -151,12 +151,15 @@ pub struct ObsidianSection {
     pub notify: Option<bool>,
     /// rebase 冲突时用 LLM 语义合并；默认 true（无 key 时降级为保留现场+通知）。
     pub merge_ai: Option<bool>,
-    /// 合并用 chat 端点；默认 MiniMax 的 OpenAI 兼容端点。
+    /// 合并用端点；不写就用底座供应商（[agent.pi]）的端点。
     pub merge_base_url: Option<String>,
-    /// 合并用模型；默认 MiniMax-M3。
+    /// 合并用模型；不写就用底座供应商的模型。
     pub merge_model: Option<String>,
-    /// 合并 key 的环境变量名；默认 MINIMAX_API_KEY。
+    /// 合并 key 的环境变量名；不写就用底座供应商的密钥变量。
     pub merge_api_key_env: Option<String>,
+    /// 合并用协议：anthropic-messages（默认）/ openai-completions；
+    /// 不写就跟底座供应商一致。
+    pub merge_api: Option<String>,
 }
 
 impl ObsidianSection {
@@ -165,9 +168,6 @@ impl ObsidianSection {
     pub const DEFAULT_REMOTE: &str = "origin";
     pub const DEFAULT_BRANCH: &str = "master";
     pub const DEFAULT_INBOX_DIR: &str = "00-Inbox-收件箱";
-    pub const DEFAULT_MERGE_BASE_URL: &str = "https://api.minimax.io/v1";
-    pub const DEFAULT_MERGE_MODEL: &str = "MiniMax-M3";
-    pub const DEFAULT_MERGE_KEY_ENV: &str = "MINIMAX_API_KEY";
 
     /// 配置是否已齐（schedule list 的 enabled 判定与装配共用同一套检查）。
     pub fn is_ready(&self) -> bool {

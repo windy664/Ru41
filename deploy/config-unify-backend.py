@@ -49,6 +49,26 @@ def ensure_default_backend(text: str) -> str:
     return text.rstrip("\n") + "\n\n" + block
 
 
+PI_BASE_URL = "https://api.minimax.io/anthropic"
+PI_API = "anthropic-messages"
+
+
+def ensure_pi_provider(text: str) -> str:
+    """把底座供应商的端点与协议写明——供应商只在一处定义（AI 合并也复用它）。"""
+    match = re.search(r"^\[agent\.pi\][^\[]*?(?=^\[|\Z)", text, re.M | re.S)
+    if not match:
+        return text
+    block = match.group(0)
+    new_block = block
+    if not re.search(r"^base_url\s*=", new_block, re.M):
+        new_block = new_block.rstrip("\n") + f"\nbase_url = \"{PI_BASE_URL}\""
+    if not re.search(r"^api\s*=", new_block, re.M):
+        new_block = new_block.rstrip("\n") + f"\napi = \"{PI_API}\""
+    if not new_block.endswith("\n"):
+        new_block += "\n"
+    return text[: match.start()] + new_block + text[match.end() :]
+
+
 def ensure_silent_sources(text: str) -> str:
     if re.search(r"^silent_sources\s*=", text, re.M):
         return re.sub(
@@ -75,6 +95,7 @@ def main(paths: list[str]) -> int:
         text = drop_table(text, "agent.codex.provider")
         text = drop_table(text, "agent.codex")
         text = ensure_default_backend(text)
+        text = ensure_pi_provider(text)
         text = ensure_silent_sources(text)
         if text == original:
             print(f"SKIP {path}: 已经是目标状态")

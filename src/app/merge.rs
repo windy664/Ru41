@@ -8,20 +8,42 @@
 use anyhow::{Context, Result, bail};
 use std::time::Duration;
 
-/// AI 合并的运行时设置（obsidian.merge_* 配置 + key 解析后的产物）。
+/// 供应商协议。跟底座（pi）用的是同一套：MiniMax 走 Anthropic Messages。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum MergeApi {
+    /// Anthropic Messages（`POST {base}/v1/messages`）。
+    AnthropicMessages,
+    /// OpenAI Chat Completions（`POST {base}/chat/completions`）。
+    OpenAiCompletions,
+}
+
+impl MergeApi {
+    /// 从配置字符串解析；不认识的值按 Anthropic 处理（MiniMax 原生协议）。
+    pub fn parse(value: &str) -> Self {
+        match value.trim() {
+            "openai-completions" | "openai" | "chat" => Self::OpenAiCompletions,
+            _ => Self::AnthropicMessages,
+        }
+    }
+}
+
+/// AI 合并的运行时设置：默认直接取底座供应商（[agent.pi]）的端点、模型与密钥，
+/// obsidian.merge_* 只是覆盖项——供应商只有一处定义。
 #[derive(Debug, Clone)]
 pub struct MergeSettings {
     pub base_url: String,
     pub model: String,
     pub api_key: String,
+    pub api: MergeApi,
 }
 
-/// chat completions 风格的冲突合并器（默认 GLM coding 端点）。
+/// 冲突合并器：按供应商协议发一次 chat 请求，取回合并后的正文。
 pub struct MergeResolver {
     http: reqwest::Client,
     base_url: String,
     model: String,
     api_key: String,
+    api: MergeApi,
 }
 
 impl MergeResolver {
@@ -29,6 +51,7 @@ impl MergeResolver {
         base_url: impl Into<String>,
         model: impl Into<String>,
         api_key: impl Into<String>,
+        api: MergeApi,
     ) -> Self {
         Self {
             http: reqwest::Client::builder()
@@ -38,15 +61,69 @@ impl MergeResolver {
             base_url: base_url.into().trim_end_matches('/').to_owned(),
             model: model.into(),
             api_key: api_key.into(),
+            api,
         }
     }
 
     /// 合并单个带冲突标记的文件，返回合并后的完整内容。
     pub async fn resolve(&self, path: &str, conflicted: &str) -> Result<String> {
+        let prompt = build_prompt(path, conflicted);
+        let raw = match self.api {
+            MergeApi::AnthropicMessages => self.anthropic_request(&prompt).await?,
+            MergeApi::OpenAiCompletions => self.openai_request(&prompt).await?,
+        };
+        let merged = clean_response(&raw);
+        validate(&merged, conflicted)?;
+        Ok(merged)
+    }
+
+    /// Anthropic Messages 协议（MiniMax 原生端点）。
+    async fn anthropic_request(&self, prompt: &str) -> Result<String> {
+        let body = serde_json::json!({
+            "model": self.model,
+            "max_tokens": 8192,
+            "temperature": 0.2,
+            "messages": [{"role": "user", "content": prompt}],
+        });
+        let response = self
+            .http
+            .post(format!("{}/v1/messages", self.base_url))
+            .header("x-api-key", &self.api_key)
+            .header("anthropic-version", "2023-06-01")
+            .json(&body)
+            .send()
+            .await
+            .context("合并请求失败")?;
+        let status = response.status();
+        let text = response.text().await.unwrap_or_default();
+        if !status.is_success() {
+            bail!("合并 HTTP {status}：{}", &text[..text.len().min(200)]);
+        }
+        serde_json::from_str::<serde_json::Value>(&text)
+            .ok()
+            .and_then(|v| {
+                v.get("content")
+                    .and_then(|c| c.as_array())
+                    .and_then(|blocks| {
+                        blocks
+                            .iter()
+                            .find(|block| {
+                                block.get("type").and_then(|t| t.as_str()) == Some("text")
+                            })
+                            .and_then(|block| block.get("text"))
+                            .and_then(|t| t.as_str())
+                            .map(str::to_owned)
+                    })
+            })
+            .context("合并响应缺 content[].text")
+    }
+
+    /// OpenAI Chat Completions 协议（备用；底座本身不用这条）。
+    async fn openai_request(&self, prompt: &str) -> Result<String> {
         let body = serde_json::json!({
             "model": self.model,
             "temperature": 0.2,
-            "messages": [{"role": "user", "content": build_prompt(path, conflicted)}],
+            "messages": [{"role": "user", "content": prompt}],
         });
         let response = self
             .http
@@ -61,17 +138,14 @@ impl MergeResolver {
         if !status.is_success() {
             bail!("合并 HTTP {status}：{}", &text[..text.len().min(200)]);
         }
-        let raw = serde_json::from_str::<serde_json::Value>(&text)
+        serde_json::from_str::<serde_json::Value>(&text)
             .ok()
             .and_then(|v| {
                 v.pointer("/choices/0/message/content")
                     .and_then(|c| c.as_str())
                     .map(str::to_owned)
             })
-            .context("合并响应缺 choices[0].message.content")?;
-        let merged = clean_response(&raw);
-        validate(&merged, conflicted)?;
-        Ok(merged)
+            .context("合并响应缺 choices[0].message.content")
     }
 }
 
