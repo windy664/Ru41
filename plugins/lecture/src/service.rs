@@ -14,6 +14,17 @@ use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::time::Duration;
 
+/// 转写结果：文本 + 落盘路径（长录音让 agent 自己分段读文件）。
+struct Transcript {
+    /// 完整转写文本。
+    text: String,
+    /// 转写全文文件路径（agent 沙箱可读：工作目录与 run 目录同在 /data 下）。
+    path: PathBuf,
+}
+
+/// 转写短于这个长度就内联进 prompt，超过则只给文件路径。
+const TRANSCRIPT_INLINE_LIMIT: usize = 4000;
+
 pub struct LectureWorker {
     store: Arc<dyn TaskStore>,
     options: TodoOptions,
@@ -73,7 +84,7 @@ impl LectureWorker {
                 Ok(serde_json::json!({
                     "processed": item.msg_id,
                     "course": course,
-                    "transcript_chars": transcript.chars().count(),
+                    "transcript_chars": transcript.text.chars().count(),
                     "task_id": enqueued.task.id,
                 }))
             }
@@ -90,9 +101,13 @@ impl LectureWorker {
         }
     }
 
-    /// 切片 → ASR 逐片转写拼接。中断重跑时切片已有产物直接复用，
-    /// 转写本身不落盘（失败重投会重调 ASR，费用可控）。
-    async fn transcribe(&self, item: &PendingItem) -> Result<String> {
+    /// 切片 → ASR 逐片转写 → 落盘成一份转写全文。
+    ///
+    /// 每片的转写结果单独存成 `slices/<片名>.txt`：重投时已有文本直接复用，
+    /// 不再重调 ASR（本地 CPU 也要跑几分钟）。整段拼进 prompt 只在文本短时用；
+    /// 长录音改用「转写文件路径 + 让 agent 分段读」，避免一次把全文塞进上下文
+    /// （长上下文里模型容易漏中段，失败重跑也要重付整段 token）。
+    async fn transcribe(&self, item: &PendingItem) -> Result<Transcript> {
         let work = self.config.workspace.join(&item.msg_id);
         let slices_dir = work.join("slices");
         std::fs::create_dir_all(&slices_dir)
@@ -111,17 +126,33 @@ impl LectureWorker {
         )?;
         let mut parts = Vec::new();
         for (index, slice) in slices.iter().enumerate() {
-            let text = asr
-                .transcribe(slice)
-                .await
-                .with_context(|| format!("转写第 {}/{} 片失败", index + 1, slices.len()))?;
+            // 每片的转写文本缓存：与切片同名 .txt，重投时复用。
+            let text_path = slice.with_extension("txt");
+            let text = match std::fs::read_to_string(&text_path) {
+                Ok(cached) if !cached.trim().is_empty() => cached,
+                _ => {
+                    let text = asr
+                        .transcribe(slice)
+                        .await
+                        .with_context(|| format!("转写第 {}/{} 片失败", index + 1, slices.len()))?;
+                    let _ = std::fs::write(&text_path, &text);
+                    text
+                }
+            };
             parts.push(text);
         }
-        Ok(parts
+        let joined = parts
             .into_iter()
-            .filter(|p| !p.is_empty())
+            .filter(|p| !p.trim().is_empty())
             .collect::<Vec<_>>()
-            .join("\n\n"))
+            .join("\n\n");
+        // 全文另存一份：长录音时 agent 自己分段读这个文件。
+        let transcript_path = work.join("transcript.md");
+        let _ = std::fs::write(&transcript_path, &joined);
+        Ok(Transcript {
+            text: joined,
+            path: transcript_path,
+        })
     }
 
     /// 原始文件切片；已有切片则跳过（中断续跑不重复转码）。
@@ -220,7 +251,7 @@ impl LectureWorker {
         &self,
         item: &PendingItem,
         course: &str,
-        transcript: &str,
+        transcript: &Transcript,
     ) -> Result<ru41::domain::EnqueueResult> {
         let (date, stem) = archive_name(item);
         let recorded_label = Local
@@ -250,6 +281,18 @@ impl LectureWorker {
                  查不到再用 ls 找同名目录；确实没有才在最近的学期目录下新建。"
             )
         };
+        // 短转写直接内联；长的只给文件路径，让 agent 分段读（上下文小、可续跑）。
+        let transcript_source = if transcript.text.chars().count() <= TRANSCRIPT_INLINE_LIMIT {
+            format!("以下是本次转写原文：\n\n{}", transcript.text)
+        } else {
+            format!(
+                "以下是本次转写原文（共 {} 字，存放在文件里）：\n\n{}\n\n\
+                 **不要一次读完**：用 read/bash 分段读（例如每次 200 行），边读边整理，\
+                 读完再写笔记。文件只读，不要修改。",
+                transcript.text.chars().count(),
+                transcript.path.display()
+            )
+        };
         let prompt = format!(
             "请把课堂录音转写整理成课堂笔记，用途只有一个：期末复习拿分。宁可短而实，不要长而空。\n\
              - 录音时间：{recorded_label}（{recorded_source}；课程匹配与归档日期的依据）\n\
@@ -274,7 +317,7 @@ impl LectureWorker {
              10. **不臆想**：只依据转写原文整理，课堂没讲的内容不补充、不外推；无法辨认或疑似转写错误的片段如实标注「待核对」，不要编造顺滑的假内容；若整段转写与学科无关（静音幻觉、字幕署名等），只写一行说明该段无可整理内容。\n\
              11. 写完把改动提交进 Vault 仓库（提交信息前缀 `[ru41]`，例如 `[ru41] 课堂笔记：{date} {course}`）。\n\
              12. 完成后简单汇报本次笔记要点与最终写入路径（不超过 10 行），不要复述全文。\n\n\
-             以下是本次转写原文：\n\n{transcript}",
+             {transcript_source}",
             recorded_source = item.recorded_time_source(),
         );
         self.store.enqueue_with_notify(
@@ -326,6 +369,27 @@ impl ru41::ingress::schedule::PollJob for LectureWorker {
 }
 
 /// 归档命名：日期取录音时间（文件名解析出的开录时刻，回退收到时间）的本地日期；stem 来自原始文件名。
+#[cfg(test)]
+mod tests {
+    use super::{TRANSCRIPT_INLINE_LIMIT, Transcript};
+    use std::path::PathBuf;
+
+    /// 短转写内联、长转写只给路径：两种形态都要让 agent 拿到全文。
+    #[test]
+    fn transcript_source_switches_between_inline_and_path() {
+        let short = Transcript {
+            text: "老师讲了一个例子。".repeat(10),
+            path: PathBuf::from("/data/lecture/x/transcript.md"),
+        };
+        assert!(short.text.chars().count() <= TRANSCRIPT_INLINE_LIMIT);
+        let long = Transcript {
+            text: "长".repeat(TRANSCRIPT_INLINE_LIMIT + 1),
+            path: PathBuf::from("/data/lecture/x/transcript.md"),
+        };
+        assert!(long.text.chars().count() > TRANSCRIPT_INLINE_LIMIT);
+    }
+}
+
 fn archive_name(item: &PendingItem) -> (String, String) {
     let date = Local
         .timestamp_opt(item.recorded_time(), 0)
