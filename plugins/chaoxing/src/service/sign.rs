@@ -29,6 +29,13 @@ pub(super) fn sign_response_ok(response: &str) -> bool {
     text.contains("success") || response.contains("签到成功") || response.contains("已签到")
 }
 
+/// 平台说「您已签到过了」：说明**此前已签**（多半是用户自己在手机上签的），
+/// 不是本次提交签成的——回执与归因都要分开说，别把用户的功劳记成自动签到的。
+pub(super) fn sign_already_done(response: &str) -> bool {
+    let text = response.to_lowercase();
+    response.contains("已签到") && !response.contains("签到成功") && !text.contains("success")
+}
+
 /// 课表窗口向前后各延伸的秒数（覆盖提前签到与拖堂后补签）。
 const CLASS_WINDOW_EXTEND_SECS: i64 = 15 * 60;
 /// 课表窗口外的兜底实轮询间隔（防课表外的临时签到漏检，同时压住请求量）。
@@ -215,12 +222,19 @@ impl ChaoxingTracker {
                     .await?;
                 let response = self.client.sign(&course, &activity, &method).await?;
                 let ok = sign_response_ok(&response);
-                self.mark_signed(&course, &activity, "cli");
+                let already = sign_already_done(&response);
+                self.mark_signed(&course, &activity, if already { "already" } else { "cli" });
                 if let Some(notifier) = &self.notifier {
-                    let mark = if ok { "✅" } else { "❌" };
+                    let (mark, verb) = if already {
+                        ("ℹ️", "此前已签到")
+                    } else if ok {
+                        ("✅", "签到成功")
+                    } else {
+                        ("❌", "签到失败")
+                    };
                     let message = format!(
                         "{mark} 学习通{}：{}｜{}（平台响应：{}）",
-                        if ok { "签到成功" } else { "签到失败" },
+                        verb,
                         course.title,
                         activity.type_label(),
                         response.trim()
@@ -471,6 +485,16 @@ impl ChaoxingTracker {
                 Err(_) => return AutoSignOutcome::Transient,
             };
             tried += 1;
+            if sign_already_done(&response) {
+                // 有人（多半是用户自己）已经签过，别记成自动签到的功劳。
+                self.mark_signed(course, activity, "already");
+                return AutoSignOutcome::Signed(format!(
+                    "- ℹ️{}｜{}｜此前已签到（平台回：{}），不是本次自动签的",
+                    course.title,
+                    activity.type_label(),
+                    response.trim()
+                ));
+            }
             if sign_response_ok(&response) {
                 self.mark_signed(course, activity, "auto");
                 return AutoSignOutcome::Signed(format!(
@@ -525,7 +549,15 @@ impl ChaoxingTracker {
         };
         match self.client.sign(course, activity, &method).await {
             Ok(response) => {
-                if sign_response_ok(&response) {
+                if sign_already_done(&response) {
+                    self.mark_signed(course, activity, "already");
+                    AutoSignOutcome::Signed(format!(
+                        "- ℹ️{}｜{}｜此前已签到（平台回：{}），不是本次自动签的",
+                        course.title,
+                        activity.type_label(),
+                        response.trim()
+                    ))
+                } else if sign_response_ok(&response) {
                     self.mark_signed(course, activity, "auto");
                     AutoSignOutcome::Signed(format!(
                         "- ✅{}｜{}｜自动签到成功（平台响应：{}）",
@@ -1028,6 +1060,22 @@ fn course_title_match(a: &str, b: &str) -> bool {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn already_signed_is_not_our_success() {
+        use super::{sign_already_done, sign_response_ok};
+        // 平台说「您已签到过了」：已签状态为真，但不是本次提交签成的。
+        assert!(sign_response_ok("您已签到过了"));
+        assert!(sign_already_done("您已签到过了"));
+        // 真正签成：不算「此前已签」。
+        assert!(sign_response_ok("success"));
+        assert!(!sign_already_done("success"));
+        assert!(sign_response_ok("签到成功"));
+        assert!(!sign_already_done("签到成功"));
+        // 被拒：两者皆否。
+        assert!(!sign_response_ok("签到失败[90002]"));
+        assert!(!sign_already_done("签到失败[90002]"));
+    }
+
     use super::{course_title_match, in_any_window};
     use crate::{ChaoxingTracker, config::ChaoxingSection, source::ChaoxingClient};
     use anyhow::Result;
