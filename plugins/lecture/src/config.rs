@@ -30,6 +30,11 @@ pub struct LectureSection {
     /// Vault 内课程根目录（相对路径），默认 01-Courses-课程；
     /// 整理笔记存 `{vault_dir}/{课程}/课堂笔记.md`（转写是临时产物，不入 Vault）。
     pub vault_dir: Option<String>,
+    /// Vault 在 agent 沙箱里的绝对路径（容器内挂载点），默认 /vault。
+    /// 笔记必须写这个绝对路径：相对路径会落进任务工作目录（沙箱），写完就丢。
+    pub vault_root: Option<String>,
+    /// 课程认不出来时，笔记暂存到 Vault 的哪个目录（相对 vault_root），默认 00-Inbox-收件箱。
+    pub inbox_dir: Option<String>,
     /// 未匹配到当天课时，转写归入的课程名，默认 课堂录音。
     pub fallback_course: Option<String>,
 }
@@ -42,6 +47,8 @@ impl LectureSection {
     pub const DEFAULT_SLICE_SECS: u64 = 600;
     pub const DEFAULT_WORKSPACE: &str = "/data/lecture";
     pub const DEFAULT_VAULT_DIR: &str = "01-Courses-课程";
+    pub const DEFAULT_VAULT_ROOT: &str = "/vault";
+    pub const DEFAULT_INBOX_DIR: &str = "00-Inbox-收件箱";
     pub const DEFAULT_FALLBACK_COURSE: &str = "课堂录音";
     /// worker 轮询间隔（秒）。
     pub const DEFAULT_INTERVAL_SECS: u64 = 60;
@@ -135,6 +142,16 @@ impl LectureSection {
                 .clone()
                 .filter(|c| !c.trim().is_empty())
                 .unwrap_or_else(|| Self::DEFAULT_FALLBACK_COURSE.into()),
+            vault_root: self
+                .vault_root
+                .clone()
+                .filter(|v| !v.trim().is_empty())
+                .unwrap_or_else(|| Self::DEFAULT_VAULT_ROOT.into()),
+            inbox_dir: self
+                .inbox_dir
+                .clone()
+                .filter(|v| !v.trim().is_empty())
+                .unwrap_or_else(|| Self::DEFAULT_INBOX_DIR.into()),
         })
     }
 }
@@ -149,5 +166,7 @@ pub struct LectureConfig {
     pub slice_secs: u64,
     pub workspace: std::path::PathBuf,
     pub vault_dir: String,
+    pub vault_root: String,
+    pub inbox_dir: String,
     pub fallback_course: String,
 }
