@@ -10,14 +10,14 @@ password = "p"
 vault_course_dir = "01-Courses-课程/2026-Fall-大一上"
 
 [course_aliases]
-"思想道德与法治" = "思想道德修养与法律基础"
+"程序设计基础" = "C语言程序设计"
 "#,
     )
     .expect("section should parse");
     let config = section.course_sync_config().expect("course config");
     assert_eq!(
-        config.aliases.get("思想道德与法治").map(String::as_str),
-        Some("思想道德修养与法律基础")
+        config.aliases.get("程序设计基础").map(String::as_str),
+        Some("C语言程序设计")
     );
     assert_eq!(config.vault_dir, "01-Courses-课程/2026-Fall-大一上");
 }

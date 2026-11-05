@@ -393,7 +393,10 @@ async fn todo_created_then_synced_on_platform_completion() {
     };
     let t1 = todo_of("职业生涯规划#T1");
     // 展示名走 vault 课程映射：平台原名 → 课表短名（目录名）。
-    assert!(t1.title.contains("智慧树｜大学生职业生涯规划｜第五节课 课前测"));
+    assert!(
+        t1.title
+            .contains("智慧树｜大学生职业生涯规划｜第五节课 课前测")
+    );
     assert!(t1.due_at.is_some() && t1.remind_at.is_some());
     assert_eq!(t1.source.as_ref().unwrap().channel, "zhihuishu");
     assert!(channel.sent.lock().unwrap()[0].contains("已入待办"));
@@ -636,7 +639,10 @@ async fn vault_index_merges_courses_into_one_dir() {
     assert!(index.contains("# 大学生职业生涯规划 · 智慧树作业"));
     assert!(index.contains("course: 大学生职业生涯规划"));
     assert!(!index.contains("platform:"));
-    assert!(index.contains("未完成（4）"), "两个班次的任务应合并: {index}");
+    assert!(
+        index.contains("未完成（4）"),
+        "两个班次的任务应合并: {index}"
+    );
     assert!(index.contains("另一班次的专属作业"));
 }
 

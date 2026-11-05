@@ -10,7 +10,7 @@ username = "u"
 password = "p"
 
 [sources.jwxt.course_aliases]
-"思想道德与法治" = "思想道德修养与法律基础"
+"程序设计基础" = "C语言程序设计"
 "#,
     )
     .expect("config should parse");
@@ -19,7 +19,11 @@ password = "p"
         .get::<ru41_plugin_jwxt::JwxtSection>("jwxt")
         .expect("jwxt section");
     assert_eq!(
-        section.course_aliases.as_ref().and_then(|m| m.get("思想道德与法治")).map(String::as_str),
-        Some("思想道德修养与法律基础")
+        section
+            .course_aliases
+            .as_ref()
+            .and_then(|m| m.get("程序设计基础"))
+            .map(String::as_str),
+        Some("C语言程序设计")
     );
 }
