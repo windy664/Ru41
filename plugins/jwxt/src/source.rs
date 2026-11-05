@@ -11,12 +11,12 @@
 //! 所以轮询路径 = 会话复用 → TGT 换 ST → 自动验证码登录，全程无需人工。
 //! 仅当密码错误/账号锁定等硬失败时才提醒人工介入。
 
-use ru41::domain::timetable::CourseMeeting;
 use anyhow::{Context, Result, bail};
 use base64::Engine;
 use num_bigint::BigUint;
 use num_traits::{Num, Zero};
 use reqwest::cookie::CookieStore;
+use ru41::domain::timetable::CourseMeeting;
 use serde::Deserialize;
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
@@ -68,7 +68,6 @@ const GNMKDM_KB: &str = "N2151";
 
 /// 学期码：正方 xqm 编码。3=第一学期、12=第二学期、16=第三学期。
 pub const TERM_CODES: [(&str, &str); 3] = [("3", "1"), ("12", "2"), ("16", "3")];
-
 
 /// 课表响应（只取需要的字段；其余宽容忽略）。
 #[derive(Debug, Deserialize)]

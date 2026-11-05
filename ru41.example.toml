@@ -208,11 +208,10 @@ app_secret = ""
 # interval_secs = 21600
 # boss_path = "/data/boss_jobs.json"
 
-# 课程索引（ru41 course-index poll/run）：把课表（jwxt 快照）、智慧树、
-# 学习通三边的课程交叉枚举，在 vault 里为每门课建目录并写「课程索引.md」，
-# 学期根另有一份「课程总览.md」。同一门课各平台名字不同时用别名表归一。
-# [sources.course-index]
-# vault_course_dir = "01-Courses-课程/2026-Fall-大一上"
-# interval_secs = 3600
-# [sources.course-index.course_aliases]
+# 课程目录同步（ru41 jwxt courses）：以教务课表为准，在 vault 里为每门课建目录
+# 并写「课程索引.md」，学期根写「课程总览.md」。课程清单以课表为权威来源。
+# [sources.jwxt.course_aliases]
 # "思想道德与法治" = "思想道德修养与法律基础"
+# vault_course_dir = "01-Courses-课程/2026-Fall-大一上"
+# courses_vault_sync = true
+# courses_interval_secs = 3600
