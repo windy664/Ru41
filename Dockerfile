@@ -1,5 +1,23 @@
 # syntax=docker/dockerfile:1
-FROM rust:1.98-trixie AS builder
+# sccache 基底：内容级编译缓存。
+# Docker 层缓存只能整层复用——插件源码一变，20 个插件的源码层全部失效，
+# 连带把每个插件静态链接的宿主（每个 .so 7-15MB）重链一遍，镜像构建要 5 分钟。
+# sccache 按源码内容命中：跨提交复用，改一个插件只重编那一个。
+# 拉不到 sccache 就退回普通编译（包装脚本直接 exec rustc），构建不会因此失败。
+FROM rust:1.98-trixie AS sccache-base
+RUN set -e; \
+    SCCACHE_VER=v0.10.0; \
+    curl -fsSL "https://github.com/mozilla/sccache/releases/download/${SCCACHE_VER}/sccache-${SCCACHE_VER}-x86_64-unknown-linux-musl.tar.gz" -o /tmp/sccache.tar.gz \
+      && tar -xzf /tmp/sccache.tar.gz -C /usr/local/bin --strip-components=1 \
+           "sccache-${SCCACHE_VER}-x86_64-unknown-linux-musl/sccache" \
+      && rm -f /tmp/sccache.tar.gz \
+      && sccache --version \
+    || echo "sccache 下载失败，退回普通编译"; \
+    printf '#!/bin/sh\nif [ -x /usr/local/bin/sccache ]; then exec /usr/local/bin/sccache "$@"; fi\nexec "$@"\n' > /usr/local/bin/rustc-sccache; \
+    chmod +x /usr/local/bin/rustc-sccache
+ENV RUSTC_WRAPPER=/usr/local/bin/rustc-sccache
+
+FROM sccache-base AS builder
 WORKDIR /build
 # 依赖层：只放清单 + 空壳源码，把全部外部依赖编进缓存层。
 # 常规代码提交不碰这一层（只有 Cargo.lock / 清单 / crates 变化才重建），
@@ -8,19 +26,21 @@ WORKDIR /build
 COPY Cargo.toml Cargo.lock build.rs ./
 COPY crates ./crates
 COPY migrations ./migrations
-RUN mkdir -p src \
+RUN --mount=type=cache,id=sccache,target=/build/.sccache \
+    mkdir -p src \
     && echo 'fn main() {}' > src/main.rs \
     && touch src/lib.rs \
-    && cargo build --locked --release --bin ru41 --features local-embed
+    && SCCACHE_DIR=/build/.sccache cargo build --locked --release --bin ru41 --features local-embed
 # 真源码层：只重编 ru41 本体，依赖全部命中缓存。
 COPY src ./src
 ARG RU41_GIT_HASH_OVERRIDE=unknown
 ENV RU41_GIT_HASH_OVERRIDE=$RU41_GIT_HASH_OVERRIDE
-RUN cargo build --locked --release --bin ru41 --features local-embed
+RUN --mount=type=cache,id=sccache,target=/build/.sccache \
+    SCCACHE_DIR=/build/.sccache cargo build --locked --release --bin ru41 --features local-embed
 
 # 插件构建：与宿主同一源码树同一锁文件，握手（api 版本 + deps stamp）才一致。
 # 产物打进镜像 /etc/ru41/plugins，镜像即完整交付物。
-FROM rust:1.98-trixie AS plugins
+FROM sccache-base AS plugins
 WORKDIR /build
 COPY Cargo.toml Cargo.lock build.rs ./
 COPY crates ./crates
@@ -29,21 +49,21 @@ COPY migrations ./migrations
 COPY --parents plugins/*/Cargo.toml ./
 ENV CARGO_TARGET_DIR=/build/.plugins-target
 # 依赖层：ru41 与全部插件用空壳 lib 预编译，外部依赖进缓存。
-RUN set -e \
+RUN --mount=type=cache,id=sccache,target=/build/.sccache \
  && mkdir -p src && echo 'fn main() {}' > src/main.rs && touch src/lib.rs \
  && for d in plugins/*/; do cp Cargo.lock "$d/Cargo.lock"; mkdir -p "$d/src"; touch "$d/src/lib.rs"; done \
- && for d in plugins/*/; do (cd "$d" && cargo build --release --features plugin-entry); done
+ && for d in plugins/*/; do (cd "$d" && SCCACHE_DIR=/build/.sccache cargo build --release --features plugin-entry); done
 # 真源码层：完整 src + 插件源码覆盖空壳，只重编 ru41 与插件本体。
 COPY src ./src
 COPY plugins ./plugins
 ARG RU41_GIT_HASH_OVERRIDE=unknown
 ENV RU41_GIT_HASH_OVERRIDE=$RU41_GIT_HASH_OVERRIDE
-RUN set -e; for d in plugins/*/; do cp Cargo.lock "$d/Cargo.lock"; done \
+RUN --mount=type=cache,id=sccache,target=/build/.sccache set -e; for d in plugins/*/; do cp Cargo.lock "$d/Cargo.lock"; done \
  # 防御空壳残留：依赖层 touch 过 src/lib.rs，若 COPY 进来的真实源码 mtime
  # 更旧，cargo 会误判「无变化」直接分发空壳 .so（2026-11-03 library 事故：
  # 该插件数日未动，全量重编时只它有此问题）。统一 touch 强制重编。
  && find plugins -name '*.rs' -exec touch {} + \
- && for d in plugins/*/; do (cd "$d" && cargo build --release --features plugin-entry); done \
+ && for d in plugins/*/; do (cd "$d" && SCCACHE_DIR=/build/.sccache cargo build --release --features plugin-entry); done \
  && mkdir -p /plugins-dist \
  # set -e 对 && 链中间的循环体不生效（2026-11-04 egress-audit 事故：cp 失败被
  # 吞、镜像缺插件但 CI 照绿），循环内必须显式 || exit。
