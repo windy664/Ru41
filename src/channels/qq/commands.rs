@@ -252,15 +252,21 @@ pub fn format_usage_overview(
             human_tokens(week.output_tokens)
         ));
     }
+    // 成功率与耗时：不依赖底座是否上报 token，永远有——报告再"空"也有硬数据。
+    lines.push(format!(
+        "**成功率** · {}/{} 次成功 · 失败 {} 次 · 平均 {:.0}s（最长 {:.0}s）",
+        week.succeeded, week.runs, week.failed, week.avg_seconds as f64, week.max_seconds as f64
+    ));
 
     if !week.by_model.is_empty() {
         lines.push(String::new());
         lines.push("**按模型**".to_owned());
         for item in &week.by_model {
             lines.push(format!(
-                "- `{}` · {} 次 · {}",
+                "- `{}` · {} 次 · 成功 {} · {}",
                 item.key,
                 item.runs,
+                item.succeeded,
                 token_phrase(item.total_tokens, item.reported_runs)
             ));
         }
@@ -276,8 +282,9 @@ pub fn format_usage_overview(
                 format!("{label}（{}）", item.key)
             };
             lines.push(format!(
-                "- {name} · {} 次 · {}",
+                "- {name} · {} 次 · 成功 {} · {}",
                 item.runs,
+                item.succeeded,
                 token_phrase(item.total_tokens, item.reported_runs)
             ));
         }
@@ -297,7 +304,7 @@ pub fn format_usage_overview(
     if week.runs > week.reported_runs {
         lines.push(String::new());
         lines.push(format!(
-            "> ⚠️ {} 次运行没有 token 数据（codex 走 GLM 的 chat 接口不返回 usage，只报 0）。\n想看每次运行具体做了什么：`ru41 task trace <任务号>`",
+            "> ℹ️ {} 次运行没有 token 数据：codex 走 GLM 的 chat 接口不返回 usage（只报 0），所以 token 列不出来；运行次数、成功率、耗时都是实的。\n想看某次运行具体做了什么：`ru41 task trace <任务号>`",
             week.runs - week.reported_runs
         ));
     }
@@ -482,6 +489,8 @@ mod tests {
             cached_input_tokens: 0,
             output_tokens: 0,
             total_tokens: total,
+            succeeded: runs.saturating_sub(1),
+            failed: 1,
         };
         let week = UsageOverview {
             days: 7,
@@ -494,6 +503,10 @@ mod tests {
             by_model: vec![stat("minimax/MiniMax-M3", 6, 1, 11_500)],
             by_source: vec![stat("qq", 6, 1, 11_500), stat("lecture", 24, 0, 0)],
             by_day: vec![stat("11-05", 30, 1, 11_500)],
+            succeeded: 120,
+            failed: 3,
+            avg_seconds: 42,
+            max_seconds: 300,
         };
         let day = UsageOverview {
             days: 1,
@@ -506,6 +519,10 @@ mod tests {
             by_model: Vec::new(),
             by_source: Vec::new(),
             by_day: Vec::new(),
+            succeeded: 29,
+            failed: 1,
+            avg_seconds: 40,
+            max_seconds: 280,
         };
         let text = format_usage_overview(&day, &week);
         eprintln!("{text}");
@@ -516,6 +533,9 @@ mod tests {
         assert!(text.contains("未上报 token"), "{text}");
         // 覆盖率与追查入口。
         assert!(text.contains("122 次运行没有 token 数据"), "{text}");
+        // 成功率与耗时：不依赖 token 覆盖，永远有。
+        assert!(text.contains("成功率"), "{text}");
+        assert!(text.contains("平均"), "{text}");
         assert!(text.contains("ru41 task trace"), "{text}");
         // 来源分组带中文名。
         assert!(text.contains("QQ 消息（qq）"), "{text}");

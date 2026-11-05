@@ -168,6 +168,10 @@ pub struct UsageStat {
     pub cached_input_tokens: u64,
     pub output_tokens: u64,
     pub total_tokens: u64,
+    /// 其中成功结束的次数。
+    pub succeeded: u32,
+    /// 其中失败结束的次数。
+    pub failed: u32,
 }
 
 impl UsageStat {
@@ -198,6 +202,14 @@ pub struct UsageOverview {
     pub by_source: Vec<UsageStat>,
     /// 按天分组（最近的在前）。
     pub by_day: Vec<UsageStat>,
+    /// 成功结束的运行数。
+    pub succeeded: u32,
+    /// 失败结束的运行数。
+    pub failed: u32,
+    /// 平均耗时（秒，只统计已结束的运行）。
+    pub avg_seconds: u64,
+    /// 最长的一次耗时（秒）。
+    pub max_seconds: u64,
 }
 
 /// 从窗口内的全部运行算出总览。
@@ -213,7 +225,10 @@ pub fn overview(runs: &[crate::ports::storage::UsageRun], days: u32) -> UsageOve
         cached_input_tokens: 0,
         output_tokens: 0,
         total_tokens: 0,
+        succeeded: 0,
+        failed: 0,
     };
+    let mut durations: Vec<u64> = Vec::new();
     for run in runs {
         // 模型名带底座前缀（codex/glm-4.6、pi/MiniMax-M3），免得同名不同底座看不清。
         let model = match run.model.clone() {
@@ -246,8 +261,15 @@ pub fn overview(runs: &[crate::ports::storage::UsageRun], days: u32) -> UsageOve
                 cached_input_tokens: 0,
                 output_tokens: 0,
                 total_tokens: 0,
+                succeeded: 0,
+                failed: 0,
             });
             entry.runs += 1;
+            if run.status == "succeeded" {
+                entry.succeeded += 1;
+            } else if run.status == "failed" {
+                entry.failed += 1;
+            }
             if reported {
                 entry.reported_runs += 1;
                 entry.input_tokens += input;
@@ -257,6 +279,15 @@ pub fn overview(runs: &[crate::ports::storage::UsageRun], days: u32) -> UsageOve
             }
         }
         totals.runs += 1;
+        if run.status == "succeeded" {
+            totals.succeeded += 1;
+        } else if run.status == "failed" {
+            totals.failed += 1;
+        }
+        if let Some(finished) = run.finished_at {
+            let seconds = (finished - run.started_at).max(0) as u64;
+            durations.push(seconds);
+        }
         if reported {
             totals.reported_runs += 1;
             totals.input_tokens += input;
@@ -289,6 +320,14 @@ pub fn overview(runs: &[crate::ports::storage::UsageRun], days: u32) -> UsageOve
             items.sort_by(|a, b| b.key.cmp(&a.key));
             items
         },
+        succeeded: totals.succeeded,
+        failed: totals.failed,
+        avg_seconds: if durations.is_empty() {
+            0
+        } else {
+            durations.iter().sum::<u64>() / durations.len() as u64
+        },
+        max_seconds: durations.iter().copied().max().unwrap_or(0),
     }
 }
 

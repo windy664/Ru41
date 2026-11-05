@@ -38,6 +38,10 @@ pub struct UsageRun {
     pub cached_input_tokens: Option<i64>,
     pub output_tokens: Option<i64>,
     pub total_tokens: Option<i64>,
+    /// 本次运行的状态（succeeded / failed / interrupted / running）。
+    pub status: String,
+    /// 结束时刻（秒），未结束为 None——用于算耗时。
+    pub finished_at: Option<i64>,
 }
 
 /// 任务与尝试的持久化边界；SQLite 是默认适配器。
