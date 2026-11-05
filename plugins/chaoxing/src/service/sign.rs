@@ -3,9 +3,9 @@
 
 use crate::config::ChaoxingConfig;
 use crate::source::ChaoxingClient;
-use ru41::ports::{channel::NotifyChannel, storage::TaskStore};
 use anyhow::Result;
 use chrono::TimeZone;
+use ru41::ports::{channel::NotifyChannel, storage::TaskStore};
 use serde::Serialize;
 use std::sync::Arc;
 
@@ -304,10 +304,7 @@ impl ChaoxingTracker {
             .unwrap_or_else(|| std::path::Path::new("."));
         std::fs::create_dir_all(dir)?;
         let path = dir.join("fallback-photo.jpg");
-        std::fs::write(
-            &path,
-            crate::source::fallback_photo_bytes(),
-        )?;
+        std::fs::write(&path, crate::source::fallback_photo_bytes())?;
         Ok(path)
     }
 
@@ -869,9 +866,9 @@ fn course_title_match(a: &str, b: &str) -> bool {
 mod tests {
     use super::{course_title_match, in_any_window};
     use crate::{ChaoxingTracker, config::ChaoxingSection, source::ChaoxingClient};
+    use anyhow::Result;
     use ru41::adapters::database::sqlite::SqliteTaskStore;
     use ru41::ports::storage::TaskStore;
-    use anyhow::Result;
     use std::sync::Arc;
 
     #[test]

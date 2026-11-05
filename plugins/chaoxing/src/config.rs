@@ -94,6 +94,9 @@ impl ChaoxingSection {
     /// Vault 学期目录默认值——必须与 sources.zhihuishu 的缺省一致，
     /// 两个平台的作业才聚合到同一目录（作业总表.md 也落在这里）。
     pub const DEFAULT_VAULT_COURSE_DIR: &str = "01-Courses-课程/2026-Fall-大一上";
+    /// 学习通课程名 → Vault 课程目录名的内置映射（按 2026 秋实际课程核对）。
+    /// 目录名以教务课表名为准；平台课名与课表一致的不必出现（默认同名）。
+    pub const DEFAULT_COURSE_MAP: &[(&str, &str)] = &[("大学英语新视野", "大学英语I（综合基础）")];
 
     /// 由 [sources.chaoxing] 解析出运行时配置；默认值与凭证兜底只定义在这里。
     pub fn resolved(&self, notify_target: String) -> Result<ChaoxingConfig> {
@@ -140,7 +143,12 @@ impl ChaoxingSection {
                     .clone()
                     .unwrap_or_else(|| Self::DEFAULT_VAULT_COURSE_DIR.into()),
             ),
-            vault_courses: self.vault_courses.clone().unwrap_or_default(),
+            vault_courses: self.vault_courses.clone().unwrap_or_else(|| {
+                Self::DEFAULT_COURSE_MAP
+                    .iter()
+                    .map(|(k, v)| (k.to_string(), v.to_string()))
+                    .collect()
+            }),
             work_vault_task_dirs: ru41::ports::vault::VaultTaskDirs::parse(
                 self.work_vault_task_dirs.as_deref(),
             )?,

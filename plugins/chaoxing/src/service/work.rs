@@ -2,12 +2,12 @@
 //! 与智慧树作业模块同构，共享同一 Vault 学期目录并聚合作业总表。
 //! 红线：作业只做提醒/跟踪/归档，不做自动作答（自动答题=代写）。
 
-use ru41::app::homework_work::{self as work_common, WorkNoteItem};
-use ru41::app::todo::TodoService;
 use crate::config::ChaoxingConfig;
 use crate::source::{ChaoxingClient, ChaoxingWork};
-use ru41::ports::{channel::NotifyChannel, storage::TaskStore, vault::Vault};
 use anyhow::Result;
+use ru41::app::homework_work::{self as work_common, WorkNoteItem};
+use ru41::app::todo::TodoService;
+use ru41::ports::{channel::NotifyChannel, storage::TaskStore, vault::Vault};
 use serde::Serialize;
 use std::sync::Arc;
 
@@ -138,10 +138,7 @@ impl ChaoxingWorkTracker {
                 Err(_) => continue, // 单课失败不破坏整体，也不刷屏
             };
             works_total += works.len();
-            let mut note_items: Vec<(
-                crate::source::ChaoxingWork,
-                Option<String>,
-            )> = Vec::new();
+            let mut note_items: Vec<(crate::source::ChaoxingWork, Option<String>)> = Vec::new();
 
             for work in works {
                 let key = format!("{}#{}", course.course_id, work.work_id);

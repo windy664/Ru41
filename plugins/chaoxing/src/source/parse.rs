@@ -109,8 +109,8 @@ pub(super) fn capture(text: &str, pattern: &str) -> Option<String> {
 
 #[cfg(test)]
 mod tests {
-    use crate::source::model::ChaoxingActivity;
     use super::*;
+    use crate::source::model::ChaoxingActivity;
 
     #[test]
     fn decode_course_list_skips_not_open() {
