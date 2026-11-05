@@ -18,9 +18,9 @@ impl TaskService {
         Self { store }
     }
 
-    /// 以默认底座（codex）入队；同 key 重复提交幂等返回既有任务。
+    /// 以默认底座（pi）入队；同 key 重复提交幂等返回既有任务。
     pub fn enqueue(&mut self, request_key: &str, prompt: &str) -> Result<EnqueueResult> {
-        self.enqueue_for(request_key, prompt, "codex")
+        self.enqueue_for(request_key, prompt, crate::bootstrap::config::AgentSection::DEFAULT_BACKEND)
     }
 
     pub fn enqueue_for(

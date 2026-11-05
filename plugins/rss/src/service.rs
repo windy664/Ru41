@@ -45,7 +45,7 @@ impl Default for RssConfig {
             interests: String::new(),
             max_items_per_feed: 50,
             interval_secs: 21_600,
-            backend: "codex".into(),
+            backend: "pi".into(),
             notify: None,
             digest_mode: DigestMode::default(),
             evening_hour: 21,

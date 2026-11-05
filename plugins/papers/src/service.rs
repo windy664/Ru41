@@ -29,7 +29,7 @@ impl Default for PapersConfig {
             interests: String::new(),
             max_results: 100,
             interval_secs: 21_600,
-            backend: "codex".into(),
+            backend: "pi".into(),
             notify: None,
         }
     }

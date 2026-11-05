@@ -22,7 +22,7 @@ tags: [Ru41, lecture, asr, plugin]
 ```toml
 [sources.lecture]
 # enabled = true            # 缺省启用；false 完全静默
-api_key = "GLM 的 key"      # 或 api_key_env = "ZHIPU_API_KEY"（默认）；whispercpp 本地服务可填占位值
+api_key = "占位值"          # 或 api_key_env = "MINIMAX_API_KEY"（默认）；whispercpp 本地服务可填占位值
 # asr_api = "openai"        # openai（默认，OpenAI 兼容）| whispercpp（whisper.cpp server 原生 /inference）
 # asr_base_url = "https://open.bigmodel.cn/api/paas/v4"   # OpenAI 兼容，可换 Groq
 # 本地 whisper.cpp server 示例：

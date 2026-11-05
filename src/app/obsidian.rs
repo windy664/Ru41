@@ -91,7 +91,10 @@ impl ObsidianSectionExt for crate::bootstrap::config::ObsidianSection {
                 .clone()
                 .unwrap_or_else(|| S::DEFAULT_INBOX_DIR.into()),
             interval_secs: self.interval_secs.unwrap_or(S::DEFAULT_INTERVAL_SECS),
-            backend: self.backend.clone().unwrap_or_else(|| "codex".into()),
+            backend: self
+                .backend
+                .clone()
+                .unwrap_or_else(|| crate::bootstrap::config::AgentSection::DEFAULT_BACKEND.into()),
             notify,
             merge: resolve_merge(self),
         })
@@ -785,7 +788,7 @@ impl ObsidianService {
             .config
             .merge
             .clone()
-            .context("AI 合并未启用或无 key（obsidian.merge_* / ZHIPU_API_KEY）")?;
+            .context("AI 合并未启用或无 key（obsidian.merge_* / MINIMAX_API_KEY）")?;
         if let Some(bad) = files
             .iter()
             .find(|f| !crate::app::merge::is_mergeable_path(f))

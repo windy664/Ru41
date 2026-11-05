@@ -60,11 +60,18 @@ pub(crate) async fn run(
     initialize_storage(&config, &options)?;
     let active_provider = config
         .agent
-        .codex
+        .pi
         .provider
-        .as_ref()
-        .and_then(|provider| provider.id.clone())
-        .unwrap_or_else(|| "codex".into());
+        .clone()
+        .or_else(|| {
+            config
+                .agent
+                .codex
+                .provider
+                .as_ref()
+                .and_then(|provider| provider.id.clone())
+        })
+        .unwrap_or_else(|| config.agent.default_backend().to_owned());
     Ok(json!({
         "created": created,
         "config_path": location.path,
@@ -84,16 +91,16 @@ fn choose_provider(non_interactive: bool, requested: Option<&str>) -> Result<Str
         return Ok(provider.to_owned());
     }
     if non_interactive || !std::io::stdin().is_terminal() {
-        return Ok("codex".into());
+        return Ok("minimax".into());
     }
-    eprint!("Model provider [codex/mimo] (codex): ");
+    eprint!("Model provider [minimax/mimo] (minimax): ");
     std::io::stderr().flush()?;
     let mut answer = String::new();
     std::io::stdin().read_line(&mut answer)?;
     match answer.trim() {
-        "" | "codex" => Ok("codex".into()),
+        "" | "minimax" => Ok("minimax".into()),
         "mimo" => Ok("mimo".into()),
-        other => bail!("unknown provider: {other}; expected codex or mimo"),
+        other => bail!("unknown provider: {other}; expected minimax or mimo"),
     }
 }
 
@@ -120,6 +127,22 @@ fn minimal_config(provider: &str, catalog_path: Option<&Path>) -> Result<Value> 
                 "wire_api": "responses",
             },
         });
+    }
+    // 默认底座统一为 pi：脚手架也只给一套（除非显式选了 mimo）。
+    if provider != "mimo" {
+        return Ok(json!({
+            "store": {"kind": "sqlite", "path": ".ru41/state.db"},
+            "worker": {"timeout_secs": 300, "runs_dir": ".ru41/runs", "sanitize": true},
+            "agent": {
+                "default_backend": "pi",
+                "pi": {
+                    "bin": "pi",
+                    "model": "minimax/MiniMax-M3",
+                    "provider": "minimax",
+                    "api_key_env": "MINIMAX_API_KEY",
+                },
+            },
+        }));
     }
     Ok(json!({
         "store": {"kind": "sqlite", "path": ".ru41/state.db"},

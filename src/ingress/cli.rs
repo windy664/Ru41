@@ -27,7 +27,7 @@ pub enum Command {
     Init {
         #[arg(long)]
         non_interactive: bool,
-        #[arg(long, value_parser = ["codex", "mimo"])]
+        #[arg(long, value_parser = ["minimax", "mimo"])]
         provider: Option<String>,
     },
     /// 启动 HTTP API；任务由独立 worker 执行。
@@ -272,8 +272,9 @@ pub enum QqCommand {
 pub enum TaskCommand {
     /// 入队一个请求。相同事件用相同的 key 与 prompt 重试。
     Add {
-        #[arg(long, default_value = "codex")]
-        backend: String,
+        /// 执行底座；不写就用配置里的默认底座（[agent].default_backend）。
+        #[arg(long)]
+        backend: Option<String>,
         #[arg(long)]
         key: String,
         #[arg(long)]

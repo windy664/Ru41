@@ -145,17 +145,17 @@ pub struct ObsidianSection {
     pub inbox_dir: Option<String>,
     /// obsidian run 的轮询间隔（秒），默认 300。
     pub interval_secs: Option<u64>,
-    /// 整理 digest 任务的执行底座，默认 codex。
+    /// 整理 digest 任务的执行底座，默认 pi。
     pub backend: Option<String>,
     /// 整理完成后是否经默认通知出口推送（[notify] channel）；默认 true。
     pub notify: Option<bool>,
     /// rebase 冲突时用 LLM 语义合并；默认 true（无 key 时降级为保留现场+通知）。
     pub merge_ai: Option<bool>,
-    /// 合并用 chat 端点；默认 GLM coding（与 agent.codex.provider 一致）。
+    /// 合并用 chat 端点；默认 MiniMax 的 OpenAI 兼容端点。
     pub merge_base_url: Option<String>,
-    /// 合并用模型；默认 glm-4.6。
+    /// 合并用模型；默认 MiniMax-M3。
     pub merge_model: Option<String>,
-    /// 合并 key 的环境变量名；默认 ZHIPU_API_KEY。
+    /// 合并 key 的环境变量名；默认 MINIMAX_API_KEY。
     pub merge_api_key_env: Option<String>,
 }
 
@@ -165,9 +165,9 @@ impl ObsidianSection {
     pub const DEFAULT_REMOTE: &str = "origin";
     pub const DEFAULT_BRANCH: &str = "master";
     pub const DEFAULT_INBOX_DIR: &str = "00-Inbox-收件箱";
-    pub const DEFAULT_MERGE_BASE_URL: &str = "https://open.bigmodel.cn/api/coding/paas/v4";
-    pub const DEFAULT_MERGE_MODEL: &str = "glm-4.6";
-    pub const DEFAULT_MERGE_KEY_ENV: &str = "ZHIPU_API_KEY";
+    pub const DEFAULT_MERGE_BASE_URL: &str = "https://api.minimax.io/v1";
+    pub const DEFAULT_MERGE_MODEL: &str = "MiniMax-M3";
+    pub const DEFAULT_MERGE_KEY_ENV: &str = "MINIMAX_API_KEY";
 
     /// 配置是否已齐（schedule list 的 enabled 判定与装配共用同一套检查）。
     pub fn is_ready(&self) -> bool {
@@ -183,6 +183,23 @@ pub struct AgentSection {
     pub pi: PiSection,
     pub codex: CodexSection,
     pub skills: AgentSkillsSection,
+    /// 全局默认底座：QQ 入口、CLI 入队、插件未显式指定时都用它。
+    /// 统一底座就改这一处；不写则用 [`AgentSection::DEFAULT_BACKEND`]。
+    pub default_backend: Option<String>,
+}
+
+impl AgentSection {
+    /// 默认底座 id。
+    pub const DEFAULT_BACKEND: &'static str = "pi";
+
+    /// 生效的默认底座：配置优先，空值回落默认。
+    pub fn default_backend(&self) -> &str {
+        self.default_backend
+            .as_deref()
+            .map(str::trim)
+            .filter(|value| !value.is_empty())
+            .unwrap_or(Self::DEFAULT_BACKEND)
+    }
 }
 
 #[derive(Debug, Default, Deserialize)]
