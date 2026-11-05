@@ -198,7 +198,7 @@ impl LectureWorker {
 
     /// 笔记落点（Vault 绝对路径）。课程认不出来时落收件箱，不硬造课程目录。
     /// 认得出时只给到课程根，真实目录名由 agent 查「课程总览.md」对照表决定
-    /// （课表课程名与 vault 目录名不一定一致，如「思想道德与法治」↔「思想道德修养与法律基础」）。
+    /// （课表课程名与 vault 目录名不一定一致，如「程序设计基础」↔「C语言程序设计」）。
     pub fn note_target(&self, course: &str, date: &str) -> String {
         let vault_root = self.config.vault_root.trim_end_matches('/');
         if course == self.config.fallback_course {
@@ -244,7 +244,7 @@ impl LectureWorker {
             format!(
                 "- 课表核对课程：{course}（录音时间落在该课的课表区间内，以此为准）\n\
                  - 课程目录：在 {course_root}/ 下找这门课的目录。目录名可能与课程名不同\
-                 （如「思想道德与法治」对应目录「思想道德修养与法律基础」），而且通常在学期子目录下\
+                 （如课表「程序设计基础」对应目录「C语言程序设计」），而且通常在学期子目录下\
                  （如 2026-Fall-大一上/）。先读该目录树里的「课程总览.md」，\
                  在「课程目录 | 课表课程」对照表里按课表课程名「{course}」查目录名；\
                  查不到再用 ls 找同名目录；确实没有才在最近的学期目录下新建。"

@@ -211,7 +211,7 @@ app_secret = ""
 # 课程目录同步（ru41 jwxt courses）：以教务课表为准，在 vault 里为每门课建目录
 # 并写「课程索引.md」，学期根写「课程总览.md」。课程清单以课表为权威来源。
 # [sources.jwxt.course_aliases]
-# "思想道德与法治" = "思想道德修养与法律基础"
+# "程序设计基础" = "C语言程序设计"
 # vault_course_dir = "01-Courses-课程/2026-Fall-大一上"
 # courses_vault_sync = true
 # courses_interval_secs = 3600

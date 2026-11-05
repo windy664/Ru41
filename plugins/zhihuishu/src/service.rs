@@ -123,7 +123,7 @@ impl ZhihuishuTracker {
         }
 
         for course in &report.courses {
-            // 消息与待办标题里用课表短名（`26-27-1思想道德与法治` → `思想道德修养与法律基础`）；
+            // 消息与待办标题里用课表短名（`26-27-1思想道德与法治` → `思想道德与法治`）；
             // store 的 key 仍用平台原名，保证跨轮稳定。
             let course_name = self.display_course(&course.title);
             // 视频内容上线检测（Autovisor 解锁信号）：每课程只播报一次
@@ -240,8 +240,12 @@ impl ZhihuishuTracker {
                         if let Some(id) = todo_id {
                             snapshot["todo_id"] = serde_json::json!(id);
                         }
-                        self.store
-                            .put_document("zhihuishu_task", &key, Some(revision), &snapshot)?;
+                        self.store.put_document(
+                            "zhihuishu_task",
+                            &key,
+                            Some(revision),
+                            &snapshot,
+                        )?;
                         lines.push(format!(
                             "- ♻️ {course_name}｜{}｜作业重新开放（打回/补交），已重建待办",
                             task.title
@@ -250,12 +254,14 @@ impl ZhihuishuTracker {
                         let revision = doc.revision;
                         let mut snapshot = doc.value.clone();
                         snapshot["end_at"] = serde_json::json!(new_end.clone());
-                        self.store
-                            .put_document("zhihuishu_task", &key, Some(revision), &snapshot)?;
-                        if let Some(todo_id) = doc
-                            .value
-                            .get("todo_id")
-                            .and_then(serde_json::Value::as_str)
+                        self.store.put_document(
+                            "zhihuishu_task",
+                            &key,
+                            Some(revision),
+                            &snapshot,
+                        )?;
+                        if let Some(todo_id) =
+                            doc.value.get("todo_id").and_then(serde_json::Value::as_str)
                         {
                             let _ = self.todos.postpone(
                                 todo_id,
@@ -404,8 +410,7 @@ impl ZhihuishuTracker {
         if !lines.is_empty()
             && let Some(notifier) = &self.notifier
         {
-            let mut card =
-                ru41::util::msg::Card::new(format!("📚 作业提醒（{}）", lines.len()));
+            let mut card = ru41::util::msg::Card::new(format!("📚 作业提醒（{}）", lines.len()));
             for line in &lines {
                 card.raw(line);
             }
@@ -693,7 +698,11 @@ impl ZhihuishuTracker {
         is_due_soon: bool,
         now: i64,
     ) -> Result<TodoItem> {
-        let mut title = format!("智慧树｜{}｜{}", self.display_course(&course.title), task.title);
+        let mut title = format!(
+            "智慧树｜{}｜{}",
+            self.display_course(&course.title),
+            task.title
+        );
         if is_exam_style {
             title = format!("🔒{title}");
         }
@@ -918,9 +927,11 @@ fn normalize_course_name(raw: &str) -> String {
 fn bare_term_suffix_start(t: &str) -> Option<usize> {
     if let Some(pos) = trailing_run_start(t, |c| {
         c.is_ascii_digit()
-            || matches!(c, '-' | '~' | '～' | '—' | '/' | '年' | '月' | '春' | '夏' | '秋' | '冬')
-    })
-    && t[pos..].chars().any(|c| c.is_ascii_digit())
+            || matches!(
+                c,
+                '-' | '~' | '～' | '—' | '/' | '年' | '月' | '春' | '夏' | '秋' | '冬'
+            )
+    }) && t[pos..].chars().any(|c| c.is_ascii_digit())
     {
         return Some(pos);
     }
@@ -1069,9 +1080,11 @@ fn rewrite_media_refs(md: &str, stem: &str) -> String {
         .replace("](./media/", &format!("]({stem}.media/"));
     // <img src="(./)media/xxx" ...> → ![[{stem}.media/xxx]]
     while let Some(start) = out.find("<img") {
-        let Some(end) = out[start..].find("/>").map(|i| start + i + 2).or_else(|| {
-            out[start..].find('>').map(|i| start + i + 1)
-        }) else {
+        let Some(end) = out[start..]
+            .find("/>")
+            .map(|i| start + i + 2)
+            .or_else(|| out[start..].find('>').map(|i| start + i + 1))
+        else {
             break;
         };
         let tag = out[start..end].to_owned();
@@ -1350,7 +1363,10 @@ mod tests {
             normalize_course_name("形势与政策-2026-2027-1"),
             "形势与政策-2026-2027-1"
         );
-        assert_eq!(normalize_course_name("  思想道德与法治  "), "思想道德与法治");
+        assert_eq!(
+            normalize_course_name("  思想道德与法治  "),
+            "思想道德与法治"
+        );
         // 整个名字就是学期段时不动
         assert_eq!(normalize_course_name("2026年秋冬学期"), "2026年秋冬学期");
     }

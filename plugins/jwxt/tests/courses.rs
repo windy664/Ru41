@@ -5,10 +5,7 @@ use std::collections::{BTreeMap, BTreeSet};
 
 fn config() -> CourseSyncConfig {
     let mut aliases = BTreeMap::new();
-    aliases.insert(
-        "思想道德与法治".to_owned(),
-        "思想道德修养与法律基础".to_owned(),
-    );
+    aliases.insert("程序设计基础".to_owned(), "C语言程序设计".to_owned());
     CourseSyncConfig {
         vault_dir: "01-Courses-课程/2026-Fall-大一上".to_owned(),
         aliases,
@@ -31,19 +28,19 @@ fn entry(course: &str, vault_name: &str) -> CourseEntry {
 #[test]
 fn alias_maps_timetable_name_to_existing_vault_dir() {
     let config = config();
-    assert_eq!(config.canonical("思想道德与法治"), "思想道德修养与法律基础");
+    assert_eq!(config.canonical("程序设计基础"), "C语言程序设计");
     // 没配别名的课按课表原名建目录。
     assert_eq!(config.canonical("办公软件"), "办公软件");
 }
 
 #[test]
 fn course_index_lists_schedule_and_directory_files() {
-    let entry = entry("思想道德与法治", "思想道德修养与法律基础");
+    let entry = entry("程序设计基础", "C语言程序设计");
     let text = render_course_index(
         &entry,
         &["课堂笔记.md".to_owned(), "智慧树作业.md".to_owned()],
     );
-    assert!(text.contains("# 思想道德修养与法律基础 课程索引"), "{text}");
+    assert!(text.contains("# C语言程序设计 课程索引"), "{text}");
     assert!(text.contains("GE1050-02"), "{text}");
     assert!(text.contains("曾尧冰"), "{text}");
     assert!(text.contains("周"), "{text}");
@@ -55,12 +52,12 @@ fn course_index_lists_schedule_and_directory_files() {
 fn overview_lists_all_courses_with_course_number() {
     let entries = vec![
         entry("高等数学I(理)", "高等数学I(理)"),
-        entry("思想道德与法治", "思想道德修养与法律基础"),
+        entry("程序设计基础", "C语言程序设计"),
     ];
     let text = render_overview(&entries);
     assert!(text.contains("| 课程目录 |"), "{text}");
     assert!(text.contains("高等数学I(理)"), "{text}");
-    assert!(text.contains("思想道德与法治"), "{text}");
+    assert!(text.contains("程序设计基础"), "{text}");
     assert!(text.contains("GE1050-02"), "{text}");
 }
 
