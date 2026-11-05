@@ -230,10 +230,18 @@ pub fn overview(runs: &[crate::ports::storage::UsageRun], days: u32) -> UsageOve
     };
     let mut durations: Vec<u64> = Vec::new();
     for run in runs {
-        // 模型名带底座前缀（codex/glm-4.6、pi/MiniMax-M3），免得同名不同底座看不清。
+        // 模型名带底座前缀（codex/glm-4.6、pi/minimax/MiniMax-M3），免得同名不同底座看不清；
+        // pi 有些路径会写成 "minimax/minimax/MiniMax-M3"（供应方重复），折叠掉。
         let model = match run.model.clone() {
-            Some(model) if model.contains('/') => model,
-            Some(model) => format!("{}/{model}", run.backend_id),
+            Some(model) => {
+                let parts: Vec<&str> = model.split('/').collect();
+                let collapsed = if parts.len() >= 3 && parts[0] == parts[1] {
+                    parts[1..].join("/")
+                } else {
+                    model
+                };
+                format!("{}/{collapsed}", run.backend_id)
+            }
             None => format!("{}/（未记录模型）", run.backend_id),
         };
         let source = source_of(&run.request_key).to_owned();
