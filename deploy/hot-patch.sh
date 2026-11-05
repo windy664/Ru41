@@ -49,6 +49,15 @@ fi
 echo "==> 传输 $(basename "$so") 到 $server"
 scp "$so" "$server:~/ru41-mimo-smoke/plugins/"
 
+# 技能包也在宿主目录（挂载到 /usr/share/ru41/plugins），改了就一并同步。
+# 目录形状必须是 <插件>/skills/<技能>/SKILL.md —— 加载器按这个结构找。
+if [[ -d "$plugin_dir/skills" ]]; then
+  echo "==> 同步技能包 $name"
+  ssh "$server" "mkdir -p ~/ru41-mimo-smoke/skills/$name/skills"
+  # 按内容拷（scp 的 "src/." 语义不可靠，会多套一层同名目录）。
+  scp -r "$plugin_dir/skills/"* "$server:~/ru41-mimo-smoke/skills/$name/skills/"
+fi
+
 echo "==> 重启: ${containers[*]}"
 ssh "$server" "docker restart ${containers[*]} >/dev/null"
 

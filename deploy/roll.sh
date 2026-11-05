@@ -45,7 +45,16 @@ for name in "${NAMES[@]}"; do
     continue
   fi
   CUR_ID="$(jq -r '.[0].Image' "$BACKUP/$name.json")"
-  if [[ "$CUR_ID" == "$NEW_ID" && "${RU41_ROLL_FORCE:-0}" != "1" ]]; then
+  NEW_ID_TARGET="$TARGET_IMAGE"
+  # 镜像没变也要重建的情况：缺技能包挂载（挂载是后加的，inspect 里还没有）。
+  SKILLS_DIR="$HOME/ru41-mimo-smoke/skills"
+  NEEDS_RECREATE=0
+  if [[ -d "$SKILLS_DIR" ]] && ! jq -e --arg src "$SKILLS_DIR" \
+      '.[0].Mounts[]? | select(.Source == $src and .Destination == "/usr/share/ru41/plugins")' \
+      "$BACKUP/$name.json" > /dev/null; then
+    NEEDS_RECREATE=1
+  fi
+  if [[ "$CUR_ID" == "$NEW_ID" && "$NEEDS_RECREATE" == "0" && "${RU41_ROLL_FORCE:-0}" != "1" ]]; then
     echo "SKIP $name: 已是 $TARGET_IMAGE"
     continue
   fi
@@ -66,6 +75,14 @@ for name in "${NAMES[@]}"; do
   ' "$BACKUP/$name.json")
   ENTRYPOINT="$(jq -r '.[0].Config.Entrypoint // empty | if type == "array" then .[0] else . end' "$BACKUP/$name.json")"
   mapfile -t CMD < <(jq -r '.[0].Config.Cmd[]?' "$BACKUP/$name.json")
+
+  # 技能包挂载：宿主目录盖住镜像里的 /usr/share/ru41/plugins，
+  # 这样改技能包也能热更（只 scp 技能目录，不用重建镜像）。
+  # 宿主目录首次由镜像内容初始化（docker cp 镜像里的 /usr/share/ru41/plugins/.）。
+  SKILLS_DIR="$HOME/ru41-mimo-smoke/skills"
+  if [[ -d "$SKILLS_DIR" ]] && ! printf '%s\n' "${ARGS[@]}" | grep -qF "$SKILLS_DIR:/usr/share/ru41/plugins"; then
+    ARGS+=(-v "$SKILLS_DIR:/usr/share/ru41/plugins:ro")
+  fi
 
   docker stop "$name" > /dev/null
   docker rm "$name" > /dev/null
