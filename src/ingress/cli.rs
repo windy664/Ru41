@@ -310,6 +310,9 @@ pub enum TaskCommand {
         /// 统计窗口（天）。
         #[arg(long, default_value_t = 7)]
         days: u32,
+        /// 写成 Markdown 报告（表格版，适合 Obsidian / 文档）到指定路径。
+        #[arg(long, value_name = "PATH")]
+        out: Option<String>,
     },
 }
 

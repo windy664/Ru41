@@ -327,23 +327,37 @@ async fn main() -> Result<()> {
                 TaskCommand::Cancel { id } => serde_json::to_value(service.cancel(id)?)?,
                 TaskCommand::Retry { id } => serde_json::to_value(service.retry(id)?)?,
                 TaskCommand::Attempts { id } => serde_json::to_value(service.attempts(id)?)?,
-                TaskCommand::Usage { days } => {
+                TaskCommand::Usage { days, out } => {
                     let store = open_store(&store_config)?;
-                    let since = ru41::util::now() - i64::from(days) * 86_400;
-                    let overview =
-                        ru41::app::usage::overview(&store.usage_runs_since(since)?, days);
-                    serde_json::json!({
-                        "window_days": days,
-                        "runs": overview.runs,
-                        "reported_runs": overview.reported_runs,
-                        "input_tokens": overview.input_tokens,
-                        "cached_input_tokens": overview.cached_input_tokens,
-                        "output_tokens": overview.output_tokens,
-                        "total_tokens": overview.total_tokens,
-                        "by_model": overview.by_model,
-                        "by_source": overview.by_source,
-                        "by_day": overview.by_day,
-                    })
+                    let now = ru41::util::now();
+                    let since = now - i64::from(days) * 86_400;
+                    let week = ru41::app::usage::overview(&store.usage_runs_since(since)?, days);
+                    if let Some(path) = out {
+                        let day = ru41::app::usage::overview(&store.usage_runs_since(now - 86_400)?, 1);
+                        let report = ru41::app::usage_report::render(
+                            &week,
+                            &day,
+                            ru41::app::usage_report::Style::Doc,
+                        );
+                        if let Some(parent) = std::path::Path::new(&path).parent() {
+                            std::fs::create_dir_all(parent)?;
+                        }
+                        std::fs::write(&path, report)?;
+                        serde_json::json!({ "written": path })
+                    } else {
+                        serde_json::json!({
+                            "window_days": days,
+                            "runs": week.runs,
+                            "reported_runs": week.reported_runs,
+                            "input_tokens": week.input_tokens,
+                            "cached_input_tokens": week.cached_input_tokens,
+                            "output_tokens": week.output_tokens,
+                            "total_tokens": week.total_tokens,
+                            "by_model": week.by_model,
+                            "by_source": week.by_source,
+                            "by_day": week.by_day,
+                        })
+                    }
                 }
             }
         }
