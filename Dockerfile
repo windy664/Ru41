@@ -7,12 +7,23 @@
 FROM rust:1.98-trixie AS sccache-base
 RUN set -e; \
     SCCACHE_VER=v0.10.0; \
-    curl -fsSL "https://github.com/mozilla/sccache/releases/download/${SCCACHE_VER}/sccache-${SCCACHE_VER}-x86_64-unknown-linux-musl.tar.gz" -o /tmp/sccache.tar.gz \
-      && tar -xzf /tmp/sccache.tar.gz -C /usr/local/bin --strip-components=1 \
-           "sccache-${SCCACHE_VER}-x86_64-unknown-linux-musl/sccache" \
-      && rm -f /tmp/sccache.tar.gz \
-      && sccache --version \
-    || echo "sccache 下载失败，退回普通编译"; \
+    case "$(uname -m)" in \
+      x86_64)  SCCA_ARCH=x86_64-unknown-linux-musl ;; \
+      aarch64) SCCA_ARCH=aarch64-unknown-linux-musl ;; \
+      *)        SCCA_ARCH="" ;; \
+    esac; \
+    if [ -n "$SCCA_ARCH" ]; then \
+      if curl -fsSL "https://github.com/mozilla/sccache/releases/download/${SCCACHE_VER}/sccache-${SCCACHE_VER}-${SCCA_ARCH}.tar.gz" -o /tmp/sccache.tar.gz \
+         && tar -xzf /tmp/sccache.tar.gz -C /usr/local/bin --strip-components=1 "sccache-${SCCACHE_VER}-${SCCA_ARCH}/sccache" \
+         && sccache --version > /dev/null 2>&1; then \
+        echo "sccache ${SCCACHE_VER} (${SCCA_ARCH}) 就绪"; \
+      else \
+        rm -f /usr/local/bin/sccache /tmp/sccache.tar.gz; \
+        echo "sccache 不可用（架构 ${SCCA_ARCH} 或下载失败），退回普通编译"; \
+      fi; \
+    else \
+      echo "架构 $(uname -m) 无预编译包，退回普通编译"; \
+    fi; \
     printf '#!/bin/sh\nif [ -x /usr/local/bin/sccache ]; then exec /usr/local/bin/sccache "$@"; fi\nexec "$@"\n' > /usr/local/bin/rustc-sccache; \
     chmod +x /usr/local/bin/rustc-sccache
 ENV RUSTC_WRAPPER=/usr/local/bin/rustc-sccache

@@ -210,7 +210,9 @@ impl ChaoxingTracker {
                 if activity.id.to_string() != activity_id {
                     continue;
                 }
-                let method = self.resolve_method(&activity, lat, lon, addr, enc, photo_path)?;
+                let method = self
+                    .resolve_method(&course, &activity, lat, lon, addr, enc, photo_path)
+                    .await?;
                 let response = self.client.sign(&course, &activity, &method).await?;
                 let ok = sign_response_ok(&response);
                 self.mark_signed(&course, &activity, "cli");
@@ -234,8 +236,9 @@ impl ChaoxingTracker {
     }
 
     /// 按活动类型 + 命令行参数 + 配置解析出具体签到方式。
-    fn resolve_method(
+    async fn resolve_method(
         &self,
+        course: &crate::source::ChaoxingCourse,
         activity: &crate::source::ChaoxingActivity,
         lat: Option<f64>,
         lon: Option<f64>,
@@ -287,11 +290,32 @@ impl ChaoxingTracker {
                 };
                 SignMethod::Photo { path }
             }
-            // 普通/手势/签到码及未知类型都走普通参数（手势自动签已被平台 90002 封堵，
-            // 此处只服务手动 chaoxing sign 补签——用户明示要撞一次时仍按原参数尝试）
-            ChaoxingSignKind::Normal | ChaoxingSignKind::Gesture | ChaoxingSignKind::Code => {
-                SignMethod::Normal
+            // 手势：轨迹作为 signCode 提交。优先用平台在窗口内下发的正确轨迹
+            // （getPPTActiveInfo 的 data.signCode，活动结束后恒为空）；
+            // 平台没下发时退到配置里按课程固定的轨迹（老师用同一图案时的兜底）。
+            ChaoxingSignKind::Gesture => {
+                let live = self
+                    .client
+                    .activity_sign_code(course, activity)
+                    .await
+                    .ok()
+                    .flatten();
+                let code = live.or_else(|| {
+                    self.config
+                        .gesture_sign_codes
+                        .get(&course.course_id)
+                        .filter(|c| !c.trim().is_empty())
+                        .cloned()
+                });
+                match code {
+                    Some(code) => SignMethod::Gesture { code },
+                    None => anyhow::bail!(
+                        "手势签到需要轨迹：平台未在窗口内下发 signCode，且配置里没有该课程的固定轨迹"
+                    ),
+                }
             }
+            // 普通 / 签到码及未知类型都走普通参数。
+            ChaoxingSignKind::Normal | ChaoxingSignKind::Code => SignMethod::Normal,
         })
     }
 
@@ -382,12 +406,27 @@ impl ChaoxingTracker {
         });
     }
 
+    /// 签到页链接：PC 端签到页（手势签到可在浏览器里画轨迹）。
+    fn sign_page_url(
+        &self,
+        course: &crate::source::ChaoxingCourse,
+        activity: &crate::source::ChaoxingActivity,
+    ) -> String {
+        format!(
+            "https://mobilelearn.chaoxing.com/widget/sign/pcStuSignController/signIn?courseId={}&classId={}&activeId={}",
+            course.course_id, course.clazz_id, activity.id
+        )
+    }
+
     async fn try_auto_sign(
         &self,
         course: &crate::source::ChaoxingCourse,
         activity: &crate::source::ChaoxingActivity,
     ) -> AutoSignOutcome {
-        let method = match self.resolve_method(activity, None, None, None, None, None) {
+        let method = match self
+            .resolve_method(course, activity, None, None, None, None, None)
+            .await
+        {
             Ok(method) => method,
             Err(err) => {
                 self.mark_auto_attempted(course, activity, &err.to_string());
@@ -415,7 +454,13 @@ impl ChaoxingTracker {
                     self.mark_auto_attempted(course, activity, response.trim());
                     // 手势的兜底是手机端手画（窗口常仅约 2 分钟），其余类型附重试按钮
                     let (advice, retry) = if activity.is_gesture() {
-                        ("→ 滑块重签仍被拒，立即打开学习通手动签！".to_string(), None)
+                        (
+                            format!(
+                                "→ 手势签到需带 signCode，机器人签不了，点链接打开学习通手动签（PC 端可画手势）：{}",
+                                self.sign_page_url(course, activity)
+                            ),
+                            None,
+                        )
                     } else {
                         (
                             "→ 点下方按钮重试".to_string(),
@@ -618,7 +663,17 @@ impl ChaoxingTracker {
                                         ""
                                     },
                                 ));
-                                if !activity.is_qr() {
+                                if activity.is_gesture() {
+                                    // 手势签到带 signCode，机器人直签必然 90002
+                                    // （公开抓包结论 + 2026-10-30 起实测稳定失败）。
+                                    // 给签到页链接，人在浏览器里画手势——PC 端支持。
+                                    pending_lines.push(format!(
+                                        "- ✍️{}｜{}｜手势签到请点链接自己画：{}",
+                                        course.title,
+                                        activity.type_label(),
+                                        self.sign_page_url(course, &activity)
+                                    ));
+                                } else if !activity.is_qr() {
                                     pending_buttons.push((
                                         format!("✍️ 去签到（{}）", activity.type_label()),
                                         format!("chaoxing sign {}", activity.id),
@@ -691,12 +746,38 @@ impl ChaoxingTracker {
                     && activity.status == Some(2)
                     && activity.user_status == Some(1)
                 {
-                    missed += 1;
-                    outcome_lines.push(format!(
-                        "- ❌{}｜{}｜已结束，仍未签到",
-                        course.title,
-                        activity.type_label()
-                    ));
+                    // activelist 的 userStatus 滞后，用户手动签了它也报未签
+                    // （2026-11-05 实测：15:31:33 手动签成功，机器人仍误报漏签）。
+                    // 判漏签前用签到页复核，签了就算数，别冤枉人。
+                    if self
+                        .client
+                        .confirm_signed(course, &activity)
+                        .await
+                        .unwrap_or(false)
+                    {
+                        signed += 1;
+                        let mut fixed = new_value.clone();
+                        fixed["user_status"] = serde_json::json!(0);
+                        fixed["signed_via"] = serde_json::json!("manual");
+                        let _ = self.store.put_document(
+                            "chaoxing_sign",
+                            &key,
+                            Some(doc.revision),
+                            &fixed,
+                        );
+                        outcome_lines.push(format!(
+                            "- ✅{}｜{}｜已签到（平台复核：手动签的）",
+                            course.title,
+                            activity.type_label()
+                        ));
+                    } else {
+                        missed += 1;
+                        outcome_lines.push(format!(
+                            "- ❌{}｜{}｜已结束，仍未签到",
+                            course.title,
+                            activity.type_label()
+                        ));
+                    }
                 }
             }
         }
