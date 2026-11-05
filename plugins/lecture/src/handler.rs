@@ -2,11 +2,12 @@
 //! 写入待转写队列并即时回执；转写整理在 worker 侧异步完成。
 
 use crate::config::LectureConfig;
+use crate::dns;
 use crate::pending::{PENDING_KIND, PendingItem, is_audio_filename, sanitize_name};
 use anyhow::{Context, Result};
 use ru41::ports::channel::MediaKind;
 use ru41::ports::commands::{CommandContext, CommandHandler, Reply};
-use std::{future::Future, pin::Pin, time::Duration};
+use std::{future::Future, net::SocketAddr, pin::Pin, time::Duration};
 
 #[derive(Clone)]
 pub struct LectureHandler {
@@ -14,15 +15,18 @@ pub struct LectureHandler {
     http: reqwest::Client,
 }
 
+/// 下载客户端的统一参数（超时），普通客户端与「固定 IP」客户端共用。
+fn http_builder() -> reqwest::ClientBuilder {
+    reqwest::Client::builder()
+        .connect_timeout(Duration::from_secs(15))
+        .timeout(Duration::from_secs(600))
+}
+
 impl LectureHandler {
     pub fn new(config: LectureConfig) -> Self {
         Self {
             config,
-            http: reqwest::Client::builder()
-                .connect_timeout(Duration::from_secs(15))
-                .timeout(Duration::from_secs(600))
-                .build()
-                .expect("lecture http client"),
+            http: http_builder().build().expect("lecture http client"),
         }
     }
 
@@ -74,6 +78,8 @@ impl LectureHandler {
     /// 流式落盘，避免大文件整读进内存。
     /// 连接类失败重试 3 次（2s/6s 退避）：家宽到腾讯云 CDN 段偶发整段劣化，
     /// 单次尝试会把好链接白白判死；HTTP 状态错误不重试（rkey 失效重试也没用）。
+    /// 三次仍连不上，多半不是链路抖动而是 DNS 给的 IP 不通（被污染的边缘），
+    /// 这时改用 DoH 解析出的 IP 重连。
     /// auth 是渠道 CDN 认证头值（QQ 要求 `Authorization: QQBot <token>`）。
     async fn download(&self, url: &str, auth: Option<&str>, dest: &std::path::Path) -> Result<u64> {
         let mut last_err = None;
@@ -81,14 +87,10 @@ impl LectureHandler {
             if attempt > 0 {
                 tokio::time::sleep(Duration::from_secs(2 * attempt as u64 + 1)).await;
             }
-            match self.try_download(url, auth, dest).await {
+            match self.try_download(&self.http, url, auth, dest).await {
                 Ok(size) => return Ok(size),
                 Err(err) => {
-                    let retriable = err.chain().any(|cause| {
-                        cause
-                            .downcast_ref::<reqwest::Error>()
-                            .is_some_and(|e| e.is_connect() || e.is_timeout())
-                    });
+                    let retriable = is_connect_failure(&err);
                     last_err = Some(err);
                     if !retriable {
                         break;
@@ -96,18 +98,70 @@ impl LectureHandler {
                 }
             }
         }
-        Err(last_err
-            .unwrap()
-            .context(format!("下载录音失败（已重试 3 次）：{url}")))
+        let err = last_err.unwrap();
+        // 只有连接类失败才值得换 IP；HTTP 4xx/5xx 换 DNS 也救不回来。
+        if !is_connect_failure(&err) {
+            return Err(err.context(format!("下载录音失败：{url}")));
+        }
+        let fallback = self.download_via_doh(url, auth, dest).await;
+        match fallback {
+            Ok(size) => Ok(size),
+            Err((doh_err, original)) => Err(original.context(format!(
+                "下载录音失败（已重试 3 次；DoH 解析重连也失败：{doh_err:#}）：{url}"
+            ))),
+        }
     }
 
-    async fn try_download(
+    /// 系统 DNS 给的 IP 连不上时，用 DoH 解析出的候选 IP 逐个重连。
+    async fn download_via_doh(
         &self,
         url: &str,
         auth: Option<&str>,
         dest: &std::path::Path,
+    ) -> Result<u64, (anyhow::Error, anyhow::Error)> {
+        let parsed = match reqwest::Url::parse(url) {
+            Ok(parsed) => parsed,
+            Err(err) => return Err((err.into(), anyhow::anyhow!("录音链接无法解析"))),
+        };
+        let Some(host) = parsed.host_str().map(str::to_string) else {
+            return Err((
+                anyhow::anyhow!("录音链接缺少主机名"),
+                anyhow::anyhow!("录音链接缺少主机名"),
+            ));
+        };
+        let port = parsed.port_or_known_default().unwrap_or(443);
+        let ips = dns::resolve_a(&host).await;
+        let mut last: Option<anyhow::Error> = None;
+        for ip in ips.into_iter().take(4) {
+            let client = match http_builder()
+                .resolve(&host, SocketAddr::new(ip.into(), port))
+                .build()
+            {
+                Ok(client) => client,
+                Err(err) => {
+                    last = Some(err.into());
+                    continue;
+                }
+            };
+            match self.try_download(&client, url, auth, dest).await {
+                Ok(size) => return Ok(size),
+                Err(err) => last = Some(err),
+            }
+        }
+        Err((
+            last.unwrap_or_else(|| anyhow::anyhow!("DoH 没有解析到可用的 A 记录")),
+            anyhow::anyhow!("系统 DNS 解析到的地址都连不上"),
+        ))
+    }
+
+    async fn try_download(
+        &self,
+        client: &reqwest::Client,
+        url: &str,
+        auth: Option<&str>,
+        dest: &std::path::Path,
     ) -> Result<u64> {
-        let mut request = self.http.get(url);
+        let mut request = client.get(url);
         if let Some(auth) = auth {
             request = request.header(reqwest::header::AUTHORIZATION, auth);
         }
@@ -131,6 +185,15 @@ impl LectureHandler {
         }
         Ok(size)
     }
+}
+
+/// 连接类失败（连不上/超时）：换 IP 有意义。
+fn is_connect_failure(err: &anyhow::Error) -> bool {
+    err.chain().any(|cause| {
+        cause
+            .downcast_ref::<reqwest::Error>()
+            .is_some_and(|e| e.is_connect() || e.is_timeout())
+    })
 }
 
 impl CommandHandler for LectureHandler {

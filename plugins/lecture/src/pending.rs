@@ -43,17 +43,86 @@ impl PendingItem {
     /// 课程匹配与归档日期用的时间：优先文件名里解析出的开录时刻
     /// （录音 app 命名通常带，比收到时刻更贴近实际上课时间），解析不出回退收到时间。
     pub fn recorded_time(&self) -> i64 {
-        parse_recorded_at(&self.filename).unwrap_or(self.received_at)
+        if let Some(ts) = parse_recorded_at(&self.filename) {
+            return ts;
+        }
+        // 文件名只有星期与时刻（如「周四 上午09点01分」）：按收到时刻往前回推最近一次。
+        // 录音往往下课后才发出去，用收到时刻会落在课区间外，课表匹配就会失手。
+        if let Some((weekday, hour, minute)) = parse_weekday_time(&self.filename) {
+            if let Some(ts) = resolve_weekday_time(weekday, hour, minute, self.received_at) {
+                return ts;
+            }
+        }
+        self.received_at
     }
 
     /// 录音时间来源说明（提示词里向 agent 交代依据）。
     pub fn recorded_time_source(&self) -> &'static str {
         if parse_recorded_at(&self.filename).is_some() {
             "来自录音文件名"
+        } else if parse_weekday_time(&self.filename).is_some() {
+            "来自录音文件名（只有星期，按收到时刻回推到最近一次）"
         } else {
             "文件名无时间，按收到时刻回退"
         }
     }
+}
+
+/// 文件名里只有星期与时刻时的解析（如「周四 上午09点01分」「周三 下午05点04分」）。
+/// 返回 (ISO 星期 1..=7, 时, 分)。
+pub fn parse_weekday_time(filename: &str) -> Option<(u32, u32, u32)> {
+    let weekday_re = regex::Regex::new(r"(?:周|星期|礼拜)\s*([一二三四五六日天1-7])").ok()?;
+    let caps = weekday_re.captures(filename)?;
+    let raw = caps.get(1)?.as_str();
+    let weekday = match raw {
+        "一" => 1,
+        "二" => 2,
+        "三" => 3,
+        "四" => 4,
+        "五" => 5,
+        "六" => 6,
+        "日" | "天" => 7,
+        other => other.parse::<u32>().ok()?,
+    };
+    let time_re = regex::Regex::new(
+        r"(上午|早上|凌晨|中午|下午|晚上|傍晚)?\s*(\d{1,2})\s*[点時:：]\s*(\d{1,2})",
+    )
+    .ok()?;
+    let caps = time_re.captures(filename)?;
+    let mut hour: u32 = caps.get(2)?.as_str().parse().ok()?;
+    let minute: u32 = caps.get(3)?.as_str().parse().ok()?;
+    if hour > 23 || minute > 59 {
+        return None;
+    }
+    if matches!(
+        caps.get(1).map(|m| m.as_str()),
+        Some("下午") | Some("晚上") | Some("午后") | Some("傍晚")
+    ) && hour < 12
+    {
+        hour += 12;
+    }
+    Some((weekday, hour, minute))
+}
+
+/// 把「星期 + 时刻」落到收到时刻之前的最近一次（最多回看一周）。
+fn resolve_weekday_time(weekday: u32, hour: u32, minute: u32, anchor: i64) -> Option<i64> {
+    use chrono::{Datelike, Local, TimeZone};
+    let anchor_local = Local.timestamp_opt(anchor, 0).single()?;
+    for back in 0..=7 {
+        let date = anchor_local.date_naive() - chrono::Duration::days(back);
+        if date.weekday().number_from_monday() != weekday {
+            continue;
+        }
+        let naive = date.and_hms_opt(hour, minute, 0)?;
+        let Some(local) = Local.from_local_datetime(&naive).single() else {
+            continue;
+        };
+        // 录音起点不该晚于收到时刻（时钟误差放宽一小时）。
+        if local.timestamp() <= anchor + 3600 {
+            return Some(local.timestamp());
+        }
+    }
+    None
 }
 
 /// 从录音文件名解析开录时刻（本地时区 unix 秒）。覆盖常见录音 app 命名：
@@ -254,7 +323,76 @@ mod tests {
     }
 
     #[test]
+    fn weekday_time_parses_chinese_names() {
+        assert_eq!(parse_weekday_time("周四 上午09点01分.mp3"), Some((4, 9, 1)));
+        assert_eq!(
+            parse_weekday_time("周三 下午05点04分(1).mp3"),
+            Some((3, 17, 4))
+        );
+        assert_eq!(
+            parse_weekday_time("星期日 晚上8点5分.mp3"),
+            Some((7, 20, 5))
+        );
+        assert_eq!(parse_weekday_time("数学课录音.m4a"), None);
+        assert_eq!(parse_weekday_time("周四上午.m4a"), None);
+    }
+
+    #[test]
+    fn weekday_time_resolves_to_nearest_past_occurrence() {
+        use chrono::{Local, TimeZone};
+        // 2026-11-05 是周四：当天 10:23 收到「周四 上午09点01分」→ 当天 09:01。
+        let received = Local
+            .with_ymd_and_hms(2026, 11, 5, 10, 23, 0)
+            .single()
+            .unwrap()
+            .timestamp();
+        assert_eq!(
+            resolve_weekday_time(4, 9, 1, received),
+            Some(
+                Local
+                    .with_ymd_and_hms(2026, 11, 5, 9, 1, 0)
+                    .single()
+                    .unwrap()
+                    .timestamp()
+            )
+        );
+        // 2026-10-30 是周五：收到的是「周四」→ 回推到前一天周四。
+        let received = Local
+            .with_ymd_and_hms(2026, 10, 30, 10, 0, 0)
+            .single()
+            .unwrap()
+            .timestamp();
+        assert_eq!(
+            resolve_weekday_time(4, 9, 1, received),
+            Some(
+                Local
+                    .with_ymd_and_hms(2026, 10, 29, 9, 1, 0)
+                    .single()
+                    .unwrap()
+                    .timestamp()
+            )
+        );
+        // 当天该时刻还没到（08:00 收到「周四 上午09点01分」）：回退到上一个周四。
+        let received = Local
+            .with_ymd_and_hms(2026, 11, 5, 8, 0, 0)
+            .single()
+            .unwrap()
+            .timestamp();
+        assert_eq!(
+            resolve_weekday_time(4, 9, 1, received),
+            Some(
+                Local
+                    .with_ymd_and_hms(2026, 10, 29, 9, 1, 0)
+                    .single()
+                    .unwrap()
+                    .timestamp()
+            )
+        );
+    }
+
+    #[test]
     fn recorded_time_falls_back_to_received_at() {
+        use chrono::{Local, TimeZone};
         let mut item = PendingItem {
             file: "/tmp/x".into(),
             filename: "数学课录音.m4a".into(),
@@ -271,5 +409,22 @@ mod tests {
         item.filename = "20261103_143000.m4a".into();
         assert_ne!(item.recorded_time(), 1_700_000_000);
         assert!(item.recorded_time() > 1_760_000_000);
+        // 只有星期：按收到时刻回推到最近一次。
+        let received = Local
+            .with_ymd_and_hms(2026, 11, 5, 10, 23, 0)
+            .single()
+            .unwrap()
+            .timestamp();
+        item.filename = "周四 上午09点01分.mp3".into();
+        item.received_at = received;
+        assert_eq!(
+            item.recorded_time(),
+            Local
+                .with_ymd_and_hms(2026, 11, 5, 9, 1, 0)
+                .single()
+                .unwrap()
+                .timestamp()
+        );
+        assert!(item.recorded_time_source().contains("星期"));
     }
 }

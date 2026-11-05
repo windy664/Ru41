@@ -4,6 +4,7 @@
 
 pub mod asr;
 pub mod config;
+pub mod dns;
 pub mod handler;
 pub mod pending;
 pub mod service;
