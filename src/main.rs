@@ -294,6 +294,33 @@ async fn main() -> Result<()> {
                 }
                 TaskCommand::List { limit } => serde_json::to_value(service.list(limit)?)?,
                 TaskCommand::Show { id } => serde_json::to_value(service.get(id)?)?,
+                TaskCommand::Trace { id } => {
+                    // 汇总最近一次尝试的底座事件：工具、技能包、改动文件、命令。
+                    let attempts = service.attempts(id)?;
+                    let mut summary = ru41::app::agent_trace::TraceSummary::default();
+                    let mut scanned = 0usize;
+                    for attempt in attempts.iter().rev() {
+                        let Some(run_dir) = attempt.run_dir.as_deref() else {
+                            continue;
+                        };
+                        let path = std::path::Path::new(run_dir).join("events.jsonl");
+                        if !path.exists() {
+                            continue;
+                        }
+                        summary = ru41::app::agent_trace::summarize_events(&path)?;
+                        scanned += 1;
+                        break;
+                    }
+                    serde_json::json!({
+                        "task_id": id,
+                        "attempts_scanned": scanned,
+                        "tools": summary.tools,
+                        "skills": summary.skills,
+                        "changed_files": summary.changed_files,
+                        "messages": summary.messages,
+                        "commands": summary.commands,
+                    })
+                }
                 TaskCommand::Cancel { id } => serde_json::to_value(service.cancel(id)?)?,
                 TaskCommand::Retry { id } => serde_json::to_value(service.retry(id)?)?,
                 TaskCommand::Attempts { id } => serde_json::to_value(service.attempts(id)?)?,

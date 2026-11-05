@@ -423,6 +423,11 @@ impl PiAgent {
                 .await?;
             stdin.flush().await?;
             let mut reader = BufReader::new(stdout);
+            // 底座事件原样落盘：codex 侧有 events.jsonl，pi 侧此前只解析不留档，
+            // 导致「这次用了哪些工具/技能」在 QQ 对话里查不到（worker 侧才看得到）。
+            let mut event_log = tokio::fs::File::create(request.run_dir.join("events.jsonl"))
+                .await
+                .ok();
             let mut final_message: Option<Value> = None;
             let mut accepted = false;
             let mut settled = false;
@@ -446,6 +451,11 @@ impl PiAgent {
                     n <= 1_048_576 && total <= 16 * 1_048_576,
                     Ru41Error::AgentProcess("Pi protocol output exceeded limit".into())
                 );
+                if let Some(file) = event_log.as_mut() {
+                    use tokio::io::AsyncWriteExt;
+                    let _ = file.write_all(&line).await;
+                    let _ = file.write_all(b"\n").await;
+                }
                 let event: Value = serde_json::from_slice(&line)
                     .map_err(|_| Ru41Error::AgentProcess("invalid Pi JSONL record".into()))?;
                 match event["type"].as_str() {

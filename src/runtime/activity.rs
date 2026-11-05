@@ -157,12 +157,41 @@ impl DisplayBuffer {
 }
 
 fn is_agent_message(event: &serde_json::Value) -> bool {
-    event.get("type").and_then(|v| v.as_str()) == Some("item.completed")
-        && event
-            .get("item")
-            .and_then(|item| item.get("type"))
-            .and_then(|v| v.as_str())
-            == Some("agent_message")
+    match event.get("type").and_then(|v| v.as_str()) {
+        // codex：item.completed + agent_message
+        Some("item.completed") => {
+            event
+                .get("item")
+                .and_then(|item| item.get("type"))
+                .and_then(|v| v.as_str())
+                == Some("agent_message")
+        }
+        // pi：message_end（携带 message 对象）
+        Some("message_end") => {
+            event
+                .get("message")
+                .and_then(|m| m.get("role"))
+                .and_then(|v| v.as_str())
+                != Some("user")
+        }
+        _ => false,
+    }
+}
+
+/// 取 pi 事件里 message 的纯文本（content 可能是字符串，也可能是内容块数组）。
+fn pi_message_text(event: &serde_json::Value) -> String {
+    let Some(message) = event.get("message") else {
+        return String::new();
+    };
+    match message.get("content") {
+        Some(serde_json::Value::String(text)) => text.clone(),
+        Some(serde_json::Value::Array(blocks)) => blocks
+            .iter()
+            .filter_map(|block| block.get("text").and_then(|v| v.as_str()))
+            .collect::<Vec<_>>()
+            .join(" "),
+        _ => String::new(),
+    }
 }
 
 /// 把一条 codex JSONL 事件映射为展示行；无关事件返回 None。
@@ -218,6 +247,31 @@ pub fn display_line(event: &serde_json::Value) -> Option<String> {
                 Some("plan_update") => Some("📋 更新了计划".to_owned()),
                 _ => None,
             }
+        }
+        // pi 底座（生产底座）：事件结构与 codex 不同，但展示风格一致——
+        // 2026-11-05 起 pi 也把事件写进 run_dir/events.jsonl，QQ 对话同样能看到过程。
+        Some("tool_execution_start") => {
+            let name = event
+                .get("toolName")
+                .and_then(|v| v.as_str())
+                .unwrap_or("tool");
+            let args = event
+                .get("args")
+                .and_then(|v| v.as_str())
+                .or_else(|| {
+                    event
+                        .get("args")
+                        .and_then(|v| v.get("command"))
+                        .and_then(|v| v.as_str())
+                })
+                .map(str::trim)
+                .unwrap_or("");
+            Some(format!("⚙️ {name}{}", truncate_pre(" ", args, 90)))
+        }
+        Some("message_end") => {
+            let text = pi_message_text(event);
+            let flat = text.split_whitespace().collect::<Vec<_>>().join(" ");
+            (!flat.is_empty()).then(|| format!("💬 {}", truncate(&flat, 120)))
         }
         // 底座报错（如 provider 402/401）也进展示流：用户在 QQ 里能实时看到失败原因，
         // 而不是等终态通知才看到一个干巴巴的「exit status: 1」。

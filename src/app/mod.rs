@@ -1,3 +1,4 @@
+pub mod agent_trace;
 pub mod digest;
 pub mod homework_work;
 pub mod identity;

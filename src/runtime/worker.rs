@@ -412,6 +412,18 @@ impl Worker {
                 eprintln!("[worker] conversation self-heal failed: {error:#}");
             }
         }
+        // 失败时附上这次运行的轨迹：它调了哪些工具、读了哪些技能包、改了哪些文件。
+        // 排障最省事的一段——"为什么没找到答案"通常就在这几行里。
+        let outcome = outcome.map_err(|error| {
+            let trace = crate::app::agent_trace::summarize_run(&run_dir)
+                .map(|summary| crate::app::agent_trace::render(&summary))
+                .unwrap_or_default();
+            if trace.is_empty() {
+                error
+            } else {
+                error.context(format!("它做了什么：\n- {}", trace.join("\n- ")))
+            }
+        });
         let session_id = outcome?;
         if let (Some(id), Some(session)) = (&conversation_id, &session_id) {
             let record = serde_json::json!({
