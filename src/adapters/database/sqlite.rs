@@ -501,7 +501,8 @@ impl TaskStore for SqliteTaskStore {
         let connection = self.connection()?;
         let mut statement = connection.prepare(
             "SELECT a.task_id, a.id, t.request_key, a.started_at, a.backend_id, a.model, \
-                    a.input_tokens, a.cached_input_tokens, a.output_tokens, a.total_tokens \
+                    a.input_tokens, a.cached_input_tokens, a.output_tokens, a.total_tokens, \
+                    a.status, a.finished_at \
              FROM attempts a JOIN tasks t ON a.task_id=t.id \
              WHERE a.started_at>=?1 ORDER BY a.started_at",
         )?;
@@ -517,6 +518,8 @@ impl TaskStore for SqliteTaskStore {
                 cached_input_tokens: row.get(7)?,
                 output_tokens: row.get(8)?,
                 total_tokens: row.get(9)?,
+                status: row.get(10)?,
+                finished_at: row.get(11)?,
             })
         })?;
         Ok(rows.collect::<rusqlite::Result<Vec<_>>>()?)

@@ -528,7 +528,8 @@ impl TaskStore for PostgresTaskStore {
         outside_runtime(|| {
             let rows = self.client()?.query(
                 "SELECT a.task_id, a.id, t.request_key, a.started_at, a.backend_id, a.model, \
-                        a.input_tokens, a.cached_input_tokens, a.output_tokens, a.total_tokens \
+                        a.input_tokens, a.cached_input_tokens, a.output_tokens, a.total_tokens, \
+                        a.status, a.finished_at \
                  FROM attempts a JOIN tasks t ON a.task_id=t.id \
                  WHERE a.started_at>=$1 ORDER BY a.started_at",
                 &[&since],
@@ -546,6 +547,8 @@ impl TaskStore for PostgresTaskStore {
                     cached_input_tokens: row.get(7),
                     output_tokens: row.get(8),
                     total_tokens: row.get(9),
+                    status: row.get(10),
+                    finished_at: row.get(11),
                 })
                 .collect())
         })
