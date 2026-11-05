@@ -78,21 +78,25 @@ pub(crate) async fn run(cli: &Cli, deep: bool) -> OpsOutcome {
             None
         }
     };
-    let codex_bin = config
-        .agent
-        .codex
-        .bin
-        .clone()
-        .unwrap_or_else(|| "codex".into());
-    match codex::version_with(&codex_bin) {
-        Ok(version) => checks.push(check("codex", "ok", version)),
-        Err(error) => checks.push(check("codex", "error", error.to_string())),
-    }
-    if config.agent.pi.enabled {
+    // 只查「默认底座」和显式配置过的底座：没配的 codex 不该报成故障。
+    let default_backend = config.agent.default_backend().to_owned();
+    if default_backend == "pi" {
         let pi_bin = config.agent.pi.bin.clone().unwrap_or_else(|| "pi".into());
         match executable_version(&pi_bin) {
             Ok(version) => checks.push(check("pi", "ok", version)),
             Err(error) => checks.push(check("pi", "error", error.to_string())),
+        }
+    }
+    if config.agent.codex.bin.is_some() {
+        let codex_bin = config
+            .agent
+            .codex
+            .bin
+            .clone()
+            .unwrap_or_else(|| "codex".into());
+        match codex::version_with(&codex_bin) {
+            Ok(version) => checks.push(check("codex", "ok", version)),
+            Err(error) => checks.push(check("codex", "error", error.to_string())),
         }
     }
     let mut model_invoked = false;
@@ -103,7 +107,7 @@ pub(crate) async fn run(cli: &Cli, deep: bool) -> OpsOutcome {
         }
         if let Some(backends) = backends.as_ref() {
             model_invoked = true;
-            match model_smoke(backends).await {
+            match model_smoke(backends, &default_backend).await {
                 Ok(()) => checks.push(check(
                     "model_smoke",
                     "ok",
@@ -173,8 +177,8 @@ fn check_storage_deep(options: &StoreOptions) -> Result<String> {
     }
 }
 
-async fn model_smoke(backends: &BackendRegistry) -> Result<()> {
-    let backend = backends.get("codex")?;
+async fn model_smoke(backends: &BackendRegistry, default_backend: &str) -> Result<()> {
+    let backend = backends.get(default_backend)?;
     let run_dir = std::env::temp_dir().join(format!("ru41-doctor-{}", rand::random::<u64>()));
     tokio::fs::create_dir_all(&run_dir).await?;
     let request = AgentRequest {

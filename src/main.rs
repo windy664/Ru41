@@ -200,7 +200,8 @@ async fn main() -> Result<()> {
                 backend,
                 bind_secret,
             } => {
-                let backend = backend.unwrap_or_else(|| "codex".into());
+                let backend = backend
+                    .unwrap_or_else(|| config.agent.default_backend().to_owned());
                 let bind_secret = bind_secret.or_else(|| config.channel.qq.bind_secret.clone());
                 let api = Arc::new(qq_api(&credentials, &config)?);
                 let store = open_store(&store_config)?;
@@ -280,6 +281,8 @@ async fn main() -> Result<()> {
                     backend,
                     notify,
                 } => {
+                    let backend = backend
+                        .unwrap_or_else(|| config.agent.default_backend().to_owned());
                     registry(&config.agent, AgentOverrides::default())?.get(&backend)?;
                     match notify {
                         false => {

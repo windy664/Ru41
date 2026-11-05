@@ -28,7 +28,7 @@ pub struct YoutubeSection {
     pub max_transcript_chars: Option<usize>,
     /// youtube run 的轮询间隔（秒），默认 21600（6 小时）。
     pub interval_secs: Option<u64>,
-    /// 预习任务的执行底座，默认 codex。
+    /// 预习任务的执行底座，默认 pi。
     pub backend: Option<String>,
     /// 终态后是否经默认通知出口推送（[notify] channel）；默认 true。
     pub notify: Option<bool>,
@@ -80,7 +80,7 @@ impl YoutubeSection {
                 .max_transcript_chars
                 .unwrap_or(Self::DEFAULT_MAX_TRANSCRIPT_CHARS),
             interval_secs: self.interval_secs.unwrap_or(Self::DEFAULT_INTERVAL_SECS),
-            backend: self.backend.clone().unwrap_or_else(|| "codex".into()),
+            backend: self.backend.clone().unwrap_or_else(|| "pi".into()),
             notify,
             digest_at: self
                 .digest_at

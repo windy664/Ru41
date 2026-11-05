@@ -22,11 +22,17 @@ migrations/    数据库迁移（核心领地）
 - 附属开发**只加插件**，不改 `src/` 的公共 trait、Worker、数据库实现；改公共接口必须同步全部调用方与测试。
 - 共享协调点（改动前先想清楚波及面）：`src/main.rs`、`src/bootstrap/config.rs`、各 `mod.rs`、根 `Cargo.toml`、`migrations/`。
 
-## agent 底座（codex / pi 并存）
+## agent 底座（统一走 pi）
 
-- 两个底座共用 `AgentBackend` 抽象（契约、描述符、结果与用量口径一致），配置在 `[agent.codex]` 与 `[agent.pi]`。
-- **切底座不用改核心**：QQ 入口的底座由容器命令参数 `--backend` 决定（`ru41 ... qq run --backend pi`）；
-  worker 侧只要 `[agent.pi]` 配好模型、provider 与密钥变量名。
+- **只有一个入口**：`[agent].default_backend` 决定全局默认底座（不写默认 `pi`）。
+  QQ 入口可用 `--backend` 临时覆盖；CLI `ru41 task add` 不写 `--backend` 就用这个默认值。
+- 当前生产：底座 pi + 模型 `minimax/MiniMax-M3`（Anthropic 协议端点，pi 原生支持）。
+- **GLM（智谱）供应方已下线**：配置里的 `[agent.codex]` 段、`ZHIPU_API_KEY` 环境变量、
+  Obsidian AI 合并默认端点（现默认 MiniMax OpenAI 兼容端点 `https://api.minimax.io/v1`）都换掉了。
+- codex 适配器代码还在仓库里（`src/adapters/agent/codex`），但生产**没启用**；
+  要重新启用得同时配 `[agent.codex]`（bin/model/provider）与对应密钥环境变量。
+- 换底座不用改核心：`AgentBackend` 抽象（契约、描述符、结果与用量口径一致）不变，
+  底座配置在 `[agent.codex]` 与 `[agent.pi]`。
 - 镜像内置两个 CLI：`@openai/codex` 与 `@earendil-works/pi-coding-agent`（Dockerfile 顶部 ARG 钉版本）。
 - 密钥只经环境变量注入子进程，配置文件里只有变量名（codex 用 `env_key`，pi 用 `api_key_env` + `models.json` 的 `$NAME` 引用）。
 - 踩坑：codex 走 OpenAI 风格工具历史，MiniMax 这类 Anthropic 协议端点会报

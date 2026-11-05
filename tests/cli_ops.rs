@@ -200,7 +200,7 @@ fn write_fake_config(root: &Path, bin: &Path) {
     std::fs::write(
         root.join("ru41.toml"),
         format!(
-            "[store]\nkind = \"sqlite\"\npath = \".ru41/state.db\"\n[worker]\nruns_dir = \".ru41/runs\"\n[agent.codex]\nbin = \"{}\"\n",
+            "[store]\nkind = \"sqlite\"\npath = \".ru41/state.db\"\n[worker]\nruns_dir = \".ru41/runs\"\n[agent]\ndefault_backend = \"codex\"\n[agent.codex]\nbin = \"{}\"\n",
             bin.display()
         ),
     )

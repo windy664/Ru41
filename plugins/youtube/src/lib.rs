@@ -139,7 +139,7 @@ fn youtube_cli(
             youtube
                 .max_transcript_chars
                 .unwrap_or(config::YoutubeSection::DEFAULT_MAX_TRANSCRIPT_CHARS),
-            youtube.backend.clone().unwrap_or_else(|| "codex".into()),
+            youtube.backend.clone().unwrap_or_else(|| "pi".into()),
             route,
         ))
     })();

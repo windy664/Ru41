@@ -19,7 +19,7 @@
 
 | 凭证 | 配置位置 | 环境变量（推荐） | 用途 |
 |---|---|---|---|
-| GLM API key | 环境变量（`[agent.codex.provider] api_key_env` 指定变量名） | `ZHIPU_API_KEY`（名字可自定） | Agent 底座模型调用 |
+| MiniMax API key | 环境变量（`[agent.pi] api_key_env` 指定变量名） | `MINIMAX_API_KEY`（名字可自定） | Agent 底座模型调用 + Obsidian AI 合并 |
 | QQ AppID/Secret | `[channel.qq]` | `RU41_QQ_APP_ID` / `RU41_QQ_APP_SECRET` | QQ 机器人鉴权 |
 | QQ 绑定口令 | `[channel.qq] bind_secret` | `RU41_QQ_BIND_SECRET` | 身份绑定命令开关 |
 | 飞书 webhook | `[channel.feishu]` | `RU41_FEISHU_WEBHOOK_URL` | 通知出口（URL 含 token） |
@@ -44,7 +44,8 @@
 
 ## 换 key 的操作
 
-- **GLM key**：改 worker 容器的 `ZHIPU_API_KEY` 环境变量（`docker rm -f` 后带新 env 重建，或 compose 改 env）→ 重启容器。配置文件不用动。
+- **底座 key（当前是 MiniMax）**：改 worker 容器的 `MINIMAX_API_KEY` 环境变量（`docker rm -f` 后带新 env 重建，或 compose 改 env）→ 重启容器。配置文件不用动。
+- **已下线**：`ZHIPU_API_KEY`（GLM coding plan）已从容器环境与配置移除。
 - **校园系统改密**：改配置文件对应 `[sources.*]` 的 password（或其环境变量）→ 重启该源容器；首次轮询会自动用新账密换新会话。
 - **QQ/飞书**：优先环境变量；`ru41 qq onboard` 扫码流程会把凭证原子写入本地配置（0600），Secret 不进日志。
 
