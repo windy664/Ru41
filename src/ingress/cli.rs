@@ -289,6 +289,10 @@ pub enum TaskCommand {
     Show {
         id: i64,
     },
+    /// 这次任务用了哪些工具、技能包、改了哪些文件（读底座事件日志汇总）。
+    Trace {
+        id: i64,
+    },
     /// 显示全部执行尝试，包括错误与本地产物路径。
     Attempts {
         id: i64,
