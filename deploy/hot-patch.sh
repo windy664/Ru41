@@ -22,9 +22,14 @@
 
 set -euo pipefail
 
+FORCE=0
+if [[ "${1:-}" == "--force" ]]; then
+  FORCE=1
+  shift
+fi
 name="${1:-}"
 if [[ -z "$name" ]]; then
-  echo "用法: $0 <插件名> [容器名 ...]" >&2
+  echo "用法: $0 [--force] <插件名> [容器名 ...]" >&2
   exit 2
 fi
 shift || true
@@ -41,6 +46,19 @@ fi
 if [[ ! -d "$plugin_dir" ]]; then
   echo "没有这个插件目录: $plugin_dir" >&2
   exit 2
+fi
+
+# 护栏：热更只适用于纯插件改动。核心（src/ crates/ migrations/ 根 Cargo.toml）
+# 变了就意味着宿主二进制要换，插件 ABI 与旧二进制对不上——必须走完整 CI 部署。
+# 除非显式 --force（明知故犯时才用）。
+core_changes="$(git -C "$repo_root" status --porcelain 2>/dev/null |
+  awk '{print $NF}' |
+  grep -E '^(src/|crates/|migrations/|Cargo\.toml|Cargo\.lock)' || true)"
+if [[ -n "$core_changes" && "$FORCE" != "1" ]]; then
+  echo "检测到核心改动，热更不适用（宿主二进制要换，插件 ABI 对不上）：" >&2
+  echo "$core_changes" | sed 's/^/  /' >&2
+  echo "请走完整链：push → CI → 搬镜像 → roll（确实要强行热更改加 --force）。" >&2
+  exit 3
 fi
 
 echo "==> 在 rust:1.98-trixie 里编译 $name（与镜像同一工具链）"
