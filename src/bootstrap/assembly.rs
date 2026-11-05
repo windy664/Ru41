@@ -128,9 +128,7 @@ pub fn notify_pair(
 /// Obsidian Vault 句柄：开关打开且 [obsidian] 已配置时才接线，否则不同步。
 pub fn vault_if_ready(config: &Config, enabled: bool) -> Result<Option<Arc<dyn Vault>>> {
     if enabled && config.obsidian.is_ready() {
-        Ok(Some(vault_client(
-            &config.obsidian.resolved(None, &config.agent)?,
-        )))
+        Ok(Some(vault_client(&config.obsidian.resolved(None)?)))
     } else {
         Ok(None)
     }
