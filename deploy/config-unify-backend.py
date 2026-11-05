@@ -24,11 +24,24 @@ SILENT_SOURCES = [
 
 
 def drop_table(text: str, header: str) -> str:
-    """删掉某个 TOML 表段（含其子表）。"""
-    pattern = re.compile(
-        r"^\[" + re.escape(header) + r"\][^\[]*?(?=^\[|\Z)", re.M | re.S
-    )
-    return pattern.sub("", text)
+    """删掉某个 TOML 表段（到下一个表头为止）。
+
+    按行判断表边界，不能用「[^[]*」——表里的数组值（如 config_overrides = ['...']）
+    会把正则截断。
+    """
+    out = []
+    skipping = False
+    for line in text.splitlines(keepends=True):
+        stripped = line.strip()
+        if stripped.startswith("[") and stripped.endswith("]"):
+            name = stripped[1:-1].strip()
+            skipping = name == header
+            if skipping:
+                continue
+        if skipping:
+            continue
+        out.append(line)
+    return "".join(out)
 
 
 def ensure_default_backend(text: str) -> str:

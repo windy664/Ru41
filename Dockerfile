@@ -43,7 +43,10 @@ RUN set -e; for d in plugins/*/; do cp Cargo.lock "$d/Cargo.lock"; done \
  # 更旧，cargo 会误判「无变化」直接分发空壳 .so（2026-11-03 library 事故：
  # 该插件数日未动，全量重编时只它有此问题）。统一 touch 强制重编。
  && find plugins -name '*.rs' -exec touch {} + \
- && for d in plugins/*/; do (cd "$d" && cargo build --release --features plugin-entry); done \
+ # 插件编译失败必须让镜像构建失败：否则会把依赖层的空壳 .so 拷进镜像，
+ # 宿主加载时才发现「缺少 ru41_plugin_entry 导出符号」，插件静默缺失
+ # （2026-11-05 research/pagewatch 等 8 个插件事故）。
+ && for d in plugins/*/; do (cd "$d" && cargo build --release --features plugin-entry) || exit 8; done \
  && mkdir -p /plugins-dist \
  # set -e 对 && 链中间的循环体不生效（2026-11-04 egress-audit 事故：cp 失败被
  # 吞、镜像缺插件但 CI 照绿），循环内必须显式 || exit。

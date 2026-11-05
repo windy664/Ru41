@@ -36,7 +36,7 @@ pub static DEF: ru41::modules::ModuleDef = ru41::modules::ModuleDef {
             )?),
             None => None,
         };
-        let resolved = obsidian.resolved(route, &config.agent)?;
+        let resolved = obsidian.resolved_with_provider(route, &config.agent)?;
         let service = ru41::app::obsidian::ObsidianService::new(
             store,
             ru41::bootstrap::assembly::vault_client(&resolved),
@@ -66,7 +66,7 @@ pub static DEF: ru41::modules::ModuleDef = ru41::modules::ModuleDef {
         if !config.obsidian.is_ready() {
             return Ok(Vec::new());
         }
-        let resolved = config.obsidian.resolved(None, &config.agent)?;
+        let resolved = config.obsidian.resolved_with_provider(None, &config.agent)?;
         Ok(vec![std::sync::Arc::new(ObsidianQqCommand::new(
             ru41::bootstrap::assembly::vault_client(&resolved),
             resolved.inbox_dir.clone(),

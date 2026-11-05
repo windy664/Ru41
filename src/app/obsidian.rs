@@ -65,8 +65,12 @@ pub struct ObsidianConfig {
 /// ru41-plugin-api（配置属于插件边界），产出物 ObsidianConfig 是宿主
 /// 运行时概念，解析逻辑以扩展 trait 留在宿主。
 pub trait ObsidianSectionExt {
-    /// 解析运行时配置；`agent` 段提供默认底座供应商（AI 合并复用同一份配置）。
-    fn resolved(
+    /// 解析运行时配置。不带供应商信息——AI 合并因此不启用
+    /// （只有需要合并的调用方才用 [`ObsidianSectionExt::resolved_with_provider`]）。
+    fn resolved(&self, notify: Option<NotifyRoute>) -> Result<ObsidianConfig>;
+
+    /// 同上，但带上底座供应商（[agent.pi]）：AI 合并复用同一份端点/模型/协议/密钥。
+    fn resolved_with_provider(
         &self,
         notify: Option<NotifyRoute>,
         agent: &crate::bootstrap::config::AgentSection,
@@ -74,7 +78,11 @@ pub trait ObsidianSectionExt {
 }
 
 impl ObsidianSectionExt for crate::bootstrap::config::ObsidianSection {
-    fn resolved(
+    fn resolved(&self, notify: Option<NotifyRoute>) -> Result<ObsidianConfig> {
+        self.resolved_with_provider(notify, &Default::default())
+    }
+
+    fn resolved_with_provider(
         &self,
         notify: Option<NotifyRoute>,
         agent: &crate::bootstrap::config::AgentSection,
