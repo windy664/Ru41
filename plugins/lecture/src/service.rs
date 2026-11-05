@@ -196,6 +196,23 @@ impl LectureWorker {
             .unwrap_or_else(|| self.config.fallback_course.clone())
     }
 
+    /// 笔记落点（Vault 绝对路径）。课程认不出来时落收件箱，不硬造课程目录。
+    /// 认得出时只给到课程根，真实目录名由 agent 查「课程总览.md」对照表决定
+    /// （课表课程名与 vault 目录名不一定一致，如「思想道德与法治」↔「思想道德修养与法律基础」）。
+    pub fn note_target(&self, course: &str, date: &str) -> String {
+        let vault_root = self.config.vault_root.trim_end_matches('/');
+        if course == self.config.fallback_course {
+            return format!(
+                "{vault_root}/{}/待归类-课堂笔记-{date}.md",
+                self.config.inbox_dir.trim_end_matches('/')
+            );
+        }
+        format!(
+            "{vault_root}/{}/<课程目录>/课堂笔记.md",
+            self.config.vault_dir.trim_end_matches('/')
+        )
+    }
+
     /// 入队 agent 整理结构化笔记；转写全量内联进 prompt，agent 只写笔记进 Vault。
     /// 一门课一份连续笔记（课堂笔记.md），每次课按日期章节追加在末尾。
     /// request_key 幂等，重复 poll 不会重复建任务。
@@ -211,24 +228,36 @@ impl LectureWorker {
             .single()
             .map(|t| t.format("%Y-%m-%d %H:%M").to_string())
             .unwrap_or_default();
-        let note_path = format!(
-            "{}/{}/课堂笔记.md",
-            self.config.vault_dir.trim_end_matches('/'),
-            course
+        let vault_root = self.config.vault_root.trim_end_matches('/');
+        let course_root = format!(
+            "{vault_root}/{}",
+            self.config.vault_dir.trim_end_matches('/')
         );
-        let course_line = if course == self.config.fallback_course {
-            format!("- 课表核对：录音时间没落在任何课的区间里，课程未知，归入「{course}」目录")
+        let unknown = course == self.config.fallback_course;
+        let note_path = self.note_target(course, &date);
+        let course_line = if unknown {
+            format!(
+                "- 课表核对：录音时间没落在任何课的区间里，课程未知，笔记暂存到收件箱（{note_path}）；\
+                 请在汇报末尾写一行「这节更像哪门课：<课程名>」，由人工归位"
+            )
         } else {
-            format!("- 课表核对课程：{course}（录音时间落在该课的课表区间内，以此为准）")
+            format!(
+                "- 课表核对课程：{course}（录音时间落在该课的课表区间内，以此为准）\n\
+                 - 课程目录：在 {course_root}/ 下找这门课的目录。目录名可能与课程名不同\
+                 （如「思想道德与法治」对应目录「思想道德修养与法律基础」），而且通常在学期子目录下\
+                 （如 2026-Fall-大一上/）。先读该目录树里的「课程总览.md」，\
+                 在「课程目录 | 课表课程」对照表里按课表课程名「{course}」查目录名；\
+                 查不到再用 ls 找同名目录；确实没有才在最近的学期目录下新建。"
+            )
         };
         let prompt = format!(
             "请把课堂录音转写整理成课堂笔记，用途只有一个：期末复习拿分。宁可短而实，不要长而空。\n\
              - 录音时间：{recorded_label}（{recorded_source}；课程匹配与归档日期的依据）\n\
              {course_line}\n\
              - 日期：{date}\n\
-             - 目标文件（Vault）：{note_path}\n\
+             - 目标文件（Vault 绝对路径）：{note_path}\n\
              要求：\n\
-             0. 课程归属以课表核对为准：直接写入上面的目标文件，**不要按转写内容改课程、不要新建其他课程目录**。\
+             0. **必须写上面给的绝对路径**：写进 Vault 仓库，不要写当前工作目录（当前目录是任务沙箱，写在这里不会进 Vault，笔记会丢）。课程归属以课表核对为准：直接写入上面的目标文件，**不要按转写内容改课程、不要新建其他课程目录**。\
              若转写内容与核对课程明显对不上，笔记照常写入目标文件，并在汇报末尾加一行「⚠️ 课程核对异常：<内容更像哪门课>」交人工确认。\n\
              1. 目标文件不存在就创建（带 # {course} 课堂笔记 标题）；已存在就读取后**在末尾追加**新章节，已有内容一字不动。\n\
              2. 新章节格式：`## {date} {stem}`。栏目按需取用，没有实质内容的栏目**整个省略不写**（不留空标题、不写「无」）：\
@@ -243,7 +272,8 @@ impl LectureWorker {
              8. 复习清单：每条必须对应本课出现过的具体题目或考点，可执行可勾选（如「重做求反函数那题：由 $y=\\ln(Bx+C)+A$ 解出 $x$」）；禁止「默写/背出某定义」这类泛泛条目，除非老师当场要求背。\n\
              9. 数学内容：口语化数学表达转规范记号（「根号二」→ $\\sqrt{{2}}$、「x的平方」→ $x^2$、分式/积分/极限用 LaTeX，Obsidian 可直接渲染）；ASR 同音误听（极限/基线、求导、ln 等）按上下文修正。\n\
              10. **不臆想**：只依据转写原文整理，课堂没讲的内容不补充、不外推；无法辨认或疑似转写错误的片段如实标注「待核对」，不要编造顺滑的假内容；若整段转写与学科无关（静音幻觉、字幕署名等），只写一行说明该段无可整理内容。\n\
-             11. 完成后简单汇报本次笔记要点与最终写入路径（不超过 10 行），不要复述全文。\n\n\
+             11. 写完把改动提交进 Vault 仓库（提交信息前缀 `[ru41]`，例如 `[ru41] 课堂笔记：{date} {course}`）。\n\
+             12. 完成后简单汇报本次笔记要点与最终写入路径（不超过 10 行），不要复述全文。\n\n\
              以下是本次转写原文：\n\n{transcript}",
             recorded_source = item.recorded_time_source(),
         );

@@ -202,3 +202,22 @@ fn course_matching_by_interval_only() {
     let store2 = Arc::new(SqliteTaskStore::open(&tmp2.path().join("state.db")).unwrap());
     assert_eq!(worker(store2, &tmp2).course_at(t0), "课堂录音");
 }
+
+#[test]
+fn note_target_is_absolute_and_falls_back_to_inbox() {
+    let tmp = tempfile::tempdir().unwrap();
+    let store: Arc<dyn TaskStore> =
+        Arc::new(SqliteTaskStore::open(&tmp.path().join("state.db")).unwrap());
+    let w = worker(store, &tmp);
+    // 认得出课程：绝对路径 + 课程根（目录名由 agent 查课程总览对照表）。
+    let target = w.note_target("思想道德与法治", "2026-11-05");
+    assert!(target.starts_with("/vault/"), "{target}");
+    assert!(target.contains("01-Courses-课程"), "{target}");
+    assert!(target.ends_with("课堂笔记.md"), "{target}");
+    // 认不出课程：落收件箱，不硬造课程目录。
+    let target = w.note_target("课堂录音", "2026-11-05");
+    assert_eq!(
+        target,
+        "/vault/00-Inbox-收件箱/待归类-课堂笔记-2026-11-05.md"
+    );
+}
