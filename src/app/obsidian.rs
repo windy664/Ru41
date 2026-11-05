@@ -168,6 +168,64 @@ pub struct ObsidianPollReport {
     pub changed_files: usize,
     pub committed: bool,
     pub notified: bool,
+    /// 本轮自动合并掉的同步冲突副本（原文件路径）。
+    #[serde(default)]
+    pub merged_conflicts: Vec<String>,
+}
+
+/// 在 vault 目录里找同步冲突副本（`名字.sync-conflict-<时间戳>-<设备>.md`），
+/// 配对原文件（原文件可能已被另一端删除，此时不配对）。
+fn find_sync_conflicts(root: &std::path::Path) -> Result<Vec<SyncConflictFile>> {
+    let mut found = Vec::new();
+    let mut stack = vec![root.to_path_buf()];
+    while let Some(dir) = stack.pop() {
+        let entries = match std::fs::read_dir(&dir) {
+            Ok(entries) => entries,
+            Err(_) => continue,
+        };
+        for entry in entries.flatten() {
+            let path = entry.path();
+            let name = entry.file_name().to_string_lossy().into_owned();
+            if name.starts_with('.') {
+                continue;
+            }
+            if path.is_dir() {
+                stack.push(path);
+                continue;
+            }
+            if !name.contains(".sync-conflict-") {
+                continue;
+            }
+            let Some((stem, rest)) = name.split_once(".sync-conflict-") else {
+                continue;
+            };
+            if stem.is_empty() {
+                continue;
+            }
+            // 副本名是「原名.sync-conflict-<时间戳>-<设备>.扩展名」，
+            // 原文件名 = 前缀 + 扩展名。
+            let extension = std::path::Path::new(rest)
+                .extension()
+                .map(|e| format!(".{}", e.to_string_lossy()))
+                .unwrap_or_default();
+            let original = path.with_file_name(format!("{stem}{extension}"));
+            found.push(SyncConflictFile {
+                path: path.clone(),
+                original_path: if original.exists() {
+                    Some(original)
+                } else {
+                    None
+                },
+            });
+        }
+    }
+    Ok(found)
+}
+
+/// 一个同步冲突副本：副本路径 + 原文件路径（原文件可能被另一端删了）。
+struct SyncConflictFile {
+    path: std::path::PathBuf,
+    original_path: Option<std::path::PathBuf>,
 }
 
 /// 处理状态：records 文档 obsidian_state:main。
@@ -314,12 +372,17 @@ impl ObsidianService {
                 Err(error) => eprintln!("[obsidian] vault sync failed: {error:#}"),
             }
         }
+        // 同步冲突副本：文件级同步（Syncthing 等）撞车时会把其中一份另存为
+        // `名字.sync-conflict-<时间戳>-<设备>.md`。这里自动把两份合并回原文件、
+        // 删掉副本——不必人工去认这些怪文件。
+        let merged_conflicts = self.resolve_sync_conflicts().await?;
         let mut report = ObsidianPollReport {
             action: "idle",
             remote_head: target.clone(),
             changed_files: 0,
             committed: false,
             notified: false,
+            merged_conflicts,
         };
 
         if let Some(pending) = state.pending.clone() {
@@ -810,6 +873,138 @@ impl ObsidianService {
         Ok(())
     }
 
+    /// 扫描 vault 里的同步冲突副本（`*.sync-conflict-*`），逐个自动合并回原文件。
+    ///
+    /// 文件级同步（Syncthing 等）撞车时的语义是「一份留原名，另一份另存为
+    /// `名字.sync-conflict-<时间戳>-<设备>.md`」——数据不丢，但会留下怪文件。
+    /// 这里把两份交给 AI 语义合并，写回原文件、删掉副本，再统一提交推送。
+    /// 没有合并能力（无 key）时只通知，不动文件。
+    async fn resolve_sync_conflicts(&self) -> Result<Vec<String>> {
+        let conflicts = self.find_sync_conflicts()?;
+        if conflicts.is_empty() {
+            return Ok(Vec::new());
+        }
+        let Some(settings) = self.config.merge.clone() else {
+            let items: Vec<String> = conflicts
+                .iter()
+                .map(|c| c.path.to_string_lossy().into_owned())
+                .collect();
+            self.notify_conflicts_found(
+                &items,
+                Some("## 发现同步冲突副本，但 AI 合并未启用，需要人工看一眼："),
+            )
+            .await?;
+            return Ok(Vec::new());
+        };
+        let resolver = crate::app::merge::MergeResolver::new(
+            &settings.base_url,
+            &settings.model,
+            &settings.api_key,
+            settings.api,
+        );
+        let mut merged = Vec::new();
+        let mut failures: Vec<String> = Vec::new();
+        for conflict in &conflicts {
+            let Some(original) = conflict.original_path.clone() else {
+                continue;
+            };
+            let original_rel = original
+                .strip_prefix(&self.config.vault_path)
+                .map(|p| p.to_string_lossy().trim_start_matches('/').to_owned())
+                .unwrap_or_else(|_| original.to_string_lossy().into_owned());
+            let original_text = match tokio::task::spawn_blocking({
+                let path = original.clone();
+                move || std::fs::read_to_string(&path)
+            })
+            .await?
+            {
+                Ok(text) => text,
+                Err(error) => {
+                    failures.push(format!("{original_rel}：读不到原文件（{error}）"));
+                    continue;
+                }
+            };
+            let other_text = match tokio::task::spawn_blocking({
+                let path = conflict.path.clone();
+                move || std::fs::read_to_string(&path)
+            })
+            .await?
+            {
+                Ok(text) => text,
+                Err(error) => {
+                    failures.push(format!("{original_rel}：读不到冲突副本（{error}）"));
+                    continue;
+                }
+            };
+            match resolver
+                .resolve_versions(&original_rel, &original_text, &other_text)
+                .await
+            {
+                Ok(text) => {
+                    let path = original.clone();
+                    let body = text.clone();
+                    tokio::task::spawn_blocking(move || -> Result<()> {
+                        std::fs::write(&path, &body)?;
+                        Ok(())
+                    })
+                    .await??;
+                    let path = conflict.path.clone();
+                    tokio::task::spawn_blocking(move || -> Result<()> {
+                        std::fs::remove_file(&path)?;
+                        Ok(())
+                    })
+                    .await??;
+                    merged.push(original_rel);
+                }
+                Err(error) => failures.push(format!("{original_rel}：{error:#}")),
+            }
+        }
+        if !merged.is_empty() {
+            let vault = self.vault.clone();
+            let committed = tokio::task::spawn_blocking(move || {
+                vault.commit_all("[ru41] 合并同步冲突副本")?;
+                vault.push()?;
+                Ok::<bool, anyhow::Error>(true)
+            })
+            .await??;
+            let _ = committed;
+            self.notify_conflicts_found(&merged, None).await?;
+        }
+        if !failures.is_empty() {
+            self.notify_conflicts_found(&failures, Some("以下冲突没能自动合并，需要人工看一眼："))
+                .await?;
+        }
+        Ok(merged)
+    }
+
+    /// 在 vault 里找同步冲突副本，返回 (副本路径, 原文件路径)。
+    fn find_sync_conflicts(&self) -> Result<Vec<SyncConflictFile>> {
+        find_sync_conflicts(&self.config.vault_path)
+    }
+
+    /// 冲突副本通知：已合并的与合不掉的分开说。
+    async fn notify_conflicts_found(&self, items: &[String], header: Option<&str>) -> Result<()> {
+        let Some(notifier) = &self.notifier else {
+            return Ok(());
+        };
+        let list = items
+            .iter()
+            .map(|f| format!("- {f}"))
+            .collect::<Vec<_>>()
+            .join("\n");
+        let title = header.unwrap_or("## 同步冲突副本已自动合并");
+        notifier
+            .send(
+                &self.notify_target,
+                None,
+                &format!(
+                    "{title}\n\n{list}\n\n> 冲突副本已合并回原文件并删除；请抽空过目合并质量。"
+                ),
+            )
+            .await?;
+        Ok(())
+    }
+
     /// rebase 冲突现场 → AI 逐文件语义合并 → continue → push → QQ 告知。
     /// 任何一步失败都 Err，由调用方 abort 现场并通知人工。
     async fn merge_conflicts(&self, files: &[String]) -> Result<()> {
@@ -1250,6 +1445,30 @@ pub fn append_quick_note(
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn finds_sync_conflict_copies_and_pairs_them_with_original() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path();
+        std::fs::create_dir_all(root.join("05-Opportunities-机会")).unwrap();
+        std::fs::write(root.join("05-Opportunities-机会/笔记.md"), "原内容").unwrap();
+        std::fs::write(
+            root.join("05-Opportunities-机会/笔记.sync-conflict-20261106-101010-ABCD.md"),
+            "副本内容",
+        )
+        .unwrap();
+        // 没有原文件的孤立副本不算配对。
+        std::fs::write(
+            root.join("05-Opportunities-机会/孤儿.sync-conflict-20261106-101010-X.md"),
+            "孤儿",
+        )
+        .unwrap();
+
+        let found = find_sync_conflicts(root).unwrap();
+        assert_eq!(found.len(), 2);
+        let paired = found.iter().filter(|c| c.original_path.is_some()).count();
+        assert_eq!(paired, 1);
+    }
+
     use super::*;
 
     /// 内存 Vault fake：execute_plan 的幂等/校验测试用。

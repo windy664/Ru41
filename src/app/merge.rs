@@ -65,6 +65,24 @@ impl MergeResolver {
         }
     }
 
+    /// 合并同一份笔记的两个版本（文件级同步留下的冲突副本场景）：
+    /// `original` 是留在原路径的版本，`other` 是同步工具另存的冲突副本。
+    pub async fn resolve_versions(
+        &self,
+        path: &str,
+        original: &str,
+        other: &str,
+    ) -> Result<String> {
+        let prompt = build_versions_prompt(path, original, other);
+        let raw = match self.api {
+            MergeApi::AnthropicMessages => self.anthropic_request(&prompt).await?,
+            MergeApi::OpenAiCompletions => self.openai_request(&prompt).await?,
+        };
+        let merged = clean_response(&raw);
+        validate_merged(&merged, original, other)?;
+        Ok(merged)
+    }
+
     /// 合并单个带冲突标记的文件，返回合并后的完整内容。
     pub async fn resolve(&self, path: &str, conflicted: &str) -> Result<String> {
         let prompt = build_prompt(path, conflicted);
@@ -149,6 +167,33 @@ fn openai_text(body: &str) -> Option<String> {
         .pointer("/choices/0/message/content")
         .and_then(|c| c.as_str())
         .map(str::to_owned)
+}
+
+/// 两版本合并的提示词：取并集、去重、保持结构。
+fn build_versions_prompt(path: &str, original: &str, other: &str) -> String {
+    format!(
+        "你是笔记合并助手。文件 `{path}` 有两个同时编辑的版本（同步冲突副本）。\n\
+         请语义合并：两边内容取并集、去重、保持 markdown 结构连贯；同一处做了相同修改就只保留一份；\
+         两边说法冲突时保留信息量更大的一方并保留另一方的独有细节，不要编造。\n\
+         只输出合并后的完整文件内容，不要解释，不要用代码块包裹。\n\n\
+         ===== 版本 A（原文件） =====\n{original}\n\n\
+         ===== 版本 B（冲突副本） =====\n{other}"
+    )
+}
+
+/// 两版本合并的产出校验：不能为空、不能暴涨、不能把冲突标记带进来。
+fn validate_merged(merged: &str, original: &str, other: &str) -> Result<()> {
+    if merged.trim().is_empty() {
+        bail!("合并结果为空");
+    }
+    if merged.contains("<<<<<<<") || merged.contains(">>>>>>>") {
+        bail!("合并结果残留冲突标记");
+    }
+    let longest = original.len().max(other.len());
+    if merged.len() > longest * 2 + 512 {
+        bail!("合并结果异常变长（{} → {}）", longest, merged.len());
+    }
+    Ok(())
 }
 
 fn build_prompt(path: &str, conflicted: &str) -> String {

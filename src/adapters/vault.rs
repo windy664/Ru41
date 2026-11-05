@@ -80,6 +80,28 @@ impl GitVault {
     }
 }
 
+/// 原子写：同目录临时文件 + rename。
+///
+/// 文件级同步（Syncthing 等）盯着目录变化，非原子写可能被同步到半截文件；
+/// rename 在同一文件系统内是原子的，读者只会看到旧版或新版。
+fn atomic_write(path: &Path, data: &[u8]) -> Result<()> {
+    let parent = path.parent().unwrap_or_else(|| Path::new("."));
+    std::fs::create_dir_all(parent)?;
+    let name = path
+        .file_name()
+        .map(|n| n.to_string_lossy().into_owned())
+        .unwrap_or_else(|| "tmp".to_owned());
+    let tmp = parent.join(format!(".{name}.ru41-tmp"));
+    std::fs::write(&tmp, data)?;
+    match std::fs::rename(&tmp, path) {
+        Ok(()) => Ok(()),
+        Err(error) => {
+            let _ = std::fs::remove_file(&tmp);
+            Err(error).with_context(|| format!("cannot rename into {}", path.display()))
+        }
+    }
+}
+
 impl Vault for GitVault {
     fn fetch(&self) -> Result<()> {
         self.git(&["fetch", &self.remote]).map(|_| ())
@@ -246,7 +268,7 @@ impl Vault for GitVault {
             if let Some(parent) = path.parent() {
                 std::fs::create_dir_all(parent)?;
             }
-            std::fs::write(&path, content)?;
+            atomic_write(&path, content.as_bytes())?;
             Ok(())
         })
     }
@@ -257,7 +279,7 @@ impl Vault for GitVault {
             if let Some(parent) = path.parent() {
                 std::fs::create_dir_all(parent)?;
             }
-            std::fs::write(&path, data)?;
+            atomic_write(&path, data)?;
             Ok(())
         })
     }
