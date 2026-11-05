@@ -200,8 +200,7 @@ async fn main() -> Result<()> {
                 backend,
                 bind_secret,
             } => {
-                let backend = backend
-                    .unwrap_or_else(|| config.agent.default_backend().to_owned());
+                let backend = backend.unwrap_or_else(|| config.agent.default_backend().to_owned());
                 let bind_secret = bind_secret.or_else(|| config.channel.qq.bind_secret.clone());
                 let api = Arc::new(qq_api(&credentials, &config)?);
                 let store = open_store(&store_config)?;
@@ -281,8 +280,8 @@ async fn main() -> Result<()> {
                     backend,
                     notify,
                 } => {
-                    let backend = backend
-                        .unwrap_or_else(|| config.agent.default_backend().to_owned());
+                    let backend =
+                        backend.unwrap_or_else(|| config.agent.default_backend().to_owned());
                     registry(&config.agent, AgentOverrides::default())?.get(&backend)?;
                     match notify {
                         false => {
@@ -336,7 +335,8 @@ async fn main() -> Result<()> {
                     let since = now - i64::from(days) * 86_400;
                     let week = ru41::app::usage::overview(&store.usage_runs_since(since)?, days);
                     if let Some(path) = out {
-                        let day = ru41::app::usage::overview(&store.usage_runs_since(now - 86_400)?, 1);
+                        let day =
+                            ru41::app::usage::overview(&store.usage_runs_since(now - 86_400)?, 1);
                         let report = ru41::app::usage_report::render(
                             &week,
                             &day,
