@@ -167,21 +167,14 @@ fn jwxt_cli(
         match args.first().map(String::as_str) {
             Some("courses") => {
                 // 课程目录同步（按课表生成 vault 课程目录与索引）。
+                // 只读已存的课表快照，不需要教务凭证。
                 let vault = ru41::bootstrap::assembly::vault_if_ready(config, true)?
                     .context("jwxt courses 需要 [obsidian] vault 已配置")?;
                 let section = config.sources.get::<crate::JwxtSection>("jwxt")?;
-                let resolved = section.resolved(String::new())?;
-                let vault_dir = resolved
-                    .vault_course_dir
-                    .clone()
-                    .unwrap_or_else(|| "01-Courses-课程/2026-Fall-大一上".to_owned());
                 Ok(Job::Courses(crate::courses::CourseSyncService::new(
                     store.clone(),
                     vault,
-                    crate::courses::CourseSyncConfig {
-                        vault_dir,
-                        aliases: resolved.course_aliases.clone(),
-                    },
+                    section.course_sync_config()?,
                 )))
             }
             Some("classes") => Ok(Job::Classes(
