@@ -908,11 +908,15 @@ impl ChaoxingClient {
         Ok(parse_work_content(&html))
     }
 
-    /// 下载图片字节。平台 CDN 图片通常不带登录态也能取，带上更稳。
+    /// 下载图片字节。
+    ///
+    /// 平台 CDN（p.ananas.chaoxing.com）有防盗链：没有 Referer 一律 403。
+    /// 加上 Referer 后是 301 跳到 star4 的真实地址，reqwest 默认跟随跳转。
     pub async fn download_image(&self, url: &str) -> Result<Vec<u8>> {
         let response = self
             .http
             .get(url)
+            .header("Referer", "https://mooc1.chaoxing.com/")
             .send()
             .await
             .context("图片请求失败")?
