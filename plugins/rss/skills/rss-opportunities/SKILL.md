@@ -33,7 +33,7 @@ description: 查询机会雷达的历史日报与最新机会（免费 AI 额度
 - 「最近有什么机会」：取最近 2-3 份日报，按主题归并（免费额度 / 竞赛 / 实习 / 行业动态），标注来自哪天的哪份报。
 - 「今天有什么新的」：今天还没出报时，说明下一份报的出报时间（08:00 / 21:00），并基于最近一份日报回答；不要声称能拿到池子里未精选的实时条目。
 - 已过期的机会（领取截止、报名截止已过）明确标注「已过期」，不要当成可操作项推荐。
-- 日报里出现真正值得行动的机会（有奖金的比赛、限量额度、招聘窗口）时，建议用户把它落成 `05-Opportunities-机会/` 对应分类下的正式笔记（格式见 `_模板-机会.md`）——日报是流水，机会笔记才是资产。
+- 日报里出现真正值得行动的机会（有奖金的比赛、限量额度、招聘窗口）时，建议用户把它落成 `05-Opportunities-机会/` 对应分类下的正式笔记——日报是流水，机会笔记才是资产。机会笔记的写法：frontmatter 写 `type`（competition / research / internship / program / scholarship / exchange / startup / campus）、`organization`、`name`、`level`、`major_relevance`、`difficulty`、`recommended_year`、`status`、`deadline`、`created`；正文按「基本信息（主办 / 时间 / 门槛 / 奖励）→ 为什么与我有关 → 下一步行动」三段写。
 
 ## 纪律
 

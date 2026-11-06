@@ -265,6 +265,7 @@ impl ChaoxingTracker {
     }
 
     /// 按活动类型 + 命令行参数 + 配置解析出具体签到方式。
+    #[allow(clippy::too_many_arguments)]
     async fn resolve_method(
         &self,
         course: &crate::source::ChaoxingCourse,
@@ -377,11 +378,7 @@ impl ChaoxingTracker {
             return false;
         };
         let activity_id = activity.id.to_string();
-        let Ok(body) = self
-            .client
-            .pre_sign_body(course, &activity_id, &uid)
-            .await
-        else {
+        let Ok(body) = self.client.pre_sign_body(course, &activity_id, &uid).await else {
             return false;
         };
         sign_page_wants_photo(&body)
@@ -506,10 +503,9 @@ impl ChaoxingTracker {
             .gesture_sign_codes
             .get(&course.course_id)
             .filter(|c| !c.trim().is_empty())
+            && !candidates.contains(code)
         {
-            if !candidates.contains(code) {
-                candidates.push(code.clone());
-            }
+            candidates.push(code.clone());
         }
         let from_platform = candidates.len();
         for code in super::gesture::candidates() {

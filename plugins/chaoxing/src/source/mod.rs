@@ -10,5 +10,5 @@ pub use captcha::slider_gap_x;
 pub use client::ChaoxingClient;
 pub use model::{
     ChaoxingActivity, ChaoxingCourse, ChaoxingSignKind, ChaoxingWork, CourseEncs, SignMethod,
-    fallback_photo_bytes,
+    WorkContent, fallback_photo_bytes,
 };

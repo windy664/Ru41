@@ -1,8 +1,12 @@
 //! 学习通 HTTP 协议客户端：登录（AES）、会话 cookie 持久化、
 //! 课程/活动/签到/云盘传图/作业列表抓取。
 
-use super::model::{ChaoxingActivity, ChaoxingCourse, ChaoxingWork, CourseEncs, SignMethod};
-use super::parse::{capture, decode_course_list, parse_work_deadline, parse_work_list};
+use super::model::{
+    ChaoxingActivity, ChaoxingCourse, ChaoxingWork, CourseEncs, SignMethod, WorkContent,
+};
+use super::parse::{
+    capture, decode_course_list, parse_work_content, parse_work_deadline, parse_work_list,
+};
 use anyhow::{Context, Result, bail};
 use base64::Engine;
 use cbc::cipher::{BlockEncryptMut, KeyIvInit};
@@ -756,10 +760,7 @@ impl ChaoxingClient {
 
     /// 上传照片到超星云盘换 objectId（拍照签到前置）。
     /// 流程：uservalid 取 _token → multipart 上传（file + puid）→ 返回 objectId。
-    async fn upload_photo(
-        &self,
-        path: &std::path::Path,
-    ) -> Result<(String, serde_json::Value)> {
+    async fn upload_photo(&self, path: &std::path::Path) -> Result<(String, serde_json::Value)> {
         let bytes =
             std::fs::read(path).with_context(|| format!("读取照片失败: {}", path.display()))?;
         let token: serde_json::Value = self
@@ -894,16 +895,42 @@ impl ChaoxingClient {
     /// 详情页拉截止时间。平台渲染「作答时间: … 至 …」，结束时刻即截止。
     /// 只对未交作业调用，控制请求量。
     pub async fn work_deadline(&self, detail_url: &str) -> Result<Option<String>> {
-        let html = self
+        let html = self.detail_html(detail_url).await?;
+        Ok(parse_work_deadline(&html, ru41::util::now()))
+    }
+
+    /// 作业详情页的题干：文字 + 配图。
+    ///
+    /// 只抓标题会丢掉作业的全部信息（讲卫生那类作业的描述就是一张图），
+    /// 所以正文和图片都要带进 vault。
+    pub async fn work_content(&self, detail_url: &str) -> Result<WorkContent> {
+        let html = self.detail_html(detail_url).await?;
+        Ok(parse_work_content(&html))
+    }
+
+    /// 下载图片字节。平台 CDN 图片通常不带登录态也能取，带上更稳。
+    pub async fn download_image(&self, url: &str) -> Result<Vec<u8>> {
+        let response = self
             .http
+            .get(url)
+            .send()
+            .await
+            .context("图片请求失败")?
+            .error_for_status()
+            .context("图片返回错误状态")?;
+        let bytes = response.bytes().await.context("图片读取失败")?;
+        Ok(bytes.to_vec())
+    }
+
+    async fn detail_html(&self, detail_url: &str) -> Result<String> {
+        self.http
             .get(detail_url)
             .send()
             .await
             .context("作业详情请求失败")?
             .text()
             .await
-            .context("作业详情响应读取失败")?;
-        Ok(parse_work_deadline(&html, ru41::util::now()))
+            .context("作业详情响应读取失败")
     }
 }
 

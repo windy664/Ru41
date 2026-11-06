@@ -39,6 +39,19 @@ pub struct CourseEncs {
     pub work_enc: String,
 }
 
+/// 作业详情里的题目描述与配图。
+///
+/// 学习通的题干是富文本：文字之外常常直接给一张图（例：讲卫生的作业，
+/// 描述就是一张现场照片）。只抓标题会丢掉作业的全部信息，所以正文与
+/// 图片都要带进 vault。
+#[derive(Debug, Clone, Default, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+pub struct WorkContent {
+    /// 题干纯文本（已去标签、压缩空白）。
+    pub text: String,
+    /// 题干里的图片绝对地址（按出现顺序，去重）。
+    pub images: Vec<String>,
+}
+
 /// 作业条目（mooc2/work/list 的 li[data] 项）。
 #[derive(Debug, Clone, PartialEq)]
 pub struct ChaoxingWork {

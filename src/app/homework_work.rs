@@ -148,6 +148,7 @@ pub fn render_work_task_note(
     open: bool,
     deadline: Option<&str>,
     url: &str,
+    body: Option<&str>,
     footer: &str,
     _now: i64,
     _offset_seconds: i32,
@@ -170,6 +171,15 @@ pub fn render_work_task_note(
         out.push_str(&format!("- 截止：{end}（北京时间）\n"));
     }
     out.push_str(&format!("- 状态：{status_label}\n"));
+    // 作业正文：题干文字与配图（图片已落到作业目录的「附件」下，这里相对引用）。
+    if let Some(body) = body {
+        let body = body.trim();
+        if !body.is_empty() {
+            out.push_str("\n## 作业内容\n\n");
+            out.push_str(body);
+            out.push('\n');
+        }
+    }
     out.push_str(&format!("\n[平台作业页]({url})\n\n> {footer}\n"));
     out
 }
