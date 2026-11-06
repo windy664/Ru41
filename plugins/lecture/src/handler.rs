@@ -134,7 +134,7 @@ impl LectureHandler {
         let mut last: Option<anyhow::Error> = None;
         for ip in ips.into_iter().take(4) {
             let client = match http_builder()
-                .resolve(&host, SocketAddr::new(ip.into(), port))
+                .resolve(&host, SocketAddr::new(ip, port))
                 .build()
             {
                 Ok(client) => client,
