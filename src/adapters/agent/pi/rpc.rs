@@ -177,6 +177,41 @@ fn extract_json_object(text: &str) -> Option<&str> {
 /// 解析 agent 结果：优先整体 JSON，其次取第一个配平的 JSON 对象；
 /// 都不是 JSON 时把最后一条文本当 summary（闲聊与简单问答常不按契约输出，
 /// 那条文本本身就是答案，整条任务判失败反而更糟——与 codex 的宽松口径一致）。
+/// 取一条 assistant 消息里的全部文本块。
+fn message_text(message: &Value) -> String {
+    let mut text = String::new();
+    for block in message["content"].as_array().into_iter().flatten() {
+        if block["type"] == "text"
+            && let Some(chunk) = block["text"].as_str()
+        {
+            text.push_str(chunk);
+        }
+    }
+    text
+}
+
+/// 挑出「完整正文」候选：模型把报告写在前面一条消息里，最后一条 JSON 的
+/// summary 反而是压缩版时，返回那份正文（2026-11-06 晚报实测）。
+///
+/// 判定要保守：正文得明显更长（2 倍以上）且本身就是一份像样的交付物，
+/// 否则宁可交付 summary——压缩摘要也是模型自己的选择。
+fn pick_full_report(candidates: &[String], summary: &str) -> Option<String> {
+    let summary_len = summary.trim().chars().count();
+    let best = candidates
+        .iter()
+        .filter(|c| {
+            c.trim().chars().count() > summary_len.saturating_mul(2)
+                && c.trim().chars().count() > 800
+        })
+        .max_by_key(|c| c.trim().chars().count())?;
+    // 正文本身得像交付物：带 Markdown 标题或分节，否则可能只是过程絮叨。
+    let looks_like_report = best.starts_with('#')
+        || best.contains("\n## ")
+        || best.contains("\n- **")
+        || best.contains("\n### ");
+    looks_like_report.then(|| best.trim().to_owned())
+}
+
 fn parse_agent_result(text: &str) -> Result<AgentResult> {
     let trimmed = text.trim();
     let candidate = extract_json_object(trimmed).unwrap_or(trimmed);
@@ -370,7 +405,10 @@ impl PiAgent {
                      never download large files, never install packages or dependencies, \
                      never render or OCR documents page by page. \
                      When finished, your last message must be a JSON object with one \
-                     nonempty string field named summary. If the tools cannot find it, \
+                     nonempty string field named summary. The summary field must \
+                     contain the COMPLETE deliverable (the full report or full answer, \
+                     in Markdown) — do not answer in a message first and then compress \
+                     it into a one-paragraph summary. If the tools cannot find it, \
                      say so in the summary instead of searching extensively.",
                 ]);
             }
@@ -378,7 +416,7 @@ impl PiAgent {
                 command.args([
                     "--no-tools",
                     "--system-prompt",
-                    "Analyze only the supplied request. Return exactly a JSON object with one nonempty string field named summary. Do not claim to have performed external actions.",
+                    "Analyze only the supplied request. Return exactly a JSON object with one nonempty string field named summary. The summary field must contain the complete answer (Markdown), not a compressed abstract of it. Do not claim to have performed external actions.",
                 ]);
             }
         }
@@ -460,6 +498,8 @@ impl PiAgent {
                 .await
                 .ok();
             let mut final_message: Option<Value> = None;
+            // 每条 assistant 消息的正文（用于「模型先给报告、再给压缩摘要」的兜底）
+            let mut report_candidates: Vec<String> = Vec::new();
             let mut accepted = false;
             let mut settled = false;
             let mut total = 0_usize;
@@ -538,6 +578,12 @@ impl PiAgent {
                         if let Some(reported) = usage_from_event(&event["message"]) {
                             usage = Some(reported);
                         }
+                        // 记下正文候选：有些模型会先把完整报告写出来，最后一条消息
+                        // 只给一句压缩摘要（2026-11-06 晚报就是这样，日报正文被丢掉）。
+                        let body = message_text(&event["message"]);
+                        if !body.trim().is_empty() {
+                            report_candidates.push(body);
+                        }
                         final_message = Some(event["message"].clone());
                     }
                     Some("agent_settled") => {
@@ -571,7 +617,12 @@ impl PiAgent {
                             text.push_str(block["text"].as_str().context("Pi text missing")?);
                         }
                     }
-                    let result = parse_agent_result(&text)?;
+                    let mut result = parse_agent_result(&text)?;
+                    // 兜底：最后一条消息的 summary 是压缩版，而前面某条消息里有
+                    // 完整正文（Markdown 报告）——交付完整正文，别交付压缩版。
+                    if let Some(report) = pick_full_report(&report_candidates, &result.summary) {
+                        result.summary = report;
+                    }
                     stdin.shutdown().await?;
                     return Ok::<_, anyhow::Error>(AgentOutput {
                         result,
@@ -610,5 +661,38 @@ impl PiAgent {
         let _ = child.kill().await;
         let _ = child.wait().await;
         outcome
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{parse_agent_result, pick_full_report};
+
+    /// 模型先写完整报告、最后一条 JSON 只给压缩摘要时，交付完整报告。
+    #[test]
+    fn picks_full_report_over_compressed_summary() {
+        let report = format!(
+            "# 今日机会雷达（2026-11-06）\n\n## 1. 某某模型发布\n\n- **链接**：https://x\n{}\n",
+            "正文细节。".repeat(400)
+        );
+        let summary = "今日筛选出 7 条值得关注的条目：1) ……；2) ……";
+        let picked = pick_full_report(std::slice::from_ref(&report), summary);
+        assert_eq!(picked.as_deref(), Some(report.trim()));
+    }
+
+    /// 正文不够长、或不像交付物时，不动 summary。
+    #[test]
+    fn keeps_summary_when_no_full_report() {
+        let summary = "今日筛选出 7 条值得关注的条目：1) ……";
+        assert!(pick_full_report(&["短消息".to_owned()], summary).is_none());
+        let chatter = "我先查一下接口。".repeat(200);
+        assert!(pick_full_report(&[chatter], summary).is_none());
+    }
+
+    /// 最后一条不是 JSON 时，整段文本当 summary（既有兜底口径）。
+    #[test]
+    fn plain_text_becomes_summary() {
+        let result = parse_agent_result("  直接一段话  ").unwrap();
+        assert_eq!(result.summary, "直接一段话");
     }
 }
