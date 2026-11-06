@@ -191,8 +191,6 @@ impl YoutubeTracker {
                 }
             }
         }
-        candidates.truncate(self.config.max_per_poll as usize);
-
         let cutoff = if self.config.max_age_days == 0 {
             None
         } else {
@@ -200,7 +198,12 @@ impl YoutubeTracker {
         };
         let mut prepared = 0;
         let mut task_ids = Vec::new();
+        // 配额只限制「真正去抓字幕准备」的个数，不限制遍历：
+        // 先把过期的老视频标记掉（否则它们一直占着 pending 位置，新视频排不上队）。
         for (channel, video) in candidates {
+            if prepared >= self.config.max_per_poll as usize {
+                break;
+            }
             // flat 列表通常缺发布时间：预习前补一次元数据，超窗的老视频只登记不入队。
             let timestamp = match video.timestamp {
                 Some(ts) => Some(ts),
@@ -216,6 +219,10 @@ impl YoutubeTracker {
                 && (ts as i64) < cutoff
             {
                 self.mark_seen(&channel, &video.id, "old", 0);
+                continue;
+            }
+            if prepared >= self.config.max_per_poll as usize {
+                // 配额用完，但这个视频还没过期：留作 pending，下轮继续。
                 continue;
             }
             match self.client.transcript(&video.id).await {

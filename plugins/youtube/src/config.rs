@@ -46,7 +46,7 @@ pub struct YoutubeSection {
 
 impl YoutubeSection {
     /// run 的轮询间隔（秒）默认值；tracker 装配与 schedule list 共用这一份。
-    pub const DEFAULT_INTERVAL_SECS: u64 = 21_600;
+    pub const DEFAULT_INTERVAL_SECS: u64 = 3_600;
 
     /// 学习者水平默认描述（QQ 命令与 CLI 共用）。
     pub const DEFAULT_LEVEL: &str = "CET-6 / B2";
@@ -83,7 +83,7 @@ impl YoutubeSection {
                 .unwrap_or_else(|| Self::DEFAULT_LEVEL.into()),
             min_duration_secs: self.min_duration_secs.unwrap_or(60),
             max_per_channel: self.max_per_channel.unwrap_or(15),
-            max_per_poll: self.max_per_poll.unwrap_or(2),
+            max_per_poll: self.max_per_poll.unwrap_or(6),
             max_age_days: self.max_age_days.unwrap_or(Self::DEFAULT_MAX_AGE_DAYS),
             max_transcript_chars: self
                 .max_transcript_chars
@@ -145,7 +145,7 @@ mod tests {
         };
         let config = section.resolved(None).unwrap();
         assert_eq!(config.interval_secs, YoutubeSection::DEFAULT_INTERVAL_SECS);
-        assert_eq!(config.max_per_poll, 2);
+        assert_eq!(config.max_per_poll, 6);
         assert_eq!(config.min_duration_secs, 60);
         assert_eq!(config.max_age_days, YoutubeSection::DEFAULT_MAX_AGE_DAYS);
         assert_eq!(config.level, "CET-6 / B2");
