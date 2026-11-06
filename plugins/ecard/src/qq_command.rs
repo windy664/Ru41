@@ -183,6 +183,5 @@ fn format_utility(reading: Option<&Document>) -> String {
         lines.push(format!("- **水**：{w:.2}吨"));
     }
     lines.push(format!("- **数据时间**：{}", reading.id));
-    lines.push("\n> 每日自动采集，低余额会主动提醒。".to_owned());
     lines.join("\n")
 }

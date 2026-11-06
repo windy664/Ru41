@@ -113,8 +113,12 @@ fn ctx<'a>(
 #[test]
 fn list_scopes_to_current_conversation() {
     let fixture = fixture();
-    let group_view =
-        commands::execute(&Command::List, &ctx(&fixture, "group:G1", "U9", false)).unwrap();
+    let group_view = commands::execute(
+        &Command::List,
+        &ctx(&fixture, "group:G1", "U9", false),
+        &ru41::app::usage_report::Pricing::builtin(),
+    )
+    .unwrap();
     assert!(
         group_view
             .text
@@ -134,8 +138,12 @@ fn list_scopes_to_current_conversation() {
             .command
             .contains(&format!("/取消 {}", fixture.group_task))
     );
-    let c2c_view =
-        commands::execute(&Command::List, &ctx(&fixture, "user:U1", "U1", true)).unwrap();
+    let c2c_view = commands::execute(
+        &Command::List,
+        &ctx(&fixture, "user:U1", "U1", true),
+        &ru41::app::usage_report::Pricing::builtin(),
+    )
+    .unwrap();
     assert!(!c2c_view.text.contains(&format!("#{}", fixture.group_task)));
     assert!(c2c_view.text.contains(&format!("#{}", fixture.c2c_task)));
 }
@@ -152,7 +160,12 @@ fn clear_resets_only_the_current_conversation() {
             &serde_json::json!({"backend_id": "codex", "session_id": "thread-1"}),
         )
         .unwrap();
-    let reply = commands::execute(&Command::Clear, &ctx(&fixture, "user:U1", "U1", true)).unwrap();
+    let reply = commands::execute(
+        &Command::Clear,
+        &ctx(&fixture, "user:U1", "U1", true),
+        &ru41::app::usage_report::Pricing::builtin(),
+    )
+    .unwrap();
     assert!(reply.text.contains("新对话"));
     let document = fixture
         .store
@@ -168,15 +181,25 @@ fn bound_user_aggregates_across_conversations_in_c2c() {
     let bound = commands::execute(
         &Command::Bind("s3cret".into()),
         &ctx(&fixture, "user:U1", "U1", true),
+        &ru41::app::usage_report::Pricing::builtin(),
     )
     .unwrap();
     assert!(bound.text.contains("绑定成功"));
-    let view = commands::execute(&Command::List, &ctx(&fixture, "user:U1", "U1", true)).unwrap();
+    let view = commands::execute(
+        &Command::List,
+        &ctx(&fixture, "user:U1", "U1", true),
+        &ru41::app::usage_report::Pricing::builtin(),
+    )
+    .unwrap();
     assert!(view.text.contains(&format!("#{}", fixture.group_task)));
     assert!(view.text.contains(&format!("#{}", fixture.c2c_task)));
     // 群聊中即使已绑定也不聚合，私人内容不进群。
-    let group_view =
-        commands::execute(&Command::List, &ctx(&fixture, "group:G1", "U1", false)).unwrap();
+    let group_view = commands::execute(
+        &Command::List,
+        &ctx(&fixture, "group:G1", "U1", false),
+        &ru41::app::usage_report::Pricing::builtin(),
+    )
+    .unwrap();
     assert!(!group_view.text.contains(&format!("#{}", fixture.c2c_task)));
 }
 
@@ -192,7 +215,12 @@ async fn todo_commands_add_list_and_complete_in_private_chat() {
         .unwrap()
         .unwrap();
     assert!(unbound.text.contains("身份绑定"));
-    commands::execute(&Command::Bind("s3cret".into()), &context).unwrap();
+    commands::execute(
+        &Command::Bind("s3cret".into()),
+        &context,
+        &ru41::app::usage_report::Pricing::builtin(),
+    )
+    .unwrap();
 
     let added = command
         .handle_command("记待办", "明天下午3点 写项目周报", &context)
@@ -238,7 +266,12 @@ async fn todo_commands_reject_group_chat_and_parse_views() {
     let fixture = fixture();
     let command = TodoQqCommand::new(ru41::domain::todo::TodoOptions::default(), None);
     let private = ctx(&fixture, "user:U1", "U1", true);
-    commands::execute(&Command::Bind("s3cret".into()), &private).unwrap();
+    commands::execute(
+        &Command::Bind("s3cret".into()),
+        &private,
+        &ru41::app::usage_report::Pricing::builtin(),
+    )
+    .unwrap();
     command
         .handle_command("记待办", "未排期事项", &private)
         .await
@@ -289,11 +322,17 @@ fn bind_requires_configured_and_matching_secret() {
         bind_secret: None,
         ..ctx(&fixture, "user:U1", "U1", true)
     };
-    let reply = commands::execute(&Command::Bind("s3cret".into()), &disabled).unwrap();
+    let reply = commands::execute(
+        &Command::Bind("s3cret".into()),
+        &disabled,
+        &ru41::app::usage_report::Pricing::builtin(),
+    )
+    .unwrap();
     assert!(reply.text.contains("未开放"));
     let wrong = commands::execute(
         &Command::Bind("nope".into()),
         &ctx(&fixture, "user:U1", "U1", true),
+        &ru41::app::usage_report::Pricing::builtin(),
     )
     .unwrap();
     assert!(wrong.text.contains("口令错误"));
@@ -305,12 +344,14 @@ fn show_and_cancel_reject_cross_conversation_tasks() {
     let denied = commands::execute(
         &Command::Show(fixture.c2c_task),
         &ctx(&fixture, "group:G1", "U9", false),
+        &ru41::app::usage_report::Pricing::builtin(),
     )
     .unwrap();
     assert!(denied.text.contains("无权"));
     let denied = commands::execute(
         &Command::Cancel(fixture.c2c_task),
         &ctx(&fixture, "group:G1", "U9", false),
+        &ru41::app::usage_report::Pricing::builtin(),
     )
     .unwrap();
     assert!(denied.text.contains("无权"));
@@ -321,6 +362,7 @@ fn show_and_cancel_reject_cross_conversation_tasks() {
     let cancelled = commands::execute(
         &Command::Cancel(fixture.c2c_task),
         &ctx(&fixture, "user:U1", "U1", true),
+        &ru41::app::usage_report::Pricing::builtin(),
     )
     .unwrap();
     assert!(cancelled.text.contains("已取消"));
@@ -331,6 +373,7 @@ fn show_and_cancel_reject_cross_conversation_tasks() {
     let detail = commands::execute(
         &Command::Show(fixture.c2c_task),
         &ctx(&fixture, "user:U1", "U1", true),
+        &ru41::app::usage_report::Pricing::builtin(),
     )
     .unwrap();
     assert!(detail.text.contains("已取消"));
@@ -352,6 +395,8 @@ fn c2c_new_message_interrupts_unfinished_tasks_same_conversation() {
         command_handlers: vec![],
         image_consumers: vec![],
         sequencer: Arc::new(ru41::channels::qq::ReplySequencer::default()),
+        typing_sent_at: std::sync::Mutex::new(std::collections::HashMap::new()),
+        pricing: ru41::app::usage_report::Pricing::builtin(),
     };
     let c2c = |msg_id: &str, content: &str| GatewayEvent::C2cMessage {
         msg_id: msg_id.into(),
