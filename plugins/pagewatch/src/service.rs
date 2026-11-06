@@ -22,6 +22,8 @@ pub struct PagewatchConfig {
     pub pages: Vec<WatchedPage>,
     pub interval_secs: u64,
     pub notify: Option<NotifyRoute>,
+    /// 状态表写到 vault 的路径；None = 不写 vault（默认）。
+    pub status_path: Option<String>,
 }
 
 /// 一页一轮询的结果报告；单页失败不中断其他页面，错误收进 errors。
@@ -205,7 +207,7 @@ impl PagewatchTracker {
         // vault 状态表：每轮按各页文档全量重渲染，保证 Obsidian 里是最新状态；
         // 内容没变化则不写文件不提交（obsidian 闭环也不会被触发）。
         let mut vault_logged = 0usize;
-        if let Some(vault) = &self.vault {
+        if let Some(vault) = self.vault.as_ref().filter(|_| self.config.status_path.is_some()) {
             let mut docs = std::collections::HashMap::new();
             for page in &self.config.pages {
                 if let Some(doc) = self.store.document("pagewatch_page", &page.url)? {
@@ -213,13 +215,18 @@ impl PagewatchTracker {
                 }
             }
             let content = render_status(&self.config.pages, &docs);
+            let path = self
+                .config
+                .status_path
+                .clone()
+                .unwrap_or_else(|| STATUS_PATH.to_owned());
             let vault = vault.clone();
             vault_logged = docs.len();
             tokio::task::spawn_blocking(move || -> Result<()> {
-                if vault.read_file(STATUS_PATH)?.as_deref() == Some(content.as_str()) {
+                if vault.read_file(&path)?.as_deref() == Some(content.as_str()) {
                     return Ok(());
                 }
-                vault.write_file(STATUS_PATH, &content)?;
+                vault.write_file(&path, &content)?;
                 if vault.commit_all("[ru41] 页面监控")? {
                     vault.push()?;
                 }

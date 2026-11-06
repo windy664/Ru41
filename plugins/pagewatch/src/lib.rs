@@ -1,6 +1,7 @@
 //! 页面监控附属：盯没有 RSS 的机会源头页面（赛事官网/公告页），内容变更即通知。
 
 mod config;
+pub mod qq_command;
 mod service;
 
 pub use config::PagewatchSection;
@@ -45,11 +46,19 @@ pub static DEF: ru41::modules::ModuleDef = ru41::modules::ModuleDef {
         } else {
             None
         };
+        let resolved = section.resolved(route)?;
         Ok(Some(Box::new(
-            PagewatchTracker::new(store, notifier, section.resolved(route)?).with_vault_opt(vault),
+            PagewatchTracker::new(store, notifier, resolved.clone()).with_vault_opt(vault),
         )))
     },
-    qq_handlers: |_, _| Ok(Vec::new()),
+    qq_handlers: |config, _| {
+        let section = config.sources.get::<crate::PagewatchSection>("pagewatch")?;
+        let notify = ru41::bootstrap::assembly::source_notify(config, section.notify)?;
+        let resolved = std::sync::Arc::new(section.resolved(notify)?);
+        Ok(vec![std::sync::Arc::new(crate::qq_command::PagewatchQqCommand::new(
+            resolved,
+        ))])
+    },
     image_consumers: ru41::modules::no_image_consumers,
     cli: ru41::modules::no_cli,
 };
