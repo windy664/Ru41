@@ -209,6 +209,7 @@ async fn main() -> Result<()> {
                 let image_consumers = qq_image_consumers(&config)?;
                 // 回执与终态/进度通知共享序号器，同 msg_id 被动回复 seq 不撞车。
                 let sequencer = Arc::new(ReplySequencer::default());
+                let pricing = ru41::app::usage_report::Pricing::from_config(&config.pricing);
                 let bot = QqBot {
                     api: api.clone(),
                     store: store.clone(),
@@ -218,6 +219,7 @@ async fn main() -> Result<()> {
                     image_consumers,
                     sequencer: sequencer.clone(),
                     typing_sent_at: Mutex::new(HashMap::new()),
+                    pricing,
                 };
                 let dispatcher = NotifyDispatcher {
                     store,
@@ -342,6 +344,7 @@ async fn main() -> Result<()> {
                             &week,
                             &day,
                             ru41::app::usage_report::Style::Doc,
+                            &ru41::app::usage_report::Pricing::from_config(&config.pricing),
                         );
                         if let Some(parent) = std::path::Path::new(&path).parent() {
                             std::fs::create_dir_all(parent)?;

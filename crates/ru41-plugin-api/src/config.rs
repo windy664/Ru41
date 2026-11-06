@@ -17,6 +17,8 @@ pub struct Config {
     pub sources: SourcesSection,
     pub notify: NotifySection,
     pub plugins: PluginsSection,
+    /// 供应商定价（用量报告折算花费用）。
+    pub pricing: PricingSection,
 }
 
 /// 动态插件（cdylib）配置。
@@ -237,6 +239,34 @@ pub struct CodexProviderSection {
     pub api_key_env: Option<String>,
     /// chat（OpenAI Chat Completions 兼容）或 responses（Responses API）。
     pub wire_api: Option<String>,
+}
+
+/// 供应商定价（美元 / 百万 token）。
+///
+/// 用量报告要回答「实际花了多少钱」，光给 token 数看不懂。价格随供应商调整，
+/// 所以默认走内置值（MiniMax-M3，2026-11 的公开价），配置里可覆盖。
+#[derive(Debug, Clone, Default, Deserialize, serde::Serialize)]
+#[serde(default, deny_unknown_fields)]
+pub struct PricingSection {
+    /// 默认输入价（美元 / 百万 token）。
+    pub input_per_million: Option<f64>,
+    /// 默认输出价。
+    pub output_per_million: Option<f64>,
+    /// 默认缓存命中价。
+    pub cache_read_per_million: Option<f64>,
+    /// 美元兑人民币（只用于给个约数）。
+    pub usd_per_cny: Option<f64>,
+    /// 分模型覆盖（键为模型名，可写带供应方前缀的完整名）。
+    pub models: std::collections::BTreeMap<String, ModelPricing>,
+}
+
+/// 单个模型的定价。
+#[derive(Debug, Clone, Default, Deserialize, serde::Serialize)]
+#[serde(default, deny_unknown_fields)]
+pub struct ModelPricing {
+    pub input_per_million: Option<f64>,
+    pub output_per_million: Option<f64>,
+    pub cache_read_per_million: Option<f64>,
 }
 
 #[derive(Debug, Default, Deserialize)]
