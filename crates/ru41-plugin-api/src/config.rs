@@ -241,32 +241,31 @@ pub struct CodexProviderSection {
     pub wire_api: Option<String>,
 }
 
-/// 供应商定价（美元 / 百万 token）。
+/// 供应商定价（人民币 / 百万 token）。
 ///
 /// 用量报告要回答「实际花了多少钱」，光给 token 数看不懂。价格随供应商调整，
-/// 所以默认走内置值（MiniMax-M3，2026-11 的公开价），配置里可覆盖。
+/// 所以默认走内置值（MiniMax-M3，2026-11 的公开价折合人民币），配置里可覆盖。
+/// 内置值参考：输入 $0.30/M、输出 $1.20/M、缓存命中 $0.06/M（按 1 美元 ≈ 7.2 元折算）。
 #[derive(Debug, Clone, Default, Deserialize, serde::Serialize)]
 #[serde(default, deny_unknown_fields)]
 pub struct PricingSection {
-    /// 默认输入价（美元 / 百万 token）。
-    pub input_per_million: Option<f64>,
+    /// 默认输入价（元 / 百万 token）。
+    pub input_cny_per_million: Option<f64>,
     /// 默认输出价。
-    pub output_per_million: Option<f64>,
+    pub output_cny_per_million: Option<f64>,
     /// 默认缓存命中价。
-    pub cache_read_per_million: Option<f64>,
-    /// 美元兑人民币（只用于给个约数）。
-    pub usd_per_cny: Option<f64>,
+    pub cache_read_cny_per_million: Option<f64>,
     /// 分模型覆盖（键为模型名，可写带供应方前缀的完整名）。
     pub models: std::collections::BTreeMap<String, ModelPricing>,
 }
 
-/// 单个模型的定价。
+/// 单个模型的定价（元 / 百万 token）。
 #[derive(Debug, Clone, Default, Deserialize, serde::Serialize)]
 #[serde(default, deny_unknown_fields)]
 pub struct ModelPricing {
-    pub input_per_million: Option<f64>,
-    pub output_per_million: Option<f64>,
-    pub cache_read_per_million: Option<f64>,
+    pub input_cny_per_million: Option<f64>,
+    pub output_cny_per_million: Option<f64>,
+    pub cache_read_cny_per_million: Option<f64>,
 }
 
 #[derive(Debug, Default, Deserialize)]

@@ -12,7 +12,7 @@
 use crate::app::usage::{UsageOverview, UsageStat};
 use crate::bootstrap::config::PricingSection;
 
-/// 一个模型的单价（美元 / 百万 token）。
+/// 一个模型的单价（元 / 百万 token）。
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct UnitPrice {
     pub input: f64,
@@ -21,14 +21,15 @@ pub struct UnitPrice {
 }
 
 impl UnitPrice {
-    /// MiniMax-M3 的公开价（2026-11）：输入 0.30、输出 1.20、缓存命中 0.06。
+    /// MiniMax-M3 的公开价折合人民币（2026-11）：
+    /// 输入 $0.30、输出 $1.20、缓存命中 $0.06，按 1 美元 ≈ 7.2 元。
     pub const MINIMAX_M3: UnitPrice = UnitPrice {
-        input: 0.30,
-        output: 1.20,
-        cache_read: 0.06,
+        input: 2.16,
+        output: 8.64,
+        cache_read: 0.43,
     };
 
-    /// 按 token 数折算花费（美元）。
+    /// 按 token 数折算花费（元）。
     pub fn cost(&self, input: u64, cache_read: u64, output: u64) -> f64 {
         (input as f64 / 1_000_000.0) * self.input
             + (cache_read as f64 / 1_000_000.0) * self.cache_read
@@ -40,43 +41,39 @@ impl UnitPrice {
 pub struct Pricing {
     default: UnitPrice,
     models: Vec<(String, UnitPrice)>,
-    /// 美元兑人民币。
-    pub usd_per_cny: f64,
 }
 
 impl Pricing {
-    /// 没有任何配置时的默认定价（MiniMax-M3）。
+    /// 没有任何配置时的默认定价（MiniMax-M3，元 / 百万 token）。
     pub fn builtin() -> Self {
         Pricing {
             default: UnitPrice::MINIMAX_M3,
             models: Vec::new(),
-            usd_per_cny: 7.2,
         }
     }
 
     /// 从配置构造；模型名匹配忽略大小写与供应方前缀。
     pub fn from_config(section: &PricingSection) -> Self {
         let mut pricing = Pricing::builtin();
-        if let Some(input) = section.input_per_million {
+        if let Some(input) = section.input_cny_per_million {
             pricing.default.input = input;
         }
-        if let Some(output) = section.output_per_million {
+        if let Some(output) = section.output_cny_per_million {
             pricing.default.output = output;
         }
-        if let Some(cache) = section.cache_read_per_million {
+        if let Some(cache) = section.cache_read_cny_per_million {
             pricing.default.cache_read = cache;
-        }
-        if let Some(rate) = section.usd_per_cny {
-            pricing.usd_per_cny = rate;
         }
         for (name, model) in &section.models {
             pricing.models.push((
                 name.clone(),
                 UnitPrice {
-                    input: model.input_per_million.unwrap_or(pricing.default.input),
-                    output: model.output_per_million.unwrap_or(pricing.default.output),
+                    input: model.input_cny_per_million.unwrap_or(pricing.default.input),
+                    output: model
+                        .output_cny_per_million
+                        .unwrap_or(pricing.default.output),
                     cache_read: model
-                        .cache_read_per_million
+                        .cache_read_cny_per_million
                         .unwrap_or(pricing.default.cache_read),
                 },
             ));
@@ -96,7 +93,7 @@ impl Pricing {
         self.default
     }
 
-    /// 一组用量折算出的花费（美元）。
+    /// 一组用量折算出的花费（元）。
     ///
     /// `model` 为 None 时用默认价（按来源分组时组内可能混着多个模型，
     /// 单价差异大时以按模型分组的那张表为准）。
@@ -116,15 +113,15 @@ impl Pricing {
     }
 }
 
-/// 花费格式化：小于 1 分钱时用「$0.000x」级别，不然四舍五入到分。
-pub fn fmt_usd(cost: f64) -> String {
+/// 花费格式化（元）：小于 1 分时保留到厘，再小就四舍五入到分。
+pub fn fmt_cny(cost: f64) -> String {
     if cost <= 0.0 {
-        return "$0".to_owned();
+        return "¥0".to_owned();
     }
     if cost < 0.01 {
-        return format!("${cost:.4}");
+        return format!("¥{cost:.4}");
     }
-    format!("${cost:.3}")
+    format!("¥{cost:.2}")
 }
 
 /// 报告版式。
@@ -191,20 +188,6 @@ fn stat_phrase(stat: &UsageStat) -> String {
             cn_tokens(stat.cached_input_tokens)
         )
     }
-}
-
-/// Markdown 表格（QQ 与 Obsidian 都认这套语法）。
-fn markdown_table(headers: &[&str], rows: &[Vec<String>]) -> String {
-    let mut out = String::new();
-    out.push_str(&format!("| {} |\n", headers.join(" | ")));
-    out.push_str(&format!(
-        "|{}|\n",
-        headers.iter().map(|_| "---").collect::<Vec<_>>().join("|")
-    ));
-    for row in rows {
-        out.push_str(&format!("| {} |\n", row.join(" | ")));
-    }
-    out.trim_end().to_owned()
 }
 
 /// 生成报告。
@@ -443,116 +426,72 @@ fn render_chat(dashboard: &Dashboard<'_>, pricing: &Pricing) -> String {
     lines.push("## 📊 Token 用量".to_owned());
     lines.push(String::new());
 
-    // 总览表：两个窗口并排，花费是主角。
-    let day_cost = day_cost(pricing, day);
-    let week_cost = week_cost(pricing, week);
-    let mut rows: Vec<Vec<String>> = Vec::new();
-    rows.push(vec![
-        "运行次数".to_owned(),
-        day.runs.to_string(),
-        week.runs.to_string(),
-    ]);
-    rows.push(vec![
-        "实际花费".to_owned(),
-        day_cost.map(fmt_usd).unwrap_or_else(|| "—".to_owned()),
-        week_cost.map(fmt_usd).unwrap_or_else(|| "—".to_owned()),
-    ]);
-    rows.push(vec![
-        "  新读入".to_owned(),
-        cn_tokens(day.input_tokens),
-        cn_tokens(week.input_tokens),
-    ]);
-    rows.push(vec![
-        "  缓存命中".to_owned(),
-        cn_tokens(day.cached_input_tokens),
-        cn_tokens(week.cached_input_tokens),
-    ]);
-    rows.push(vec![
-        "  输出".to_owned(),
-        cn_tokens(day.output_tokens),
-        cn_tokens(week.output_tokens),
-    ]);
-    rows.push(vec![
-        "成功率".to_owned(),
-        percent(u64::from(day.succeeded), u64::from(day.runs)),
-        percent(u64::from(week.succeeded), u64::from(week.runs)),
-    ]);
-    rows.push(vec![
-        "平均耗时".to_owned(),
-        format!("{}s", day.avg_seconds),
-        format!("{}s", week.avg_seconds),
-    ]);
-    lines.push(markdown_table(&["指标", "近 24 小时", "近 7 天"], &rows));
-
-    // 花费说明：让人知道这个钱怎么算出来的。
-    let price = pricing.price_of("");
-    lines.push(String::new());
-    lines.push(format!(
-        "> 花费按 MiniMax-M3 公开价折算：输入 ${:.2}/M、缓存命中 ${:.2}/M、输出 ${:.2}/M；缓存命中只按输入价的 1/5 计价，所以 token 数看着吓人、钱不多。",
-        price.input, price.cache_read, price.output
-    ));
-    if let Some(cost) = week_cost {
+    for (label, window) in [("近 24 小时", day), ("近 7 天", week)] {
+        lines.push(format!("**{label}**"));
         lines.push(format!(
-            "> 近 7 天实际花费 **{}**（约 ¥{:.2}，汇率 {:.1}）",
-            fmt_usd(cost),
-            cost * pricing.usd_per_cny,
-            pricing.usd_per_cny
+            "运行 {} 次，成功 {} 次，平均 {}s",
+            window.runs, window.succeeded, window.avg_seconds
         ));
-    }
-
-    // 按模型
-    if !week.by_model.is_empty() {
-        lines.push(String::new());
-        lines.push("**按模型**".to_owned());
-        let mut rows: Vec<Vec<String>> = Vec::new();
-        for item in &week.by_model {
-            let cost = pricing
-                .cost_of(item, Some(&item.key))
-                .map(fmt_usd)
-                .unwrap_or_else(|| "—".to_owned());
-            let tokens = if item.reported_runs == 0 {
-                "—".to_owned()
-            } else {
-                cn_tokens(real_tokens(item))
-            };
-            rows.push(vec![item.key.clone(), item.runs.to_string(), tokens, cost]);
+        match window_cost(pricing, window) {
+            Some(cost) => lines.push(format!(
+                "实际消耗 {} token，费用 {}",
+                cn_tokens(real_of(window)),
+                fmt_cny(cost)
+            )),
+            None => lines.push(format!("实际消耗 {} token", cn_tokens(real_of(window)))),
         }
-        lines.push(markdown_table(&["模型", "次数", "真实消耗", "花费"], &rows));
+        lines.push(format!(
+            "新读入 {}　缓存命中 {}　输出 {}",
+            cn_tokens(window.input_tokens),
+            cn_tokens(window.cached_input_tokens),
+            cn_tokens(window.output_tokens)
+        ));
+        lines.push(String::new());
     }
 
     // 按功能来源
     let sources = group_sources(&week.by_source);
     if !sources.is_empty() {
-        lines.push(String::new());
-        lines.push("**按功能来源（近 7 天）**".to_owned());
-        let mut rows: Vec<Vec<String>> = Vec::new();
+        lines.push("**按功能来源 · 近 7 天**".to_owned());
         for (name, item) in &sources {
-            let cost = pricing
-                .cost_of(item, None)
-                .map(fmt_usd)
-                .unwrap_or_else(|| "—".to_owned());
-            let tokens = if item.reported_runs == 0 {
-                "—".to_owned()
-            } else {
-                cn_tokens(real_tokens(item))
-            };
-            rows.push(vec![name.clone(), item.runs.to_string(), tokens, cost]);
+            lines.push(format!(
+                "{} · {} 次 · {}",
+                name,
+                item.runs,
+                usage_cell(pricing, item, None)
+            ));
         }
-        lines.push(markdown_table(&["来源", "次数", "真实消耗", "花费"], &rows));
+        lines.push(String::new());
     }
 
-    // 未上报说明
-    if week.runs > week.reported_runs {
-        lines.push(String::new());
-        lines.push(format!(
-            "> ℹ️ {} 次运行没有 token 数据（底座走 chat 接口时不返回 usage），所以花费算不出来；运行次数、成功率、耗时都是实的。\n想看某次运行具体做了什么：`ru41 task trace <任务号>`",
-            week.runs - week.reported_runs
-        ));
+    // 按模型
+    if !week.by_model.is_empty() {
+        lines.push("**按模型 · 近 7 天**".to_owned());
+        for item in &week.by_model {
+            lines.push(format!(
+                "{} · {} 次 · {}",
+                item.key,
+                item.runs,
+                usage_cell(pricing, item, Some(&item.key))
+            ));
+        }
     }
     lines.join("\n")
 }
 
-/// 窗口的总花费（美元）；没有上报数据时 None。
+/// 一组用量的展示：token 数 + 花费；没有上报数据时只写一次「未上报」。
+fn usage_cell(
+    pricing: &Pricing,
+    stat: &crate::app::usage::UsageStat,
+    model: Option<&str>,
+) -> String {
+    let Some(cost) = pricing.cost_of(stat, model) else {
+        return "未上报".to_owned();
+    };
+    format!("{} token · {}", cn_tokens(real_tokens(stat)), fmt_cny(cost))
+}
+
+/// 窗口的总花费（元）；没有上报数据时 None。
 fn window_cost(pricing: &Pricing, overview: &UsageOverview) -> Option<f64> {
     if overview.reported_runs == 0 {
         return None;
@@ -563,14 +502,6 @@ fn window_cost(pricing: &Pricing, overview: &UsageOverview) -> Option<f64> {
         overview.cached_input_tokens,
         overview.output_tokens,
     ))
-}
-
-fn day_cost(pricing: &Pricing, day: &UsageOverview) -> Option<f64> {
-    window_cost(pricing, day)
-}
-
-fn week_cost(pricing: &Pricing, week: &UsageOverview) -> Option<f64> {
-    window_cost(pricing, week)
 }
 
 #[cfg(test)]
@@ -636,23 +567,23 @@ mod tests {
     }
 
     #[test]
-    fn chat_report_has_no_tables_and_explains_real_tokens() {
+    fn chat_report_is_plain_lines_without_pipes_or_notes() {
         let week = overview();
         let text = render(&week, &week, Style::Chat, &Pricing::builtin());
-        // QQ 版用 markdown 表格。
-        assert!(text.contains("| 指标 | 近 24 小时 | 近 7 天 |"), "{text}");
-        // 表格化的总览：指标行 + 两个窗口。
-        assert!(text.contains("指标"), "{text}");
+        // 不要竖线（markdown 表格语法）与引用备注块。
+        assert!(!text.contains('|'), "不该有竖线：{text}");
+        assert!(!text.contains('>'), "不该有引用备注：{text}");
+        // 两个时间窗、token 口径与花费都在。
         assert!(text.contains("近 24 小时"), "{text}");
         assert!(text.contains("近 7 天"), "{text}");
-        assert!(text.contains("实际花费"), "{text}");
         assert!(text.contains("新读入"), "{text}");
         assert!(text.contains("缓存命中"), "{text}");
-        assert!(text.contains("成功率"), "{text}");
-        // 花费要给出单价口径，让人知道钱怎么算的。
-        assert!(text.contains("缓存命中只按输入价的 1/5 计价"), "{text}");
-        // 分来源表也带花费列。
+        assert!(text.contains("费用"), "{text}");
+        // 费用用人民币。
+        assert!(text.contains("¥"), "{text}");
+        assert!(!text.contains('$'), "不该出现美元：{text}");
+        // 分来源与未上报标记都在。
         assert!(text.contains("QQ 消息（qq）"), "{text}");
-        assert!(text.contains("没有 token 数据"), "{text}");
+        assert!(text.contains("未上报"), "{text}");
     }
 }
