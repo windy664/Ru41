@@ -459,9 +459,12 @@ impl ChaoxingWorkTracker {
         for (index, url) in content.images.iter().enumerate() {
             let name = image_file_name(url, index);
             let relative = format!("{course_base}/{folder}/附件/{name}");
+            // 注意摊平：read_file_at 返回 Option<String>，文件不存在是 Ok(None)，
+            // 直接 is_some() 会把「不存在」也当成「已存在」，图片就永远下不下来。
             let exists = head
                 .as_ref()
                 .and_then(|head| vault.read_file_at(head, &relative).ok())
+                .flatten()
                 .is_some();
             if !exists {
                 match self.client.download_image(url).await {
