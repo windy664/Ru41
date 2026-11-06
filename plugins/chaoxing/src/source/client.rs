@@ -527,8 +527,11 @@ impl ChaoxingClient {
                 params.push(("longitude".into(), "-1".into()));
             }
             SignMethod::Photo { path } => {
-                let object_id = self.upload_photo(path).await?;
+                let (object_id, raw) = self.upload_photo(path).await?;
                 params.push(("objectId".into(), object_id));
+                // photoResult：页面里是把上传结果整个 JSON 化（见签到页的
+                // `PHOTO_RESULT = JSON.stringify(object)`），少了它平台会判参数不全。
+                params.push(("photoResult".into(), raw.to_string()));
                 params.push(("name".into(), display_name));
                 params.push(("latitude".into(), "-1".into()));
                 params.push(("longitude".into(), "-1".into()));
@@ -753,7 +756,10 @@ impl ChaoxingClient {
 
     /// 上传照片到超星云盘换 objectId（拍照签到前置）。
     /// 流程：uservalid 取 _token → multipart 上传（file + puid）→ 返回 objectId。
-    async fn upload_photo(&self, path: &std::path::Path) -> Result<String> {
+    async fn upload_photo(
+        &self,
+        path: &std::path::Path,
+    ) -> Result<(String, serde_json::Value)> {
         let bytes =
             std::fs::read(path).with_context(|| format!("读取照片失败: {}", path.display()))?;
         let token: serde_json::Value = self
@@ -803,10 +809,14 @@ impl ChaoxingClient {
             .json()
             .await
             .context("照片上传响应不是合法 JSON")?;
-        resp.get("objectId")
+        let object_id = resp
+            .get("objectId")
             .or_else(|| resp.get("data").and_then(|d| d.get("objectId")))
             .and_then(|v| v.as_str().map(str::to_owned))
-            .context("照片上传响应缺少 objectId")
+            .context("照片上传响应缺少 objectId")?;
+        // 原始响应也要带回去：签到页把整个上传结果 JSON 化后作为 photoResult 提交
+        // （`PHOTO_RESULT = JSON.stringify(object)`），平台拿它与 objectId 对照。
+        Ok((object_id, resp))
     }
 
     /// 进课取作业鉴权三件套（stucoursemiddle 隐藏域 enc/openc/workEnc）。

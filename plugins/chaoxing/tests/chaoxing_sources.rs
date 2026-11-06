@@ -86,7 +86,7 @@ struct FixtureState {
     /// stuSignajax（实际签到请求）命中次数。
     sign_hits: Mutex<usize>,
     /// stuSignajax 最后一次请求的 (activeId, latitude)。
-    last_sign: Mutex<Option<(String, String)>>,
+    last_sign: Mutex<Option<(String, String, String)>>,
     /// stuSignajax 最后一次完整 query（enc/objectId/address 断言用）。
     last_query: Mutex<String>,
     /// 云盘 /upload 命中次数（拍照签到）。
@@ -291,6 +291,7 @@ async fn spawn_fixture(state: Arc<FixtureState>) -> SocketAddr {
                     *state.last_sign.lock().unwrap() = Some((
                         get("activeId").unwrap_or_default(),
                         get("latitude").unwrap_or_default(),
+                        query.clone(),
                     ));
                     *state.last_query.lock().unwrap() = query.clone();
                     *state.sign_hits.lock().unwrap() += 1;
@@ -675,7 +676,9 @@ async fn sign_manual_signs_via_presign_and_reports() {
         .await
         .unwrap();
     assert_eq!(response, "success");
-    assert_eq!(*state.presign_hits.lock().unwrap(), 1);
+    // 两次 preSign：一次是「普通签到要不要先问页面是不是图片签到」，
+    // 一次是签到本身（页面不带照片组件 → 走普通参数）。
+    assert_eq!(*state.presign_hits.lock().unwrap(), 2);
     let last = state.last_sign.lock().unwrap().clone().unwrap();
     assert_eq!(last.0, "1001");
     assert_eq!(last.1, "-1"); // 普通签到不带位置
@@ -907,7 +910,8 @@ async fn auto_sign_signs_pending_on_discovery_and_reports() {
         assert!(sent[0].contains("自动签到成功"));
         assert!(!sent[0].contains("⏰"));
     }
-    assert_eq!(*state.presign_hits.lock().unwrap(), 1);
+    // 两次 preSign：一次是「普通签到要不要先问页面是不是图片签到」，一次是签到本身。
+    assert_eq!(*state.presign_hits.lock().unwrap(), 2);
     let doc = store
         .document("chaoxing_sign", "268129408#1001")
         .unwrap()
@@ -955,7 +959,8 @@ async fn auto_sign_platform_reject_marks_and_never_retries() {
     let report = tracker.poll_once().await.unwrap();
     assert_eq!(report.auto_signed, 0);
     assert!(!report.notified);
-    assert_eq!(*state.presign_hits.lock().unwrap(), 1);
+    // 不再重复尝试 → 不再问页面，也不发签到请求（计数停在首轮的值）。
+    assert_eq!(*state.presign_hits.lock().unwrap(), 2);
     assert_eq!(channel.sent.lock().unwrap().len(), 1);
 }
 
@@ -1140,6 +1145,37 @@ struct WorkVault {
 }
 
 impl ru41::ports::vault::Vault for WorkVault {
+        fn remote_branch_sha(&self, _branch: &str) -> anyhow::Result<Option<String>> {
+            Ok(None)
+        }
+        fn push_head_to(&self, _remote_ref: &str, _force: bool) -> anyhow::Result<()> {
+            Ok(())
+        }
+        fn delete_remote_branch(&self, _branch: &str) -> anyhow::Result<()> {
+            Ok(())
+        }
+        fn head_sha(&self) -> anyhow::Result<String> {
+            Ok("0".repeat(40))
+        }
+        fn merge_commit(
+            &self,
+            _sha: &str,
+        ) -> anyhow::Result<ru41::ports::vault::SyncOutcome> {
+            Ok(ru41::ports::vault::SyncOutcome::Clean)
+        }
+        fn merge_continue(&self) -> anyhow::Result<()> {
+            Ok(())
+        }
+        fn merge_abort(&self) -> anyhow::Result<()> {
+            Ok(())
+        }
+        fn conflict_files(&self) -> anyhow::Result<Vec<String>> {
+            Ok(Vec::new())
+        }
+        fn is_ancestor(&self, _ancestor: &str, _other: &str) -> anyhow::Result<bool> {
+            Ok(true)
+        }
+
     fn fetch(&self) -> anyhow::Result<()> {
         Ok(())
     }

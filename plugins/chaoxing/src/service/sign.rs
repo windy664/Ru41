@@ -21,6 +21,21 @@ pub fn sign_type_name(sign_type: Option<i64>) -> &'static str {
     }
 }
 
+/// 签到页是否含拍照（图片）签到组件。
+///
+/// 平台的图片签到页面会带这几个特征串：拍照入口 `newOpenPhoto`、照片容器
+/// `photoAreaId`、选图回调 `CLIENT_CHOOSE_IMAGE_RESULT`、提交值 `PHOTO_RESULT`。
+/// 普通签到与手势签到的页面都不含它们。
+pub(crate) fn sign_page_wants_photo(page: &str) -> bool {
+    const PHOTO_MARKERS: [&str; 4] = [
+        "newOpenPhoto",
+        "photoAreaId",
+        "CLIENT_CHOOSE_IMAGE_RESULT",
+        "PHOTO_RESULT",
+    ];
+    PHOTO_MARKERS.iter().any(|marker| page.contains(marker))
+}
+
 /// 平台签到响应的成败判定：stuSignajax 成功返回含 success 的文本；
 /// 「已签到/签到成功」视为正向（可能手机端已签，命令行补签无害）。
 /// 其余（距离不足、参数错误等）按失败处理。
@@ -328,9 +343,48 @@ impl ChaoxingTracker {
                     None => anyhow::bail!("手势签到需要轨迹：平台未下发、配置也没有"),
                 }
             }
-            // 普通 / 签到码及未知类型都走普通参数。
-            ChaoxingSignKind::Normal | ChaoxingSignKind::Code => SignMethod::Normal,
+            // 普通 / 签到码：标题与 sign_type 都看不出是不是「上传图片签到」——
+            // 平台把图片签到的活动也标成普通签到（2026-11-06 实测：大学英语新视野
+            // 15:30 的「普通签到」，页面里其实是要拍照上传后才签到，objectId 取自
+            // 照片）。只有签到页里有照片上传组件才算数，所以这里问页面本身。
+            ChaoxingSignKind::Normal | ChaoxingSignKind::Code => {
+                if self.page_wants_photo(course, activity).await {
+                    let path = match photo_path
+                        .map(std::path::PathBuf::from)
+                        .or_else(|| self.config.photo_path.clone())
+                    {
+                        Some(path) => path,
+                        None => self.materialize_fallback_photo()?,
+                    };
+                    SignMethod::Photo { path }
+                } else {
+                    SignMethod::Normal
+                }
+            }
         })
+    }
+
+    /// 签到页是否要求上传照片（图片签到）：页面里有照片上传组件才算。
+    ///
+    /// 判据取页面里拍照流程的特征串：`newOpenPhoto`（打开拍照）、`photoAreaId`
+    /// （照片区）、`CLIENT_CHOOSE_IMAGE_RESULT`（选图回调）、`PHOTO_RESULT`（提交值）。
+    async fn page_wants_photo(
+        &self,
+        course: &crate::source::ChaoxingCourse,
+        activity: &crate::source::ChaoxingActivity,
+    ) -> bool {
+        let Ok(uid) = self.client.uid() else {
+            return false;
+        };
+        let activity_id = activity.id.to_string();
+        let Ok(body) = self
+            .client
+            .pre_sign_body(course, &activity_id, &uid)
+            .await
+        else {
+            return false;
+        };
+        sign_page_wants_photo(&body)
     }
 
     /// 把内置兜底照片落到 cookie 同目录，返回其路径。
@@ -1060,6 +1114,25 @@ fn course_title_match(a: &str, b: &str) -> bool {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn photo_sign_page_is_detected_by_widget_markers() {
+        let photo_page = r#"
+            <div class="conDiv" onclick="newOpenPhoto();">
+            <div class="imgDiv"><img id="image_1" src="https://home-yd.chaoxing.com/res/images/tools/05.gif" /></div>
+            <script>var PHOTO_RESULT = ""; var handler = jsBridge_cmd_handlers["CLIENT_CHOOSE_IMAGE_RESULT"];</script>
+        "#;
+        assert!(super::sign_page_wants_photo(photo_page));
+    }
+
+    #[test]
+    fn normal_sign_page_is_not_mistaken_for_photo() {
+        let normal_page = r#"
+            <button onclick="sign();">签到</button>
+            <script>function sign(){ var url="/pptSign/stuSignajax?activeId=1"; }</script>
+        "#;
+        assert!(!super::sign_page_wants_photo(normal_page));
+    }
+
     #[test]
     fn already_signed_is_not_our_success() {
         use super::{sign_already_done, sign_response_ok};

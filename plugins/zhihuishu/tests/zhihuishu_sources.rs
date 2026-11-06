@@ -166,6 +166,37 @@ struct FakeVault {
 }
 
 impl ru41::ports::vault::Vault for FakeVault {
+        fn remote_branch_sha(&self, _branch: &str) -> anyhow::Result<Option<String>> {
+            Ok(None)
+        }
+        fn push_head_to(&self, _remote_ref: &str, _force: bool) -> anyhow::Result<()> {
+            Ok(())
+        }
+        fn delete_remote_branch(&self, _branch: &str) -> anyhow::Result<()> {
+            Ok(())
+        }
+        fn head_sha(&self) -> anyhow::Result<String> {
+            Ok("0".repeat(40))
+        }
+        fn merge_commit(
+            &self,
+            _sha: &str,
+        ) -> anyhow::Result<ru41::ports::vault::SyncOutcome> {
+            Ok(ru41::ports::vault::SyncOutcome::Clean)
+        }
+        fn merge_continue(&self) -> anyhow::Result<()> {
+            Ok(())
+        }
+        fn merge_abort(&self) -> anyhow::Result<()> {
+            Ok(())
+        }
+        fn conflict_files(&self) -> anyhow::Result<Vec<String>> {
+            Ok(Vec::new())
+        }
+        fn is_ancestor(&self, _ancestor: &str, _other: &str) -> anyhow::Result<bool> {
+            Ok(true)
+        }
+
     fn fetch(&self) -> anyhow::Result<()> {
         Ok(())
     }
