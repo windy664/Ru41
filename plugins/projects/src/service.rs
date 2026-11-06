@@ -12,6 +12,8 @@ use serde::Serialize;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
+use crate::docs::{DOCS_DIR, DocsClient, render_doc};
+
 /// projects 同步运行时配置（由 ProjectsSection::resolved 解析产出）。
 #[derive(Debug, Clone)]
 pub struct ProjectsConfig {
@@ -24,6 +26,8 @@ pub struct ProjectsConfig {
     pub github_user: Option<String>,
     /// 仓库最后更新超过该天数自动归入 Archived-已归档。
     pub archive_after_days: u64,
+    /// 是否同步仓库里的 markdown 文档（根目录 + doc/、docs/ 下）。
+    pub docs_enabled: bool,
 }
 
 /// 进行中分组目录名（顶层 英文-中文 约定）。
@@ -62,6 +66,7 @@ pub struct ProjectsTracker {
     config: ProjectsConfig,
     vault: Arc<dyn Vault>,
     github: GithubClient,
+    docs: DocsClient,
 }
 
 impl ProjectsTracker {
@@ -70,6 +75,7 @@ impl ProjectsTracker {
             config,
             vault,
             github: GithubClient::new(),
+            docs: DocsClient::new(),
         }
     }
 
@@ -313,11 +319,64 @@ impl ProjectsTracker {
                 format!("{frontmatter}\n---\n\n{readme}\n")
             }
         };
-        if existing.as_deref() == Some(rendered.as_str()) {
-            return Ok(false);
+        let mut changed = false;
+        if existing.as_deref() != Some(rendered.as_str()) {
+            self.vault.write_file(&target, &rendered)?;
+            changed = true;
         }
-        self.vault.write_file(&target, &rendered)?;
-        Ok(true)
+        // 仓库文档：根目录与 doc/、docs/ 下的 markdown 一起抓下来。
+        // 文档同步失败不拖累 README——两者是独立的东西。
+        if self.config.docs_enabled {
+            match self.sync_repo_docs(entry, default_branch).await {
+                Ok(doc_changed) => changed |= doc_changed,
+                Err(error) => eprintln!("[projects] {} 文档同步失败: {error:#}", entry.name),
+            }
+        }
+        Ok(changed)
+    }
+
+    /// 同步仓库里的 markdown 文档到项目的 `GitHub-Docs/` 子目录。
+    ///
+    /// 目录是机器专属：人写的笔记落项目目录的其他文件，不会被覆盖。
+    /// 上游删掉的文件这里也跟着删——否则 vault 里会攒一堆僵尸文档。
+    async fn sync_repo_docs(&self, entry: &ProjectEntry, branch: &str) -> Result<bool> {
+        let (owner, repo) = &entry.repo;
+        let paths = self.docs.list_markdown(owner, repo, branch).await?;
+        let mut changed = false;
+        let mut wanted: Vec<String> = Vec::new();
+        for path in &paths {
+            let body = match self.docs.fetch(owner, repo, branch, path).await {
+                Ok(body) => body,
+                Err(error) => {
+                    eprintln!("[projects] {} 文档 {path} 抓取失败: {error:#}", entry.name);
+                    continue;
+                }
+            };
+            wanted.push(path.clone());
+            let relative = format!("{}/{}/{path}", entry.rel_dir, DOCS_DIR);
+            let rendered = render_doc(&format!("{owner}/{repo}"), branch, path, &body);
+            if self.vault.read_file(&relative)?.as_deref() == Some(rendered.as_str()) {
+                continue;
+            }
+            self.vault.write_file(&relative, &rendered)?;
+            changed = true;
+        }
+        // 清理上游已删除的文档
+        let prefix = format!("{}/{}/", entry.rel_dir, DOCS_DIR);
+        if let Ok(head) = self.vault.remote_head()
+            && let Ok(existing) = self.vault.list_files(&head, &prefix)
+        {
+            for file in existing {
+                let relative = file.trim_start_matches('/');
+                let Some(sub) = relative.strip_prefix(&prefix) else {
+                    continue;
+                };
+                if !wanted.iter().any(|w| w == sub) && self.vault.remove_file(relative)? {
+                    changed = true;
+                }
+            }
+        }
+        Ok(changed)
     }
 }
 

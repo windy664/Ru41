@@ -1,4 +1,5 @@
 pub mod config;
+pub mod docs;
 pub mod service;
 
 pub use config::ProjectsSection;
