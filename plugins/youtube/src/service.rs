@@ -1,9 +1,9 @@
+use anyhow::Result;
 use ru41::{
     app::{digest::keyword_match, task::TaskService},
     domain::NotifyRoute,
     ports::storage::TaskStore,
 };
-use anyhow::Result;
 use serde::Serialize;
 use std::sync::Arc;
 
@@ -41,6 +41,11 @@ pub struct YoutubeConfig {
     pub notify: Option<NotifyRoute>,
     /// 每日日报推送时刻（本地 HH:MM）。
     pub digest_at: String,
+    /// 晚间补充推送时刻（本地 HH:MM）；默认 "20:30"。
+    ///
+    /// 下午抓到的视频当天送到，不用拖到第二天；两个时刻都是固定的，
+    /// 窗口外一律不推——推送时间不该由「视频什么时候被抓到」决定。
+    pub digest_evening_at: String,
     pub ytdlp_bin: String,
     pub proxy_url: Option<String>,
     /// yt-dlp --cookies 文件（Netscape 格式）；过字幕接口 429/bot 风控。
@@ -152,7 +157,11 @@ impl YoutubeTracker {
             let mut videos: Vec<VideoEntry> = Vec::new();
             let mut seen_ids: std::collections::HashSet<String> = std::collections::HashSet::new();
             for url in tab_urls(channel, &self.config.tabs) {
-                let listed = match self.client.list_videos(&url, self.config.max_per_channel).await {
+                let listed = match self
+                    .client
+                    .list_videos(&url, self.config.max_per_channel)
+                    .await
+                {
                     Ok(listed) => listed,
                     Err(error) => {
                         // 频道没有这个标签页（多数频道没有直播页）不是故障，别记进 errors。
@@ -208,7 +217,8 @@ impl YoutubeTracker {
                     };
                     if recent {
                         candidates.push((channel.clone(), video.clone()));
-                        if let Err(error) = self.write_seen(channel, &video.id, "pending", 0, &video.title)
+                        if let Err(error) =
+                            self.write_seen(channel, &video.id, "pending", 0, &video.title)
                         {
                             errors.push(format!("{}#{}: {error:#}", channel, video.id));
                         }
@@ -650,7 +660,10 @@ mod tests {
 
     #[test]
     fn blocked_channel_matching_is_case_insensitive_and_by_name() {
-        let blocked = vec!["@BBCLearningEnglish".to_owned(), "BBC Learning English".to_owned()];
+        let blocked = vec![
+            "@BBCLearningEnglish".to_owned(),
+            "BBC Learning English".to_owned(),
+        ];
         assert!(super::channel_blocked("@bbclearningenglish", &blocked));
         assert!(super::channel_blocked("@BBCLearningEnglish", &blocked));
         assert!(super::channel_blocked("BBC Learning English", &blocked));

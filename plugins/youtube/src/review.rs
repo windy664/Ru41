@@ -14,6 +14,8 @@
 //! - `youtube_placement`：`latest` 定级测试状态（questions→answers）；
 //! - `youtube_level`：`latest` 定级结果（level/task_id），预习 prompt 的级别来源。
 
+use anyhow::Result;
+use chrono::{Local, Timelike};
 use ru41::{
     app::task::TaskService,
     bootstrap::assembly,
@@ -21,8 +23,6 @@ use ru41::{
     ingress::schedule::PollJob,
     ports::{channel::NotifyChannel, storage::TaskStore},
 };
-use anyhow::Result;
-use chrono::{Local, Timelike};
 use std::sync::Arc;
 
 use crate::service::YoutubeConfig;
@@ -53,9 +53,6 @@ const MAX_PER_PUSH: usize = 8;
 const MAX_PER_VIDEO: usize = 2;
 /// 单期日报最多带的预习单数（控制消息长度）。
 const MAX_SHEETS_PER_DIGEST: usize = 2;
-/// 每天最多推几期日报（同一批预习单可能分几次推完）。
-const MAX_DIGEST_PUSHES_PER_DAY: u64 = 3;
-
 /// 解析 "HH:MM" 为 (时, 分)；非法输入返回 None（走默认值）。
 fn parse_hhmm(s: &str) -> Option<(i64, i64)> {
     let (h, m) = s.split_once(':')?;
@@ -146,31 +143,31 @@ impl YoutubeReviewJob {
         if self.config.notify.is_some() {
             retired = self.retire_stale_batches()?;
             self.pickup_level()?;
-            // 日报：窗口内、或刚抽出了新视频（白天）就推——下午才完成的预习单
-            // 不该干等到明天中午（2026-11-06：14:30 抽出的 6 个视频，日报 0 推送）。
-            // 夜间不打扰，等次日窗口；当天已推过则不重复推。
-            let now_mins = now.hour() as i64 * 60 + now.minute() as i64;
-            let quiet_hours = now_mins < 7 * 60 || now_mins >= 23 * 60;
-            // 触发信号是「还有没上过头、等着推送的预习单」——
-            // 词块抽取数不能当信号：词块早抽完了，预习单却还压在队列里等窗口。
-            let pending_sheets = self.pending_sheet_ids()?.len();
-            let pushed_today = self
+            // 日报只在固定窗口推：中午主推送 + 晚间补充推送，窗口外一律不推。
+            //
+            // 早先的「有货就立刻推」是反的：推送时间由「视频什么时候被抓到」
+            // 决定，于是半夜 22:33 也会突然弹一条（2026-11-06 实测被投诉）。
+            // 现在时间点是可预期的：每天 12:10 与 20:30，各至多一次。
+            let window = self.current_digest_window(&now);
+            let pushed_windows: Vec<String> = self
                 .store
                 .document(DIGEST_KIND, &today)?
-                .and_then(|doc| doc.value["pushes"].as_u64())
-                .unwrap_or(0);
-            // 有待推送的预习单：立刻推（白天，最多 3 期）——下午完成的预习单
-            // 不该干等到次日 12:10 窗口。
-            // 没有新单子时：维持原语义——窗口内推一次（可能只带到期复习或
-            // 发音专题），一天一期，不反复打扰。
-            let digest_due = if pending_sheets > 0 {
-                pushed_today < MAX_DIGEST_PUSHES_PER_DAY && !quiet_hours
-            } else {
-                self.in_digest_window(&now)
-                    && self.store.document(DIGEST_KIND, &today)?.is_none()
+                .and_then(|doc| doc.value["windows"].as_array().cloned())
+                .map(|items| {
+                    items
+                        .iter()
+                        .filter_map(|v| v.as_str().map(str::to_owned))
+                        .collect()
+                })
+                .unwrap_or_default();
+            let digest_due = match &window {
+                Some(label) => !pushed_windows.iter().any(|w| w == label),
+                None => false,
             };
-            if digest_due {
-                digest_pushed = self.push_daily_digest(&today).await?;
+            if let Some(label) = window
+                && digest_due
+            {
+                digest_pushed = self.push_daily_digest(&today, &label).await?;
             }
         }
 
@@ -182,18 +179,31 @@ impl YoutubeReviewJob {
         }))
     }
 
-    /// 当前时刻是否落在日报窗口 [digest_at, digest_at + DIGEST_WINDOW_MINS) 内。
-    fn in_digest_window(&self, now: &chrono::DateTime<chrono::Local>) -> bool {
-        let Some((hour, minute)) = parse_hhmm(&self.config.digest_at) else {
-            return false;
-        };
-        let start = hour * 60 + minute;
+    /// 每日固定推送窗口：[(标签, 起始分钟)]。中午主推送 + 晚间补充。
+    fn digest_windows(&self) -> Vec<(String, i64)> {
+        let mut out = Vec::new();
+        for raw in [
+            self.config.digest_at.as_str(),
+            self.config.digest_evening_at.as_str(),
+        ] {
+            if let Some((hour, minute)) = parse_hhmm(raw) {
+                out.push((raw.to_owned(), hour * 60 + minute));
+            }
+        }
+        out
+    }
+
+    /// 当前落在哪个推送窗口（[起点, 起点 + DIGEST_WINDOW_MINS)）；窗口外为 None。
+    fn current_digest_window(&self, now: &chrono::DateTime<chrono::Local>) -> Option<String> {
         let now_mins = now.hour() as i64 * 60 + now.minute() as i64;
-        now_mins >= start && now_mins < start + DIGEST_WINDOW_MINS
+        self.digest_windows()
+            .into_iter()
+            .find(|(_, start)| now_mins >= *start && now_mins < *start + DIGEST_WINDOW_MINS)
+            .map(|(label, _)| label)
     }
 
     /// 每日日报：所有待推送内容合成一条消息；发送成功后才落各自的副作用记录。
-    async fn push_daily_digest(&self, today: &str) -> Result<usize> {
+    async fn push_daily_digest(&self, today: &str, window: &str) -> Result<usize> {
         let Some(notifier) = &self.notifier else {
             return Ok(0);
         };
@@ -279,6 +289,20 @@ impl YoutubeReviewJob {
             .and_then(|doc| doc.value["pushes"].as_u64())
             .unwrap_or(0)
             + 1;
+        // 已经推过的窗口（"12:10" / "20:30"）：同一窗口当天只推一次。
+        let mut pushed_windows: Vec<String> = previous
+            .as_ref()
+            .and_then(|doc| doc.value["windows"].as_array())
+            .map(|items| {
+                items
+                    .iter()
+                    .filter_map(|v| v.as_str().map(str::to_owned))
+                    .collect()
+            })
+            .unwrap_or_default();
+        if !pushed_windows.iter().any(|w| w == window) {
+            pushed_windows.push(window.to_owned());
+        }
         // 必须带上 expected revision：put_document 传 None 时是
         // 「INSERT ... ON CONFLICT DO NOTHING」——不会覆盖已有文档，
         // 一天推第二期时计数与已推单子都记不上（2026-11-06 实测）。
@@ -289,6 +313,7 @@ impl YoutubeReviewJob {
             &serde_json::json!({
                 "task_ids": digested_ids,
                 "pushes": pushes,
+                "windows": pushed_windows,
                 "pushed_at": ru41::util::now(),
             }),
         )?;

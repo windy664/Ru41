@@ -1,5 +1,5 @@
-use ru41::domain::NotifyRoute;
 use anyhow::{Context, Result};
+use ru41::domain::NotifyRoute;
 use serde::Deserialize;
 
 use crate::service::YoutubeConfig;
@@ -43,6 +43,10 @@ pub struct YoutubeSection {
     pub notify: Option<bool>,
     /// 每日日报推送时刻（本地时间 HH:MM）：新预习单 + 到期复习 + 发音专题打包一条，默认 "12:10"。
     pub digest_at: Option<String>,
+    /// 晚间补充推送时刻（本地时间 HH:MM），默认 "20:30"。
+    ///
+    /// 只有两个固定时刻会推：中午主推送 + 晚间补充。窗口外一律不推。
+    pub digest_evening_at: Option<String>,
     /// yt-dlp 可执行文件路径，默认 PATH 上的 "yt-dlp"。
     pub ytdlp_bin: Option<String>,
     /// 传给 yt-dlp 子进程的代理（HTTPS_PROXY/HTTP_PROXY）；缺省继承 ru41 进程环境。
@@ -59,6 +63,8 @@ impl YoutubeSection {
     pub const DEFAULT_LEVEL: &str = "CET-6 / B2";
     /// 每日日报默认推送时刻。
     pub const DEFAULT_DIGEST_AT: &str = "12:10";
+    /// 晚间补充推送默认时刻。
+    pub const DEFAULT_DIGEST_EVENING_AT: &str = "20:30";
     /// 注入 prompt 的转写默认上限。
     pub const DEFAULT_MAX_TRANSCRIPT_CHARS: usize = 24_000;
     /// 新鲜度窗口默认天数；自动追踪只追新，存量内容走手动 /预习。
@@ -111,6 +117,10 @@ impl YoutubeSection {
                 .digest_at
                 .clone()
                 .unwrap_or_else(|| Self::DEFAULT_DIGEST_AT.into()),
+            digest_evening_at: self
+                .digest_evening_at
+                .clone()
+                .unwrap_or_else(|| Self::DEFAULT_DIGEST_EVENING_AT.into()),
             ytdlp_bin: self.ytdlp_bin.clone().unwrap_or_else(|| "yt-dlp".into()),
             proxy_url: self.proxy_url.clone(),
             ytdlp_cookies: self.ytdlp_cookies.clone(),
