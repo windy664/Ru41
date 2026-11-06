@@ -350,43 +350,6 @@ struct NotePrompt<'a> {
     transcript_source: &'a str,
 }
 
-/// 课程性质提示：告诉 agent 这门课该怎么记。
-/// 课表里的名字已经带学科信息，用它判比让 agent 猜准。
-fn course_kind(course: &str) -> &'static str {
-    const SCIENCE: &[&str] = &[
-        "数学",
-        "物理",
-        "化学",
-        "生物",
-        "程序设计",
-        "计算机",
-        "数据结构",
-        "电路",
-        "编译",
-    ];
-    const LANGUAGE: &[&str] = &["英语", "日语", "德语", "法语"];
-    const HUMANITIES: &[&str] = &[
-        "思修",
-        "思想道德",
-        "法治",
-        "五史",
-        "形势与政策",
-        "职业生涯",
-        "军事",
-        "党史",
-        "国情",
-    ];
-    if SCIENCE.iter().any(|k| course.contains(k)) {
-        "理科/工科：课堂主体是概念推导与例题，笔记重心放在公式怎么来的、例题怎么解"
-    } else if LANGUAGE.iter().any(|k| course.contains(k)) {
-        "语言类：课堂主体是词汇语法与题型技巧，笔记重心放在考点怎么考、怎么判断"
-    } else if HUMANITIES.iter().any(|k| course.contains(k)) {
-        "文科：课堂主体是概念与观点，笔记重心放在可自测的知识点问答和老师的判断"
-    } else {
-        "按这节课的实际内容判断，别预设体例"
-    }
-}
-
 fn build_note_prompt(p: &NotePrompt<'_>) -> String {
     let NotePrompt {
         course,
@@ -401,7 +364,7 @@ fn build_note_prompt(p: &NotePrompt<'_>) -> String {
     format!(
         "这是《{course}》的课堂录音转写，请帮我整理成这门课的课堂笔记。\n\
              用途只有一个：期末复习拿分——宁可短而实，不要长而空。\n\
-             - 这门课：{course}（{kind}）\n\
+             - 这门课：{course}\n\
              - 录音时间：{recorded_label}（{recorded_source}；课程匹配与归档日期的依据）\n\
              {course_line}\n\
              - 日期：{date}\n\
@@ -434,7 +397,6 @@ fn build_note_prompt(p: &NotePrompt<'_>) -> String {
              11. 写完把改动提交进 Vault 仓库（提交信息前缀 `[ru41]`，例如 `[ru41] 课堂笔记：{date} {course}`）。\n\
              12. 完成后简单汇报本次笔记要点与最终写入路径（不超过 10 行），不要复述全文。\n\n\
              {transcript_source}",
-        kind = course_kind(course),
     )
 }
 
@@ -471,7 +433,7 @@ fn archive_name(item: &PendingItem) -> (String, String) {
 /// 归档命名：日期取录音时间（文件名解析出的开录时刻，回退收到时间）的本地日期；stem 来自原始文件名。
 #[cfg(test)]
 mod tests {
-    use super::{NotePrompt, TRANSCRIPT_INLINE_LIMIT, Transcript, build_note_prompt, course_kind};
+    use super::{NotePrompt, TRANSCRIPT_INLINE_LIMIT, Transcript, build_note_prompt};
     use std::path::PathBuf;
 
     /// 短转写内联、长转写只给路径：两种形态都要让 agent 拿到全文。
@@ -489,16 +451,6 @@ mod tests {
         assert!(long.text.chars().count() > TRANSCRIPT_INLINE_LIMIT);
     }
 
-    /// 课表课程名带学科信息，据此给 agent 不同的记笔记口径。
-    #[test]
-    fn course_kind_reads_subject_from_course_name() {
-        assert!(course_kind("高等数学I(理)").contains("理科"));
-        assert!(course_kind("大学英语新视野").contains("语言类"));
-        assert!(course_kind("思想道德修养与法律基础").contains("文科"));
-        assert!(course_kind("五史教育").contains("文科"));
-        assert!(course_kind("没见过的课").contains("别预设体例"));
-    }
-
     /// 提示词必须带课程语境、并且明确禁止套模板；行内公式不许用 `$$`。
     #[test]
     fn prompt_carries_course_context_and_forbids_templates() {
@@ -513,7 +465,7 @@ mod tests {
             transcript_source: "以下是本次转写原文：\n\n老师讲了导数。",
         });
         assert!(prompt.contains("《高等数学I(理)》"));
-        assert!(prompt.contains("理科/工科"));
+        assert!(prompt.contains("这门课：高等数学I(理)"));
         assert!(prompt.contains("别套模板"));
         assert!(prompt.contains("不要在句子里写 `$$…$$`"));
         // 旧的固定栏目写法不能再出现，否则等于把模板又塞回去。
