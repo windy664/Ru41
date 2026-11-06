@@ -18,6 +18,9 @@ pub struct ProjectsSection {
     /// 同步发现 README 变更/元数据变化时是否经默认通知出口推送；默认 false
     /// （低频归档型任务，默认静默，变更会在下一次 QQ /项目 或巡检中可见）。
     pub notify: Option<bool>,
+    /// 是否把仓库里的 markdown 文档（根目录 + doc/、docs/ 下）也同步进项目目录；
+    /// 默认 true。关掉只同步 README。
+    pub docs: Option<bool>,
 }
 
 impl ProjectsSection {
@@ -35,6 +38,7 @@ impl ProjectsSection {
             interval_secs: self.interval_secs.unwrap_or(Self::DEFAULT_INTERVAL_SECS),
             github_user: self.github_user.clone(),
             archive_after_days: self.archive_after_days.unwrap_or(14),
+            docs_enabled: self.docs.unwrap_or(true),
         })
     }
 }
