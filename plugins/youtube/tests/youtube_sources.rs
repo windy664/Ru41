@@ -696,6 +696,25 @@ mod review_loop {
             .value
     }
 
+    /// 下午才完成的预习单要当天推出去，不该干等到次日 12:10 窗口
+    /// （2026-11-06：14:30 抽出 6 个视频，日报 digest_pushed=0）。
+    #[tokio::test]
+    async fn digest_pushes_outside_window_when_videos_extracted() {
+        let dir = tempfile::tempdir().unwrap();
+        let store: Arc<dyn TaskStore> =
+            Arc::new(SqliteTaskStore::open(&dir.path().join("state.db")).unwrap());
+        seed_succeeded_sheet(&store, "vidq");
+        // 14:30：不在日报窗口内。
+        let afternoon = clock_at(0) + chrono::Duration::hours(2) + chrono::Duration::minutes(20);
+        let (job, fake) = review_job_at(store.clone(), afternoon);
+        let report = ru41::ingress::schedule::PollJob::poll_json(&job)
+            .await
+            .unwrap();
+        assert_eq!(report["extracted_videos"], 1);
+        assert_eq!(report["digest_pushed"], 1, "有新视频就该当天推，不等窗口");
+        assert_eq!(fake.0.lock().unwrap().len(), 1);
+    }
+
     #[tokio::test]
     async fn extract_push_feedback_roundtrip() {
         let dir = tempfile::tempdir().unwrap();
