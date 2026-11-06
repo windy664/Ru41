@@ -15,3 +15,6 @@ templates/*/target*/
 plugins/*/target*/
 plugins/target-plugins/
 /.plugins-dist/
+
+# 本地协作契约：只在工作区保留，不进公开仓库（内容已沉淀到 docs/conventions.md）
+/AGENTS.md

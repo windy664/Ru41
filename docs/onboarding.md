@@ -16,8 +16,8 @@ Ru41 是 Rust 个人自动化宿主：核心任务调度器（SQLite/Postgres + 
 ## 1. 环境准备
 
 - rustc 1.99（与 CI 一致）、clang + lld（插件共享链接器）、docker（净室编译/部署）。
-- **先读根目录 [AGENTS.md](../AGENTS.md)**——它是唯一活着的构建契约：
-  目录边界、共享 target、bridge 纪律、部署链、红线，全部在里面。
+- **先读 [工程约定](conventions.md)**——它是活着的构建契约：目录边界、共享
+  target、bridge 纪律、部署分层、红线，全部在里面。
 
 ## 2. 本地跑通（不改任何代码）
 
