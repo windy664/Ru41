@@ -1,7 +1,7 @@
 //! 学习通页面解析：作业列表/截止时间（HTML）与课程列表（HTML）。
 //! 页面改版集中体现在这些函数。
 
-use super::model::{ChaoxingCourse, ChaoxingWork};
+use super::model::{ChaoxingCourse, ChaoxingWork, WorkContent};
 
 pub(super) fn parse_work_list(html: &str) -> Vec<ChaoxingWork> {
     let re_li =
@@ -29,6 +29,104 @@ pub(super) fn parse_work_list(html: &str) -> Vec<ChaoxingWork> {
         });
     }
     out
+}
+
+/// 解析作业详情页里的题干：文字 + 图片。
+///
+/// 题干在 `<h3 class="mark_name">` 里（平台渲染的题目块）；个别题型落在
+/// `<div class="mark_content">`。图片多是平台 CDN（p.ananas.chaoxing.com），
+/// 也可能写协议相对的 `//host/path`。
+pub(super) fn parse_work_content(html: &str) -> WorkContent {
+    let re_stem = regex::Regex::new(r#"(?s)<h3[^>]*class="[^"]*mark_name[^"]*"[^>]*>(.*?)</h3>"#)
+        .expect("stem regex");
+    let re_block =
+        regex::Regex::new(r#"(?s)<div[^>]*class="[^"]*mark_content[^"]*"[^>]*>(.*?)</div>"#)
+            .expect("mark_content regex");
+    let re_img = regex::Regex::new(r#"(?s)<img[^>]*src="([^"]+)""#).expect("img regex");
+
+    let mut texts: Vec<String> = Vec::new();
+    let mut images: Vec<String> = Vec::new();
+    let collect = |stem: &str, texts: &mut Vec<String>, images: &mut Vec<String>| {
+        let text = html_to_text(stem);
+        if !text.is_empty() {
+            texts.push(text);
+        }
+        for cap in re_img.captures_iter(stem) {
+            if let Some(url) = normalize_image_url(&cap[1])
+                && !images.contains(&url)
+            {
+                images.push(url);
+            }
+        }
+    };
+
+    for cap in re_stem.captures_iter(html) {
+        collect(&cap[1], &mut texts, &mut images);
+    }
+    if texts.is_empty() && images.is_empty() {
+        for cap in re_block.captures_iter(html) {
+            collect(&cap[1], &mut texts, &mut images);
+        }
+    }
+    WorkContent {
+        text: texts.join("\n\n"),
+        images,
+    }
+}
+
+/// 去掉所有标签。
+fn re_tags() -> &'static regex::Regex {
+    use std::sync::OnceLock;
+    static RE: OnceLock<regex::Regex> = OnceLock::new();
+    RE.get_or_init(|| regex::Regex::new(r#"(?s)<[^>]*>"#).expect("tag regex"))
+}
+
+/// HTML 片段转纯文本：块级标签换行，其余去标签，最后压空白。
+fn html_to_text(html: &str) -> String {
+    let with_breaks = html
+        .replace("<br", "\n<br")
+        .replace("<br/>", "\n")
+        .replace("</p>", "\n")
+        .replace("</div>", "\n")
+        .replace("</li>", "\n");
+    let stripped = re_tags().replace_all(&with_breaks, "");
+    let decoded = decode_entities(&stripped);
+    let mut lines: Vec<String> = decoded
+        .lines()
+        .map(|l| l.split_whitespace().collect::<Vec<_>>().join(" "))
+        .map(|l| l.trim().to_owned())
+        .filter(|l| !l.is_empty())
+        .collect();
+    lines.dedup();
+    lines.join("\n")
+}
+
+/// 图片地址归一：协议相对补 https，站内绝对路径补平台域，其余丢弃。
+fn normalize_image_url(raw: &str) -> Option<String> {
+    let raw = raw.trim();
+    if raw.is_empty() {
+        return None;
+    }
+    if let Some(rest) = raw.strip_prefix("//") {
+        return Some(format!("https://{rest}"));
+    }
+    if raw.starts_with("https://") {
+        return Some(raw.to_owned());
+    }
+    if raw.starts_with("http://") {
+        return Some(raw.replacen("http://", "https://", 1));
+    }
+    None
+}
+
+/// 常见 HTML 实体解码（作业描述里够用）。
+fn decode_entities(text: &str) -> String {
+    text.replace("&nbsp;", " ")
+        .replace("&amp;", "&")
+        .replace("&lt;", "<")
+        .replace("&gt;", ">")
+        .replace("&quot;", "\"")
+        .replace("&#39;", "'")
 }
 
 /// 从详情页提取截止时间，归一化为 "YYYY-MM-DD HH:MM"。
@@ -111,6 +209,43 @@ pub(super) fn capture(text: &str, pattern: &str) -> Option<String> {
 mod tests {
     use super::*;
     use crate::source::model::ChaoxingActivity;
+
+    /// 题干可能只有一张图（讲卫生那类作业），文字与图片都要抓到。
+    #[test]
+    fn parse_work_content_keeps_text_and_images() {
+        let html = r#"
+            <h3 class="mark_name colorDeep fontLabel workTextWrap">1.
+                <span class="colorShallow">(简答题)</span>
+                <p>请描述宿舍卫生打扫情况<br>要求 300 字以内。</p>
+                <p><img class="ans-ued-img" src="https://p.ananas.chaoxing.com/star3/750_1024/abc.jpg"></p>
+            </h3>
+            <img src="//mooc1.chaoxing.com/mooc-ans/mooc2/images/popClose.png">
+        "#;
+        let content = parse_work_content(html);
+        assert!(content.text.contains("请描述宿舍卫生打扫情况"));
+        assert!(content.text.contains("要求 300 字以内"));
+        assert_eq!(
+            content.images,
+            vec!["https://p.ananas.chaoxing.com/star3/750_1024/abc.jpg".to_owned()]
+        );
+    }
+
+    /// 纯图片题干：没有文字也要把图片带出来。
+    #[test]
+    fn parse_work_content_handles_image_only_stem() {
+        let html = r#"
+            <h3 class="mark_name colorDeep">1.
+                <p><img class="ans-ued-img" src="//p.ananas.chaoxing.com/star3/x.jpg"></p>
+            </h3>
+        "#;
+        let content = parse_work_content(html);
+        // 题号还在（"1."），但没有实质文字——图片才是内容。
+        assert!(!content.text.contains("描述"));
+        assert_eq!(
+            content.images,
+            vec!["https://p.ananas.chaoxing.com/star3/x.jpg".to_owned()]
+        );
+    }
 
     #[test]
     fn decode_course_list_skips_not_open() {

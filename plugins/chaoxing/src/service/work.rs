@@ -3,6 +3,7 @@
 //! 红线：作业只做提醒/跟踪/归档，不做自动作答（自动答题=代写）。
 
 use crate::config::ChaoxingConfig;
+use crate::source::WorkContent;
 use crate::source::{ChaoxingClient, ChaoxingWork};
 use anyhow::Result;
 use ru41::app::homework_work::{self as work_common, WorkNoteItem};
@@ -15,7 +16,10 @@ use std::sync::Arc;
 const DEADLINE_FORMATS: &[&str] = &["%Y-%m-%d %H:%M"];
 
 /// vault 渲染缓存：(课程名, [(作业, 截止)]) 列表。
-type CourseNotes = Vec<(String, Vec<(ChaoxingWork, Option<String>)>)>;
+type CourseNotes = Vec<(
+    String,
+    Vec<(ChaoxingWork, Option<String>, Option<WorkContent>)>,
+)>;
 
 #[derive(Debug, Serialize)]
 pub struct ChaoxingWorkPollReport {
@@ -147,7 +151,11 @@ impl ChaoxingWorkTracker {
                 Err(_) => continue, // 单课失败不破坏整体，也不刷屏
             };
             works_total += works.len();
-            let mut note_items: Vec<(crate::source::ChaoxingWork, Option<String>)> = Vec::new();
+            let mut note_items: Vec<(
+                crate::source::ChaoxingWork,
+                Option<String>,
+                Option<WorkContent>,
+            )> = Vec::new();
 
             for work in works {
                 let key = format!("{}#{}", course.course_id, work.work_id);
@@ -358,12 +366,39 @@ impl ChaoxingWorkTracker {
                         }
                     }
                 }
-                note_items.push((work, deadline));
+                // 题干与配图：截止时间与正文在同一个详情页，缓存进快照，
+                // 只在首次（或平台改了正文）时重新拉。
+                let mut content: Option<WorkContent> = self
+                    .store
+                    .document("chaoxing_work", &key)?
+                    .and_then(|doc| doc.value.get("content").cloned())
+                    .and_then(|v| serde_json::from_value::<WorkContent>(v).ok());
+                if content.is_none() && open {
+                    match self.client.work_content(&work.detail_url).await {
+                        Ok(fresh) => {
+                            if let Ok(Some(doc)) = self.store.document("chaoxing_work", &key) {
+                                let mut value = doc.value.clone();
+                                value["content"] = serde_json::to_value(&fresh)?;
+                                let _ = self.store.put_document(
+                                    "chaoxing_work",
+                                    &key,
+                                    Some(doc.revision),
+                                    &value,
+                                );
+                            }
+                            content = Some(fresh);
+                        }
+                        Err(error) => {
+                            eprintln!("[chaoxing] {} 正文抓取失败: {error:#}", work.title);
+                        }
+                    }
+                }
+                note_items.push((work, deadline, content));
             }
             course_notes.push((course.title.clone(), note_items));
         }
 
-        let vault_files = self.sync_vault(&course_notes, now)?;
+        let vault_files = self.sync_vault(&course_notes, now).await?;
 
         let mut notified = false;
         if !lines.is_empty()
@@ -395,9 +430,65 @@ impl ChaoxingWorkTracker {
         })
     }
 
+    /// 作业正文渲染：题干文字 + 图片。
+    ///
+    /// 图片先落到作业目录的「附件」子目录，笔记里用相对路径引用——
+    /// Obsidian 直接能看，图片也不会因为平台链接过期而失效。
+    async fn render_work_body(
+        &self,
+        course_base: &str,
+        folder: &str,
+        content: Option<&WorkContent>,
+    ) -> Result<Option<String>> {
+        let Some(content) = content else {
+            return Ok(None);
+        };
+        let Some(vault) = &self.vault else {
+            return Ok(None);
+        };
+        let mut parts: Vec<String> = Vec::new();
+        let text = content.text.trim();
+        if !text.is_empty() {
+            parts.push(text.to_owned());
+        }
+        if content.images.is_empty() {
+            return Ok(Some(parts.join("\n\n")));
+        }
+        // 已经写过的图片不再重复下载：git 里有一份就直接引用。
+        let head = vault.remote_head().ok();
+        for (index, url) in content.images.iter().enumerate() {
+            let name = image_file_name(url, index);
+            let relative = format!("{course_base}/{folder}/附件/{name}");
+            let exists = head
+                .as_ref()
+                .and_then(|head| vault.read_file_at(head, &relative).ok())
+                .is_some();
+            if !exists {
+                match self.client.download_image(url).await {
+                    Ok(bytes) => {
+                        if let Err(error) = vault.write_bytes(&relative, &bytes) {
+                            eprintln!("[chaoxing] 图片写入失败 {relative}: {error:#}");
+                            continue;
+                        }
+                    }
+                    Err(error) => {
+                        eprintln!("[chaoxing] 图片下载失败 {url}: {error:#}");
+                        continue;
+                    }
+                }
+            }
+            parts.push(format!("![{name}](附件/{name})"));
+        }
+        if parts.is_empty() {
+            Ok(None)
+        } else {
+            Ok(Some(parts.join("\n\n")))
+        }
+    }
+
     /// 作业清单落 Vault：每课 `学习通作业.md` + 作业文件夹 `作业说明.md`，
     /// 再由 homework 共享层聚合三平台快照写学期级 `作业总表.md`。内容无变化不提交。
-    fn sync_vault(&self, course_notes: &CourseNotes, now: i64) -> Result<usize> {
+    async fn sync_vault(&self, course_notes: &CourseNotes, now: i64) -> Result<usize> {
         let Some(vault) = &self.vault else {
             return Ok(0);
         };
@@ -425,7 +516,7 @@ impl ChaoxingWorkTracker {
             let dirs = self.config.work_vault_task_dirs;
             let rows: Vec<WorkNoteItem> = items
                 .iter()
-                .map(|(work, deadline)| WorkNoteItem {
+                .map(|(work, deadline, _)| WorkNoteItem {
                     title: work.title.clone(),
                     deadline: deadline.clone(),
                     open: work.is_open(),
@@ -444,13 +535,16 @@ impl ChaoxingWorkTracker {
                 ),
             )?;
             written += 1;
-            for (work, deadline) in items {
+            for (work, deadline, content) in items {
                 // substantive 策略：作业说明不含正文，只为未交作业建目录；
                 // 已交作业的空壳目录纯属噪音，索引里降级为纯文本行。
                 if dirs == ru41::ports::vault::VaultTaskDirs::Substantive && !work.is_open() {
                     continue;
                 }
                 let folder = work_common::work_folder_name(&work.title, deadline.as_deref(), None);
+                let body = self
+                    .render_work_body(&course_base, &folder, content.as_ref())
+                    .await?;
                 vault.write_file(
                     &format!("{course_base}/{folder}/作业说明.md"),
                     &work_common::render_work_task_note(
@@ -461,6 +555,7 @@ impl ChaoxingWorkTracker {
                         work.is_open(),
                         deadline.as_deref(),
                         &work.detail_url,
+                        body.as_deref(),
                         "由 Ru41 自学习通作业列表自动生成与更新。",
                         now,
                         offset,
@@ -482,6 +577,17 @@ impl ChaoxingWorkTracker {
             Ok(0) // 内容无变化，不提交不播报
         }
     }
+}
+
+/// 图片落盘的文件名：取 URL 末段（去查询串），没有就用序号兜底。
+fn image_file_name(url: &str, index: usize) -> String {
+    let path = url.split('?').next().unwrap_or(url);
+    let last = path.rsplit('/').next().unwrap_or_default();
+    let name = last.trim();
+    if name.is_empty() || !name.contains('.') {
+        return format!("图{index}.jpg");
+    }
+    name.to_owned()
 }
 
 impl ru41::ingress::schedule::PollJob for ChaoxingWorkTracker {

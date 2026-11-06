@@ -160,7 +160,7 @@ fn chaoxing_cli(
                         "--lat" | "--lon" => {
                             let value = rest
                                 .next()
-                                .map(String::clone)
+                                .cloned()
                                 .with_context(|| format!("{flag} 缺值"))?;
                             let parsed: f64 = value
                                 .parse()
@@ -174,21 +174,21 @@ fn chaoxing_cli(
                         "--addr" => {
                             addr = Some(
                                 rest.next()
-                                    .map(String::clone)
+                                    .cloned()
                                     .with_context(|| format!("{flag} 缺值"))?,
                             )
                         }
                         "--enc" => {
                             enc = Some(
                                 rest.next()
-                                    .map(String::clone)
+                                    .cloned()
                                     .with_context(|| format!("{flag} 缺值"))?,
                             )
                         }
                         "--photo" => {
                             photo = Some(
                                 rest.next()
-                                    .map(String::clone)
+                                    .cloned()
                                     .with_context(|| format!("{flag} 缺值"))?,
                             )
                         }

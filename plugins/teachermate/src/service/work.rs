@@ -469,6 +469,7 @@ impl TeachermateWorkTracker {
                         work.is_open(),
                         deadline.as_deref(),
                         "https://www.teachermate.com.cn/pc-ssr/student/homework",
+                        None,
                         "由 Ru41 自微助教作业列表自动生成与更新；正文与提交请在微信服务号完成。",
                         now,
                         offset,
