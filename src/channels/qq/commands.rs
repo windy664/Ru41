@@ -83,7 +83,11 @@ pub fn parse_command(content: &str) -> Option<Command> {
 }
 
 /// 执行内置命令并返回回复文本；不直接发消息，便于测试。
-pub fn execute(command: &Command, ctx: &CommandContext) -> Result<Reply> {
+pub fn execute(
+    command: &Command,
+    ctx: &CommandContext,
+    pricing: &crate::app::usage_report::Pricing,
+) -> Result<Reply> {
     let identity = IdentityService::new(ctx.store.clone());
     let bound = identity.is_bound("qq", ctx.author_openid)?;
     let aggregate = ctx.is_c2c && bound;
@@ -163,6 +167,7 @@ pub fn execute(command: &Command, ctx: &CommandContext) -> Result<Reply> {
                 &week,
                 &day,
                 crate::app::usage_report::Style::Chat,
+                pricing,
             )))
         }
         Command::Clear => {

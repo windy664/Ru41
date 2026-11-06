@@ -153,6 +153,8 @@ pub struct QqBot {
     pub sequencer: Arc<ReplySequencer>,
     /// 「正在输入」指示的发送时间（按 user_openid 去抖，平台指示有效 60s）。
     pub typing_sent_at: Mutex<HashMap<String, Instant>>,
+    /// 供应商定价：用量报告折算「实际花费」用。
+    pub pricing: crate::app::usage_report::Pricing,
 }
 
 /// 单条消息的分发结果：立即回复（含可选按钮），或已幂等入队。
@@ -399,11 +401,11 @@ impl QqBot {
         if let Some(command) = commands::parse_command(content) {
             let reply = if command == commands::Command::Help {
                 // 帮助文本需汇总扩展命令，单独构造；按钮与 /帮助 execute 一致。
-                let mut reply = commands::execute(&commands::Command::Help, &ctx)?;
+                let mut reply = commands::execute(&commands::Command::Help, &ctx, &self.pricing)?;
                 reply.text = commands::help_text(&self.command_handlers);
                 reply
             } else {
-                commands::execute(&command, &ctx)?
+                commands::execute(&command, &ctx, &self.pricing)?
             };
             return Ok(DispatchOutcome::Reply(reply));
         }
