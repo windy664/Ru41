@@ -193,6 +193,20 @@ fn stat_phrase(stat: &UsageStat) -> String {
     }
 }
 
+/// Markdown 表格（QQ 与 Obsidian 都认这套语法）。
+fn markdown_table(headers: &[&str], rows: &[Vec<String>]) -> String {
+    let mut out = String::new();
+    out.push_str(&format!("| {} |\n", headers.join(" | ")));
+    out.push_str(&format!(
+        "|{}|\n",
+        headers.iter().map(|_| "---").collect::<Vec<_>>().join("|")
+    ));
+    for row in rows {
+        out.push_str(&format!("| {} |\n", row.join(" | ")));
+    }
+    out.trim_end().to_owned()
+}
+
 /// 生成报告。
 pub fn render(
     week: &UsageOverview,
@@ -540,10 +554,7 @@ fn render_chat(dashboard: &Dashboard<'_>, pricing: &Pricing) -> String {
         format!("{}s", day.avg_seconds),
         format!("{}s", week.avg_seconds),
     ]);
-    lines.push(format!(
-        "```\n{}\n```",
-        code_table(&["指标", "近 24 小时", "近 7 天"], &rows)
-    ));
+    lines.push(markdown_table(&["指标", "近 24 小时", "近 7 天"], &rows));
 
     // 花费说明：让人知道这个钱怎么算出来的。
     let price = pricing.price_of("");
@@ -578,10 +589,7 @@ fn render_chat(dashboard: &Dashboard<'_>, pricing: &Pricing) -> String {
             };
             rows.push(vec![item.key.clone(), item.runs.to_string(), tokens, cost]);
         }
-        lines.push(format!(
-            "```\n{}\n```",
-            code_table(&["模型", "次数", "真实消耗", "花费"], &rows)
-        ));
+        lines.push(markdown_table(&["模型", "次数", "真实消耗", "花费"], &rows));
     }
 
     // 按功能来源
@@ -602,10 +610,7 @@ fn render_chat(dashboard: &Dashboard<'_>, pricing: &Pricing) -> String {
             };
             rows.push(vec![name.clone(), item.runs.to_string(), tokens, cost]);
         }
-        lines.push(format!(
-            "```\n{}\n```",
-            code_table(&["来源", "次数", "真实消耗", "花费"], &rows)
-        ));
+        lines.push(markdown_table(&["来源", "次数", "真实消耗", "花费"], &rows));
     }
 
     // 未上报说明
@@ -706,8 +711,8 @@ mod tests {
     fn chat_report_has_no_tables_and_explains_real_tokens() {
         let week = overview();
         let text = render(&week, &week, Style::Chat, &Pricing::builtin());
-        // QQ 版用等宽代码块当表格，不出现 markdown 表格竖线。
-        assert!(!text.contains("| "), "QQ 版不该有 markdown 表格：{text}");
+        // QQ 版用 markdown 表格。
+        assert!(text.contains("| 指标 | 近 24 小时 | 近 7 天 |"), "{text}");
         // 表格化的总览：指标行 + 两个窗口。
         assert!(text.contains("指标"), "{text}");
         assert!(text.contains("近 24 小时"), "{text}");
