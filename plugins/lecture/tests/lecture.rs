@@ -11,7 +11,7 @@ use ru41::{
 use ru41_plugin_lecture::{LectureConfig, LectureHandler, LectureSection, LectureWorker};
 use std::{
     future::Future,
-    io::{BufRead, BufReader, Write},
+    io::{BufRead, Write},
     net::TcpListener,
     path::PathBuf,
     sync::Arc,
@@ -110,10 +110,7 @@ fn non_audio_attachments_are_not_intercepted() {
 
 /// 在同步测试线程里跑 async fn：plugin 侧不能自带 runtime，
 /// 测试同样只在 block_on 语义下验证（宿主 dispatch 已在 block_in_place）。
-fn tokio_bridge_block<F: Future>(f: F) -> F::Output
-where
-    F: std::future::Future,
-{
+fn tokio_bridge_block<F: Future>(f: F) -> F::Output {
     let rt = tokio::runtime::Builder::new_current_thread()
         .enable_all()
         .build()

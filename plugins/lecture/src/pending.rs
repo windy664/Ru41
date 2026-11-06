@@ -48,10 +48,10 @@ impl PendingItem {
         }
         // 文件名只有星期与时刻（如「周四 上午09点01分」）：按收到时刻往前回推最近一次。
         // 录音往往下课后才发出去，用收到时刻会落在课区间外，课表匹配就会失手。
-        if let Some((weekday, hour, minute)) = parse_weekday_time(&self.filename) {
-            if let Some(ts) = resolve_weekday_time(weekday, hour, minute, self.received_at) {
-                return ts;
-            }
+        if let Some((weekday, hour, minute)) = parse_weekday_time(&self.filename)
+            && let Some(ts) = resolve_weekday_time(weekday, hour, minute, self.received_at)
+        {
+            return ts;
         }
         self.received_at
     }

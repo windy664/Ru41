@@ -293,33 +293,16 @@ impl LectureWorker {
                 transcript.path.display()
             )
         };
-        let prompt = format!(
-            "请把课堂录音转写整理成课堂笔记，用途只有一个：期末复习拿分。宁可短而实，不要长而空。\n\
-             - 录音时间：{recorded_label}（{recorded_source}；课程匹配与归档日期的依据）\n\
-             {course_line}\n\
-             - 日期：{date}\n\
-             - 目标文件（Vault 绝对路径）：{note_path}\n\
-             要求：\n\
-             0. **必须写上面给的绝对路径**：写进 Vault 仓库，不要写当前工作目录（当前目录是任务沙箱，写在这里不会进 Vault，笔记会丢）。课程归属以课表核对为准：直接写入上面的目标文件，**不要按转写内容改课程、不要新建其他课程目录**。\
-             若转写内容与核对课程明显对不上，笔记照常写入目标文件，并在汇报末尾加一行「⚠️ 课程核对异常：<内容更像哪门课>」交人工确认。\n\
-             1. 目标文件不存在就创建（带 # {course} 课堂笔记 标题）；已存在就读取后**在末尾追加**新章节，已有内容一字不动。\n\
-             2. 新章节格式：`## {date} {stem}`。栏目按需取用，没有实质内容的栏目**整个省略不写**（不留空标题、不写「无」）：\
-             ### 本课概览（2-4 条说清这节课实际讲了什么）、### 例题与讲解、### 题型与方法、### 公式与结论、### 考试线索、### 易错点、### 复习清单。\n\
-             3. **宁缺毋滥**：每条内容都要能落到转写原文；教科书上本来就有的通用定义（如函数三要素、极限定义）只在老师当场强调时才记，并注明是老师强调；口语冗余、重复内容直接舍弃。\
-             章节间上下文连贯的可与之前章节互相引用（如「延续 11-03 的积分法」）。\n\
-             4. 例题与讲解（理科课）：逐题记【题目（尽力还原式子）】【解法步骤】【易错点/老师提醒】；转写破碎只对缺失处标「待核对」，能还原的部分照常写，不要整段放弃。\
-             文科课（思修/五史/职规等无例题的课）改用「知识点与问答」：把要点整理成可自测的问答对（Q：… A：…），便于考前盖住答案自测。\n\
-             5. 题型与方法：把本课出现的题型归纳成「题型 → 方法/步骤」短条目（如「判断两个函数是否相同 → 先看定义域，再看对应法则」），这是期末复习最先看的部分。\n\
-             6. 考试线索：优先收老师的考试信号原话——「会考」「出大题」「分值」「题型分布」，以及「这部分不考/不要求证明」之类的排除信息（排除信息同样省复习时间）；每条注明是老师原话还是你依据转写的推断。\n\
-             7. 易错点：老师点名的常见错误、课上有人做错的地方（如「把式子错误拆开导致解不出 $x$」），一句话说清错误做法与正确做法。\n\
-             8. 复习清单：每条必须对应本课出现过的具体题目或考点，可执行可勾选（如「重做求反函数那题：由 $y=\\ln(Bx+C)+A$ 解出 $x$」）；禁止「默写/背出某定义」这类泛泛条目，除非老师当场要求背。\n\
-             9. 数学内容：口语化数学表达转规范记号（「根号二」→ $\\sqrt{{2}}$、「x的平方」→ $x^2$、分式/积分/极限用 LaTeX，Obsidian 可直接渲染）；ASR 同音误听（极限/基线、求导、ln 等）按上下文修正。\n\
-             10. **不臆想**：只依据转写原文整理，课堂没讲的内容不补充、不外推；无法辨认或疑似转写错误的片段如实标注「待核对」，不要编造顺滑的假内容；若整段转写与学科无关（静音幻觉、字幕署名等），只写一行说明该段无可整理内容。\n\
-             11. 写完把改动提交进 Vault 仓库（提交信息前缀 `[ru41]`，例如 `[ru41] 课堂笔记：{date} {course}`）。\n\
-             12. 完成后简单汇报本次笔记要点与最终写入路径（不超过 10 行），不要复述全文。\n\n\
-             {transcript_source}",
-            recorded_source = item.recorded_time_source(),
-        );
+        let prompt = build_note_prompt(&NotePrompt {
+            course,
+            course_line: &course_line,
+            recorded_label: &recorded_label,
+            recorded_source: item.recorded_time_source(),
+            date: &date,
+            stem: &stem,
+            note_path: &note_path,
+            transcript_source: &transcript_source,
+        });
         self.store.enqueue_with_notify(
             &format!("lecture:notes:{}", item.msg_id),
             &prompt,
@@ -353,6 +336,108 @@ impl LectureWorker {
     }
 }
 
+/// 组装「整理课堂笔记」的 prompt。
+/// 抽成独立函数：提示词是要反复调的东西，能直接单测比只能读代码强。
+#[derive(Clone, Copy)]
+struct NotePrompt<'a> {
+    course: &'a str,
+    course_line: &'a str,
+    recorded_label: &'a str,
+    recorded_source: &'a str,
+    date: &'a str,
+    stem: &'a str,
+    note_path: &'a str,
+    transcript_source: &'a str,
+}
+
+/// 课程性质提示：告诉 agent 这门课该怎么记。
+/// 课表里的名字已经带学科信息，用它判比让 agent 猜准。
+fn course_kind(course: &str) -> &'static str {
+    const SCIENCE: &[&str] = &[
+        "数学",
+        "物理",
+        "化学",
+        "生物",
+        "程序设计",
+        "计算机",
+        "数据结构",
+        "电路",
+        "编译",
+    ];
+    const LANGUAGE: &[&str] = &["英语", "日语", "德语", "法语"];
+    const HUMANITIES: &[&str] = &[
+        "思修",
+        "思想道德",
+        "法治",
+        "五史",
+        "形势与政策",
+        "职业生涯",
+        "军事",
+        "党史",
+        "国情",
+    ];
+    if SCIENCE.iter().any(|k| course.contains(k)) {
+        "理科/工科：课堂主体是概念推导与例题，笔记重心放在公式怎么来的、例题怎么解"
+    } else if LANGUAGE.iter().any(|k| course.contains(k)) {
+        "语言类：课堂主体是词汇语法与题型技巧，笔记重心放在考点怎么考、怎么判断"
+    } else if HUMANITIES.iter().any(|k| course.contains(k)) {
+        "文科：课堂主体是概念与观点，笔记重心放在可自测的知识点问答和老师的判断"
+    } else {
+        "按这节课的实际内容判断，别预设体例"
+    }
+}
+
+fn build_note_prompt(p: &NotePrompt<'_>) -> String {
+    let NotePrompt {
+        course,
+        course_line,
+        recorded_label,
+        recorded_source,
+        date,
+        stem,
+        note_path,
+        transcript_source,
+    } = *p;
+    format!(
+        "这是《{course}》的课堂录音转写，请帮我整理成这门课的课堂笔记。\n\
+             用途只有一个：期末复习拿分——宁可短而实，不要长而空。\n\
+             - 这门课：{course}（{kind}）\n\
+             - 录音时间：{recorded_label}（{recorded_source}；课程匹配与归档日期的依据）\n\
+             {course_line}\n\
+             - 日期：{date}\n\
+             - 目标文件（Vault 绝对路径）：{note_path}\n\
+             要求：\n\
+             0. **必须写上面给的绝对路径**：写进 Vault 仓库，不要写当前工作目录（当前目录是任务沙箱，写在这里不会进 Vault，笔记会丢）。课程归属以课表核对为准：直接写入上面的目标文件，**不要按转写内容改课程、不要新建其他课程目录**。\
+             若转写内容与核对课程明显对不上，笔记照常写入目标文件，并在汇报末尾加一行「⚠️ 课程核对异常：<内容更像哪门课>」交人工确认。\n\
+             1. 目标文件不存在就创建（带 # {course} 课堂笔记 标题）；已存在就读取后**在末尾追加**新章节，已有内容一字不动。\n\
+             2. 新章节格式：`## {date} {stem}`。**别套模板**：标题由内容定，讲了什么用什么标题；\
+             没有合适标题的地方就用连贯段落或短条目，别硬套「本课概览／题型与方法／易错点／复习清单」这一套固定栏目，\
+             也不要为了凑齐栏目去写。下面只是可能用得上的内容方向，不是必须出现的部分——这节课真讲了才写，\
+             没讲的整段不写（不留空标题、不写「无」）：这节课实际讲了什么、例题与讲解、题型与方法、\
+             公式与结论、考试线索、易错点、复习清单。\
+             写的是本人复习用的笔记，不是交上去的材料：不要「综上所述」「希望对你有帮助」这类套话，\
+             末尾也不用加「本笔记由 AI 生成」之类的声明。\n\
+             3. **宁缺毋滥**：每条内容都要能落到转写原文；教科书上本来就有的通用定义（如函数三要素、极限定义）只在老师当场强调时才记，并注明是老师强调；口语冗余、重复内容直接舍弃。\
+             章节间上下文连贯的可与之前章节互相引用（如「延续 11-03 的积分法」）。\n\
+             4. 例题与讲解（理科课）：逐题记【题目（尽力还原式子）】【解法步骤】【易错点/老师提醒】；转写破碎只对缺失处标「待核对」，能还原的部分照常写，不要整段放弃。\
+             文科课（思修/五史/职规等无例题的课）改用「知识点与问答」：把要点整理成可自测的问答对（Q：… A：…），便于考前盖住答案自测。\n\
+             5. 题型与方法：把本课出现的题型归纳成「题型 → 方法/步骤」短条目（如「判断两个函数是否相同 → 先看定义域，再看对应法则」），这是期末复习最先看的部分。\n\
+             6. 考试线索：优先收老师的考试信号原话——「会考」「出大题」「分值」「题型分布」，以及「这部分不考/不要求证明」之类的排除信息（排除信息同样省复习时间）；每条注明是老师原话还是你依据转写的推断。\n\
+             7. 易错点：老师点名的常见错误、课上有人做错的地方（如「把式子错误拆开导致解不出 $x$」），一句话说清错误做法与正确做法。\n\
+             8. 复习清单：每条必须对应本课出现过的具体题目或考点，可执行可勾选（如「重做求反函数那题：由 $y=\\ln(Bx+C)+A$ 解出 $x$」）；禁止「默写/背出某定义」这类泛泛条目，除非老师当场要求背。\n\
+             9. 数学内容：口语化数学表达转规范记号（「根号二」→ $\\sqrt{{2}}$、「x的平方」→ $x^2$）；\
+             行内公式用单个 `$…$`，独立成行的公式用 `$$` 独占一行的块公式——\
+             **不要在句子里写 `$$…$$`**（Obsidian 渲染会坏成一坨）；\
+             分式、积分、极限、求和一律 LaTeX，Obsidian 可直接渲染；\
+             ASR 同音误听（极限/基线、求导、ln 等）按上下文修正。\n\
+             10. **不臆想**：只依据转写原文整理，课堂没讲的内容不补充、不外推；无法辨认或疑似转写错误的片段如实标注「待核对」，不要编造顺滑的假内容；若整段转写与学科无关（静音幻觉、字幕署名等），只写一行说明该段无可整理内容。\n\
+             11. 写完把改动提交进 Vault 仓库（提交信息前缀 `[ru41]`，例如 `[ru41] 课堂笔记：{date} {course}`）。\n\
+             12. 完成后简单汇报本次笔记要点与最终写入路径（不超过 10 行），不要复述全文。\n\n\
+             {transcript_source}",
+        kind = course_kind(course),
+    )
+}
+
 impl ru41::ingress::schedule::PollJob for LectureWorker {
     fn job_interval(&self) -> Duration {
         Duration::from_secs(crate::config::LectureSection::DEFAULT_INTERVAL_SECS)
@@ -365,28 +450,6 @@ impl ru41::ingress::schedule::PollJob for LectureWorker {
         // runtime 里（宿主 runtime 的 reactor TLS 跨不过 .so 边界）。
         let owned = self.clone();
         ru41::plugins::bridge(async move { owned.poll_once().await })
-    }
-}
-
-/// 归档命名：日期取录音时间（文件名解析出的开录时刻，回退收到时间）的本地日期；stem 来自原始文件名。
-#[cfg(test)]
-mod tests {
-    use super::{TRANSCRIPT_INLINE_LIMIT, Transcript};
-    use std::path::PathBuf;
-
-    /// 短转写内联、长转写只给路径：两种形态都要让 agent 拿到全文。
-    #[test]
-    fn transcript_source_switches_between_inline_and_path() {
-        let short = Transcript {
-            text: "老师讲了一个例子。".repeat(10),
-            path: PathBuf::from("/data/lecture/x/transcript.md"),
-        };
-        assert!(short.text.chars().count() <= TRANSCRIPT_INLINE_LIMIT);
-        let long = Transcript {
-            text: "长".repeat(TRANSCRIPT_INLINE_LIMIT + 1),
-            path: PathBuf::from("/data/lecture/x/transcript.md"),
-        };
-        assert!(long.text.chars().count() > TRANSCRIPT_INLINE_LIMIT);
     }
 }
 
@@ -403,4 +466,57 @@ fn archive_name(item: &PendingItem) -> (String, String) {
         .filter(|s| !s.is_empty())
         .unwrap_or_else(|| format!("课堂录音 {}", item.msg_id));
     (date, stem)
+}
+
+/// 归档命名：日期取录音时间（文件名解析出的开录时刻，回退收到时间）的本地日期；stem 来自原始文件名。
+#[cfg(test)]
+mod tests {
+    use super::{NotePrompt, TRANSCRIPT_INLINE_LIMIT, Transcript, build_note_prompt, course_kind};
+    use std::path::PathBuf;
+
+    /// 短转写内联、长转写只给路径：两种形态都要让 agent 拿到全文。
+    #[test]
+    fn transcript_source_switches_between_inline_and_path() {
+        let short = Transcript {
+            text: "老师讲了一个例子。".repeat(10),
+            path: PathBuf::from("/data/lecture/x/transcript.md"),
+        };
+        assert!(short.text.chars().count() <= TRANSCRIPT_INLINE_LIMIT);
+        let long = Transcript {
+            text: "长".repeat(TRANSCRIPT_INLINE_LIMIT + 1),
+            path: PathBuf::from("/data/lecture/x/transcript.md"),
+        };
+        assert!(long.text.chars().count() > TRANSCRIPT_INLINE_LIMIT);
+    }
+
+    /// 课表课程名带学科信息，据此给 agent 不同的记笔记口径。
+    #[test]
+    fn course_kind_reads_subject_from_course_name() {
+        assert!(course_kind("高等数学I(理)").contains("理科"));
+        assert!(course_kind("大学英语新视野").contains("语言类"));
+        assert!(course_kind("思想道德修养与法律基础").contains("文科"));
+        assert!(course_kind("五史教育").contains("文科"));
+        assert!(course_kind("没见过的课").contains("别预设体例"));
+    }
+
+    /// 提示词必须带课程语境、并且明确禁止套模板；行内公式不许用 `$$`。
+    #[test]
+    fn prompt_carries_course_context_and_forbids_templates() {
+        let prompt = build_note_prompt(&NotePrompt {
+            course: "高等数学I(理)",
+            course_line: "- 课表核对课程：高等数学I(理)",
+            recorded_label: "2026-11-05 10:41",
+            recorded_source: "文件名时间",
+            date: "2026-11-05",
+            stem: "上午10点41分",
+            note_path: "/vault/01-Courses-课程/高等数学I(理)/课堂笔记.md",
+            transcript_source: "以下是本次转写原文：\n\n老师讲了导数。",
+        });
+        assert!(prompt.contains("《高等数学I(理)》"));
+        assert!(prompt.contains("理科/工科"));
+        assert!(prompt.contains("别套模板"));
+        assert!(prompt.contains("不要在句子里写 `$$…$$`"));
+        // 旧的固定栏目写法不能再出现，否则等于把模板又塞回去。
+        assert!(!prompt.contains("栏目按需取用"));
+    }
 }
