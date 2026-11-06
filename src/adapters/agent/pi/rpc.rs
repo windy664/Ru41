@@ -62,6 +62,10 @@ pub struct PiAgent {
     pub session_dir: Option<PathBuf>,
     /// 工具白名单（Pi 的 --tools）；为空则禁用全部工具，只做文本分析。
     pub tools: Option<String>,
+    /// 显式加载的 Pi 扩展（--extension）；扩展发现始终关闭。
+    pub extensions: Vec<String>,
+    /// 额外注入子进程的环境变量（扩展读配置用）。
+    pub extra_env: std::collections::BTreeMap<String, String>,
     /// 备用模型链：主模型失败（限流/服务端错误/协议中断）时按顺序切换。
     /// 每项写 `供应方/模型` 或裸 `模型`（沿用主供应方）。
     pub fallback_models: Vec<String>,
@@ -80,6 +84,8 @@ impl Default for PiAgent {
             session: false,
             session_dir: None,
             tools: None,
+            extensions: Vec::new(),
+            extra_env: Default::default(),
             fallback_models: Vec::new(),
             id: "pi".into(),
         }
@@ -337,6 +343,14 @@ impl PiAgent {
             .stdout(Stdio::piped())
             .stderr(Stdio::piped())
             .kill_on_drop(true);
+        // 扩展：只加载配置里显式写下的那几个。
+        // --no-extensions 保留（不做扩展发现），但 Pi 允许显式 -e 覆盖它。
+        for extension in &self.extensions {
+            command.arg("--extension").arg(extension);
+        }
+        for (key, value) in &self.extra_env {
+            command.env(key, value);
+        }
         // 工具：给了白名单就按白名单开放，否则禁用全部工具（只做文本分析）。
         // 带工具时不能用「只输出 JSON summary」的分析用系统提示。
         match self.tools.as_deref().filter(|t| !t.trim().is_empty()) {

@@ -445,4 +445,14 @@ pub struct PiSection {
     /// 留空则禁用全部工具：只做文本分析。启用后 Pi 的工具没有操作系统级沙箱，
     /// 权限与 Codex 的 bypass 模式相当。
     pub tools: Option<String>,
+    /// Pi 扩展（--extension）：显式路径列表。
+    ///
+    /// 只影响这里写下的扩展——Pi 的扩展发现始终是关的（--no-extensions 保留），
+    /// 不会因为装了扩展包就自动多出工具。浏览器扩展示例见 docs/browser-automation.md。
+    pub extensions: Vec<String>,
+    /// 额外注入 Pi 子进程的环境变量（键值对）。
+    ///
+    /// 扩展要自己读环境变量时用这个：例如浏览器扩展读 `BU_CDP_WS`
+    /// 找 CDP 端点。值只进子进程环境，不写进日志。
+    pub extra_env: std::collections::BTreeMap<String, String>,
 }
