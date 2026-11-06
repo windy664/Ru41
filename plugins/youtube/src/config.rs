@@ -24,6 +24,9 @@ pub struct YoutubeSection {
     /// 默认关：首见只登记存量快照，避免一次性灌进一堆历史视频。
     /// 换频道后想立刻有内容可学时打开它。
     pub backfill_on_first_sight: Option<bool>,
+    /// 屏蔽的频道（handle 或频道名，忽略大小写）：不巡查、不预习、不进日报。
+    /// 用户点名不要的频道放这里（2026-11-06：BBC Learning English 的新闻节目）。
+    pub blocked_channels: Option<Vec<String>>,
     /// 每个频道要巡查的标签页。默认 videos + streams：
     /// 很多 UP 主主更新在直播页（/videos 只放常规上传），只查 videos 会漏掉他们。
     pub tabs: Option<Vec<String>>,
@@ -75,6 +78,14 @@ impl YoutubeSection {
                 .map(|entry| channel_videos_url(entry))
                 .collect(),
             backfill_on_first_sight: self.backfill_on_first_sight.unwrap_or(false),
+            blocked_channels: self
+                .blocked_channels
+                .clone()
+                .unwrap_or_default()
+                .into_iter()
+                .map(|c| c.trim().to_owned())
+                .filter(|c| !c.is_empty())
+                .collect(),
             tabs: self
                 .tabs
                 .clone()

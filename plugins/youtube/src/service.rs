@@ -16,6 +16,8 @@ use crate::source::{
 pub struct YoutubeConfig {
     /// 归一化后的频道 videos 列表页。
     pub channels: Vec<String>,
+    /// 屏蔽的频道（handle 或频道名，忽略大小写）。
+    pub blocked_channels: Vec<String>,
     /// 首见频道时是否把窗口期内的视频也当候选（默认否）。
     pub backfill_on_first_sight: bool,
     /// 每个频道要巡查的标签页（videos / streams / shorts）。
@@ -43,6 +45,20 @@ pub struct YoutubeConfig {
     pub proxy_url: Option<String>,
     /// yt-dlp --cookies 文件（Netscape 格式）；过字幕接口 429/bot 风控。
     pub ytdlp_cookies: Option<String>,
+}
+
+/// 频道是否命中屏蔽名单：handle 相同，或频道 URL/名字里含屏蔽词。
+pub(crate) fn channel_blocked(channel: &str, blocked: &[String]) -> bool {
+    let channel = channel.trim();
+    if channel.is_empty() {
+        return false;
+    }
+    let lower = channel.to_ascii_lowercase();
+    blocked.iter().any(|entry| {
+        let entry = entry.trim();
+        !entry.is_empty()
+            && (entry.eq_ignore_ascii_case(channel) || lower.contains(&entry.to_ascii_lowercase()))
+    })
 }
 
 /// 频道要巡查的标签页 URL：把 /videos 换成各标签页。
@@ -129,6 +145,10 @@ impl YoutubeTracker {
             Some(ru41::util::now() - (self.config.max_age_days as i64) * 86_400)
         };
         for channel in &self.config.channels {
+            // 屏蔽名单里的频道不巡查（用户点名不要的频道）。
+            if self.is_blocked(channel) {
+                continue;
+            }
             let mut videos: Vec<VideoEntry> = Vec::new();
             let mut seen_ids: std::collections::HashSet<String> = std::collections::HashSet::new();
             for url in tab_urls(channel, &self.config.tabs) {
@@ -282,6 +302,11 @@ impl YoutubeTracker {
             errors,
             task_ids,
         })
+    }
+
+    /// 频道是否被用户屏蔽（handle 或频道名，忽略大小写）。
+    fn is_blocked(&self, channel: &str) -> bool {
+        channel_blocked(channel, &self.config.blocked_channels)
     }
 
     /// 去重登记与候选判定：新视频按关键词/时长终态登记或列为候选；
@@ -622,6 +647,16 @@ impl ru41::ingress::schedule::PollJob for YoutubeTracker {
 #[cfg(test)]
 mod tests {
     use super::tab_urls;
+
+    #[test]
+    fn blocked_channel_matching_is_case_insensitive_and_by_name() {
+        let blocked = vec!["@BBCLearningEnglish".to_owned(), "BBC Learning English".to_owned()];
+        assert!(super::channel_blocked("@bbclearningenglish", &blocked));
+        assert!(super::channel_blocked("@BBCLearningEnglish", &blocked));
+        assert!(super::channel_blocked("BBC Learning English", &blocked));
+        assert!(!super::channel_blocked("@Fireship", &blocked));
+        assert!(!super::channel_blocked("@Fireship", &[]));
+    }
 
     #[test]
     fn tab_urls_expands_channels_to_each_tab() {
