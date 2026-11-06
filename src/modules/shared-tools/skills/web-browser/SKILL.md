@@ -5,26 +5,34 @@ description: 用共享无头浏览器渲染 JS 重度页面（X、知乎、SPA �
 
 # 共享无头浏览器（browserless）
 
-worker 容器里没有浏览器；浏览器是独立容器，通过 HTTP API 使用。
+worker 容器里没有浏览器；浏览器是独立容器（ru41-browser），通过 HTTP API 使用。
 
 ## 何时用
 
-- 页面需要 JS 渲染才有内容（X/Twitter、知乎、多数 SPA、无限滚动列表）
+- 页面需要 JS 渲染才有内容（多数 SPA、无限滚动列表）
 - 静态页面**不要**用浏览器：curl / python requests 更快更省
+- **已知抓不到的**：X（x.com）与知乎当前对这台机器的出口 IP 直接 403（"Access denied" / "请求存在异常"）。
+  遇到 403 不要反复重试——换信息源（官方 API、RSS、镜像站）更有效。
 
-## 用法（curl 即可）
+## 铁律：原始 HTML 不要进上下文
 
-渲染并取完整 HTML（等网络静默）：
+浏览器返回的是整页 HTML（X 一页 185KB ≈ 4.6 万 token），正文实际只有几 KB。
+**必须**在进上下文之前先压成快照，否则白白烧 token 且干扰判断。
 
 ```bash
 curl -s -X POST http://ru41-browser:3000/content \
   -H 'Content-Type: application/json' \
-  -d '{"url":"https://example.com","gotoOptions":{"waitUntil":"networkidle2"}}'
+  -d '{"url":"https://example.com","gotoOptions":{"waitUntil":"networkidle2"}}' \
+  | python3 /usr/share/ru41/modules/shared-tools/skills/web-browser/snapshot.py \
+      --url https://example.com
 ```
 
-返回渲染后的 HTML 文本，用 python+bs4 提取正文。
+快照脚本会输出：标题 / 来源 / 原始字节数 → 快照字符数 / 页面结构（各级标题）/ 正文 /
+可交互元素（按钮、输入框）/ 链接。默认正文截断到 6000 字符，要全文加 `--full` 重跑。
 
-截图（返回二进制，保存为文件）：
+**不要**把 `curl` 的输出直接打印出来看——那才是 18 万 token 的来源。
+
+## 截图
 
 ```bash
 curl -s -X POST http://ru41-browser:3000/screenshot \
@@ -33,9 +41,10 @@ curl -s -X POST http://ru41-browser:3000/screenshot \
   -o page.jpg
 ```
 
+截图是二进制文件，**别读进上下文**；要引用就只说文件名与路径。
+
 ## 注意
 
 - 浏览器容器已接代理，国际站点直接可访问；国内站点走直连规则
-- 单页渲染要几秒到十几秒，批量抓取注意节奏，别并发打满
+- 单页渲染要几秒到十几秒，批量抓取注意节奏（容器允许 10 并发，别一次打满）
 - 不访问需要登录态的私人站点；不绕验证码
-- API 无鉴权，仅限内网容器使用，不要把 3000 端口映射到宿主机
