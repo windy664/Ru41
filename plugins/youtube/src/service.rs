@@ -16,6 +16,8 @@ use crate::source::{
 pub struct YoutubeConfig {
     /// 归一化后的频道 videos 列表页。
     pub channels: Vec<String>,
+    /// 首见频道时是否把窗口期内的视频也当候选（默认否）。
+    pub backfill_on_first_sight: bool,
     /// 每个频道要巡查的标签页（videos / streams / shorts）。
     /// 只查 videos 会漏掉以直播为主的 UP 主——他们的新内容在 /streams。
     pub tabs: Vec<String>,
@@ -120,6 +122,12 @@ impl YoutubeTracker {
         let mut new_videos = 0;
         let mut errors = Vec::new();
         let mut candidates = Vec::new();
+        // 时效窗口先算好：基线登记与候选判定都要用。
+        let cutoff = if self.config.max_age_days == 0 {
+            None
+        } else {
+            Some(ru41::util::now() - (self.config.max_age_days as i64) * 86_400)
+        };
         for channel in &self.config.channels {
             let mut videos: Vec<VideoEntry> = Vec::new();
             let mut seen_ids: std::collections::HashSet<String> = std::collections::HashSet::new();
@@ -158,8 +166,33 @@ impl YoutubeTracker {
             };
             if is_new_channel {
                 for video in &videos {
-                    // 覆盖式登记：旧版本存量 seen（如历史积压 pending）一并改写为 baseline。
-                    if let Err(error) =
+                    // 首见频道：默认只登记存量快照（不预习历史）；
+                    // 打开 backfill_on_first_sight 时，时效窗口内的也算候选——
+                    // 否则刚换频道当天推不到任何东西（2026-11-06 换频道后全是 baseline）。
+                    let recent = if !self.config.backfill_on_first_sight {
+                        false
+                    } else {
+                        match cutoff {
+                            Some(cutoff) => match self.client.video_meta(&video.id).await {
+                                Ok(meta) => meta
+                                    .timestamp
+                                    .map(|ts| (ts as i64) >= cutoff)
+                                    .unwrap_or(false),
+                                Err(error) => {
+                                    errors.push(format!("meta {}: {error:#}", video.id));
+                                    false
+                                }
+                            },
+                            None => true,
+                        }
+                    };
+                    if recent {
+                        candidates.push((channel.clone(), video.clone()));
+                        if let Err(error) = self.write_seen(channel, &video.id, "pending", 0, &video.title)
+                        {
+                            errors.push(format!("{}#{}: {error:#}", channel, video.id));
+                        }
+                    } else if let Err(error) =
                         self.upsert_seen(channel, &video.id, "baseline", &video.title)
                     {
                         errors.push(format!("{}#{}: {error:#}", channel, video.id));
@@ -177,6 +210,7 @@ impl YoutubeTracker {
                     errors.push(format!("{channel}: {error:#}"));
                 }
                 new_videos += videos.len();
+                // 本频道的视频都已登记（基线或候选），不再走下面的登记循环。
                 continue;
             }
             for video in videos {
@@ -191,11 +225,6 @@ impl YoutubeTracker {
                 }
             }
         }
-        let cutoff = if self.config.max_age_days == 0 {
-            None
-        } else {
-            Some(ru41::util::now() - (self.config.max_age_days as i64) * 86_400)
-        };
         let mut prepared = 0;
         let mut task_ids = Vec::new();
         // 配额只限制「真正去抓字幕准备」的个数，不限制遍历：

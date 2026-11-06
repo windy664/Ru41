@@ -116,6 +116,7 @@ fn tracker_with(
 ) -> YoutubeTracker {
     let config = YoutubeConfig {
         tabs: vec!["videos".into()],
+        backfill_on_first_sight: false,
         channels: vec!["https://www.youtube.com/@test/videos".into()],
         keywords,
         interests: "AI / 安全".into(),
@@ -289,6 +290,45 @@ async fn freshness_window_marks_old_without_queueing() {
 
 /// 配额只限制「真正抓字幕准备」的个数：过期的老视频要先被标记掉，
 /// 否则它们一直占着 pending 位置，新视频排不上队（2026-11-06 排查）。
+/// 打开 backfill_on_first_sight：首见频道时窗口期内的视频要进准备流程，
+/// 否则刚换频道当天推不到任何东西。
+#[tokio::test]
+async fn backfill_on_first_sight_prepares_recent_videos() {
+    let dir = tempfile::tempdir().unwrap();
+    let marker = dir.path().join("absent-marker");
+    let store: Arc<dyn TaskStore> =
+        Arc::new(SqliteTaskStore::open(&dir.path().join("state.db")).unwrap());
+    let list = concat!(
+        "printf 'vid-recent\\037Real AI News Deep Dive\\037306\\0371700000\\037%s\\n' \"$(date +%s)\"\n",
+    );
+    let config = YoutubeConfig {
+        tabs: vec!["videos".into()],
+        backfill_on_first_sight: true,
+        channels: vec!["https://www.youtube.com/@test/videos".into()],
+        keywords: vec!["AI".into()],
+        interests: "AI / 安全".into(),
+        level: "CET-6 / B2".into(),
+        min_duration_secs: 60,
+        max_per_channel: 15,
+        max_per_poll: 5,
+        max_age_days: 14,
+        max_transcript_chars: 24_000,
+        interval_secs: 21_600,
+        backend: "codex".into(),
+        notify: None,
+        digest_at: "12:10".into(),
+        ytdlp_bin: write_fake_ytdlp(dir.path(), &marker, list)
+            .to_string_lossy()
+            .to_string(),
+        proxy_url: None,
+        ytdlp_cookies: None,
+    };
+    let tracker = YoutubeTracker::new(store.clone(), config);
+    let report = tracker.poll_once().await.unwrap();
+    assert_eq!(report.prepared, 1, "首见频道的近期视频应进入准备流程");
+    assert_eq!(seen_status(&store, "vid-recent"), "done");
+}
+
 #[tokio::test]
 async fn old_videos_do_not_consume_the_prep_quota() {
     let dir = tempfile::tempdir().unwrap();
@@ -305,6 +345,7 @@ async fn old_videos_do_not_consume_the_prep_quota() {
     );
     let config = YoutubeConfig {
         tabs: vec!["videos".into()],
+        backfill_on_first_sight: false,
         channels: vec!["https://www.youtube.com/@test/videos".into()],
         keywords: vec!["AI".into()],
         interests: "AI / 安全".into(),
@@ -511,6 +552,7 @@ mod review_loop {
     ) -> (YoutubeReviewJob, FakeNotifier) {
         let config = ru41_plugin_youtube::YoutubeConfig {
             tabs: vec!["videos".into()],
+            backfill_on_first_sight: false,
         channels: vec![],
             keywords: vec![],
             interests: String::new(),
