@@ -115,6 +115,9 @@ async fn utility_command_requires_binding_and_c2c() {
     assert!(reply.text.contains("2.80吨"));
     assert!(reply.text.contains("测试楼A栋 A#101"));
     assert!(reply.text.contains("数据时间"));
+    // 余额与数据时间就是全部信息，末尾不再附「每日自动采集…」提示行
+    assert!(!reply.text.contains("每日自动采集"));
+    assert!(!reply.text.contains("低余额会主动提醒"));
 }
 
 #[tokio::test]
