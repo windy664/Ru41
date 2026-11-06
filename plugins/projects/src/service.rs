@@ -341,11 +341,12 @@ impl ProjectsTracker {
     /// 上游删掉的文件这里也跟着删——否则 vault 里会攒一堆僵尸文档。
     async fn sync_repo_docs(&self, entry: &ProjectEntry, branch: &str) -> Result<bool> {
         let (owner, repo) = &entry.repo;
-        let paths = self.docs.list_markdown(owner, repo, branch).await?;
+        // 清单与正文必须同一个分支：清单接口会自动落到能用的分支上。
+        let (branch, paths) = self.docs.list_markdown(owner, repo, branch).await?;
         let mut changed = false;
         let mut wanted: Vec<String> = Vec::new();
         for path in &paths {
-            let body = match self.docs.fetch(owner, repo, branch, path).await {
+            let body = match self.docs.fetch(owner, repo, &branch, path).await {
                 Ok(body) => body,
                 Err(error) => {
                     eprintln!("[projects] {} 文档 {path} 抓取失败: {error:#}", entry.name);
@@ -354,7 +355,7 @@ impl ProjectsTracker {
             };
             wanted.push(path.clone());
             let relative = format!("{}/{}/{path}", entry.rel_dir, DOCS_DIR);
-            let rendered = render_doc(&format!("{owner}/{repo}"), branch, path, &body);
+            let rendered = render_doc(&format!("{owner}/{repo}"), &branch, path, &body);
             if self.vault.read_file(&relative)?.as_deref() == Some(rendered.as_str()) {
                 continue;
             }
