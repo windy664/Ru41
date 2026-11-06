@@ -115,6 +115,7 @@ fn tracker_with(
     list_lines: &str,
 ) -> YoutubeTracker {
     let config = YoutubeConfig {
+        tabs: vec!["videos".into()],
         channels: vec!["https://www.youtube.com/@test/videos".into()],
         keywords,
         interests: "AI / 安全".into(),
@@ -465,7 +466,8 @@ mod review_loop {
         at: chrono::DateTime<chrono::Local>,
     ) -> (YoutubeReviewJob, FakeNotifier) {
         let config = ru41_plugin_youtube::YoutubeConfig {
-            channels: vec![],
+            tabs: vec!["videos".into()],
+        channels: vec![],
             keywords: vec![],
             interests: String::new(),
             level: "CET-6 / B2".into(),

@@ -20,7 +20,9 @@ pub struct YoutubeSection {
     pub min_duration_secs: Option<u64>,
     /// 每个频道单轮最多检查的最新视频数，默认 15。
     pub max_per_channel: Option<u32>,
-    /// 单轮最多入队的预习任务数（控制 Agent 额度），默认 2。
+    /// 每个频道要巡查的标签页。默认 videos + streams：
+    /// 很多 UP 主主更新在直播页（/videos 只放常规上传），只查 videos 会漏掉他们。
+    pub tabs: Option<Vec<String>>,
     pub max_per_poll: Option<u32>,
     /// 视频发布时间的最大回溯天数（超窗只登记不预习）；0 表示不做时效窗口，默认 14。
     pub max_age_days: Option<u64>,
@@ -54,6 +56,8 @@ impl YoutubeSection {
     pub const DEFAULT_MAX_TRANSCRIPT_CHARS: usize = 24_000;
     /// 新鲜度窗口默认天数；自动追踪只追新，存量内容走手动 /预习。
     pub const DEFAULT_MAX_AGE_DAYS: u64 = 14;
+    /// 默认巡查的标签页：常规上传 + 直播（很多 UP 主主更新在直播页）。
+    pub const DEFAULT_TABS: [&'static str; 2] = ["videos", "streams"];
     /// 由 [sources.youtube] 解析出运行时配置；默认值只定义在这里。
     /// 通知路由由装配层按 [notify] 渠道注入，模块内不感知渠道知识。
     pub fn resolved(&self, notify: Option<NotifyRoute>) -> Result<YoutubeConfig> {
@@ -66,6 +70,11 @@ impl YoutubeSection {
                 .iter()
                 .map(|entry| channel_videos_url(entry))
                 .collect(),
+            tabs: self
+                .tabs
+                .clone()
+                .filter(|tabs| !tabs.is_empty())
+                .unwrap_or_else(|| Self::DEFAULT_TABS.iter().map(|s| s.to_string()).collect()),
             keywords: self.keywords.clone().unwrap_or_default(),
             interests: self.interests.clone().unwrap_or_default(),
             level: self

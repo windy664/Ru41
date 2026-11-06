@@ -16,6 +16,9 @@ use crate::source::{
 pub struct YoutubeConfig {
     /// 归一化后的频道 videos 列表页。
     pub channels: Vec<String>,
+    /// 每个频道要巡查的标签页（videos / streams / shorts）。
+    /// 只查 videos 会漏掉以直播为主的 UP 主——他们的新内容在 /streams。
+    pub tabs: Vec<String>,
     /// 标题关键词粗筛；空列表不过滤。
     pub keywords: Vec<String>,
     /// 个人关注方向描述，注入预习单 prompt。
@@ -38,6 +41,30 @@ pub struct YoutubeConfig {
     pub proxy_url: Option<String>,
     /// yt-dlp --cookies 文件（Netscape 格式）；过字幕接口 429/bot 风控。
     pub ytdlp_cookies: Option<String>,
+}
+
+/// 频道要巡查的标签页 URL：把 /videos 换成各标签页。
+/// videos 永远是第一个（它是 seen 登记的基准 URL）。
+fn tab_urls(channel: &str, tabs: &[String]) -> Vec<String> {
+    let mut urls = Vec::new();
+    for tab in tabs {
+        let tab = tab.trim();
+        if tab.is_empty() {
+            continue;
+        }
+        let url = if channel.ends_with("/videos") {
+            channel.trim_end_matches("/videos").to_owned() + "/" + tab
+        } else {
+            format!("{channel}/{tab}")
+        };
+        if !urls.contains(&url) {
+            urls.push(url);
+        }
+    }
+    if urls.is_empty() {
+        urls.push(channel.to_owned());
+    }
+    urls
 }
 
 /// 一轮轮询的结果报告；单频道/单视频失败不中断，错误收进 errors。
@@ -94,18 +121,32 @@ impl YoutubeTracker {
         let mut errors = Vec::new();
         let mut candidates = Vec::new();
         for channel in &self.config.channels {
-            let videos = match self
-                .client
-                .list_videos(channel, self.config.max_per_channel)
-                .await
-            {
-                Ok(videos) => videos,
-                Err(error) => {
-                    errors.push(format!("{channel}: {error:#}"));
-                    continue;
+            let mut videos: Vec<VideoEntry> = Vec::new();
+            let mut seen_ids: std::collections::HashSet<String> = std::collections::HashSet::new();
+            for url in tab_urls(channel, &self.config.tabs) {
+                let listed = match self.client.list_videos(&url, self.config.max_per_channel).await {
+                    Ok(listed) => listed,
+                    Err(error) => {
+                        // 频道没有这个标签页（多数频道没有直播页）不是故障，别记进 errors。
+                        let message = format!("{error:#}");
+                        if message.contains("does not have a") && message.contains("tab") {
+                            continue;
+                        }
+                        // 其他抓取失败不该让整个频道被跳过。
+                        errors.push(format!("{url}: {message}"));
+                        continue;
+                    }
+                };
+                fetched += listed.len();
+                for video in listed {
+                    if seen_ids.insert(video.id.clone()) {
+                        videos.push(video);
+                    }
                 }
-            };
-            fetched += videos.len();
+            }
+            if videos.is_empty() {
+                continue;
+            }
             // 首次接触频道：只登记存量快照（baseline），不预习任何历史视频。
             let is_new_channel = match self.store.document(BASELINE_KIND, channel) {
                 Ok(None) => true,
@@ -539,5 +580,36 @@ impl ru41::ingress::schedule::PollJob for YoutubeTracker {
     > {
         let owned = self.clone();
         ru41::plugins::bridge(async move { Ok(serde_json::to_value(owned.poll_once().await?)?) })
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::tab_urls;
+
+    #[test]
+    fn tab_urls_expands_channels_to_each_tab() {
+        let urls = tab_urls(
+            "https://www.youtube.com/@Fireship/videos",
+            &["videos".to_owned(), "streams".to_owned()],
+        );
+        assert_eq!(
+            urls,
+            vec![
+                "https://www.youtube.com/@Fireship/videos".to_owned(),
+                "https://www.youtube.com/@Fireship/streams".to_owned(),
+            ]
+        );
+    }
+
+    #[test]
+    fn tab_urls_dedupes_and_falls_back_to_the_channel() {
+        let urls = tab_urls(
+            "https://www.youtube.com/@Fireship/videos",
+            &["videos".to_owned(), "videos".to_owned()],
+        );
+        assert_eq!(urls.len(), 1);
+        let urls = tab_urls("https://www.youtube.com/@Fireship/videos", &[]);
+        assert_eq!(urls, vec!["https://www.youtube.com/@Fireship/videos"]);
     }
 }
