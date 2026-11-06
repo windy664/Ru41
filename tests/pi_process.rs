@@ -75,13 +75,12 @@ sleep 30
     assert_eq!(prompt["message"], "测试 Unicode");
 }
 #[tokio::test]
-async fn rejects_failed_aborted_missing_and_malformed_results() {
+async fn rejects_failed_aborted_and_missing_results() {
     let _guard = SERIAL.lock().await;
     for body in [
         r#"printf '%s\n' '{"id":"ru41-prompt","type":"response","success":false}'"#,
         r#"printf '%s\n' '{"type":"agent_settled","aborted":true}'"#,
         r#"printf '%s\n' '{"id":"ru41-prompt","type":"response","success":true}' '{"type":"agent_end"}'"#,
-        r#"printf '%s\n' '{"id":"ru41-prompt","type":"response","success":true}' '{"type":"message_end","message":{"role":"assistant","stopReason":"stop","content":[{"type":"text","text":"not json"}]}}' '{"type":"agent_settled","aborted":false}'"#,
         r#"printf '%s\n' '{"type":"extension_ui_request"}'"#,
         r#"printf '%s\n' 'not json'"#,
     ] {
@@ -94,9 +93,28 @@ async fn rejects_failed_aborted_missing_and_malformed_results() {
             tokio::time::timeout(Duration::from_secs(3), agent.run(request(dir.path())))
                 .await
                 .unwrap()
-                .is_err()
+                .is_err(),
+            "应当判失败：{body}"
         );
     }
+}
+
+/// 模型没按契约输出 JSON 时，最后一条文本就是答案——整条任务不该因此判失败。
+/// （闲聊与简单问答最常见；codex 在 output_schema=false 时也是这个口径。）
+#[tokio::test]
+async fn plain_text_result_becomes_the_summary() {
+    let _guard = SERIAL.lock().await;
+    let dir = tempfile::tempdir().unwrap();
+    let body = r#"printf '%s\n' '{"id":"ru41-prompt","type":"response","success":true}' '{"type":"message_end","message":{"role":"assistant","stopReason":"stop","content":[{"type":"text","text":"你好！我是 Ru41 助手"}]}}' '{"type":"agent_settled","aborted":false}'"#;
+    let agent = PiAgent {
+        executable: executable(dir.path(), body),
+        ..Default::default()
+    };
+    let output = tokio::time::timeout(Duration::from_secs(3), agent.run(request(dir.path())))
+        .await
+        .unwrap()
+        .expect("普通文本应当被接受为 summary");
+    assert_eq!(output.result.summary, "你好！我是 Ru41 助手");
 }
 #[tokio::test]
 async fn bounds_output_and_cancels_process_group() {

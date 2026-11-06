@@ -168,14 +168,28 @@ fn extract_json_object(text: &str) -> Option<&str> {
     None
 }
 
-/// 解析 agent 结果：优先整体 JSON，其次取第一个配平的 JSON 对象。
+/// 解析 agent 结果：优先整体 JSON，其次取第一个配平的 JSON 对象；
+/// 都不是 JSON 时把最后一条文本当 summary（闲聊与简单问答常不按契约输出，
+/// 那条文本本身就是答案，整条任务判失败反而更糟——与 codex 的宽松口径一致）。
 fn parse_agent_result(text: &str) -> Result<AgentResult> {
     let trimmed = text.trim();
     let candidate = extract_json_object(trimmed).unwrap_or(trimmed);
-    let result: AgentResult = serde_json::from_str(candidate)
-        .map_err(|_| Ru41Error::InvalidOutput("Pi result must be JSON with summary".into()))?;
-    result.validate().map_err(Ru41Error::InvalidOutput)?;
-    Ok(result)
+    match serde_json::from_str::<AgentResult>(candidate) {
+        Ok(result) => {
+            result.validate().map_err(Ru41Error::InvalidOutput)?;
+            Ok(result)
+        }
+        Err(_) => {
+            if trimmed.is_empty() {
+                return Err(
+                    Ru41Error::InvalidOutput("Pi result must be JSON with summary".into()).into(),
+                );
+            }
+            Ok(AgentResult {
+                summary: trimmed.to_owned(),
+            })
+        }
+    }
 }
 
 impl PiAgent {
@@ -333,14 +347,17 @@ impl PiAgent {
                     tools,
                     "--system-prompt",
                     "Carry out the task in the request using the available tools. \
-                     Prefer answering from the request context itself; use tools only when \
-                     the context is genuinely insufficient. Keep tool use to a few calls: \
+                     Look up anything factual with the tools: schedules, balances, \
+                     deadlines, file contents and notes must be read, never recalled \
+                     from memory or guessed. The request context is a hint, not the \
+                     source of truth — if it does not contain the answer, use a tool \
+                     (read/bash, or a CLI such as 'ru41 event list --days 1' for today's \
+                     schedule) before answering. Keep tool use to a few calls: \
                      never download large files, never install packages or dependencies, \
                      never render or OCR documents page by page. \
                      When finished, your last message must be a JSON object with one \
-                     nonempty string field named summary. If the information cannot be \
-                     found with minimal effort, say so in the summary instead of searching \
-                     extensively.",
+                     nonempty string field named summary. If the tools cannot find it, \
+                     say so in the summary instead of searching extensively.",
                 ]);
             }
             None => {
