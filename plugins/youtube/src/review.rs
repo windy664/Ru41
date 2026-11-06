@@ -279,10 +279,13 @@ impl YoutubeReviewJob {
             .and_then(|doc| doc.value["pushes"].as_u64())
             .unwrap_or(0)
             + 1;
+        // 必须带上 expected revision：put_document 传 None 时是
+        // 「INSERT ... ON CONFLICT DO NOTHING」——不会覆盖已有文档，
+        // 一天推第二期时计数与已推单子都记不上（2026-11-06 实测）。
         self.store.put_document(
             DIGEST_KIND,
             today,
-            None,
+            previous.as_ref().map(|doc| doc.revision),
             &serde_json::json!({
                 "task_ids": digested_ids,
                 "pushes": pushes,
