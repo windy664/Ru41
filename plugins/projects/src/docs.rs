@@ -88,16 +88,16 @@ impl DocsClient {
         }
     }
 
-    /// 列出仓库里要同步的 markdown 相对路径。
+    /// 列出仓库里要同步的 markdown 相对路径，并给出**实际用到的分支**。
     ///
-    /// 分支名对不上（仓库改了默认分支）就换另一个常见分支再试；
-    /// 都不行才报错——文档同步失败不该拖垮整轮同步。
+    /// 分支名对不上（仓库改了默认分支）就换另一个常见分支再试；返回的分支
+    /// 必须跟着走——拿 A 分支的清单去 B 分支取正文会 404。
     pub async fn list_markdown(
         &self,
         owner: &str,
         repo: &str,
         branch: &str,
-    ) -> Result<Vec<String>> {
+    ) -> Result<(String, Vec<String>)> {
         let mut branches = vec![branch.to_owned()];
         for fallback in ["master", "main"] {
             if !branches.iter().any(|b| b == fallback) {
@@ -107,7 +107,7 @@ impl DocsClient {
         let mut last_err = None;
         for candidate in branches {
             match self.fetch_listing(owner, repo, &candidate).await {
-                Ok(listing) => return Ok(select_markdown(&listing)),
+                Ok(listing) => return Ok((candidate, select_markdown(&listing))),
                 Err(error) => last_err = Some(error),
             }
         }
