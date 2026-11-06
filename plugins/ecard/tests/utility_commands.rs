@@ -104,6 +104,7 @@ async fn utility_command_requires_binding_and_c2c() {
     commands::execute(
         &Command::Bind("s3cret".into()),
         &ctx(&fixture, "user:U1", "U1", true),
+        &ru41::app::usage_report::Pricing::builtin(),
     )
     .unwrap();
     let reply = utility_reply(&fixture, "group:G1", "U1", false).await;
@@ -122,6 +123,7 @@ async fn utility_command_without_reading() {
     commands::execute(
         &Command::Bind("s3cret".into()),
         &ctx(&fixture, "user:U1", "U1", true),
+        &ru41::app::usage_report::Pricing::builtin(),
     )
     .unwrap();
     let reply = utility_reply(&fixture, "user:U1", "U1", true).await;
@@ -145,6 +147,7 @@ async fn utility_natural_language_enqueues_authorized_analysis() {
     commands::execute(
         &Command::Bind("s3cret".into()),
         &ctx(&fixture, "user:U1", "U1", true),
+        &ru41::app::usage_report::Pricing::builtin(),
     )
     .unwrap();
 
@@ -192,6 +195,7 @@ async fn utility_recent_phrase_enqueues_authorized_analysis() {
     commands::execute(
         &Command::Bind("s3cret".into()),
         &ctx(&fixture, "user:U1", "U1", true),
+        &ru41::app::usage_report::Pricing::builtin(),
     )
     .unwrap();
 
@@ -246,6 +250,7 @@ async fn utility_natural_language_keeps_privacy_boundary() {
     commands::execute(
         &Command::Bind("s3cret".into()),
         &ctx(&fixture, "user:U1", "U1", true),
+        &ru41::app::usage_report::Pricing::builtin(),
     )
     .unwrap();
     let group = command
