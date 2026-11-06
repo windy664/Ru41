@@ -90,6 +90,26 @@ pub struct JwxtPollReport {
     /// 是否已推送今日明日课表提醒。
     pub daily_reminded: bool,
     pub notified: bool,
+    /// 下学期（下一教学学期）课表探测结果：学校还没放课时说明还没放。
+    pub next_term: Option<String>,
+}
+
+/// 从本学期第几周开始探测下学期课表。
+/// 学校一般在本学期后半段（选课/预排课前后）才放出下学期课表；
+/// 早探必然是空表，纯属给每轮轮询添一次无谓请求。
+const NEXT_TERM_PROBE_FROM_WEEK: i64 = 12;
+
+/// 下一个教学学期：秋(3)→春(12)→下一学年秋(3)。
+/// 正方学年号跨年：2026 学年第二学期就是 2027-Spring。
+pub fn next_term(xnm: &str, xqm: &str) -> (String, String) {
+    match xqm {
+        "3" => (xnm.to_owned(), "12".to_owned()),
+        "12" => {
+            let year: i64 = xnm.parse().unwrap_or(0);
+            (year.saturating_add(1).to_string(), "3".to_owned())
+        }
+        other => (xnm.to_owned(), other.to_owned()),
+    }
 }
 
 fn signature_hash(signatures: &[String]) -> u64 {
@@ -589,6 +609,7 @@ impl JwxtTracker {
                 events_cancelled: 0,
                 daily_reminded: false,
                 notified: alerted,
+                next_term: None,
             });
         }
 
@@ -611,6 +632,7 @@ impl JwxtTracker {
                     events_cancelled: 0,
                     daily_reminded: false,
                     notified: alerted,
+                    next_term: None,
                 });
             }
         };
@@ -639,6 +661,7 @@ impl JwxtTracker {
         let (events_created, events_cancelled) = self
             .sync_schedule_events(&xnm, &xqm, &meetings, today)
             .await?;
+        let next_term = self.probe_next_term(&xnm, &xqm).await?;
 
         Ok(JwxtPollReport {
             login_ok: true,
@@ -654,7 +677,81 @@ impl JwxtTracker {
             events_cancelled,
             daily_reminded,
             notified: !changes.is_empty() || daily_reminded,
+            next_term,
         })
+    }
+
+    /// 探测下学期课表是否已发布。
+    ///
+    /// 学校在下学期预排课出来之前，课表接口返回空表；一旦有数据就说明
+    /// 下学期的课定了（选课/调课窗口）。这里每轮探一次，课程集合变了才通知，
+    /// 免得选课那天才发现下学期的课不一样了。
+    ///
+    /// 只记状态，不写 `jwxt_timetable` 快照——那份快照喂给课程目录同步，
+    /// 混进下学期的课会把本学期的课程目录写脏。
+    async fn probe_next_term(&self, xnm: &str, xqm: &str) -> Result<Option<String>> {
+        // 本学期前半段不探：学校还没放课，探了也是空表。
+        let Some(start) = self.config.semester_start else {
+            return Ok(None);
+        };
+        let today = chrono::Local::now().date_naive();
+        if week_of(start, today) < NEXT_TERM_PROBE_FROM_WEEK {
+            return Ok(None);
+        }
+        let (nxnm, nxqm) = next_term(xnm, xqm);
+        let meetings = match self.client.timetable(&nxnm, &nxqm).await {
+            Ok(meetings) => meetings,
+            // 探测失败不动状态、不打扰：下学期有没有数据不是紧急事。
+            Err(_) => return Ok(None),
+        };
+        let mut courses: Vec<String> = meetings.iter().map(|m| m.course.clone()).collect();
+        courses.sort();
+        courses.dedup();
+        let hash = signature_hash(&courses);
+
+        let doc = self.store.document("jwxt_next_term", "main")?;
+        let old_hash = doc
+            .as_ref()
+            .and_then(|d| d.value.get("hash"))
+            .and_then(|v| v.as_u64())
+            .unwrap_or(0);
+        let changed = old_hash != hash;
+        self.store.put_document(
+            "jwxt_next_term",
+            "main",
+            doc.as_ref().map(|d| d.revision),
+            &serde_json::json!({
+                "xnm": nxnm,
+                "xqm": nxqm,
+                "hash": hash,
+                "courses": courses,
+                "updated_at": ru41::util::now(),
+            }),
+        )?;
+
+        if courses.is_empty() {
+            return Ok(Some(format!("{nxnm} 学年 {nxqm} 学期：学校还没放课")));
+        }
+        let summary = format!(
+            "{nxnm} 学年 {nxqm} 学期：{} 门课（{}）",
+            courses.len(),
+            courses.join("、")
+        );
+        if changed && let Some(notifier) = &self.notifier {
+            notifier
+                .send(
+                    &self.config.notify_target,
+                    None,
+                    &ru41::util::msg::Card::new("📚 下学期课表已发布")
+                        .raw(format!(
+                            "- 学期：{nxnm} 学年 {nxqm} 学期\n- 课程：{}",
+                            courses.join("、")
+                        ))
+                        .build(),
+                )
+                .await?;
+        }
+        Ok(Some(summary))
     }
 }
 
@@ -714,6 +811,13 @@ mod tests {
                 ..Default::default()
             },
         )
+    }
+
+    /// 下学期探测的学期推算：秋→春、跨年时学年 +1。
+    #[test]
+    fn next_term_rolls_over_academic_year() {
+        assert_eq!(super::next_term("2026", "3"), ("2026".into(), "12".into()));
+        assert_eq!(super::next_term("2026", "12"), ("2027".into(), "3".into()));
     }
 
     #[tokio::test]
