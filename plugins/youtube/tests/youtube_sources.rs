@@ -1,6 +1,5 @@
 use ru41::{
-    adapters::database::sqlite::SqliteTaskStore, domain::NotifyRoute,
-    ports::storage::TaskStore,
+    adapters::database::sqlite::SqliteTaskStore, domain::NotifyRoute, ports::storage::TaskStore,
 };
 use ru41_plugin_youtube::{YoutubeConfig, YoutubeTracker};
 use std::{
@@ -135,6 +134,7 @@ fn tracker_with(
             msg_id: None,
         }),
         digest_at: "12:10".into(),
+        digest_evening_at: "20:30".into(),
         ytdlp_bin: write_fake_ytdlp(dir, marker, list_lines)
             .to_string_lossy()
             .to_string(),
@@ -299,9 +299,7 @@ async fn backfill_on_first_sight_prepares_recent_videos() {
     let marker = dir.path().join("absent-marker");
     let store: Arc<dyn TaskStore> =
         Arc::new(SqliteTaskStore::open(&dir.path().join("state.db")).unwrap());
-    let list = concat!(
-        "printf 'vid-recent\\037Real AI News Deep Dive\\037306\\0371700000\\037%s\\n' \"$(date +%s)\"\n",
-    );
+    let list = "printf 'vid-recent\\037Real AI News Deep Dive\\037306\\0371700000\\037%s\\n' \"$(date +%s)\"\n";
     let config = YoutubeConfig {
         tabs: vec!["videos".into()],
         backfill_on_first_sight: true,
@@ -319,6 +317,7 @@ async fn backfill_on_first_sight_prepares_recent_videos() {
         backend: "codex".into(),
         notify: None,
         digest_at: "12:10".into(),
+        digest_evening_at: "20:30".into(),
         ytdlp_bin: write_fake_ytdlp(dir.path(), &marker, list)
             .to_string_lossy()
             .to_string(),
@@ -362,6 +361,7 @@ async fn old_videos_do_not_consume_the_prep_quota() {
         backend: "codex".into(),
         notify: None,
         digest_at: "12:10".into(),
+        digest_evening_at: "20:30".into(),
         ytdlp_bin: write_fake_ytdlp(dir.path(), &marker, list)
             .to_string_lossy()
             .to_string(),
@@ -556,8 +556,8 @@ mod review_loop {
         let config = ru41_plugin_youtube::YoutubeConfig {
             tabs: vec!["videos".into()],
             backfill_on_first_sight: false,
-        channels: vec![],
-        blocked_channels: vec![],
+            channels: vec![],
+            blocked_channels: vec![],
             keywords: vec![],
             interests: String::new(),
             level: "CET-6 / B2".into(),
@@ -574,6 +574,7 @@ mod review_loop {
                 msg_id: None,
             }),
             digest_at: "12:10".into(),
+            digest_evening_at: "20:30".into(),
             ytdlp_bin: "yt-dlp".into(),
             proxy_url: None,
             ytdlp_cookies: None,
@@ -700,23 +701,43 @@ mod review_loop {
             .value
     }
 
-    /// 下午才完成的预习单要当天推出去，不该干等到次日 12:10 窗口
-    /// （2026-11-06：14:30 抽出 6 个视频，日报 digest_pushed=0）。
+    /// 日报只在固定窗口推（中午 12:10 / 晚间 20:30）。
+    ///
+    /// 早先是「有货就立刻推」，于是半夜 22:33 也会突然弹一条
+    /// （2026-11-06 用户投诉）。现在：窗口外不推，窗口内同一窗口只推一次。
     #[tokio::test]
-    async fn digest_pushes_outside_window_when_videos_extracted() {
+    async fn digest_only_pushes_inside_fixed_windows() {
         let dir = tempfile::tempdir().unwrap();
         let store: Arc<dyn TaskStore> =
             Arc::new(SqliteTaskStore::open(&dir.path().join("state.db")).unwrap());
         seed_succeeded_sheet(&store, "vidq");
-        // 14:30：不在日报窗口内。
+
+        // 14:30：不在任何窗口内——不推。
         let afternoon = clock_at(0) + chrono::Duration::hours(2) + chrono::Duration::minutes(20);
-        let (job, fake) = review_job_at(store.clone(), afternoon);
+        let (job, fake_afternoon) = review_job_at(store.clone(), afternoon);
         let report = ru41::ingress::schedule::PollJob::poll_json(&job)
             .await
             .unwrap();
         assert_eq!(report["extracted_videos"], 1);
-        assert_eq!(report["digest_pushed"], 1, "有新视频就该当天推，不等窗口");
-        assert_eq!(fake.0.lock().unwrap().len(), 1);
+        assert_eq!(report["digest_pushed"], 0, "窗口外不该推");
+        assert_eq!(fake_afternoon.0.lock().unwrap().len(), 0);
+
+        // 20:35：晚间窗口内——推一次。
+        let evening = clock_at(0) + chrono::Duration::hours(8) + chrono::Duration::minutes(20);
+        let (job, fake_evening) = review_job_at(store.clone(), evening);
+        let report = ru41::ingress::schedule::PollJob::poll_json(&job)
+            .await
+            .unwrap();
+        assert_eq!(report["digest_pushed"], 1, "晚间窗口内该推");
+        assert_eq!(fake_evening.0.lock().unwrap().len(), 1);
+
+        // 同一窗口再跑一次：不重复推。
+        let (job, fake_again) = review_job_at(store.clone(), evening);
+        let report = ru41::ingress::schedule::PollJob::poll_json(&job)
+            .await
+            .unwrap();
+        assert_eq!(report["digest_pushed"], 0, "同一窗口当天只推一次");
+        assert_eq!(fake_again.0.lock().unwrap().len(), 0, "同一窗口不重复推");
     }
 
     #[tokio::test]

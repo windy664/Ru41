@@ -55,9 +55,7 @@ pub static DEF: ru41::modules::ModuleDef = ru41::modules::ModuleDef {
         ]
     },
     tracker: |config, store, name| {
-        let youtube = config
-            .sources
-            .get::<crate::YoutubeSection>("youtube")?;
+        let youtube = config.sources.get::<crate::YoutubeSection>("youtube")?;
         match name {
             "youtube" => Ok(Some(Box::new(YoutubeTracker::new(
                 store,
@@ -112,8 +110,9 @@ fn youtube_cli(
     config: &ru41::bootstrap::config::Config,
     store: std::sync::Arc<dyn ru41::ports::storage::TaskStore>,
     args: &[String],
-) -> std::pin::Pin<Box<dyn std::future::Future<Output = anyhow::Result<Option<serde_json::Value>>> + Send>>
-{
+) -> std::pin::Pin<
+    Box<dyn std::future::Future<Output = anyhow::Result<Option<serde_json::Value>>> + Send>,
+> {
     use anyhow::Context as _;
     let prepared = (|| -> anyhow::Result<_> {
         anyhow::ensure!(
@@ -127,7 +126,7 @@ fn youtube_cli(
             format!("无法从「{url}」解析视频 ID（支持 watch / youtu.be / shorts 链接或 11 位 ID）")
         })?;
         let youtube = config.sources.get::<crate::YoutubeSection>("youtube")?;
-        let route = ru41::bootstrap::assembly::source_notify(config, youtube.notify.clone())?;
+        let route = ru41::bootstrap::assembly::source_notify(config, youtube.notify)?;
         Ok((
             video_id,
             ytdlp_client(config),
@@ -156,7 +155,9 @@ fn youtube_cli(
             route.as_ref(),
         )
         .await?;
-        Ok(Some(serde_json::json!({ "video_id": video_id, "message": message })))
+        Ok(Some(
+            serde_json::json!({ "video_id": video_id, "message": message }),
+        ))
     }))
 }
 
