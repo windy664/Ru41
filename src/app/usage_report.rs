@@ -190,6 +190,20 @@ fn stat_phrase(stat: &UsageStat) -> String {
     }
 }
 
+/// Markdown 表格（QQ 与 Obsidian 都认这套语法）。
+fn markdown_table(headers: &[&str], rows: &[Vec<String>]) -> String {
+    let mut out = String::new();
+    out.push_str(&format!("| {} |\n", headers.join(" | ")));
+    out.push_str(&format!(
+        "|{}|\n",
+        headers.iter().map(|_| "---").collect::<Vec<_>>().join("|")
+    ));
+    for row in rows {
+        out.push_str(&format!("| {} |\n", row.join(" | ")));
+    }
+    out.trim_end().to_owned()
+}
+
 /// 生成报告。
 pub fn render(
     week: &UsageOverview,
@@ -426,69 +440,112 @@ fn render_chat(dashboard: &Dashboard<'_>, pricing: &Pricing) -> String {
     lines.push("## 📊 Token 用量".to_owned());
     lines.push(String::new());
 
-    for (label, window) in [("近 24 小时", day), ("近 7 天", week)] {
-        lines.push(format!("**{label}**"));
-        lines.push(format!(
-            "运行 {} 次，成功 {} 次，平均 {}s",
-            window.runs, window.succeeded, window.avg_seconds
-        ));
-        match window_cost(pricing, window) {
-            Some(cost) => lines.push(format!(
-                "实际消耗 {} token，费用 {}",
-                cn_tokens(real_of(window)),
-                fmt_cny(cost)
-            )),
-            None => lines.push(format!("实际消耗 {} token", cn_tokens(real_of(window)))),
-        }
-        lines.push(format!(
-            "新读入 {}　缓存命中 {}　输出 {}",
-            cn_tokens(window.input_tokens),
-            cn_tokens(window.cached_input_tokens),
-            cn_tokens(window.output_tokens)
-        ));
-        lines.push(String::new());
-    }
+    // 总览表：两个窗口并排。
+    let mut rows: Vec<Vec<String>> = Vec::new();
+    rows.push(vec![
+        "运行次数".to_owned(),
+        day.runs.to_string(),
+        week.runs.to_string(),
+    ]);
+    rows.push(vec![
+        "实际消耗".to_owned(),
+        format!("{} token", cn_tokens(real_of(day))),
+        format!("{} token", cn_tokens(real_of(week))),
+    ]);
+    rows.push(vec![
+        "费用".to_owned(),
+        cost_text(pricing, day),
+        cost_text(pricing, week),
+    ]);
+    rows.push(vec![
+        "新读入".to_owned(),
+        cn_tokens(day.input_tokens),
+        cn_tokens(week.input_tokens),
+    ]);
+    rows.push(vec![
+        "缓存命中".to_owned(),
+        cn_tokens(day.cached_input_tokens),
+        cn_tokens(week.cached_input_tokens),
+    ]);
+    rows.push(vec![
+        "输出".to_owned(),
+        cn_tokens(day.output_tokens),
+        cn_tokens(week.output_tokens),
+    ]);
+    rows.push(vec![
+        "成功率".to_owned(),
+        percent(u64::from(day.succeeded), u64::from(day.runs)),
+        percent(u64::from(week.succeeded), u64::from(week.runs)),
+    ]);
+    rows.push(vec![
+        "平均耗时".to_owned(),
+        format!("{}s", day.avg_seconds),
+        format!("{}s", week.avg_seconds),
+    ]);
+    lines.push(markdown_table(&["指标", "近 24 小时", "近 7 天"], &rows));
 
     // 按功能来源
     let sources = group_sources(&week.by_source);
     if !sources.is_empty() {
-        lines.push("**按功能来源 · 近 7 天**".to_owned());
-        for (name, item) in &sources {
-            lines.push(format!(
-                "{} · {} 次 · {}",
-                name,
-                item.runs,
-                usage_cell(pricing, item, None)
-            ));
-        }
         lines.push(String::new());
+        lines.push("**按功能来源 · 近 7 天**".to_owned());
+        let mut rows: Vec<Vec<String>> = Vec::new();
+        for (name, item) in &sources {
+            rows.push(vec![
+                name.clone(),
+                item.runs.to_string(),
+                token_cell(item),
+                cost_cell(pricing, item, None),
+            ]);
+        }
+        lines.push(markdown_table(&["来源", "次数", "真实消耗", "费用"], &rows));
     }
 
     // 按模型
     if !week.by_model.is_empty() {
+        lines.push(String::new());
         lines.push("**按模型 · 近 7 天**".to_owned());
+        let mut rows: Vec<Vec<String>> = Vec::new();
         for item in &week.by_model {
-            lines.push(format!(
-                "{} · {} 次 · {}",
-                item.key,
-                item.runs,
-                usage_cell(pricing, item, Some(&item.key))
-            ));
+            rows.push(vec![
+                item.key.clone(),
+                item.runs.to_string(),
+                token_cell(item),
+                cost_cell(pricing, item, Some(&item.key)),
+            ]);
         }
+        lines.push(markdown_table(&["模型", "次数", "真实消耗", "费用"], &rows));
     }
     lines.join("\n")
 }
 
-/// 一组用量的展示：token 数 + 花费；没有上报数据时只写一次「未上报」。
-fn usage_cell(
+/// 窗口的费用文字；没有上报数据时写「未上报」。
+fn cost_text(pricing: &Pricing, window: &UsageOverview) -> String {
+    match window_cost(pricing, window) {
+        Some(cost) => fmt_cny(cost),
+        None => "未上报".to_owned(),
+    }
+}
+
+/// 一组用量的 token 文字；没有上报数据时写「未上报」（不写 0）。
+fn token_cell(stat: &crate::app::usage::UsageStat) -> String {
+    if stat.reported_runs == 0 {
+        "未上报".to_owned()
+    } else {
+        cn_tokens(real_tokens(stat))
+    }
+}
+
+/// 一组用量的费用文字；没有上报数据时写「—」（token 列已写明未上报）。
+fn cost_cell(
     pricing: &Pricing,
     stat: &crate::app::usage::UsageStat,
     model: Option<&str>,
 ) -> String {
-    let Some(cost) = pricing.cost_of(stat, model) else {
-        return "未上报".to_owned();
-    };
-    format!("{} token · {}", cn_tokens(real_tokens(stat)), fmt_cny(cost))
+    match pricing.cost_of(stat, model) {
+        Some(cost) => fmt_cny(cost),
+        None => "—".to_owned(),
+    }
 }
 
 /// 窗口的总花费（元）；没有上报数据时 None。
@@ -567,18 +624,15 @@ mod tests {
     }
 
     #[test]
-    fn chat_report_is_plain_lines_without_pipes_or_notes() {
+    fn chat_report_is_a_table_without_notes() {
         let week = overview();
         let text = render(&week, &week, Style::Chat, &Pricing::builtin());
-        // 不要竖线（markdown 表格语法）与引用备注块。
-        assert!(!text.contains('|'), "不该有竖线：{text}");
-        assert!(!text.contains('>'), "不该有引用备注：{text}");
-        // 两个时间窗、token 口径与花费都在。
-        assert!(text.contains("近 24 小时"), "{text}");
-        assert!(text.contains("近 7 天"), "{text}");
-        assert!(text.contains("新读入"), "{text}");
-        assert!(text.contains("缓存命中"), "{text}");
-        assert!(text.contains("费用"), "{text}");
+        // 表格回来了。
+        assert!(text.contains("| 指标 | 近 24 小时 | 近 7 天 |"), "{text}");
+        assert!(text.contains("| 来源 | 次数 | 真实消耗 | 费用 |"), "{text}");
+        // 备注/PS 那些东西一律不要（引用块、说明脚注）。
+        assert!(!text.contains(">"), "不该有引用备注：{text}");
+        assert!(!text.contains("ℹ️"), "不该有脚注：{text}");
         // 费用用人民币。
         assert!(text.contains("¥"), "{text}");
         assert!(!text.contains('$'), "不该出现美元：{text}");
