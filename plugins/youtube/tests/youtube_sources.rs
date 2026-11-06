@@ -287,6 +287,50 @@ async fn freshness_window_marks_old_without_queueing() {
     assert_eq!(seen_status(&store, "vid-old"), "old");
 }
 
+/// 配额只限制「真正抓字幕准备」的个数：过期的老视频要先被标记掉，
+/// 否则它们一直占着 pending 位置，新视频排不上队（2026-11-06 排查）。
+#[tokio::test]
+async fn old_videos_do_not_consume_the_prep_quota() {
+    let dir = tempfile::tempdir().unwrap();
+    let marker = dir.path().join("absent-marker");
+    let store: Arc<dyn TaskStore> =
+        Arc::new(SqliteTaskStore::open(&dir.path().join("state.db")).unwrap());
+    let first = tracker(store.clone(), dir.path(), &marker, LIST_SHORT);
+    first.poll_once().await.unwrap();
+
+    // 第二轮：一条老视频 + 一条新视频，配额为 1。
+    let list = concat!(
+        "printf 'vid-old\\037Some AI essay video\\037306\\0379000\\037NA\\n'\n",
+        "printf 'vid-new\\037Real AI News Deep Dive\\037306\\0371700000\\037%s\\n' \"$(date +%s)\"\n",
+    );
+    let config = YoutubeConfig {
+        tabs: vec!["videos".into()],
+        channels: vec!["https://www.youtube.com/@test/videos".into()],
+        keywords: vec!["AI".into()],
+        interests: "AI / 安全".into(),
+        level: "CET-6 / B2".into(),
+        min_duration_secs: 60,
+        max_per_channel: 15,
+        max_per_poll: 1,
+        max_age_days: 14,
+        max_transcript_chars: 24_000,
+        interval_secs: 21_600,
+        backend: "codex".into(),
+        notify: None,
+        digest_at: "12:10".into(),
+        ytdlp_bin: write_fake_ytdlp(dir.path(), &marker, list)
+            .to_string_lossy()
+            .to_string(),
+        proxy_url: None,
+        ytdlp_cookies: None,
+    };
+    let tracker = YoutubeTracker::new(store.clone(), config);
+    let report = tracker.poll_once().await.unwrap();
+    // 老视频被标记为 old（不占配额），新视频照样进入准备流程。
+    assert_eq!(report.prepared, 1, "老视频不该占掉唯一的名额");
+    assert_eq!(seen_status(&store, "vid-old"), "old");
+}
+
 #[tokio::test]
 async fn rebaseline_covers_preexisting_pending_docs() {
     let dir = tempfile::tempdir().unwrap();
