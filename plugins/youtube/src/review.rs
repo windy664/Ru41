@@ -149,8 +149,11 @@ impl YoutubeReviewJob {
             // 夜间不打扰，等次日窗口；当天已推过则不重复推。
             let now_mins = now.hour() as i64 * 60 + now.minute() as i64;
             let quiet_hours = now_mins < 7 * 60 || now_mins >= 23 * 60;
+            // 触发信号是「有待推送的预习单」，不是词块抽取数——
+            // 词块可能早抽完了，预习单却还压在队列里等窗口。
+            let pending_sheets = self.pending_sheet_ids()?.len();
             let digest_due =
-                self.in_digest_window(&now) || (extracted > 0 && !quiet_hours);
+                self.in_digest_window(&now) || (pending_sheets > 0 && !quiet_hours);
             if digest_due && self.store.document(DIGEST_KIND, &today)?.is_none() {
                 digest_pushed = self.push_daily_digest(&today).await?;
             }
