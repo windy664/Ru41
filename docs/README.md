@@ -11,6 +11,7 @@
 - [产品设计](product-design.md)：产品目标、业务场景与总体设计
 - [开发路线](roadmap.md)：已完成能力与后续阶段
 - [核心宿主状态](core-status.md)：核心边界、并行开发约定和未完成项
+- [浏览器能力](browser-automation.md)：快照管道（默认）与 pi-chrome-use 真浏览器（可选）
 - [动态插件开发指南](plugin-development.md)：新附属的默认路线——cdylib 热插拔、ru41-plugin-api 边界与握手纪律
 - [内建模块开发指南](module-development.md)：**历史参考**——静态装配路线已随 2026-11-03 全量插件化弃用，仅当将来恢复内建形态时再看
 - [Docker 部署](../deploy/README.md)：单镜像多进程、持久化数据、备份恢复与重依赖扩展

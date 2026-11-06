@@ -63,6 +63,9 @@ FROM node:22-trixie-slim
 ARG CODEX_VERSION=0.80.0
 # Pi 底座 CLI（Anthropic 协议提供方，如 MiniMax 用 minimax/MiniMax-M3）。
 ARG PI_VERSION=1.5.0
+# Pi 扩展：真浏览器（CDP）。默认不加载——只有配置里写死 extensions 才启用，
+# 见 docs/browser-automation.md。
+ARG PI_CHROME_USE_VERSION=1.1.1
 # 容器出国际方向不稳定（宿主机代理不覆盖 docker 桥接），apt 统一走阿里云镜像。
 RUN sed -i 's|deb.debian.org|mirrors.aliyun.com|g; s|security.debian.org|mirrors.aliyun.com|g' \
         /etc/apt/sources.list.d/debian.sources 2>/dev/null \
@@ -78,6 +81,7 @@ RUN apt-get update \
     && apt-get autoremove -y --purge \
     && rm -rf /var/lib/apt/lists/* /root/.cache \
     && npm install -g "@openai/codex@${CODEX_VERSION}" "@earendil-works/pi-coding-agent@${PI_VERSION}" \
+    && HOME=/home/node pi install npm:pi-chrome-use@${PI_CHROME_USE_VERSION} \
     && npm cache clean --force \
     && cd /usr/local/lib/node_modules/@openai/codex/vendor \
     && ls | grep -v '^x86_64-unknown-linux-musl$' | xargs rm -rf \

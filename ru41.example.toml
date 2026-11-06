@@ -36,6 +36,23 @@ long_term_days = 14             # 超过该窗口的已排期事项归入“长�
 bin = "codex"
 # model = "gpt-5-codex"
 
+# Pi 底座（Anthropic 协议端点，如 minimax/MiniMax-M3）。
+# [agent.pi]
+# enabled = true
+# model = "minimax/MiniMax-M3"
+# provider = "minimax"
+# base_url = "https://api.minimax.io/anthropic"
+# api = "anthropic-messages"
+# api_key_env = "MINIMAX_API_KEY"     # 值只进子进程环境
+# tools = "read,write,edit,bash"      # 留空 = 禁用全部工具（只做文本分析）
+# 显式加载的 Pi 扩展：只加载这里写下的，扩展发现始终关闭。
+# 浏览器扩展（真浏览器 + 截图）见 docs/browser-automation.md。
+# extensions = ["/home/node/.pi/agent/npm/node_modules/pi-chrome-use/extensions/browser-execute.ts"]
+#
+# [agent.pi.extra_env]
+# 扩展读环境变量用这个（只进子进程环境，不写日志）。
+# BU_CDP_WS = "ws://ru41-browser:3000/chromium"
+
 [agent.skills]
 # 按 root/<module>/skills/<skill>/SKILL.md 发现技能；缺省同时尝试以下两个目录。
 roots = ["src/modules", "/etc/ru41/modules"]
