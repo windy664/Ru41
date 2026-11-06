@@ -133,11 +133,16 @@ pub fn build_rows(input: Vec<CompetitionRow>, today: NaiveDate) -> Vec<Competiti
             }
         }
     }
+    // HashMap 的迭代顺序不确定，而下面的比较只到「截止日」为止：
+    // 同一截止日的行会在每轮 poll 里换位置 → 文件内容变了 → 每次都产生一次提交
+    // （2026-11-06 实测：竞赛日程总览每轮 25 行变动）。补足全序，输出才稳定。
     let mut rows: Vec<CompetitionRow> = seen.into_values().collect();
     rows.sort_by(|a, b| {
         (!a.gba)
             .cmp(&!b.gba)
             .then(a.deadline.or(a.start).cmp(&b.deadline.or(b.start)))
+            .then(a.name.cmp(&b.name))
+            .then(a.link.cmp(&b.link))
     });
     rows
 }
