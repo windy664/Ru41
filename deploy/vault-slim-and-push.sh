@@ -10,7 +10,15 @@ set -euo pipefail
 
 VAULT_PATH="${1:-/vault}"
 BRANCH="${2:-master}"
-FILTER="~/bin/git-filter-repo"
+# git-filter-repo 放哪都行：优先常见的几个位置。
+FILTER=""
+for candidate in ~/bin/git-filter-repo ~/.local/bin/git-filter-repo /home/node/bin/git-filter-repo "$(command -v git-filter-repo 2>/dev/null || true)"; do
+  [ -n "$candidate" ] && [ -x "$candidate" ] && { FILTER="$candidate"; break; }
+done
+if [ -z "$FILTER" ]; then
+  echo "找不到 git-filter-repo：curl -o ~/bin/git-filter-repo https://raw.githubusercontent.com/newren/git-filter-repo/master/git-filter-repo && chmod +x ~/bin/git-filter-repo" >&2
+  exit 1
+fi
 
 cd "$VAULT_PATH"
 
@@ -31,6 +39,9 @@ du -sh .git
 git ls-files | wc -l | sed 's/^/文件数: /'
 
 echo "==> 强推 $BRANCH"
+# filter-repo 会把 origin 删掉，这里按原来的地址补回来。
+REMOTE_URL="$(git config --get remote.origin.url || echo https://gitee.com/sui-heng/obsidian-vault.git)"
+git remote get-url origin >/dev/null 2>&1 || git remote add origin "$REMOTE_URL"
 git push --force origin "HEAD:refs/heads/$BRANCH"
 
 echo "==> 清理本地旧对象"
