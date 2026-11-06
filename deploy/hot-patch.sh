@@ -88,7 +88,14 @@ if [[ ! -f "$so" ]]; then
 fi
 
 echo "==> 传输 $(basename "$so") 到 $server"
-scp "$so" "$server:~/ru41-mimo-smoke/plugins/"
+# 落盘必须用「改名」而不是覆盖写：插件 .so 被所有 ru41 容器 dlopen 着，
+# 原地覆盖会让已映射的进程读到新旧混杂的字节——调用到改过的函数就 SIGSEGV
+# （2026-11-06 热更 ecard 后 ru41-qq 崩在 /水电 上：QQ 网关也加载着这个 .so）。
+# 同目录内先写临时名再 rename 是原子替换：老 inode 仍被老进程安全持有，
+# 新进程 dlopen 到新 inode。
+tmp_name=".tmp-$(basename "$so").$$"
+scp "$so" "$server:~/ru41-mimo-smoke/plugins/$tmp_name"
+ssh "$server" "mv ~/ru41-mimo-smoke/plugins/$tmp_name ~/ru41-mimo-smoke/plugins/$(basename "$so")"
 
 # 技能包也在宿主目录（挂载到 /usr/share/ru41/plugins），改了就一并同步。
 # 目录形状必须是 <插件>/skills/<技能>/SKILL.md —— 加载器按这个结构找。
