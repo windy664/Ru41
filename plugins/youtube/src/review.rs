@@ -53,6 +53,8 @@ const MAX_PER_PUSH: usize = 8;
 const MAX_PER_VIDEO: usize = 2;
 /// 单期日报最多带的预习单数（控制消息长度）。
 const MAX_SHEETS_PER_DIGEST: usize = 2;
+/// 每天最多推几期日报（同一批预习单可能分几次推完）。
+const MAX_DIGEST_PUSHES_PER_DAY: u64 = 3;
 
 /// 解析 "HH:MM" 为 (时, 分)；非法输入返回 None（走默认值）。
 fn parse_hhmm(s: &str) -> Option<(i64, i64)> {
@@ -149,12 +151,25 @@ impl YoutubeReviewJob {
             // 夜间不打扰，等次日窗口；当天已推过则不重复推。
             let now_mins = now.hour() as i64 * 60 + now.minute() as i64;
             let quiet_hours = now_mins < 7 * 60 || now_mins >= 23 * 60;
-            // 触发信号是「有待推送的预习单」，不是词块抽取数——
-            // 词块可能早抽完了，预习单却还压在队列里等窗口。
+            // 触发信号是「还有没上过头、等着推送的预习单」——
+            // 词块抽取数不能当信号：词块早抽完了，预习单却还压在队列里等窗口。
             let pending_sheets = self.pending_sheet_ids()?.len();
-            let digest_due =
-                self.in_digest_window(&now) || (pending_sheets > 0 && !quiet_hours);
-            if digest_due && self.store.document(DIGEST_KIND, &today)?.is_none() {
+            let pushed_today = self
+                .store
+                .document(DIGEST_KIND, &today)?
+                .and_then(|doc| doc.value["pushes"].as_u64())
+                .unwrap_or(0);
+            // 有待推送的预习单：立刻推（白天，最多 3 期）——下午完成的预习单
+            // 不该干等到次日 12:10 窗口。
+            // 没有新单子时：维持原语义——窗口内推一次（可能只带到期复习或
+            // 发音专题），一天一期，不反复打扰。
+            let digest_due = if pending_sheets > 0 {
+                pushed_today < MAX_DIGEST_PUSHES_PER_DAY && !quiet_hours
+            } else {
+                self.in_digest_window(&now)
+                    && self.store.document(DIGEST_KIND, &today)?.is_none()
+            };
+            if digest_due {
                 digest_pushed = self.push_daily_digest(&today).await?;
             }
         }
@@ -247,11 +262,32 @@ impl YoutubeReviewJob {
         notifier.send(&route.target, None, &text).await?;
 
         // 副作用：日报标记、批次登记与宽限、专题标记。
+        // task_ids 累积（多期日报各自记自己带过的单子），pushes 记当天推了几期。
+        let previous = self.store.document(DIGEST_KIND, today)?;
+        let mut digested_ids: Vec<i64> = previous
+            .as_ref()
+            .and_then(|doc| doc.value["task_ids"].as_array())
+            .map(|ids| ids.iter().filter_map(|v| v.as_i64()).collect())
+            .unwrap_or_default();
+        for id in &sheet_ids {
+            if !digested_ids.contains(id) {
+                digested_ids.push(*id);
+            }
+        }
+        let pushes = previous
+            .as_ref()
+            .and_then(|doc| doc.value["pushes"].as_u64())
+            .unwrap_or(0)
+            + 1;
         self.store.put_document(
             DIGEST_KIND,
             today,
             None,
-            &serde_json::json!({ "task_ids": sheet_ids, "pushed_at": ru41::util::now() }),
+            &serde_json::json!({
+                "task_ids": digested_ids,
+                "pushes": pushes,
+                "pushed_at": ru41::util::now(),
+            }),
         )?;
         if let Some(ids) = batch_ids {
             self.apply_batch_effects(&ids)?;
