@@ -20,6 +20,10 @@ pub struct YoutubeSection {
     pub min_duration_secs: Option<u64>,
     /// 每个频道单轮最多检查的最新视频数，默认 15。
     pub max_per_channel: Option<u32>,
+    /// 首见某个频道时，把「时效窗口内」的视频也当作候选去预习。
+    /// 默认关：首见只登记存量快照，避免一次性灌进一堆历史视频。
+    /// 换频道后想立刻有内容可学时打开它。
+    pub backfill_on_first_sight: Option<bool>,
     /// 每个频道要巡查的标签页。默认 videos + streams：
     /// 很多 UP 主主更新在直播页（/videos 只放常规上传），只查 videos 会漏掉他们。
     pub tabs: Option<Vec<String>>,
@@ -70,6 +74,7 @@ impl YoutubeSection {
                 .iter()
                 .map(|entry| channel_videos_url(entry))
                 .collect(),
+            backfill_on_first_sight: self.backfill_on_first_sight.unwrap_or(false),
             tabs: self
                 .tabs
                 .clone()
