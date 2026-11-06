@@ -14,6 +14,10 @@ pub struct PagewatchSection {
     pub interval_secs: Option<u64>,
     /// 内容变化是否经默认通知出口推送（[notify] channel）；默认 true。
     pub notify: Option<bool>,
+    /// 状态表写到 vault 的哪个路径；**默认不写**——机器生成的状态表是
+    /// ru41 的内部视图，不该混进用户的知识库（还会跟着同步、进 RAG 索引）。
+    /// 需要时用 QQ 的 `/页面监控` 查。
+    pub status_path: Option<String>,
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -37,6 +41,10 @@ impl PagewatchSection {
             .filter(|pages| !pages.is_empty())
             .context("sources.pagewatch.pages required")?;
         Ok(PagewatchConfig {
+            status_path: self
+                .status_path
+                .clone()
+                .filter(|p| !p.trim().is_empty()),
             pages: pages
                 .into_iter()
                 .map(|entry| WatchedPage {
