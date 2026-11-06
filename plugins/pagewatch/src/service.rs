@@ -304,27 +304,21 @@ fn render_status(
     docs: &std::collections::HashMap<String, serde_json::Value>,
 ) -> String {
     let mut out = String::from(
-        "# 📡 页面监控\n\n         > ru41 pagewatch 附属每 30 分钟巡查一轮，只维护最新状态，不推送。\n         > 变更判定：可见文本行级比对（标签噪声/顺序抖动不算变更）。\n\n         | 页面 | 最近巡查 | 最近内容变更 |\n|---|---|---|\n",
+        "# 📡 页面监控\n\n         > ru41 pagewatch 附属每 30 分钟巡查一轮，只维护最新状态，不推送。\n         > 变更判定：可见文本行级比对（标签噪声/顺序抖动不算变更）。\n\n         | 页面 | 最近内容变更 |\n|---|---|\n",
     );
     for page in pages {
-        let row = match docs.get(&page.url) {
-            Some(doc) => {
-                let checked = doc["last_checked_at"]
-                    .as_i64()
-                    .or(doc["baseline_at"].as_i64())
-                    .map(fmt_ts)
-                    .unwrap_or_else(|| "—".into());
-                let changed = doc["last_changed_at"]
-                    .as_i64()
-                    .map(fmt_ts)
-                    .unwrap_or_else(|| "接入以来无变化".into());
-                format!(
-                    "| [{}]({}) | {} | {} |",
-                    page.name, page.url, checked, changed
-                )
-            }
-            None => format!("| [{}]({}) | 未建立基线 | — |", page.name, page.url),
-        };
+            // 只写「最近内容变更」：巡查时间每轮都在变，写进文件就等于每轮
+            // 产生一次提交（2026-11-06 实测：每 30 分钟一笔，42 笔/天）。
+            let row = match docs.get(&page.url) {
+                Some(doc) => {
+                    let changed = doc["last_changed_at"]
+                        .as_i64()
+                        .map(fmt_ts)
+                        .unwrap_or_else(|| "接入以来无变化".into());
+                    format!("| [{}]({}) | {} |", page.name, page.url, changed)
+                }
+                None => format!("| [{}]({}) | 未建立基线 |", page.name, page.url),
+            };
         out.push_str(&row);
         out.push('\n');
     }

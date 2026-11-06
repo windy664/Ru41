@@ -96,16 +96,14 @@ pub fn render_work_course_note(
     course: &str,
     platform: &str,
     items: &[WorkNoteItem],
-    now: i64,
-    offset_seconds: i32,
+    _now: i64,
+    _offset_seconds: i32,
     dirs: VaultTaskDirs,
 ) -> String {
-    let stamp = local_stamp(now, offset_seconds);
     let mut out = String::new();
     out.push_str("---\n");
     out.push_str(&format!("course: {course}\n"));
     out.push_str(&format!("platform: {platform}\n"));
-    out.push_str(&format!("updated: {stamp}\n"));
     out.push_str(&format!("tags:\n  - 课程\n  - {platform}\n---\n\n"));
     out.push_str(&format!("# {course} · {platform}作业\n\n"));
     out.push_str("> 由 Ru41 每轮轮询自动覆写，请勿手改；截止时间为平台北京时间。\n\n");
@@ -151,10 +149,9 @@ pub fn render_work_task_note(
     deadline: Option<&str>,
     url: &str,
     footer: &str,
-    now: i64,
-    offset_seconds: i32,
+    _now: i64,
+    _offset_seconds: i32,
 ) -> String {
-    let stamp = local_stamp(now, offset_seconds);
     let status = if open { "open" } else { "done" };
     let mut out = String::new();
     out.push_str("---\n");
@@ -164,7 +161,6 @@ pub fn render_work_task_note(
         out.push_str(&format!("due: \"{end}\"\n"));
     }
     out.push_str(&format!("status: {status}\n"));
-    out.push_str(&format!("updated: {stamp}\n"));
     out.push_str(&format!(
         "tags:\n  - 课程\n  - {platform}\n  - 作业\n---\n\n"
     ));
@@ -242,11 +238,10 @@ pub fn render_homework_dashboard(
     // 未完成在前按截止升序（空截止垫底），已完成按截止降序
     rows.sort_by(|a, b| b.5.cmp(&a.5).then(a.0.cmp(&b.0)));
 
-    let stamp = local_stamp(now, offset_seconds);
     let mut out = String::new();
     out.push_str("---\n");
     out.push_str("tags:\n  - 作业\n  - 作业总表\n");
-    out.push_str(&format!("updated: {stamp}\n---\n\n"));
+    out.push_str("---\n\n");
     out.push_str("# 作业总表\n\n");
     out.push_str("> 由 Ru41 跨平台聚合自动覆写（学习通 + 智慧树 + 微助教）；请勿手改。\n\n");
     let open: Vec<_> = rows.iter().filter(|r| r.5).collect();
