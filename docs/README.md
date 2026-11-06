@@ -14,7 +14,7 @@
 - [动态插件开发指南](plugin-development.md)：新附属的默认路线——cdylib 热插拔、ru41-plugin-api 边界与握手纪律
 - [内建模块开发指南](module-development.md)：**历史参考**——静态装配路线已随 2026-11-03 全量插件化弃用，仅当将来恢复内建形态时再看
 - [Docker 部署](../deploy/README.md)：单镜像多进程、持久化数据、备份恢复与重依赖扩展
-- [仓库协作契约（AGENTS.md）](../AGENTS.md)：目录边界、构建踩坑（共享 target、bridge、plugin-entry feature）、部署链与红线——**上手开发前必读**
+- [工程约定](conventions.md)：目录边界、构建踩坑（共享 target、bridge、plugin-entry feature）、部署分层与红线——**上手开发前必读**
 
 ## 设计研究（待实施）
 
@@ -82,7 +82,7 @@
 **赶时间直接看 [onboarding.md](onboarding.md)**——半天接手路径 + 排障速查表。完整顺序：
 
 1. 根目录 README：快速开始、配置与整体架构
-2. [AGENTS.md](../AGENTS.md)：构建踩坑与协作契约（插件不在 workspace、共享 target、bridge 纪律、部署链）
+2. [工程约定](conventions.md)：构建踩坑与协作契约（插件不在 workspace、共享 target、bridge 纪律、部署分层）
 3. 核心宿主状态：确认哪些能力尚未完成
 4. 上表找到对应插件 → 渠道或来源文档：搭建并运行一个真实闭环
 5. 动态插件开发指南：在不修改核心的前提下扩展新业务（独立 crate 热插拔）
