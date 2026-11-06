@@ -13,8 +13,6 @@
 
 use anyhow::{Context, Result, bail};
 use base64::Engine;
-use num_bigint::BigUint;
-use num_traits::{Num, Zero};
 use reqwest::cookie::CookieStore;
 use ru41::domain::timetable::CourseMeeting;
 use serde::Deserialize;

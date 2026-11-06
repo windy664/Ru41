@@ -18,7 +18,6 @@ pub use source::{JwxtClient, JwxtError};
 
 use anyhow::Context as _;
 use anyhow::Result;
-use ru41::app::obsidian::ObsidianSectionExt;
 use std::sync::Arc;
 
 /// 课表 tracker 的具体类型构造：DEF 注册表与 main.rs 的 login 分支共用。
@@ -189,7 +188,7 @@ fn jwxt_cli(
                         "--captcha" => {
                             captcha = Some(
                                 rest.next()
-                                    .map(String::clone)
+                                    .cloned()
                                     .with_context(|| format!("{flag} 缺值"))?,
                             )
                         }
