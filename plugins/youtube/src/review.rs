@@ -144,8 +144,14 @@ impl YoutubeReviewJob {
         if self.config.notify.is_some() {
             retired = self.retire_stale_batches()?;
             self.pickup_level()?;
-            // 日报窗口内且当天未发过：新预习单 + 到期词块 + 发音专题，一条打包。
-            if self.in_digest_window(&now) && self.store.document(DIGEST_KIND, &today)?.is_none() {
+            // 日报：窗口内、或刚抽出了新视频（白天）就推——下午才完成的预习单
+            // 不该干等到明天中午（2026-11-06：14:30 抽出的 6 个视频，日报 0 推送）。
+            // 夜间不打扰，等次日窗口；当天已推过则不重复推。
+            let now_mins = now.hour() as i64 * 60 + now.minute() as i64;
+            let quiet_hours = now_mins < 7 * 60 || now_mins >= 23 * 60;
+            let digest_due =
+                self.in_digest_window(&now) || (extracted > 0 && !quiet_hours);
+            if digest_due && self.store.document(DIGEST_KIND, &today)?.is_none() {
                 digest_pushed = self.push_daily_digest(&today).await?;
             }
         }
