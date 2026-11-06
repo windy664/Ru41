@@ -571,12 +571,12 @@ fn render_chat(dashboard: &Dashboard<'_>, pricing: &Pricing) -> String {
                 .cost_of(item, Some(&item.key))
                 .map(fmt_usd)
                 .unwrap_or_else(|| "—".to_owned());
-            rows.push(vec![
-                item.key.clone(),
-                item.runs.to_string(),
-                cn_tokens(real_tokens(item)),
-                cost,
-            ]);
+            let tokens = if item.reported_runs == 0 {
+                "—".to_owned()
+            } else {
+                cn_tokens(real_tokens(item))
+            };
+            rows.push(vec![item.key.clone(), item.runs.to_string(), tokens, cost]);
         }
         lines.push(format!(
             "```\n{}\n```",
@@ -595,12 +595,12 @@ fn render_chat(dashboard: &Dashboard<'_>, pricing: &Pricing) -> String {
                 .cost_of(item, None)
                 .map(fmt_usd)
                 .unwrap_or_else(|| "—".to_owned());
-            rows.push(vec![
-                name.clone(),
-                item.runs.to_string(),
-                cn_tokens(real_tokens(item)),
-                cost,
-            ]);
+            let tokens = if item.reported_runs == 0 {
+                "—".to_owned()
+            } else {
+                cn_tokens(real_tokens(item))
+            };
+            rows.push(vec![name.clone(), item.runs.to_string(), tokens, cost]);
         }
         lines.push(format!(
             "```\n{}\n```",
