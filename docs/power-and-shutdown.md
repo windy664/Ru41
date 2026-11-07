@@ -128,6 +128,23 @@ error: cannot pull with rebase: You have unstaged changes.
 - **上 UPS，或接带电量计的智能插座**：能记录 AC 事件，掉电时至少留个时间戳；
 - **压 CPU 频率上限**（`intel_pstate.max_perf_pct`，需要 root）：降低峰值电流，等于给适配器减负。
 
+## 2026-11-08 追加：第四次断电，取证器抓到完整过程
+
+11-08 03:28:43 第四次无预警断电。这次采样器在场，证据链完整：
+
+```
+03:23:10  temp=67°C  ru41 进程 92%   ← 某个单核任务开始
+03:25:25  temp=92°C  ru41 98.8%      ← 2 分钟爬升 25 度
+03:26:40  temp=93°C  freq 已被压到 1450MHz
+03:27:30  temp=94°C  持续 99%
+03:28:43  死亡（journal 在 03:28:31 戛然而止，ac=1 全程在线）
+```
+
+- 全程 AC 在线、load 只有 ~1.0（单核满载，不是整机过载）、内存充足、无 swap——**唯一异常就是温度**。
+- 凶手进程在宿主视角只叫 `ru41`（23 个容器进程同名），任务库无记录、knowledge 无日志、vault 当时无提交，没能定位到具体容器。已给采样器补上**高温/高 CPU 时自动附 `docker stats` 容器归因**（detail 行新增 `containers=` 字段），下次再死直接点名。
+- 更深一层的根因找到了：**这台 i3-8130U（15W 规格）的 RAPL PL1 被设成了 25W**（`/sys/class/powercap/intel-rapl-mmio:0/constraint_0_power_limit_uw`）。散热按 15W 设计，功耗墙放到 25W，持续满载就是缓慢自杀——thermald 在跑也救不回来。修复脚本 `deploy/ru41-power-cap.sh`（钉回 15W + systemd 开机自恢复），在服务器上 `sudo bash ~/bin/ru41-power-cap.sh` 执行一次即可。
+- 采样器脚本本身已收进仓库 `deploy/ru41-power-watch.sh`，不再只活在服务器上。
+
 ## 相关提交
 
 - `fc24788` fix(vault): 关掉 git 的后台自动维护，避免 merge 触发 repack 尖峰
