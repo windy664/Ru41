@@ -25,10 +25,37 @@ impl GitVault {
         remote: impl Into<String>,
         branch: impl Into<String>,
     ) -> Self {
-        Self {
+        let vault = Self {
             path: path.into(),
             remote: remote.into(),
             branch: branch.into(),
+        };
+        vault.disable_background_maintenance();
+        vault
+    }
+
+    /// 关掉 git 的「后台自动维护」。
+    ///
+    /// git 的自动 gc/maintenance 是 **detach** 出去的：父进程退出后它被 reparent 到
+    /// PID 1（容器里就是我们自己），没人回收 → 每次 merge 漏一个僵尸进程；
+    /// 而它干的是 repack——多核 CPU 打满 + 大量磁盘 I/O 的尖峰。
+    ///
+    /// 2026-11-07 实测：笔记本无电池（BAT0 的 energy_now 直接 No such device），
+    /// 纯适配器供电；后台 repack 的负载尖峰让适配器跌落 → 整机瞬间断电，
+    /// 内核连日志都来不及写（无关机序列、无 OOM、无 panic），AC 恢复后 BIOS 自动开机。
+    ///
+    /// 仓库很小（几百文件），松散对象靠定时手动 gc 就行，不必每次 merge 都自动 repack。
+    fn disable_background_maintenance(&self) {
+        for (key, value) in [
+            ("gc.auto", "0"),
+            ("maintenance.auto", "false"),
+            ("gc.autoDetach", "false"),
+        ] {
+            let _ = Command::new("git")
+                .args(["config", key, value])
+                .current_dir(&self.path)
+                .env("GIT_TELEMETRY", "0")
+                .output();
         }
     }
 
