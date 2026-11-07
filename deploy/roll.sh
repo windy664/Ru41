@@ -71,6 +71,12 @@ for name in "${NAMES[@]}"; do
            and (($c.HostConfig.NetworkMode // "bridge") != "bridge")
          then ["--network", ($c.HostConfig.NetworkMode // "bridge")] else [] end)
     + (($c.HostConfig.ExtraHosts // []) | map("--add-host", .))
+    + (if ($c.HostConfig.NanoCpus // 0) > 0
+           then ["--cpus", (($c.HostConfig.NanoCpus / 1000000000) | tostring)] else [] end)
+    + (if ($c.HostConfig.Memory // 0) > 0
+           then ["--memory", (($c.HostConfig.Memory / 1048576) | tostring),
+                 "--memory-swap", (($c.HostConfig.Memory / 1048576) | tostring)]
+           else [] end)
     | .[]
   ' "$BACKUP/$name.json")
   ENTRYPOINT="$(jq -r '.[0].Config.Entrypoint // empty | if type == "array" then .[0] else . end' "$BACKUP/$name.json")"
