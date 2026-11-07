@@ -34,9 +34,8 @@ fn build_http(
     jar: &Arc<CookieJar>,
     hosts: &[(&str, u16)],
 ) -> reqwest::Client {
-    let mut builder = reqwest::Client::builder()
+    let mut builder = ru41::util::http_client_builder()
         .user_agent(user_agent)
-        .timeout(ru41::util::HTTP_TIMEOUT)
         .cookie_provider(jar.clone());
     for o in ru41::util::dns_fallback_overrides(hosts) {
         builder = builder.resolve(&o.host, o.addr);
