@@ -105,6 +105,23 @@ impl GitVault {
         }
         op(self)
     }
+
+    /// 提交工作区里的全部改动。调用方必须已持有仓库锁（flock 不可重入）。
+    ///
+    /// 没有东西可提交时返回 false，不产生空提交。
+    fn commit_all_locked(&self, message: &str) -> Result<bool> {
+        self.git(&["add", "-A"])?;
+        let status = Command::new("git")
+            .args(["diff", "--cached", "--quiet"])
+            .current_dir(&self.path)
+            .status()
+            .context("cannot run git diff")?;
+        if status.success() {
+            return Ok(false);
+        }
+        self.git(&["commit", "-m", message])?;
+        Ok(true)
+    }
 }
 
 /// 原子写：同目录临时文件 + rename。
@@ -196,19 +213,7 @@ impl Vault for GitVault {
     }
 
     fn commit_all(&self, message: &str) -> Result<bool> {
-        self.locked(|vault| {
-            vault.git(&["add", "-A"])?;
-            let status = Command::new("git")
-                .args(["diff", "--cached", "--quiet"])
-                .current_dir(&vault.path)
-                .status()
-                .context("cannot run git diff")?;
-            if status.success() {
-                return Ok(false);
-            }
-            vault.git(&["commit", "-m", message])?;
-            Ok(true)
-        })
+        self.locked(|vault| vault.commit_all_locked(message))
     }
 
     fn push(&self) -> Result<()> {
@@ -221,6 +226,17 @@ impl Vault for GitVault {
 
     fn sync(&self) -> Result<SyncOutcome> {
         self.locked(|vault| {
+            // 工作区不干净时 `git pull --rebase` 直接拒绝：
+            //   error: cannot pull with rebase: You have unstaged changes.
+            // 而 vault 是所有插件共写的：projects / chaoxing / zhihuishu 随时会
+            // 往里写文件，且常常要跑好几分钟才提交一次（projects 扫 117 个仓库、
+            // GitHub 免鉴权配额被打满，一轮 8 分钟）。obsidian 每 5 分钟轮询一次，
+            // 于是几乎每次都撞进那个脏窗口——每轮白费一次 fetch + 一次失败的
+            // rebase，还让本该 fast-forward 的同步退化成 fetch + merge --no-ff。
+            //
+            // 先把本地改动提交掉再拉：这些文件本来就是机器生成的，提交内容跟
+            // 插件自己那条 "[ru41] …" 提交没有区别。
+            vault.commit_all_locked("[ru41] 同步前提交")?;
             if let Err(error) = vault.git(&["pull", "--rebase", &vault.remote, &vault.branch]) {
                 let conflicts = vault.conflict_files().unwrap_or_default();
                 if conflicts.is_empty() {
