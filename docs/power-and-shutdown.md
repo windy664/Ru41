@@ -114,10 +114,13 @@ error: cannot pull with rebase: You have unstaged changes.
 
 原因是自提交（self-commit）跑完之后、其它插件还会往 vault 写文件，工作区不干净，rebase 直接拒绝。插件随后走 `merge_remote_pending()` 那条路（fetch → `merge --no-ff` → push → fetch → `push --delete`），于是每轮白白多一次 fetch、一次失败 rebase、一次 abort，以及一条本地 merge commit。
 
-这不是 CPU 问题，但每 5 分钟一轮的固定开销里有一部分是它。想修有两个方向，都动核心（`src/adapters/vault.rs`），要跟核心开发组对齐：
+**已修**（`73f499f`）：`GitVault::sync()` 在拉远端之前先把本地改动提交掉
+（`[ru41] 同步前提交`），脏工作区不再挡住 pull。集成测试
+`tests/obsidian.rs::sync_commits_dirty_worktree_before_pulling` 覆盖这个场景。
 
-- 让 sync 在 pull 之前先把工作区提交干净（等价于把 self-commit 挪到 pull 之前）；
-- 或者给 pull 加 `--autostash`，让它自己处理脏工作区（会改变历史形状，从 merge 提交变成线性 rebase）。
+> 顺带记一笔部署上的坑：插件 .so 静态链接了 `ru41` lib crate 的代码，
+> **只换宿主二进制不刷新 .so，插件侧跑的还是旧逻辑**。发布链见
+> [deploy/README](../deploy/README.md)。
 
 ## 代码侧做不了的部分
 
