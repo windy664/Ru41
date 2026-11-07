@@ -5,6 +5,8 @@ pub mod todo;
 use serde::{Deserialize, Serialize};
 use std::str::FromStr;
 
+use crate::ports::media::MediaRef;
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
 #[serde(rename_all = "snake_case")]
 pub enum TaskStatus {
@@ -68,16 +70,35 @@ pub struct EnqueueResult {
     pub task: Task,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+/// 一次 agent 运行的结果：摘要正文 + 要随结果一起发给用户的媒体附件。
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct AgentResult {
     pub summary: String,
+    /// 随结果一起发给用户的富媒体（截图、图表、生成的文档…）。
+    ///
+    /// 底座在最终 JSON 里给出（路径相对运行目录），宿主解析后校验归属与大小，
+    /// 再交给渠道上传。
+    #[serde(default)]
+    pub media: Vec<MediaRef>,
 }
+
+/// 单次结果最多带的媒体数。
+pub const MAX_RESULT_MEDIA: usize = 8;
 
 impl AgentResult {
     pub fn validate(&self) -> Result<(), String> {
         if self.summary.trim().is_empty() || self.summary.len() > 65_536 {
             return Err("summary must contain 1..65536 bytes of nonblank text".into());
+        }
+        if self.media.len() > MAX_RESULT_MEDIA {
+            return Err(format!(
+                "media must contain at most {MAX_RESULT_MEDIA} items (got {})",
+                self.media.len()
+            ));
+        }
+        if self.media.iter().any(|m| m.source.trim().is_empty()) {
+            return Err("media source must not be blank".into());
         }
         Ok(())
     }

@@ -120,6 +120,7 @@ async fn dispatcher_delivers_terminal_task_to_default_webhook() {
             &claim,
             &AgentResult {
                 summary: "论文核心结论".into(),
+                ..Default::default()
             },
             None,
             101,

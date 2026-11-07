@@ -157,7 +157,7 @@ impl CodexAgent {
         // 旧版 resume 子命令不支持 --output-last-message：改从事件流提取最终消息。
         let use_output_file = !resuming || caps.resume_output_last_message;
         if use_output_file && self.output_schema {
-            tokio::fs::write(&schema, r#"{"type":"object","properties":{"summary":{"type":"string"}},"required":["summary"],"additionalProperties":false}"#).await?;
+            tokio::fs::write(&schema, r#"{"type":"object","properties":{"summary":{"type":"string"},"media":{"type":"array","items":{"type":"object","properties":{"kind":{"type":"string"},"source":{"type":"string"},"filename":{"type":"string"}},"required":["source"],"additionalProperties":false}}},"required":["summary"],"additionalProperties":false}"#).await?;
         }
         let mut cmd = tokio::process::Command::new(&self.executable);
         cmd.current_dir(&request.run_dir).arg("exec");
@@ -293,6 +293,7 @@ impl CodexAgent {
                         })?
                         .trim()
                         .to_owned(),
+                    media: Vec::new(),
                 }
             }
         } else {
@@ -302,6 +303,7 @@ impl CodexAgent {
                         "resumed Codex run produced no agent message in events".into(),
                     )
                 })?,
+                media: Vec::new(),
             }
         };
         super::ensure_tool_calls_executed(&result.summary)?;

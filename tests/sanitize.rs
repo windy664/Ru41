@@ -163,6 +163,7 @@ impl AgentBackend for CapturingAgent {
                 // Agent 只会引用脱敏后的假值。
                 result: AgentResult {
                     summary: format!("已回电 {}", self.seen.lock().unwrap().clone().unwrap()),
+                    ..Default::default()
                 },
                 session_id: None,
                 usage: None,

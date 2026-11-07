@@ -31,6 +31,7 @@ impl AgentBackend for FakeAgent {
             Ok(AgentOutput {
                 result: AgentResult {
                     summary: self.summary.into(),
+                    ..Default::default()
                 },
                 session_id: Some("test-thread".into()),
                 usage: None,
@@ -99,6 +100,7 @@ impl AgentBackend for EventfulAgent {
             Ok(AgentOutput {
                 result: AgentResult {
                     summary: "done".into(),
+                    ..Default::default()
                 },
                 session_id: Some("t1".into()),
                 usage: None,
@@ -311,6 +313,7 @@ async fn conversation_session_is_saved_and_resumed() {
                 Ok(AgentOutput {
                     result: AgentResult {
                         summary: "done".into(),
+                        ..Default::default()
                     },
                     session_id: Some("thread-1".into()),
                     usage: None,
@@ -407,6 +410,7 @@ async fn conversation_resume_requires_matching_model() {
                 Ok(AgentOutput {
                     result: AgentResult {
                         summary: "done".into(),
+                        ..Default::default()
                     },
                     session_id: Some("thread-glm".into()),
                     usage: None,
@@ -515,6 +519,7 @@ impl AgentBackend for EchoAgent {
             Ok(AgentOutput {
                 result: AgentResult {
                     summary: request.prompt.clone(),
+                    ..Default::default()
                 },
                 session_id: Some("test-thread".into()),
                 usage: None,

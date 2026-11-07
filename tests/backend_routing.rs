@@ -26,6 +26,7 @@ impl AgentBackend for TestBackend {
             Ok(AgentOutput {
                 result: AgentResult {
                     summary: format!("handled by {}", self.0),
+                    ..Default::default()
                 },
                 session_id: Some("opaque-session".into()),
                 usage: None,

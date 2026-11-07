@@ -627,7 +627,8 @@ mod review_loop {
                     summary: String::from(
                         "📺 旧格式单子\n🔗 https://www.youtube.com/watch?v=old\n⏱ 5:00\n\n                         📖 重点词句（8-12 个）：\n                         1. **footage** /ˈfʊtɪdʒ/ 拍摄的视频素材 — \"my footage from my GoPro\" [1:00]\n",
                     ),
-                },
+        ..Default::default()
+    },
                 None,
                 ru41::util::now(),
             )
@@ -656,7 +657,8 @@ mod review_loop {
                 &claim,
                 &AgentResult {
                     summary: SHEET.replace("vidq", video),
-                },
+        ..Default::default()
+    },
                 None,
                 ru41::util::now(),
             )
@@ -686,7 +688,8 @@ mod review_loop {
                 &claim,
                 &AgentResult {
                     summary: SHEET.replace("vidq", video) + "\n（作废旧单子标记）\n",
-                },
+        ..Default::default()
+    },
                 None,
                 ru41::util::now(),
             )
@@ -1101,7 +1104,8 @@ mod review_loop {
                 &claim,
                 &AgentResult {
                     summary: "📏 定级测试｜1. She is late. 2. The agent keeps building on it. 3. Had it not been for the scoring function, the loop would start over.".into(),
-                },
+        ..Default::default()
+    },
                 None,
                 now,
             )
@@ -1134,7 +1138,8 @@ mod review_loop {
                 &claim,
                 &AgentResult {
                     summary: "🔊 定级：B2+\n\n1. 对。2. 偏差：building on 是在现有基础上改进。3. 虚拟语气没译出来；这个级别最该练长难句。".into(),
-                },
+        ..Default::default()
+    },
                 None,
                 now,
             )

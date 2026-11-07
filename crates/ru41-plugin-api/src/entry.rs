@@ -21,7 +21,7 @@ pub const PLUGIN_ENTRY_SYMBOL: &[u8] = b"ru41_plugin_entry";
 pub const PLUGIN_API_MAGIC: u64 = 0x7275_3431_5f70_6c75;
 /// 入口结构版本：PluginEntry 布局或握手协议变更时 +1。
 /// v2：ru41_version/pkg 版本门退役，改为 api crate 版本 + deps stamp。
-pub const PLUGIN_API_VERSION: u32 = 2;
+pub const PLUGIN_API_VERSION: u32 = 3;
 /// 本 crate 版本（握手硬门之一）。
 pub const API_CRATE_VERSION: &str = env!("CARGO_PKG_VERSION");
 /// 外部依赖 stamp（握手硬门之一；本 crate build.rs 从 Cargo.lock 生成）。

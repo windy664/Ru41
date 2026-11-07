@@ -1,15 +1,20 @@
 use crate::{
     domain::{
         error::{FailureKind, Ru41Error, classify},
-        {AgentResult, Claim, RunContract, TaskStatus},
+        {AgentResult, Claim, MAX_RESULT_MEDIA, RunContract, TaskStatus},
     },
     ports::agent::{AgentBackend, AgentOutput, AgentRequest, BackendRegistry},
+    ports::channel::MediaRef,
     ports::storage::TaskStore,
     privacy::Sanitizer,
 };
 use anyhow::{Context, Result, ensure};
 use serde::Serialize;
-use std::{path::PathBuf, sync::Arc, time::Duration};
+use std::{
+    path::{Path, PathBuf},
+    sync::Arc,
+    time::Duration,
+};
 use tokio::sync::watch;
 
 /// Worker 执行配置：标识、运行目录、超时与租约/重试参数。
@@ -365,6 +370,7 @@ impl Worker {
                             let output = AgentOutput {
                                 result: AgentResult {
                                     summary: self.sanitizer.restore(&output.result.summary, &mapping),
+                                    media: collect_media(&output.result.media, &run_dir),
                                 },
                                 session_id: output.session_id,
                                 usage: output.usage,
@@ -462,3 +468,80 @@ impl Worker {
 
 /// 时间源已上移到 util；此处保留 re-export 兼容既有调用方。
 pub use crate::util::now;
+
+/// 结果里的媒体附件：只收「运行目录内的文件」或 http(s) 链接。
+///
+/// agent 可能指任意路径（宿主上的配置、密钥、别人的 vault），所以越界的
+/// 一律丢掉——它只能把这次运行自己产出的东西发出去。
+fn collect_media(media: &[MediaRef], run_dir: &Path) -> Vec<MediaRef> {
+    /// 单个媒体的大小上限（字节）；超了平台也会拒。
+    const MAX_MEDIA_BYTES: u64 = 20 * 1024 * 1024;
+    let root = run_dir.canonicalize().ok();
+    let mut out: Vec<MediaRef> = Vec::new();
+    for item in media.iter().take(MAX_RESULT_MEDIA) {
+        if item.is_remote() {
+            out.push(item.clone());
+            continue;
+        }
+        let path = Path::new(&item.source);
+        let joined = if path.is_absolute() {
+            path.to_path_buf()
+        } else {
+            run_dir.join(path)
+        };
+        let Ok(real) = joined.canonicalize() else {
+            continue;
+        };
+        if let Some(root) = &root
+            && !real.starts_with(root)
+        {
+            eprintln!("[worker] media 越出运行目录，已丢弃: {}", item.source);
+            continue;
+        }
+        let Ok(meta) = std::fs::metadata(&real) else {
+            continue;
+        };
+        if !meta.is_file() || meta.len() > MAX_MEDIA_BYTES {
+            continue;
+        }
+        let mut item = item.clone();
+        item.source = real.to_string_lossy().into_owned();
+        out.push(item);
+    }
+    out
+}
+
+#[cfg(test)]
+mod tests {
+    use super::collect_media;
+    use crate::ports::channel::{MediaKind, MediaRef};
+
+    /// agent 只能把「这次运行自己产出的文件」发出去：越界路径直接丢。
+    #[test]
+    fn collect_media_keeps_run_dir_files_and_drops_others() {
+        let dir = tempfile::tempdir().unwrap();
+        let shot = dir.path().join("shot.png");
+        std::fs::write(&shot, b"png").unwrap();
+        let outside = tempfile::NamedTempFile::new().unwrap();
+
+        let kept = collect_media(
+            &[
+                MediaRef::new(MediaKind::Image, "shot.png"),
+                MediaRef::new(
+                    MediaKind::File,
+                    outside.path().to_string_lossy().into_owned(),
+                ),
+                MediaRef::new(MediaKind::Image, "https://example.com/a.png"),
+            ],
+            dir.path(),
+        );
+        assert_eq!(kept.len(), 2, "越界文件被丢弃，远程链接保留");
+        assert!(kept[0].source.ends_with("shot.png"));
+        assert!(
+            kept[0]
+                .source
+                .starts_with(dir.path().to_string_lossy().as_ref())
+        );
+        assert!(kept[1].is_remote());
+    }
+}
