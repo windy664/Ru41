@@ -73,8 +73,34 @@ cp plugins/*/target-docker/release/*.so .ru41/plugins/
 ```
 
 插件与宿主的握手规则（api 版本 + 依赖 stamp）见
-[插件开发指南](../docs/plugin-development.md)；宿主升级镜像后一般无需重编插件，
-被拒载时日志会给出明确原因。
+[插件开发指南](../docs/plugin-development.md)。
+
+**核心改动上线：插件 .so 必须一起刷新。** 插件是 cdylib，但它调用的是
+`ru41` 这个 lib crate 的函数（如 `app::obsidian::ObsidianService`、
+`adapters::vault::GitVault`），**这些代码会被静态链接进 .so**。所以只换宿主
+二进制、.so 留在旧版本，插件侧跑的还是旧逻辑——现象是"镜像更新了、行为没变"。
+生产发布链：
+
+```bash
+# 1. 本地出镜像并推到 GHCR（CI 也会推 ghcr.io/windy664/ru41:latest）
+docker build -t ghcr.io/windy664/ru41:latest .
+docker push ghcr.io/windy664/ru41:latest
+
+# 2. 服务器换镜像
+docker pull ghcr.io/windy664/ru41:latest
+docker save ghcr.io/windy664/ru41:latest | ssh <server> 'docker load'
+ssh <server> 'docker tag ghcr.io/windy664/ru41:latest ru41:local'
+
+# 3. 把镜像里的插件 .so 覆盖到宿主挂载目录（关键：容器挂的是宿主目录）
+ssh <server> 'docker run --rm --entrypoint tar ru41:local -cf - -C /etc/ru41/plugins . \
+  | tar -xf - -C ~/ru41-mimo-smoke/plugins'
+
+# 4. 滚动重建 + 补回环境变量
+ssh <server> 'bash ~/ru41-roll.sh && bash ~/roll-set-env.sh <容器名> <KEY...>'
+```
+
+第 3 步漏掉时，日志里会出现"插件与宿主 git commit 不同（插件 xxx / 宿主 yyy）"
+的提示——那是 .so 比宿主旧，不是握手失败，行为上却等同于没升级。
 
 ```bash
 # QQ 网关（内含通知派发，不要再同时运行 notify）
