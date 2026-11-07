@@ -105,6 +105,26 @@ impl NotifyDispatcher {
             .await;
             match result {
                 Ok(Ok(())) => {
+                    // 结果带媒体（截图/图表/生成文档）时逐个随消息发出。
+                    // QQ 会上传成平台媒体；不支持媒体的渠道降级成文本链接。
+                    if let Some(result) = task.result.as_ref() {
+                        for media in &result.media {
+                            let caption = media.display_name().to_owned();
+                            let sent_media = tokio::time::timeout(
+                                Duration::from_secs(60),
+                                channel.send_media(
+                                    &route.target,
+                                    effective_msg_id(&task, now),
+                                    &caption,
+                                    media,
+                                ),
+                            )
+                            .await;
+                            if !matches!(sent_media, Ok(Ok(()))) {
+                                eprintln!("[notify] media delivery failed for task-{}", task.id);
+                            }
+                        }
+                    }
                     record["status"] = "sent".into();
                     if self
                         .store

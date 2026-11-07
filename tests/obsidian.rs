@@ -205,7 +205,8 @@ async fn succeeded_task_commits_and_pushes() {
             &claim,
             &AgentResult {
                 summary: "```ru41-organize\n{\"moves\":[{\"from\":\"00-Inbox-收件箱/新想法.md\",\"to\":\"03-Knowledge-知识/新想法.md\"}],\"todos\":[],\"skipped\":[]}\n```".into(),
-            },
+        ..Default::default()
+    },
             None,
             101,
         )
@@ -288,7 +289,8 @@ async fn conflict_aborts_when_remote_moved() {
             &claim,
             &AgentResult {
                 summary: "```ru41-organize\n{\"moves\":[{\"from\":\"00-Inbox-收件箱/新想法.md\",\"to\":\"03-Knowledge-知识/新想法.md\"}],\"todos\":[],\"skipped\":[]}\n```".into(),
-            },
+        ..Default::default()
+    },
             None,
             101,
         )
@@ -316,6 +318,7 @@ async fn invalid_plan_output_reenqueues_retry() {
             &claim,
             &AgentResult {
                 summary: "我整理好了，但忘了按格式输出".into(),
+                ..Default::default()
             },
             None,
             101,

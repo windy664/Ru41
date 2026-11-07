@@ -1,8 +1,11 @@
 //! 渠道无关的富媒体类型；宿主渠道适配器与插件命令共用，
 //! 放在 plugin-api 是因为 CommandContext 需要把消息附件透传给插件。
 
+use serde::{Deserialize, Serialize};
+
 /// 富媒体类型（渠道无关）。
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
 pub enum MediaKind {
     Image,
     Video,
@@ -11,15 +14,19 @@ pub enum MediaKind {
 }
 
 /// 富媒体来源：http(s) URL 渠道直接引用，其余按本地文件路径上传。
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct MediaRef {
     pub kind: MediaKind,
     pub source: String,
     /// 文件类附件的展示名；缺省取路径/URL 末段。
+    #[serde(default)]
     pub filename: Option<String>,
     /// 渠道媒体 CDN 的下载认证头值（如 QQ 的 `QQBot <token>`）。
     /// 宿主入站时快照；插件下载附件时应作为 `Authorization` 头带上，
     /// 否则部分渠道（QQ 多媒体 CDN）会拒绝请求。
+    ///
+    /// **属于凭据，不落库、不进任务结果**——序列化时跳过。
+    #[serde(skip)]
     pub auth: Option<String>,
 }
 

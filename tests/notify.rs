@@ -16,6 +16,7 @@ use std::{
 struct MockChannel {
     id: &'static str,
     sent: Mutex<Vec<(String, Option<String>, String)>>,
+    media: Mutex<Vec<(String, String)>>,
     fail: bool,
 }
 
@@ -41,6 +42,25 @@ impl NotifyChannel for MockChannel {
             Ok(())
         })
     }
+
+    fn send_media<'a>(
+        &'a self,
+        target: &'a str,
+        _msg_id: Option<&'a str>,
+        caption: &'a str,
+        media: &'a ru41::ports::channel::MediaRef,
+    ) -> Pin<Box<dyn Future<Output = anyhow::Result<()>> + Send + 'a>> {
+        Box::pin(async move {
+            if self.fail {
+                anyhow::bail!("channel down");
+            }
+            self.media
+                .lock()
+                .unwrap()
+                .push((target.to_owned(), format!("{caption}|{}", media.source)));
+            Ok(())
+        })
+    }
 }
 
 fn store_with_terminal_task(dir: &tempfile::TempDir, route: NotifyRoute) -> Arc<dyn TaskStore> {
@@ -62,6 +82,7 @@ fn store_with_terminal_task(dir: &tempfile::TempDir, route: NotifyRoute) -> Arc<
             &claim,
             &AgentResult {
                 summary: "处理完成".into(),
+                ..Default::default()
             },
             None,
             101,
@@ -429,4 +450,50 @@ async fn stale_progress_for_terminal_task_is_skipped() {
         .unwrap()
         .unwrap();
     assert_eq!(doc.value["status"], "done");
+}
+
+/// 结果里带媒体时，媒体要随消息一起发出（QQ 会传成平台媒体）。
+#[tokio::test]
+async fn dispatches_result_media_to_channel() {
+    let dir = tempfile::tempdir().unwrap();
+    let route = NotifyRoute {
+        channel: "qq".into(),
+        target: "group:G1".into(),
+        msg_id: Some("m1".into()),
+    };
+    let store: Arc<dyn TaskStore> =
+        Arc::new(SqliteTaskStore::open(&dir.path().join("state.db")).unwrap());
+    store
+        .enqueue_with_notify(
+            "qq:msg:m2",
+            "hello",
+            "codex",
+            RunContract::AnalysisV1,
+            &route,
+        )
+        .unwrap();
+    let claim = store.claim("worker", 100, 30).unwrap().unwrap();
+    store
+        .succeed(
+            &claim,
+            &AgentResult {
+                summary: "图给你".into(),
+                media: vec![ru41::ports::channel::MediaRef::new(
+                    ru41::ports::channel::MediaKind::Image,
+                    "/data/runs/x/shot.png",
+                )],
+            },
+            None,
+            101,
+        )
+        .unwrap();
+    let qq = Arc::new(MockChannel {
+        id: "qq",
+        ..Default::default()
+    });
+    let d = dispatcher(store, vec![qq.clone()]);
+    assert_eq!(d.run_once().await.unwrap(), 1);
+    let media = qq.media.lock().unwrap();
+    assert_eq!(media.len(), 1, "媒体应随结果发出");
+    assert!(media[0].1.contains("shot.png"), "{:?}", media[0]);
 }

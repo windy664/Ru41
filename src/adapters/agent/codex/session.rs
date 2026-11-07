@@ -97,7 +97,7 @@ impl CodexSession {
                     let prompt = crate::skills::skills_index_prefix(skills) + &request.prompt;
                     let mut params = json!({"threadId":id,"input":[{"type":"text","text":prompt}]});
                     if self.output_schema {
-                        params["outputSchema"] = json!({"type":"object","properties":{"summary":{"type":"string"}},"required":["summary"],"additionalProperties":false});
+                        params["outputSchema"] = json!({"type":"object","properties":{"summary":{"type":"string"},"media":{"type":"array","items":{"type":"object","properties":{"kind":{"type":"string"},"source":{"type":"string"},"filename":{"type":"string"}},"required":["source"],"additionalProperties":false}}},"required":["summary"],"additionalProperties":false});
                     }
                     send(
                         &mut writer,
@@ -161,6 +161,7 @@ impl CodexSession {
                 } else {
                     AgentResult {
                         summary: final_text.trim().to_owned(),
+                        media: Vec::new(),
                     }
                 };
                 super::ensure_tool_calls_executed(&result.summary)?;

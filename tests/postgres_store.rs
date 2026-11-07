@@ -68,6 +68,7 @@ fn expired_owner_is_fenced_and_recovery_keeps_history() {
     let new = b.claim("new", 111, 30).unwrap().unwrap();
     let result = AgentResult {
         summary: "done".into(),
+        ..Default::default()
     };
     assert!(!a.succeed(&old, &result, None, 112).unwrap());
     assert!(!a.fail(&old, "late failure", 112, 10, false, true).unwrap());
@@ -94,7 +95,8 @@ fn cancellation_fences_completion_and_success_cannot_be_cancelled() {
             .succeed(
                 &claim,
                 &AgentResult {
-                    summary: "late".into()
+                    summary: "late".into(),
+                    ..Default::default()
                 },
                 None,
                 101
@@ -110,7 +112,8 @@ fn cancellation_fences_completion_and_success_cannot_be_cancelled() {
             .succeed(
                 &claim,
                 &AgentResult {
-                    summary: "done".into()
+                    summary: "done".into(),
+                    ..Default::default()
                 },
                 None,
                 102

@@ -1,8 +1,11 @@
 use super::super::process::{OwnedChild, ProcessGroup};
 // Pi 1.2 RPC 分析适配器。模型与认证由 Pi 管理，宿主只管理进程和结果契约。
 use crate::{
-    domain::{AgentResult, RunContract, error::Ru41Error},
-    ports::agent::{AgentBackend, AgentOutput, AgentRequest, BackendDescriptor, TokenUsage},
+    domain::{AgentResult, MAX_RESULT_MEDIA, RunContract, error::Ru41Error},
+    ports::{
+        agent::{AgentBackend, AgentOutput, AgentRequest, BackendDescriptor, TokenUsage},
+        channel::{MediaKind, MediaRef},
+    },
 };
 use anyhow::{Context, Result, ensure};
 use serde_json::{Value, json};
@@ -215,21 +218,96 @@ fn pick_full_report(candidates: &[String], summary: &str) -> Option<String> {
 fn parse_agent_result(text: &str) -> Result<AgentResult> {
     let trimmed = text.trim();
     let candidate = extract_json_object(trimmed).unwrap_or(trimmed);
-    match serde_json::from_str::<AgentResult>(candidate) {
-        Ok(result) => {
-            result.validate().map_err(Ru41Error::InvalidOutput)?;
-            Ok(result)
-        }
-        Err(_) => {
-            if trimmed.is_empty() {
-                return Err(
-                    Ru41Error::InvalidOutput("Pi result must be JSON with summary".into()).into(),
-                );
+    // 先按值解析再挑字段：底座给的 media 可能是字符串路径，也可能是对象，
+    // 直接反序列化 AgentResult 遇到不认的形状会整条判失败——那就白跑一次。
+    if let Ok(value) = serde_json::from_str::<Value>(candidate)
+        && let Some(summary) = value.get("summary").and_then(|v| v.as_str())
+    {
+        let result = AgentResult {
+            summary: summary.to_owned(),
+            media: parse_media_list(value.get("media")),
+        };
+        result.validate().map_err(Ru41Error::InvalidOutput)?;
+        return Ok(result);
+    }
+    if trimmed.is_empty() {
+        return Err(Ru41Error::InvalidOutput("Pi result must be JSON with summary".into()).into());
+    }
+    Ok(AgentResult {
+        summary: trimmed.to_owned(),
+        media: Vec::new(),
+    })
+}
+
+/// 底座最终 JSON 里的媒体列表。
+///
+/// 两种写法都认：字符串（路径）、对象（kind/source/filename）。
+/// kind 缺省按扩展名猜；相对路径由 worker 按运行目录解析。
+fn parse_media_list(value: Option<&Value>) -> Vec<MediaRef> {
+    let Some(items) = value.and_then(|v| v.as_array()) else {
+        return Vec::new();
+    };
+    items
+        .iter()
+        .take(MAX_RESULT_MEDIA)
+        .filter_map(|item| {
+            let (kind, source, filename) = match item {
+                Value::String(s) => (None, s.trim().to_owned(), None),
+                Value::Object(map) => {
+                    let source = map
+                        .get("source")
+                        .or_else(|| map.get("path"))
+                        .and_then(|v| v.as_str())
+                        .map(|s| s.trim().to_owned())?;
+                    let kind = map
+                        .get("kind")
+                        .and_then(|v| v.as_str())
+                        .and_then(parse_media_kind);
+                    let filename = map
+                        .get("filename")
+                        .and_then(|v| v.as_str())
+                        .map(str::to_owned);
+                    (kind, source, filename)
+                }
+                _ => return None,
+            };
+            if source.is_empty() {
+                return None;
             }
-            Ok(AgentResult {
-                summary: trimmed.to_owned(),
-            })
-        }
+            let mut media =
+                MediaRef::new(kind.unwrap_or_else(|| guess_media_kind(&source)), source);
+            media.filename = filename;
+            Some(media)
+        })
+        .collect()
+}
+
+/// "image"/"video"/"voice"/"file"（大小写不敏感）。
+fn parse_media_kind(raw: &str) -> Option<MediaKind> {
+    match raw.trim().to_ascii_lowercase().as_str() {
+        "image" | "img" | "picture" | "photo" => Some(MediaKind::Image),
+        "video" => Some(MediaKind::Video),
+        "voice" | "audio" => Some(MediaKind::Voice),
+        "file" | "document" => Some(MediaKind::File),
+        _ => None,
+    }
+}
+
+/// 缺省媒体类型：按扩展名猜。
+fn guess_media_kind(source: &str) -> MediaKind {
+    let ext = source
+        .rsplit(['/', '\\'])
+        .next()
+        .unwrap_or("")
+        .rsplit('.')
+        .next()
+        .unwrap_or("")
+        .to_ascii_lowercase();
+    match ext.as_str() {
+        "png" | "jpg" | "jpeg" | "gif" | "webp" | "bmp" => MediaKind::Image,
+        "mp4" | "mov" | "mkv" | "webm" => MediaKind::Video,
+        "amr" | "silk" | "wav" | "mp3" | "m4a" => MediaKind::Voice,
+        _ => MediaKind::File,
     }
 }
 
@@ -409,7 +487,13 @@ impl PiAgent {
                      contain the COMPLETE deliverable (the full report or full answer, \
                      in Markdown) — do not answer in a message first and then compress \
                      it into a one-paragraph summary. If the tools cannot find it, \
-                     say so in the summary instead of searching extensively.",
+                     say so in the summary instead of searching extensively. \
+                     If you produced files the user should SEE (a screenshot, a chart, \
+                     a generated document), also include a media array in that JSON: \
+                     items are either a path relative to your working directory, or \
+                     objects {kind, source, filename} where kind is image|video|voice|file. \
+                     Only list files you actually created in this run; paths outside the \
+                     working directory are dropped.",
                 ]);
             }
             None => {
@@ -666,7 +750,7 @@ impl PiAgent {
 
 #[cfg(test)]
 mod tests {
-    use super::{parse_agent_result, pick_full_report};
+    use super::{MediaKind, parse_agent_result, pick_full_report};
 
     /// 模型先写完整报告、最后一条 JSON 只给压缩摘要时，交付完整报告。
     #[test]
@@ -687,6 +771,33 @@ mod tests {
         assert!(pick_full_report(&["短消息".to_owned()], summary).is_none());
         let chatter = "我先查一下接口。".repeat(200);
         assert!(pick_full_report(&[chatter], summary).is_none());
+    }
+
+    /// 底座最终 JSON 里的媒体：字符串路径与对象两种写法都要认。
+    #[test]
+    fn parses_media_from_agent_json() {
+        let result = parse_agent_result(
+            r#"{"summary":"done","media":["shot.png",{"kind":"image","source":"charts/a.png","filename":"a.png"}]}"#,
+        )
+        .unwrap();
+        assert_eq!(result.summary, "done");
+        assert_eq!(result.media.len(), 2);
+        assert_eq!(result.media[0].source, "shot.png");
+        assert_eq!(result.media[0].kind, MediaKind::Image, "缺 kind 按扩展名猜");
+        assert_eq!(result.media[1].source, "charts/a.png");
+        assert_eq!(result.media[1].filename.as_deref(), Some("a.png"));
+    }
+
+    /// media 形状不对时不能连累 summary——整条判失败等于白跑一次。
+    #[test]
+    fn tolerates_malformed_media() {
+        let result = parse_agent_result(
+            r#"{"summary":"done","media":[{"nope":1},42,"",{"source":"ok.png"}]}"#,
+        )
+        .unwrap();
+        assert_eq!(result.summary, "done");
+        assert_eq!(result.media.len(), 1);
+        assert_eq!(result.media[0].source, "ok.png");
     }
 
     /// 最后一条不是 JSON 时，整段文本当 summary（既有兜底口径）。

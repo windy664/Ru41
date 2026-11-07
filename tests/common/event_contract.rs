@@ -10,6 +10,7 @@ pub fn assert_event_contract(store: &dyn TaskStore) {
     let second = store.claim("b", 112, 30).unwrap().unwrap();
     let output = AgentResult {
         summary: "secret-result".into(),
+        ..Default::default()
     };
     assert!(!store.succeed(&first, &output, None, 113).unwrap());
     let run = format!("run-{}-{}", task.id, second.attempt_id);
