@@ -52,7 +52,7 @@ src/modules/<name>/
 - `app/task/`：Agent 执行任务的创建、取消、重试与查询
 - `app/todo.rs`：私人常驻待办与今日/近期/长期/逾期视图
 - `app/schedule.rs`：行程（时间轴占用）与待办互补：一次性/每周重复事件、读取时展开、冲突检测、到点提醒。附属直接 `ScheduleService::new(store, options)` 构造使用（zhihuishu 写作业截止、chaoxing 灌课表都是这个路子）；跨进程访问方（agent、sidecar）走 `ru41 event ...` CLI
-- `app/obsidian.rs`：Obsidian Vault 核心服务（轮询游标、整理任务编排、提交推送）
+- `app/obsidian/`：Obsidian Vault 核心服务（轮询游标、整理任务编排、提交推送）
 - `app/digest.rs`：去重、关键词过滤和 digest 入队
 - `app/identity.rs`：渠道身份绑定
 - `ports/vault.rs` + `adapters/vault.rs`：Vault 读写端口与 git 实现，附属经 `Arc<dyn Vault>` 读写 Vault
@@ -60,7 +60,7 @@ src/modules/<name>/
 - `ingress/schedule.rs`：`run_periodic` 定时循环与 `PollJob` trait
 - `ports/`：核心公开接口
 
-现有范例：自包含附属 `modules/papers`、`modules/rss`、`modules/ecard`；薄门面附属 `modules/planner`（QQ 待办/日程入口，持久化由核心 `app/todo.rs` 与 `app/schedule.rs` 提供）、`modules/obsidian`（QQ 记一下 + 归档技能，Vault 读写由核心 `app/obsidian.rs` 提供）。
+现有范例：自包含附属 `modules/papers`、`modules/rss`、`modules/ecard`；薄门面附属 `modules/planner`（QQ 待办/日程入口，持久化由核心 `app/todo.rs` 与 `app/schedule.rs` 提供）、`modules/obsidian`（QQ 记一下 + 归档技能，Vault 读写由核心 `app/obsidian/` 提供）。
 
 ## 两种附属形态与升级路径
 
