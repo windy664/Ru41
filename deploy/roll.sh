@@ -6,6 +6,11 @@
 #   ./deploy/roll.sh                 # 滚动全部 ru41 容器（自动发现，无手写名单）
 #   ./deploy/roll.sh ru41-rss ...    # 只滚动指定容器
 #
+# 滚动前自动完成两件原来要手工做的事：
+#   1. RU41_IMAGE 是带 registry 前缀的镜像名时，先 docker tag 成 ru41:local；
+#   2. 从目标镜像同步插件 .so（/etc/ru41/plugins）与技能包（/usr/share/ru41/plugins）
+#      到宿主 ~/ru41-mimo-smoke/{plugins,skills}（RU41_SYNC_PLUGINS=0 关闭）。
+#
 # 自动发现规则：容器名以 ru41- 开头 且 entrypoint 是 /usr/local/bin/ru41。
 # 不依赖任何手写列表——新附属上线（新容器）自动被后续滚动覆盖，
 # 镜像被 pin 成无标签 ID 的掉队容器也能凭 entrypoint 识别回来。
@@ -18,6 +23,28 @@ TARGET_IMAGE="${RU41_IMAGE:-ru41:local}"
 EXTRA_NET="${RU41_NET:-ru41-net}"
 BACKUP="$HOME/roll-backup-$(date +%Y%m%d-%H%M%S)"
 mkdir -p "$BACKUP"
+
+# RU41_IMAGE 指向刚 load 的带 registry 前缀的镜像（如 ghcr.io/.../ru41:<sha>）时，
+# 先钉到本地标签再滚——完整链不再需要单独手工 tag。
+if [[ "$TARGET_IMAGE" == */* ]] && docker image inspect "$TARGET_IMAGE" > /dev/null 2>&1; then
+  docker tag "$TARGET_IMAGE" ru41:local
+  echo "tag: $TARGET_IMAGE -> ru41:local"
+  TARGET_IMAGE=ru41:local
+fi
+
+# 插件 .so 与技能包随镜像一起刷新（RU41_SYNC_PLUGINS=0 可关，默认开）。
+# 不能省：.so 静态链接 ru41 lib 代码，核心改动只换宿主二进制不刷 .so，
+# 插件侧跑的仍是旧逻辑——"镜像更新了行为没变"的坑就发生在这里。
+# 注意：这会以镜像为准覆盖宿主插件目录，热更过但未进镜像的 .so 会被回退。
+if [[ "${RU41_SYNC_PLUGINS:-1}" == "1" ]]; then
+  SYNC_DIR="$HOME/ru41-mimo-smoke"
+  mkdir -p "$SYNC_DIR/plugins" "$SYNC_DIR/skills"
+  CID="$(docker create "$TARGET_IMAGE")"
+  docker cp "$CID:/etc/ru41/plugins/." "$SYNC_DIR/plugins/"
+  docker cp "$CID:/usr/share/ru41/plugins/." "$SYNC_DIR/skills/"
+  docker rm -v "$CID" > /dev/null
+  echo "synced: $SYNC_DIR/plugins + $SYNC_DIR/skills <- $TARGET_IMAGE"
+fi
 
 if [[ $# -gt 0 ]]; then
   NAMES=("$@")

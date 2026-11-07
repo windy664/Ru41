@@ -89,17 +89,16 @@ docker push ghcr.io/windy664/ru41:latest
 # 2. 服务器换镜像
 docker pull ghcr.io/windy664/ru41:latest
 docker save ghcr.io/windy664/ru41:latest | ssh <server> 'docker load'
-ssh <server> 'docker tag ghcr.io/windy664/ru41:latest ru41:local'
 
-# 3. 把镜像里的插件 .so 覆盖到宿主挂载目录（关键：容器挂的是宿主目录）
-ssh <server> 'docker run --rm --entrypoint tar ru41:local -cf - -C /etc/ru41/plugins . \
-  | tar -xf - -C ~/ru41-mimo-smoke/plugins'
-
-# 4. 滚动重建 + 补回环境变量
-ssh <server> 'bash ~/ru41-roll.sh && bash ~/roll-set-env.sh <容器名> <KEY...>'
+# 3. 滚动重建 + 补回环境变量
+#    roll.sh 滚动前自动完成：registry 镜像 tag 成 ru41:local +
+#    把镜像里的插件 .so 和技能包同步到宿主挂载目录（关键：容器挂的是宿主目录，
+#    RU41_SYNC_PLUGINS=0 可关）。这两步不再需要手工做。
+ssh <server> 'RU41_IMAGE=ghcr.io/windy664/ru41:latest bash ~/ru41-roll.sh \
+  && bash ~/roll-set-env.sh <容器名> <KEY...>'
 ```
 
-第 3 步漏掉时，日志里会出现"插件与宿主 git commit 不同（插件 xxx / 宿主 yyy）"
+插件同步漏掉时，日志里会出现"插件与宿主 git commit 不同（插件 xxx / 宿主 yyy）"
 的提示——那是 .so 比宿主旧，不是握手失败，行为上却等同于没升级。
 
 ```bash
