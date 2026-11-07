@@ -4,7 +4,7 @@ use crate::{
         {AgentResult, Claim, MAX_RESULT_MEDIA, RunContract, TaskStatus},
     },
     ports::agent::{AgentBackend, AgentOutput, AgentRequest, BackendRegistry},
-    ports::channel::MediaRef,
+    ports::channel::{MediaKind, MediaRef},
     ports::storage::TaskStore,
     privacy::Sanitizer,
 };
@@ -508,12 +508,64 @@ fn collect_media(media: &[MediaRef], run_dir: &Path) -> Vec<MediaRef> {
         item.source = real.to_string_lossy().into_owned();
         out.push(item);
     }
+    // 兜底：模型没在结果里声明 media，但这次运行确实产出了图片
+    // （截图、图表）——那就把它捎上。用户要的是图，不是模型的合规声明。
+    if out.is_empty() {
+        out.extend(pickup_run_images(run_dir));
+    }
     out
+}
+
+/// 运行目录顶层的图片文件（截图/图表），按修改时间新到旧，最多 4 张。
+fn pickup_run_images(run_dir: &Path) -> Vec<MediaRef> {
+    /// 兜底最多附几张。
+    const MAX_PICKUP: usize = 4;
+    /// 单张上限（字节）。
+    const MAX_BYTES: u64 = 20 * 1024 * 1024;
+    let Ok(entries) = std::fs::read_dir(run_dir) else {
+        return Vec::new();
+    };
+    let mut candidates: Vec<(std::time::SystemTime, PathBuf)> = Vec::new();
+    for entry in entries.flatten() {
+        let path = entry.path();
+        if !path.is_file() {
+            continue;
+        }
+        let is_image = path
+            .extension()
+            .and_then(|e| e.to_str())
+            .map(|e| {
+                matches!(
+                    e.to_ascii_lowercase().as_str(),
+                    "png" | "jpg" | "jpeg" | "gif" | "webp" | "bmp"
+                )
+            })
+            .unwrap_or(false);
+        if !is_image {
+            continue;
+        }
+        let Ok(meta) = entry.metadata() else { continue };
+        if meta.len() > MAX_BYTES {
+            continue;
+        }
+        let modified = meta.modified().unwrap_or(std::time::SystemTime::UNIX_EPOCH);
+        candidates.push((modified, path));
+    }
+    candidates.sort_by_key(|c| std::cmp::Reverse(c.0));
+    candidates
+        .into_iter()
+        .take(MAX_PICKUP)
+        .map(|(_, path)| {
+            let mut media = MediaRef::new(MediaKind::Image, path.to_string_lossy().into_owned());
+            media.filename = path.file_name().map(|n| n.to_string_lossy().into_owned());
+            media
+        })
+        .collect()
 }
 
 #[cfg(test)]
 mod tests {
-    use super::collect_media;
+    use super::{collect_media, pickup_run_images};
     use crate::ports::channel::{MediaKind, MediaRef};
 
     /// agent 只能把「这次运行自己产出的文件」发出去：越界路径直接丢。
@@ -543,5 +595,18 @@ mod tests {
                 .starts_with(dir.path().to_string_lossy().as_ref())
         );
         assert!(kept[1].is_remote());
+    }
+
+    /// 模型没声明 media 时，运行目录里产出的图片要被捎上。
+    #[test]
+    fn collect_media_picks_up_images_when_model_declares_none() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(dir.path().join("shot.png"), b"png").unwrap();
+        std::fs::write(dir.path().join("notes.md"), b"x").unwrap();
+        let kept = collect_media(&[], dir.path());
+        assert_eq!(kept.len(), 1);
+        assert!(kept[0].source.ends_with("shot.png"));
+        assert_eq!(kept[0].kind, MediaKind::Image);
+        assert_eq!(pickup_run_images(dir.path()).len(), 1);
     }
 }
