@@ -148,6 +148,45 @@ async fn git_vault_basic_ops() {
     assert!(!vault.commit_all("noop").unwrap());
 }
 
+/// 别的插件往 vault 写文件、还没提交（工作区脏）时，同步照样要过。
+///
+/// 真实事故：projects 插件扫 117 个仓库、一轮 8 分钟，跑完才提交一次；
+/// obsidian 每 5 分钟轮询一次，`git pull --rebase` 几乎每次都撞进那个脏窗口，
+/// 报 "cannot pull with rebase: You have unstaged changes"，
+/// 于是每轮白费一次 fetch + 一次失败的 rebase。
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn sync_commits_dirty_worktree_before_pulling() {
+    let fx = RepoFixture::new();
+    let vault = fx.vault();
+    // 模拟别的插件写完文件还没提交。
+    let dirty = fx
+        .vault_path
+        .join("02-Projects-项目/Active-进行中/BiomeBounty/README.md");
+    std::fs::create_dir_all(dirty.parent().unwrap()).unwrap();
+    std::fs::write(&dirty, "机器写的 README\n").unwrap();
+    // 远端同时也有新提交。
+    fx.push_change("03-Knowledge-知识/已有笔记.md", "远端改的", "远端提交");
+
+    // 以前这一步会直接失败：工作区脏 → pull --rebase 拒绝。
+    let outcome = vault.sync().expect("脏工作区下同步也该成功");
+    assert!(matches!(
+        outcome,
+        ru41::ports::vault::SyncOutcome::Clean | ru41::ports::vault::SyncOutcome::Pushed
+    ));
+
+    // 本地改动已被提交，工作区干净。
+    assert!(git(&fx.vault_path, &["status", "--porcelain"]).is_empty());
+    let log = git(&fx.vault_path, &["log", "--format=%s", "-5"]);
+    assert!(
+        log.contains("同步前提交"),
+        "应当有一条同步前提交，实际日志：\n{log}"
+    );
+    // 远端那个提交也被拉下来了。
+    let content =
+        std::fs::read_to_string(fx.vault_path.join("03-Knowledge-知识/已有笔记.md")).unwrap();
+    assert_eq!(content, "远端改的");
+}
+
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn inbox_change_enqueues_organize_task() {
     let fx = RepoFixture::new();
