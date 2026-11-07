@@ -21,6 +21,7 @@
 
 - [敏感信息与 LLM 边界](privacy-llm-boundary.md)：脱敏现状缺口（agent 自主读盘不脱敏）、三色分级判据与 P0-P3 路线
 - [容器故障自愈](self-healing.md)：进程/看门狗/agent 诊断三层设计，agent 永不持有 docker.sock
+- [宿舍服务器掉电排查](power-and-shutdown.md)：两次无预警断电的证据链（是供电不是负载）、git 那条线的复核结论与遗留问题
 
 ## Agent 与核心运行时
 
