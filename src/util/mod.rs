@@ -8,13 +8,18 @@ use std::time::{Duration, SystemTime, UNIX_EPOCH};
 /// 出站 HTTP 请求的整体超时；抓取/通知类调用都不应无限等待。
 pub const HTTP_TIMEOUT: Duration = Duration::from_secs(30);
 
-/// 出站 HTTP 客户端统一出口：带整体超时与 ru41 UA，避免各来源重复构造、漏设超时。
-pub fn http_client() -> reqwest::Client {
+/// 出站 HTTP 客户端构造器统一出口：预置 ru41 UA 与整体超时。
+/// 需要 cookie jar / DNS 兜底 / 浏览器 UA / 特殊超时的调用方在此基础上继续定制
+/// （后调的 builder 方法覆盖先调的，直接链式覆盖即可）。
+pub fn http_client_builder() -> reqwest::ClientBuilder {
     reqwest::Client::builder()
         .user_agent(concat!("ru41/", env!("CARGO_PKG_VERSION")))
         .timeout(HTTP_TIMEOUT)
-        .build()
-        .expect("reqwest client build")
+}
+
+/// 出站 HTTP 客户端统一出口：带整体超时与 ru41 UA，避免各来源重复构造、漏设超时。
+pub fn http_client() -> reqwest::Client {
+    http_client_builder().build().expect("reqwest client build")
 }
 
 /// 当前 Unix 秒；全库统一用它，避免各处时间源不一致。

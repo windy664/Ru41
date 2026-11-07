@@ -305,9 +305,8 @@ fn host_of(base: &str) -> String {
 }
 
 fn build_http(user_agent: &'static str, jar: &Arc<CookieJar>, hosts: &[(&str, u16)]) -> reqwest::Client {
-    let mut builder = reqwest::Client::builder()
+    let mut builder = ru41::util::http_client_builder()
         .user_agent(user_agent)
-        .timeout(ru41::util::HTTP_TIMEOUT)
         .cookie_provider(jar.clone());
     for o in ru41::util::dns_fallback_overrides(hosts) {
         builder = builder.resolve(&o.host, o.addr);
@@ -321,9 +320,8 @@ fn build_http_noredir(
     jar: &Arc<CookieJar>,
     hosts: &[(&str, u16)],
 ) -> reqwest::Client {
-    let mut builder = reqwest::Client::builder()
+    let mut builder = ru41::util::http_client_builder()
         .user_agent(user_agent)
-        .timeout(ru41::util::HTTP_TIMEOUT)
         .cookie_provider(jar.clone())
         .redirect(reqwest::redirect::Policy::none());
     for o in ru41::util::dns_fallback_overrides(hosts) {
@@ -334,11 +332,9 @@ fn build_http_noredir(
 
 /// find 公开检索专用客户端：不带 cookie jar（带 oga SESSION 会被当登录态 → 401）。
 fn build_http_public(hosts: &[(&str, u16)]) -> reqwest::Client {
-    let mut builder = reqwest::Client::builder()
-        .user_agent(
-            "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/143.0.0.0 Safari/537.36",
-        )
-        .timeout(ru41::util::HTTP_TIMEOUT);
+    let mut builder = ru41::util::http_client_builder().user_agent(
+        "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/143.0.0.0 Safari/537.36",
+    );
     for o in ru41::util::dns_fallback_overrides(hosts) {
         builder = builder.resolve(&o.host, o.addr);
     }

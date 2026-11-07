@@ -35,7 +35,7 @@ impl ChasparkClient {
     }
 
     pub fn with_base(base: &str) -> Self {
-        let http = reqwest::Client::builder()
+        let http = ru41::util::http_client_builder()
             .user_agent("Mozilla/5.0 (X11; Linux x86_64) ru41-events")
             .timeout(std::time::Duration::from_secs(20))
             .build()
@@ -154,7 +154,7 @@ pub const HDX_CITIES: &[&str] = &["广州", "深圳", "香港"];
 
 impl HuodongxingClient {
     pub fn new() -> Self {
-        let http = reqwest::Client::builder()
+        let http = ru41::util::http_client_builder()
             .user_agent("Mozilla/5.0 (X11; Linux x86_64) ru41-events")
             .timeout(std::time::Duration::from_secs(20))
             .build()

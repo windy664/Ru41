@@ -182,9 +182,7 @@ impl ChaoxingClient {
         captcha_base: String,
     ) -> Self {
         let jar = std::sync::Arc::new(CookieJar::default());
-        let http = reqwest::Client::builder()
-            .user_agent(concat!("ru41/", env!("CARGO_PKG_VERSION")))
-            .timeout(ru41::util::HTTP_TIMEOUT)
+        let http = ru41::util::http_client_builder()
             .cookie_provider(jar.clone())
             .build()
             .expect("reqwest client build");
