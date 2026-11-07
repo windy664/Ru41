@@ -5,8 +5,7 @@ description: 用共享无头浏览器渲染 JS 重度页面（X、知乎、SPA �
 
 # 共享无头浏览器（browserless）
 
-worker 容器里没有浏览器；浏览器是独立容器（ru41-browser）。
-两条路：HTTP API（下面的 curl，快、便宜）和 **browser_execute**（CDP，能交互、能截图、图直接进上下文）。
+worker 容器里没有浏览器；浏览器是独立容器（ru41-browser），通过 HTTP API 使用。
 
 ## 何时用
 
@@ -33,14 +32,7 @@ curl -s -X POST http://ru41-browser:3000/content \
 
 **不要**把 `curl` 的输出直接打印出来看——那才是 18 万 token 的来源。
 
-## 截图：优先 browser_execute
-
-需要截图、或者要跟页面交互（点按钮、填表、读 DOM），用 **browser_execute 工具**
-（pi-chrome-use 扩展，已装好）：截图会**作为图片直接进你的上下文**——你能真的看见
-页面，不用猜；文件落在运行目录里，回复用户时系统会自动把它附上（也可以在最终
-JSON 的 media 数组里显式指定文件）。
-
-只有"要批量取图、又不想让图进上下文"这种场景才用下面的 curl 办法：
+## 截图
 
 ```bash
 curl -s -X POST http://ru41-browser:3000/screenshot \
@@ -49,7 +41,7 @@ curl -s -X POST http://ru41-browser:3000/screenshot \
   -o page.jpg
 ```
 
-curl 取到的截图是二进制文件，**别读进上下文**；只报文件名与路径即可。
+截图是二进制文件，**别读进上下文**；要引用就只说文件名与路径。
 
 ## 注意
 
