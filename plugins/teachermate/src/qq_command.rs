@@ -3,9 +3,9 @@
 //! `/微助教` 查看绑定与存活状态。写入凭证要求单聊 + 已绑定身份。
 
 use crate::{config::extract_openid, source::TeachermateClient};
-use ru41::ports::commands::{CommandContext, CommandHandler, Reply};
 use anyhow::Result;
-use std::{future::Future, path::PathBuf, pin::Pin, time::UNIX_EPOCH};
+use ru41::ports::commands::{CommandContext, Reply, SimpleCommand};
+use std::{path::PathBuf, time::UNIX_EPOCH};
 
 /// 微助教换绑/状态命令。openid 文件与轮询容器共享（windy2 上位于 /data 挂载内）。
 pub struct TeachermateQqCommand {
@@ -38,21 +38,16 @@ impl TeachermateQqCommand {
     }
 }
 
-impl CommandHandler for TeachermateQqCommand {
-    fn matches(&self, verb: &str) -> bool {
-        matches!(verb, "微助教" | "teachermate")
+impl SimpleCommand for TeachermateQqCommand {
+    fn verbs(&self) -> &'static [&'static str] {
+        &["微助教", "teachermate"]
     }
 
     fn help(&self) -> &'static str {
         "`/微助教`：查看 openid 绑定状态；微信复制微助教链接后直接粘贴到对话即可换绑"
     }
 
-    fn handle<'a>(
-        &'a self,
-        arg: &'a str,
-        ctx: &'a CommandContext<'a>,
-    ) -> Pin<Box<dyn Future<Output = Result<Option<Reply>>> + Send + 'a>> {
-        Box::pin(async move {
+    async fn run(&self, arg: &str, ctx: &CommandContext<'_>) -> Result<Option<Reply>> {
             if !arg.is_empty() {
                 return Ok(None);
             }
@@ -81,15 +76,9 @@ impl CommandHandler for TeachermateQqCommand {
             Ok(Some(Reply::text(format!(
                 "## 微助教\n\n- openid：{masked}\n- 写入时间：{stamp}\n- 状态：{health}\n- 轮询：签到 60s · 作业 30min"
             ))))
-        })
     }
 
-    fn handle_message<'a>(
-        &'a self,
-        content: &'a str,
-        ctx: &'a CommandContext<'a>,
-    ) -> Pin<Box<dyn Future<Output = Result<Option<Reply>>> + Send + 'a>> {
-        Box::pin(async move {
+    async fn run_message(&self, content: &str, ctx: &CommandContext<'_>) -> Result<Option<Reply>> {
             // 只拦截提到微助教域名的消息，其余交回 Agent 通道
             if !content.contains("teachermate.cn") {
                 return Ok(None);
@@ -137,6 +126,5 @@ impl CommandHandler for TeachermateQqCommand {
                 "## ✅ 微助教已换绑\n\n- 身份：{identity}\n- 生效：下一次轮询（≤60s）自动启用，无需重启\n\n\
                  提醒：平时别在微信里点微助教链接，点了就会再次失效。"
             ))))
-        })
     }
 }

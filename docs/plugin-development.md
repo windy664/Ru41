@@ -134,6 +134,29 @@ static DEF: ru41::modules::ModuleDef = ru41::modules::ModuleDef {
   必须走入口函数显式返回 DEF。
 - `ModuleDef` 是 Copy，宿主 `Box::leak` 成 `'static`，插件 .so 永不卸载。
 
+## QQ 命令（SimpleCommand）
+
+`qq_handlers` 里注册的命令统一实现 `ports::commands::SimpleCommand`
+（2026-11-08 起）：只填 `verbs()` / `help()` / `run(arg, ctx)`，verb 匹配、
+`Pin<Box<dyn Future>>` 仪式、多命令词分发（`run_command`）、自然语言兜底
+（`run_message`）由 plugin-api 的统一实现代劳，实现它即自动获得
+`CommandHandler`，注册处不用改。
+
+```rust
+impl SimpleCommand for FooQqCommand {
+    fn verbs(&self) -> &'static [&'static str] { &["foo", "富"] }
+    fn help(&self) -> &'static str { "`/foo`：……" }
+    async fn run(&self, arg: &str, ctx: &CommandContext<'_>) -> Result<Option<Reply>> {
+        if arg.is_empty() { return Ok(None); }  // 不拦截，交回 Agent
+        Ok(Some(Reply::text("……")))
+    }
+}
+```
+
+⚠️ 触网调用仍须显式过 `ru41::plugins::bridge`（cdylib 的 tokio reactor 与
+宿主不通用，漏了第一个 reqwest await 就炸网关）——这一步样板代劳不了。
+参考：plugins/pagewatch（最简）、plugins/library（bridge + 多命令词）。
+
 ## 部署拓扑
 
 插件目录默认 `/etc/ru41/plugins`（`[plugins] dir` 可改、`enabled = false` 可关）。

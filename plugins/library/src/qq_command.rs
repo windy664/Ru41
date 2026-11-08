@@ -1,10 +1,6 @@
 use anyhow::Result;
-use ru41::ports::commands::{CommandContext, CommandHandler, MarkupButton, Reply, ReplyMarkup};
-use std::{
-    future::Future,
-    pin::Pin,
-    sync::Arc,
-};
+use ru41::ports::commands::{CommandContext, MarkupButton, Reply, ReplyMarkup, SimpleCommand};
+use std::sync::Arc;
 
 use crate::service::{format_loan_reply, local_today};
 use crate::source::{LibraryClient, LibraryWatch, LoanRecord};
@@ -27,61 +23,50 @@ impl LibraryQqCommand {
     }
 }
 
-impl CommandHandler for LibraryQqCommand {
-    fn matches(&self, verb: &str) -> bool {
-        matches!(verb, "借阅" | "借书" | "图书" | "续借" | "找书" | "查书" | "馆藏" | "追书" | "订书")
+impl SimpleCommand for LibraryQqCommand {
+    fn verbs(&self) -> &'static [&'static str] {
+        &["借阅", "借书", "图书", "续借", "找书", "查书", "馆藏", "追书", "订书"]
     }
 
     fn help(&self) -> &'static str {
         "`/借阅`：在借清单（可点续借按钮）；`/续借 书名`：续借；`/找书 关键词`：查馆藏（索书号/在架）；`/追书 书名`：馆藏可借到货提醒"
     }
 
-    fn handle<'a>(
-        &'a self,
-        arg: &'a str,
-        ctx: &'a CommandContext<'a>,
-    ) -> Pin<Box<dyn Future<Output = Result<Option<Reply>>> + Send + 'a>> {
-        Box::pin(async move {
-            if let Some(reply) = ctx.require_private("查询借阅", "借阅记录属于个人数据")? {
-                return Ok(Some(Reply::text(reply)));
-            }
-            let worker = self.clone();
-            let arg = arg.trim().to_owned();
-            ru41::plugins::bridge(async move { worker.dispatch(arg).await }).await
-        })
+    async fn run(&self, arg: &str, ctx: &CommandContext<'_>) -> Result<Option<Reply>> {
+        if let Some(reply) = ctx.require_private("查询借阅", "借阅记录属于个人数据")? {
+            return Ok(Some(Reply::text(reply)));
+        }
+        let worker = self.clone();
+        let arg = arg.trim().to_owned();
+        ru41::plugins::bridge(async move { worker.dispatch(arg).await }).await
     }
 
-    fn handle_command<'a>(
-        &'a self,
-        verb: &'a str,
-        arg: &'a str,
-        ctx: &'a CommandContext<'a>,
-    ) -> Pin<Box<dyn Future<Output = Result<Option<Reply>>> + Send + 'a>> {
+    async fn run_command(&self, verb: &str, arg: &str, ctx: &CommandContext<'_>) -> Result<Option<Reply>> {
         match verb {
-            "续借" => Box::pin(async move {
+            "续借" => {
                 if let Some(reply) = ctx.require_private("续借图书", "借阅记录属于个人数据")? {
                     return Ok(Some(Reply::text(reply)));
                 }
                 let worker = self.clone();
                 let arg = arg.trim().to_owned();
                 ru41::plugins::bridge(async move { worker.renew(&arg).await }).await
-            }),
+            }
             // 找书是公开馆藏检索（无个人数据），无需私聊闸。
-            "找书" | "查书" | "馆藏" => Box::pin(async move {
+            "找书" | "查书" | "馆藏" => {
                 let worker = self.clone();
                 let arg = arg.trim().to_owned();
                 ru41::plugins::bridge(async move { worker.search(&arg).await }).await
-            }),
+            }
             // 追书是个人跟踪清单（含推送），与借阅同级私聊闸。
-            "追书" | "订书" => Box::pin(async move {
+            "追书" | "订书" => {
                 if let Some(reply) = ctx.require_private("追书", "追书清单属于个人数据")? {
                     return Ok(Some(Reply::text(reply)));
                 }
                 let worker = self.clone();
                 let arg = arg.trim().to_owned();
                 ru41::plugins::bridge(async move { worker.watch_cmd(&arg).await }).await
-            }),
-            _ => self.handle(arg, ctx),
+            }
+            _ => self.run(arg, ctx).await,
         }
     }
 }

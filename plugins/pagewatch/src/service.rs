@@ -294,7 +294,7 @@ fn diff_lines(old: &[String], new: &[String]) -> (Vec<String>, Vec<String>) {
 pub const STATUS_PATH: &str = "05-Opportunities-机会/页面监控.md";
 
 /// Unix 秒 → "10-27 17:35"（本地时区）。
-fn fmt_ts(ts: i64) -> String {
+pub(crate) fn fmt_ts(ts: i64) -> String {
     chrono::DateTime::from_timestamp(ts, 0)
         .map(|d| {
             d.with_timezone(&chrono::Local)

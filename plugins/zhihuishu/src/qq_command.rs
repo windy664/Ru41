@@ -1,10 +1,6 @@
 use anyhow::Result;
-use ru41::ports::commands::{CommandContext, CommandHandler, Reply};
-use std::{
-    future::Future,
-    path::{Path, PathBuf},
-    pin::Pin,
-};
+use ru41::ports::commands::{CommandContext, Reply, SimpleCommand};
+use std::path::{Path, PathBuf};
 
 use crate::source::{load_report, parse_platform_time};
 
@@ -23,48 +19,34 @@ impl ZhihuishuQqCommand {
     }
 }
 
-impl CommandHandler for ZhihuishuQqCommand {
-    fn matches(&self, verb: &str) -> bool {
-        matches!(verb, "作业" | "homework" | "deadline")
+impl SimpleCommand for ZhihuishuQqCommand {
+    fn verbs(&self) -> &'static [&'static str] {
+        &["作业", "homework", "deadline"]
     }
 
     fn help(&self) -> &'static str {
         "`/作业`：查询智慧树未完成作业与截止时间（需绑定身份，仅单聊）"
     }
 
-    fn handle<'a>(
-        &'a self,
-        arg: &'a str,
-        ctx: &'a CommandContext<'a>,
-    ) -> Pin<Box<dyn Future<Output = Result<Option<Reply>>> + Send + 'a>> {
-        Box::pin(async move {
-            // 带参数的「/作业 xxx」不拦截：避免误吞自然语言, 交给 Agent。
-            if !arg.is_empty() {
-                return Ok(None);
-            }
-            if let Some(reply) = ctx.require_private("查询作业", "作业信息属于个人数据")?
-            {
-                return Ok(Some(Reply::text(reply)));
-            }
-            Ok(Some(Reply::text(format_homework(&self.report_path))))
-        })
+    async fn run(&self, arg: &str, ctx: &CommandContext<'_>) -> Result<Option<Reply>> {
+        // 带参数的「/作业 xxx」不拦截：避免误吞自然语言, 交给 Agent。
+        if !arg.is_empty() {
+            return Ok(None);
+        }
+        if let Some(reply) = ctx.require_private("查询作业", "作业信息属于个人数据")? {
+            return Ok(Some(Reply::text(reply)));
+        }
+        Ok(Some(Reply::text(format_homework(&self.report_path))))
     }
 
-    fn handle_message<'a>(
-        &'a self,
-        content: &'a str,
-        ctx: &'a CommandContext<'a>,
-    ) -> Pin<Box<dyn Future<Output = Result<Option<Reply>>> + Send + 'a>> {
-        Box::pin(async move {
-            if !looks_like_homework_question(content) {
-                return Ok(None);
-            }
-            if let Some(reply) = ctx.require_private("查询作业", "作业信息属于个人数据")?
-            {
-                return Ok(Some(Reply::text(reply)));
-            }
-            Ok(Some(Reply::text(format_homework(&self.report_path))))
-        })
+    async fn run_message(&self, content: &str, ctx: &CommandContext<'_>) -> Result<Option<Reply>> {
+        if !looks_like_homework_question(content) {
+            return Ok(None);
+        }
+        if let Some(reply) = ctx.require_private("查询作业", "作业信息属于个人数据")? {
+            return Ok(Some(Reply::text(reply)));
+        }
+        Ok(Some(Reply::text(format_homework(&self.report_path))))
     }
 }
 

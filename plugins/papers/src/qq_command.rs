@@ -1,6 +1,5 @@
 use anyhow::Result;
-use ru41::ports::commands::{CommandContext, CommandHandler, Reply};
-use std::{future::Future, pin::Pin};
+use ru41::ports::commands::{CommandContext, Reply, SimpleCommand};
 
 use crate::{service::deep_read_task, source::ArxivClient};
 
@@ -21,37 +20,31 @@ impl PapersQqCommand {
     }
 }
 
-impl CommandHandler for PapersQqCommand {
-    fn matches(&self, verb: &str) -> bool {
-        matches!(verb, "精读" | "deep" | "deepread")
+impl SimpleCommand for PapersQqCommand {
+    fn verbs(&self) -> &'static [&'static str] {
+        &["精读", "deep", "deepread"]
     }
 
     fn help(&self) -> &'static str {
         "`/精读 <arxiv-id>`：精读指定论文（如 `/精读 2510.12345`）"
     }
 
-    fn handle<'a>(
-        &'a self,
-        arg: &'a str,
-        ctx: &'a CommandContext<'a>,
-    ) -> Pin<Box<dyn Future<Output = Result<Option<Reply>>> + Send + 'a>> {
-        Box::pin(async move {
-            if !is_arxiv_id(arg) {
-                return Ok(None);
-            }
-            let route = ctx.reply_route();
-            deep_read_task(
-                ctx.store,
-                &self.client,
-                arg,
-                &self.interests,
-                &self.backend,
-                &route,
-            )
-            .await
-            .map(Reply::text)
-            .map(Some)
-        })
+    async fn run(&self, arg: &str, ctx: &CommandContext<'_>) -> Result<Option<Reply>> {
+        if !is_arxiv_id(arg) {
+            return Ok(None);
+        }
+        let route = ctx.reply_route();
+        deep_read_task(
+            ctx.store,
+            &self.client,
+            arg,
+            &self.interests,
+            &self.backend,
+            &route,
+        )
+        .await
+        .map(Reply::text)
+        .map(Some)
     }
 }
 
