@@ -62,10 +62,38 @@ impl CodexSession {
         let _guard = ProcessGroup(child.id());
         let mut writer = child.stdin.take().context("missing stdin")?;
         let mut reader = BufReader::new(child.stdout.take().context("missing stdout")?).lines();
+        let mut cancel_rx = request.cancel.clone();
         send(&mut writer,json!({"id":1,"method":"initialize","params":{"clientInfo":{"name":"ru41","version":"0.3.0"},"capabilities":{"experimentalApi":false}}})).await?;
         let mut session = None;
+        let mut turn_id: Option<String> = None;
         let mut final_text = String::new();
-        while let Some(line) = reader.next_line().await? {
+        loop {
+            let line = {
+                let next = reader.next_line();
+                tokio::pin!(next);
+                tokio::select! {
+                    biased;
+                    line = &mut next => line?,
+                    _ = async {
+                        match cancel_rx.as_mut() {
+                            Some(rx) => rx.changed().await.map(|_| ()).unwrap_or(()),
+                            None => std::future::pending::<()>().await,
+                        }
+                    } => {
+                        // 协作式取消：走 app-server 原生 turn/interrupt，与 pi 的
+                        // abort 对齐；打断后的 turn/completed（status interrupted）
+                        // 由下方 ensure 按失败收尾，进程由 kill_on_drop 兜底。
+                        if let (Some(thread), Some(turn)) = (session.clone(), turn_id.clone()) {
+                            let _ = send(&mut writer, json!({"id":9,"method":"turn/interrupt","params":{"threadId":thread,"turnId":turn}})).await;
+                            continue;
+                        }
+                        return Err(Ru41Error::AgentProcess(
+                            "Codex run cancelled before turn start".into(),
+                        ).into());
+                    }
+                }
+            };
+            let Some(line) = line else { break };
             ensure!(line.len() <= 2 * 1024 * 1024, "oversized app-server frame");
             let frame: Value = serde_json::from_str(&line)?;
             if frame.get("error").is_some() {
@@ -153,6 +181,9 @@ impl CodexSession {
                     .as_str()
                     .unwrap_or("")
                     .into();
+            }
+            if method == "turn/started" {
+                turn_id = frame["params"]["turn"]["id"].as_str().map(str::to_owned);
             }
             if method == "turn/completed" {
                 ensure!(
