@@ -156,11 +156,22 @@ impl ProjectsTracker {
     async fn sync_account(&self, user: &str, updated: &mut Vec<String>) -> Result<usize> {
         let cache_id = format!("user:{user}");
         let cached = self.etag_load(&cache_id);
-        let repos = match self
+        let outcome = self
             .github
             .list_user_repos_conditional(user, cached.as_ref().and_then(|(e, _)| e.as_deref()))
-            .await?
-        {
+            .await;
+        // 限流等错误有缓存就降级沿用——清单一天前的也够用，报错空转才是浪费。
+        let outcome = match outcome {
+            Ok(outcome) => outcome,
+            Err(error) => {
+                let Some((_, payload)) = cached else {
+                    return Err(error);
+                };
+                eprintln!("[projects] 仓库清单拉取失败，沿用缓存清单: {error:#}");
+                Conditional::Fresh(serde_json::from_value(payload)?, None)
+            }
+        };
+        let repos = match outcome {
             Conditional::Fresh(repos, new_etag) => {
                 self.etag_save(
                     &cache_id,
