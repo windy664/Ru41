@@ -246,11 +246,14 @@ impl TodoQqCommand {
             },
             now,
         )?;
-        Ok(Reply::text(format!(
-            "## 已加入待办收件箱\n\n- **{}**\n- **ID**：`{}`\n- 查看：`/待办 收件箱`",
-            item.title,
-            item.short_id()
-        )))
+        Ok(Reply::with_markup(
+            format!(
+                "## 已加入待办收件箱\n\n- **{}**\n- **ID**：`{}`\n- 查看：`/待办 收件箱`",
+                item.title,
+                item.short_id()
+            ),
+            done_markup(std::slice::from_ref(&item)),
+        ))
     }
 
     fn list_reply(

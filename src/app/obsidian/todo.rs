@@ -1,5 +1,5 @@
 //! 待办视图双向同步：todo 数据库 → `04-Life-生活/Todo-待办.md` 每轮重渲；
-//! 文件里的勾选变更与手写新行回写数据库。
+//! 文件里的勾选变更、标题改名与手写新行回写数据库（删行不删库，防止误清空）。
 
 use super::ObsidianService;
 use anyhow::Result;
@@ -67,32 +67,38 @@ impl ObsidianService {
                 return Ok(());
             }
             if let Some(existing) = existing.as_deref() {
-                // 1. 勾选回写：旧文件里用户手动的 [x]/[ ] 变更写回数据库。
-                //    先取当前状态对比，只在勾选与数据库不一致时调用，
-                //    否则每轮都会对同一批条目空调 complete/restore 刷错误日志。
-                let current: std::collections::HashMap<String, crate::domain::todo::TodoStatus> =
+                // 1. 勾选与标题回写：旧文件里用户手动的 [x]/[ ] 变更写回数据库；
+                //    带锚点行的标题被改过也写回（重命名）。先取当前状态对比，
+                //    只在不一致时调用，否则每轮都会对同一批条目空刷错误日志。
+                let current: std::collections::HashMap<String, crate::domain::todo::TodoItem> =
                     service
                         .list(crate::domain::todo::TodoView::All, now, 1000)?
                         .into_iter()
-                        .map(|item| (item.id, item.status))
+                        .map(|item| (item.id.clone(), item))
                         .collect();
-                for (id, checked) in parse_checkbox_states(existing) {
-                    let needs_sync = match current.get(&id) {
-                        Some(crate::domain::todo::TodoStatus::Completed) => !checked,
-                        Some(_) => checked,
-                        None => false, // id 已失效（被删/重建），忽略
+                for (id, checked, middle) in parse_anchored_lines(existing) {
+                    let Some(item) = current.get(&id) else {
+                        continue; // id 已失效（被删/重建），忽略
                     };
-                    if !needs_sync {
-                        continue;
+                    let needs_sync = match item.status {
+                        crate::domain::todo::TodoStatus::Completed => !checked,
+                        _ => checked,
+                    };
+                    if needs_sync {
+                        let result = if checked {
+                            service.complete(&id, now).map(|_| ())
+                        } else {
+                            service.restore(&id, now).map(|_| ())
+                        };
+                        if let Err(error) = result {
+                            // 状态已一致或 id 已失效：忽略单项，不挡整轮。
+                            eprintln!("[obsidian] todo checkbox sync {id}: {error:#}");
+                        }
                     }
-                    let result = if checked {
-                        service.complete(&id, now).map(|_| ())
-                    } else {
-                        service.restore(&id, now).map(|_| ())
-                    };
-                    if let Err(error) = result {
-                        // 状态已一致或 id 已失效：忽略单项，不挡整轮。
-                        eprintln!("[obsidian] todo checkbox sync {id}: {error:#}");
+                    if let Some(title) = edited_title(&middle, item, now, options)
+                        && let Err(error) = service.rename(&id, &title, now)
+                    {
+                        eprintln!("[obsidian] todo rename sync {id}: {error:#}");
                     }
                 }
                 // 2. 新增回写：无 `#id` 锚点的 `- [ ]` 行是 Obsidian 里手写的新待办。
@@ -166,31 +172,64 @@ impl ObsidianService {
     }
 }
 
-/// 从视图文件解析勾选状态：`- [ ]`/`- [x]` 行尾的 `` `#id` `` → (id, 是否勾选)。
-fn parse_checkbox_states(content: &str) -> Vec<(String, bool)> {
-    let mut states = Vec::new();
+/// 从视图文件解析带锚点的渲染行：`- [ ]`/`- [x]` 开头、行尾 `` `#id` ``
+/// → (id, 是否勾选, 勾选框与锚点之间的正文)。正文用于发现标题改名。
+fn parse_anchored_lines(content: &str) -> Vec<(String, bool, String)> {
+    let mut lines = Vec::new();
     for line in content.lines() {
         let line = line.trim_start();
         // "- [ ]" 剥掉 "- [" 后剩 " ] ..."（前导空格）；"- [x]" 剩 "x] ..."。
-        let checked = match line.strip_prefix("- [") {
-            Some(rest) if rest.starts_with(" ] ") => false,
-            Some(rest) if rest.starts_with("x] ") || rest.starts_with("X] ") => true,
+        let (checked, rest) = match line.strip_prefix("- [") {
+            Some(rest) if rest.starts_with(" ] ") => (false, &rest[3..]),
+            Some(rest) if rest.starts_with("x] ") || rest.starts_with("X] ") => (true, &rest[3..]),
             _ => continue,
         };
         // 行尾 `` `#id` `` 标记
-        let Some(start) = line.rfind("`#") else {
+        let Some(start) = rest.rfind("`#") else {
             continue;
         };
-        let id = &line[start + 2..];
+        let id = &rest[start + 2..];
         let Some(end) = id.find('`') else {
             continue;
         };
         let id = id[..end].trim();
         if !id.is_empty() {
-            states.push((id.to_owned(), checked));
+            lines.push((id.to_owned(), checked, rest[..start].trim_end().to_owned()));
         }
     }
-    states
+    lines
+}
+
+/// 从锚点行正文反解用户改过的标题：剥掉渲染时追加的「（截止）」/「（完成于 日期）」
+/// 后缀后与数据库标题比对，不同且非空即视为改名。后缀没被保留时整段正文都是标题。
+fn edited_title(
+    middle: &str,
+    item: &crate::domain::todo::TodoItem,
+    now: i64,
+    options: crate::domain::todo::TodoOptions,
+) -> Option<String> {
+    use crate::domain::todo::due_label;
+    let mut title = middle.trim().to_owned();
+    let mut suffixes = vec![
+        format!("（{}）", due_label(item.due_at, now, options, true)),
+        format!("（{}）", due_label(item.due_at, now, options, false)),
+    ];
+    if let Some(done) = item
+        .completed_at
+        .map(|at| crate::domain::todo::local_date(at, options.offset_seconds))
+    {
+        suffixes.push(format!("（完成于 {done}）"));
+    }
+    for suffix in suffixes {
+        if let Some(stripped) = title.strip_suffix(suffix.as_str()) {
+            title = stripped.trim_end().to_owned();
+            break;
+        }
+    }
+    if title.is_empty() || title == item.title {
+        return None;
+    }
+    Some(title)
 }
 
 /// 解析视图里用户手写的新待办行：`- [ ] <标题>` 且无 `` `#id` `` 锚点。
@@ -233,9 +272,9 @@ fn render_todo_markdown(
     use crate::domain::todo::due_label;
     let mut out = String::from(
         "# 待办清单\n\n\
-         > Ru41 与 Obsidian 双向同步：打勾 = 完成、取消勾 = 恢复（写回数据库）。\n\
-         > 新增：直接写一行 `- [ ] 标题`（支持 `📅 YYYY-MM-DD` 截止），下一轮同步自动入库并分配锚点。\n\
-         > 修改/删除走 QQ `/待办` 或 CLI `ru41 todo`；带锚点的正文行会被覆盖，勾选状态保留。\n",
+         > 双向同步：打勾 = 完成、取消勾 = 恢复、改标题 = 重命名，下一轮写回数据库。\n\
+         > 新增：写一行 `- [ ] 标题`（支持 `📅 YYYY-MM-DD` 截止），或在 QQ 发 `#内容`。\n\
+         > 删除走 QQ `/取消待办`：直接删行不会删库（防止误清空），下一轮渲染会补回。\n",
     );
     let sections: [(&str, &Vec<crate::domain::todo::TodoItem>, bool); 5] = [
         ("已过期", &overview.overdue, true),
@@ -342,20 +381,65 @@ mod tests {
     }
 
     #[test]
-    fn parses_checkbox_states_from_view() {
+    fn parses_anchored_lines_with_middle_text() {
         let content = "# 待办清单\n\n## 今天\n- [ ] 交报告（今天）`#todo_1_abc`\n\
              - [x] 已做完的事（完成于 2026-10-25）`#todo_2_def`\n\
              - [X] 大写也算 `#todo_3_ghi`\n\
              - 普通列表不是任务 `#todo_4_jkl`\n\
              - [ ] 没有 id 标记的行\n";
-        let states = parse_checkbox_states(content);
+        let lines = parse_anchored_lines(content);
         assert_eq!(
-            states,
+            lines,
             vec![
-                ("todo_1_abc".to_owned(), false),
-                ("todo_2_def".to_owned(), true),
-                ("todo_3_ghi".to_owned(), true),
+                ("todo_1_abc".to_owned(), false, "交报告（今天）".to_owned()),
+                (
+                    "todo_2_def".to_owned(),
+                    true,
+                    "已做完的事（完成于 2026-10-25）".to_owned()
+                ),
+                ("todo_3_ghi".to_owned(), true, "大写也算".to_owned()),
             ]
         );
+    }
+
+    #[test]
+    fn edited_title_detects_rename_and_keeps_untouched() {
+        let options = crate::domain::todo::TodoOptions {
+            offset_seconds: 8 * 3600,
+            recent_days: 7,
+            long_term_days: 30,
+        };
+        let item = crate::domain::todo::TodoItem {
+            id: "todo_1_abc".into(),
+            title: "交实验报告".into(),
+            status: crate::domain::todo::TodoStatus::Active,
+            priority: crate::domain::todo::TodoPriority::Normal,
+            labels: vec![],
+            due_at: None,
+            remind_at: None,
+            last_reminded_at: None,
+            completed_at: None,
+            created_at: 0,
+            updated_at: 0,
+            source: None,
+        };
+        // 原样渲染行：无改名。
+        assert_eq!(
+            edited_title("交实验报告（未排期）", &item, 0, options),
+            None
+        );
+        // 改了标题、保留后缀：识别出改名。
+        assert_eq!(
+            edited_title("交实验报告和心得（未排期）", &item, 0, options),
+            Some("交实验报告和心得".to_owned())
+        );
+        // 连后缀一起改：整段正文作为新标题。
+        assert_eq!(
+            edited_title("交实验报告（周四前）", &item, 0, options),
+            Some("交实验报告（周四前）".to_owned())
+        );
+        // 只留后缀或空标题：拒绝改名。
+        assert_eq!(edited_title("（未排期）", &item, 0, options), None);
+        assert_eq!(edited_title("", &item, 0, options), None);
     }
 }
