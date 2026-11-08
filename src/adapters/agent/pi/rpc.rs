@@ -26,12 +26,6 @@ struct Candidate {
     provider: Option<String>,
 }
 
-/// 单次运行的工具调用硬上限。pi 无原生迭代上限，放任下去模型会在
-/// 「下载大文件/装依赖/逐页渲染」这类黑洞任务上烧满整个执行预算
-/// （实测：为查一项奖学金条款去下载 61MB 手册 PDF 并逐页渲染）。
-/// 超限按 InvalidOutput 归类为永久失败——同样的提示词重试只会重蹈覆辙。
-const TOOL_EXECUTION_BUDGET: usize = 24;
-
 impl Candidate {
     /// 展示名（供应方/模型），用于日志与用量归属。
     fn label(&self) -> String {
@@ -481,15 +475,13 @@ impl PiAgent {
                      from memory or guessed. The request context is a hint, not the \
                      source of truth — if it does not contain the answer, use a tool \
                      (read/bash, or a CLI such as 'ru41 event list --days 1' for today's \
-                     schedule) before answering. Keep tool use to a few calls: \
-                     never download large files, never install packages or dependencies, \
-                     never render or OCR documents page by page. \
+                     schedule) before answering. \
                      When finished, your last message must be a JSON object with one \
                      nonempty string field named summary. The summary field must \
                      contain the COMPLETE deliverable (the full report or full answer, \
                      in Markdown) — do not answer in a message first and then compress \
                      it into a one-paragraph summary. If the tools cannot find it, \
-                     say so in the summary instead of searching extensively. \
+                     say so in the summary. \
                      If you produced files the user should SEE (a screenshot, a chart, \
                      a generated document), also include a media array in that JSON: \
                      items are either a path relative to your working directory, or \
@@ -590,7 +582,6 @@ impl PiAgent {
             let mut accepted = false;
             let mut settled = false;
             let mut total = 0_usize;
-            let mut tool_calls = 0_usize;
             let mut usage: Option<TokenUsage> = None;
             let mut session_id: Option<String> = None;
             let mut asked_state = false;
@@ -641,15 +632,6 @@ impl PiAgent {
                 let event: Value = serde_json::from_slice(&line)
                     .map_err(|_| Ru41Error::AgentProcess("invalid Pi JSONL record".into()))?;
                 match event["type"].as_str() {
-                    Some("tool_execution_start") => {
-                        tool_calls += 1;
-                        ensure!(
-                            tool_calls <= TOOL_EXECUTION_BUDGET,
-                            Ru41Error::InvalidOutput(format!(
-                                "Pi exhausted its tool budget ({tool_calls} tool calls) without finishing"
-                            ))
-                        );
-                    }
                     Some("response") if event["id"] == "ru41-prompt" => {
                         ensure!(
                             event["success"] == true,
