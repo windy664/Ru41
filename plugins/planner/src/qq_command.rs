@@ -102,7 +102,7 @@ impl SimpleCommand for TodoQqCommand {
     }
 
     fn help(&self) -> &'static str {
-        "`#临时想法` 或 `/记一下 <内容>`：直接进待办收件箱；`/待办`：今日、逾期、长期事项；`/记待办 [时间] <内容>` 新增；`/日程`：今日与未来行程"
+        "`#临时想法` 或 `/记一下 <内容>`：直接记入待办（未排期）；`/待办`：全部未完成清单；`/记待办 [时间] <内容>` 新增；`/日程`：今日与未来行程"
     }
 
     fn help_section(&self) -> &'static str {
@@ -226,8 +226,8 @@ impl SimpleCommand for TodoQqCommand {
 
 /// 私人待办必须保持与水电一致的单聊和身份边界（由 CommandContext::require_private 统一执行）。
 impl TodoQqCommand {
-    /// 快速捕获：`#临时想法` / `/记一下` 只写 Todo 收件箱，不做时间解析、
-    /// 不写 Obsidian 文件、也不交给 Agent 二次判断。
+    /// 快速捕获：`#临时想法` / `/记一下` 只写待办（无截止时间，入未排期桶），
+    /// 不做时间解析、不写 Obsidian 文件、也不交给 Agent 二次判断。
     fn quick_capture_reply(
         &self,
         service: &TodoService,
@@ -252,7 +252,7 @@ impl TodoQqCommand {
             now,
         )?;
         Ok(Reply::text(format!(
-            "## 已加入待办收件箱\n\n- {} **{}**\n- **ID**：`{}`\n- 查看：`/待办 收件箱`",
+            "## 已记入待办\n\n- {} **{}**\n- **ID**：`{}`\n- 查看：`/待办`（无截止时间，排在未排期）",
             done_chip(&item),
             item.title,
             item.short_id()
@@ -281,7 +281,7 @@ impl TodoQqCommand {
             TodoView::Recent => "近期待办",
             TodoView::LongTerm => "长期待办",
             TodoView::Overdue => "逾期未完成",
-            TodoView::Inbox => "收件箱",
+            TodoView::Inbox => "未排期",
             TodoView::All => "全部待办",
         };
         Ok(Reply::text(format_items(title, &items, now, self.options)))
@@ -496,7 +496,7 @@ fn parse_view(text: &str) -> Option<TodoView> {
         "近期" | "最近" | "recent" => Some(TodoView::Recent),
         "长期" | "long" | "long-term" => Some(TodoView::LongTerm),
         "逾期" | "过期" | "overdue" => Some(TodoView::Overdue),
-        "收件箱" | "inbox" => Some(TodoView::Inbox),
+        "收件箱" | "未排期" | "inbox" => Some(TodoView::Inbox),
         "全部" | "所有" | "all" => Some(TodoView::All),
         _ => None,
     }
@@ -580,7 +580,7 @@ fn usage() -> String {
 }
 
 fn usage_views() -> String {
-    "今日|近期|长期|逾期|收件箱|全部".to_owned()
+    "今日|近期|长期|逾期|未排期|全部".to_owned()
 }
 
 #[cfg(test)]

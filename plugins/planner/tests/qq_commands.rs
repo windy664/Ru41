@@ -287,12 +287,11 @@ async fn todo_commands_reject_group_chat_and_parse_views() {
     assert!(group.text.contains("群聊"));
 
     let inbox = command
-        .handle_command("待办", "收件箱", &private)
+        .handle_command("待办", "未排期", &private)
         .await
         .unwrap()
         .unwrap();
-    assert!(inbox.text.contains("收件箱"));
-    assert!(inbox.text.contains("未排期事项"));
+    assert!(inbox.text.contains("未排期"));
 
     let overdue = command
         .handle_command("待办", "逾期", &private)
@@ -327,8 +326,8 @@ async fn quick_note_enters_todo_inbox_without_agent_or_schedule() {
         .await
         .unwrap()
         .unwrap();
-    assert!(reply.text.contains("已加入待办收件箱"));
-    assert!(reply.text.contains("/待办 收件箱"));
+    assert!(reply.text.contains("已记入待办"));
+    assert!(reply.text.contains("/待办"));
     // 行首勾选框：cmd-input 标签，点击把 /完成 <id> 填进输入框。
     assert!(
         reply
@@ -377,7 +376,7 @@ fn extension_commands_match_aliases_and_join_help() {
     assert!(help.contains("# Ru41 · 个人 AI 助理"));
     assert!(help.contains("## 记录与日程"));
     assert!(!help.contains("## 其他能力"));
-    assert!(help.contains("`/待办`：今日、逾期、长期事项"));
+    assert!(help.contains("`/待办`：全部未完成清单"));
     assert!(help.contains("当前对话会自动保留上下文"));
 }
 
