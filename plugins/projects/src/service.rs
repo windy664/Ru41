@@ -6,8 +6,8 @@
 //! `Repo-GitHub.md` 一个文件。
 
 use anyhow::Result;
-use ru41::adapters::sources::github::{GithubClient, GithubRepoMeta};
-use ru41::ports::vault::Vault;
+use ru41::adapters::sources::github::{Conditional, GithubClient, GithubRepoMeta};
+use ru41::ports::{storage::TaskStore, vault::Vault};
 use serde::Serialize;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
@@ -65,17 +65,46 @@ pub struct ProjectsSyncReport {
 pub struct ProjectsTracker {
     config: ProjectsConfig,
     vault: Arc<dyn Vault>,
+    store: Arc<dyn TaskStore>,
     github: GithubClient,
     docs: DocsClient,
 }
 
+/// ETag 缓存的 records kind：GitHub 条件请求的配额救生圈。
+/// 101 个仓库每轮裸拉是 ~102 次 API 调用，免鉴权配额只有 60 次/时；
+/// 带 If-None-Match 后没变的仓库返回 304（不计配额），一轮实际消耗
+/// 只剩有变动的仓库。2026-11 之前每轮必打满配额、一半仓库 403。
+const ETAG_KIND: &str = "projects_etag";
+
 impl ProjectsTracker {
-    pub fn new(config: ProjectsConfig, vault: Arc<dyn Vault>) -> Self {
+    pub fn new(config: ProjectsConfig, vault: Arc<dyn Vault>, store: Arc<dyn TaskStore>) -> Self {
         Self {
             config,
             vault,
+            store,
             github: GithubClient::new(),
             docs: DocsClient::new(),
+        }
+    }
+
+    /// 读缓存的 (etag, 缓存负载)；没有缓存或损坏都为 None。
+    fn etag_load(&self, id: &str) -> Option<(Option<String>, serde_json::Value)> {
+        let doc = self.store.document(ETAG_KIND, id).ok()??;
+        let etag = doc.value["etag"].as_str().map(str::to_owned);
+        Some((etag, doc.value["payload"].clone()))
+    }
+
+    /// 写缓存；冲突/失败只记日志——下一轮重新拉取兜底，不阻断同步。
+    fn etag_save(&self, id: &str, etag: Option<&str>, payload: serde_json::Value) {
+        let revision = self
+            .store
+            .document(ETAG_KIND, id)
+            .ok()
+            .flatten()
+            .map(|doc| doc.revision);
+        let value = serde_json::json!({ "etag": etag, "payload": payload });
+        if let Err(error) = self.store.put_document(ETAG_KIND, id, revision, &value) {
+            eprintln!("[projects] etag 缓存写入失败 {id}: {error:#}");
         }
     }
 
@@ -125,7 +154,28 @@ impl ProjectsTracker {
     /// 已在另一组的目录先写新位置再删旧文件（git mv 语义）。
     /// 返回成功同步的仓库数。
     async fn sync_account(&self, user: &str, updated: &mut Vec<String>) -> Result<usize> {
-        let repos = self.github.list_user_repos(user).await?;
+        let cache_id = format!("user:{user}");
+        let cached = self.etag_load(&cache_id);
+        let repos = match self
+            .github
+            .list_user_repos_conditional(user, cached.as_ref().and_then(|(e, _)| e.as_deref()))
+            .await?
+        {
+            Conditional::Fresh(repos, new_etag) => {
+                self.etag_save(
+                    &cache_id,
+                    new_etag.as_deref(),
+                    serde_json::to_value(&repos)?,
+                );
+                repos
+            }
+            Conditional::NotModified => {
+                let Some((_, payload)) = cached else {
+                    anyhow::bail!("304 但本地无缓存（缓存被清？），下轮重新拉取");
+                };
+                serde_json::from_value(payload)?
+            }
+        };
         let cutoff = ru41::util::now() - (self.config.archive_after_days as i64) * 86_400;
         let mut synced = 0usize;
         for meta in &repos {
@@ -283,8 +333,27 @@ impl ProjectsTracker {
         let (owner, repo) = &entry.repo;
         let target = format!("{}/{REPO_FILE}", entry.rel_dir);
         let existing = self.vault.read_file(&target)?;
-        let meta = match self.github.repo_meta(owner, repo).await {
-            Ok(meta) => Some(meta),
+        let cache_id = format!("{owner}/{repo}");
+        let cached = self.etag_load(&cache_id);
+        let mut not_modified = false;
+        let meta = match self
+            .github
+            .repo_meta_conditional(owner, repo, cached.as_ref().and_then(|(e, _)| e.as_deref()))
+            .await
+        {
+            Ok(Conditional::Fresh(meta, new_etag)) => {
+                self.etag_save(
+                    &cache_id,
+                    new_etag.as_deref(),
+                    serde_json::to_value(&meta)?,
+                );
+                Some(meta)
+            }
+            Ok(Conditional::NotModified) => {
+                not_modified = true;
+                cached
+                    .and_then(|(_, payload)| serde_json::from_value(payload).ok())
+            }
             Err(error) => {
                 eprintln!(
                     "[projects] {} meta 拉取失败，沿用旧元数据: {error:#}",
@@ -293,6 +362,11 @@ impl ProjectsTracker {
                 None
             }
         };
+        // 304 且 vault 已有成品：README/文档也不可能变（pushed_at 没动），
+        // 整仓跳过——这一轮对它的配额与流量消耗归零。
+        if not_modified && existing.is_some() {
+            return Ok(false);
+        }
         let default_branch = meta
             .as_ref()
             .map(|m| m.default_branch.as_str())

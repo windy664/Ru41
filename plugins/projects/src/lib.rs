@@ -30,7 +30,6 @@ pub static DEF: ru41::modules::ModuleDef = ru41::modules::ModuleDef {
         if name != "projects" {
             return Ok(None);
         }
-        let _ = store;
         let vault = ru41::bootstrap::assembly::vault_if_ready(config, true)?
             .context("projects 需要 [obsidian] vault 已配置（项目库写在 vault 里）")?;
         let vault_root = config.obsidian.resolved(None)?.vault_path;
@@ -40,6 +39,7 @@ pub static DEF: ru41::modules::ModuleDef = ru41::modules::ModuleDef {
                 .get::<crate::ProjectsSection>("projects")?
                 .resolved(vault_root)?,
             vault,
+            store,
         ))))
     },
     qq_handlers: |_, _| Ok(Vec::new()),
