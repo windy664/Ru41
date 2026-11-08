@@ -45,7 +45,7 @@ impl NotifyDispatcher {
     }
 
     /// 交互卡片：底座在运行中发起的审批/提问，渲染成带按钮的卡片发回
-    /// 会话，用户点按钮（代发 `/裁决 <编号> <序号>`）或超时由 dismiss 兜底。
+    /// 会话，用户点按钮（代发 `/答复 <编号> <序号>`）或超时由 dismiss 兜底。
     /// 发送成功后把 notified 置位（CAS），失败留待下一轮重试。
     async fn dispatch_interactions(&self) -> Result<usize> {
         let docs = self.store.documents("interaction", self.batch)?;
@@ -82,7 +82,7 @@ impl NotifyDispatcher {
                 markup.push_row(
                     row.iter()
                         .map(|(index, label)| {
-                            MarkupButton::new(*label, format!("/裁决 {short_id} {}", index + 1))
+                            MarkupButton::new(*label, format!("/答复 {short_id} {}", index + 1))
                         })
                         .collect(),
                 );

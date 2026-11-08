@@ -8,7 +8,7 @@ pub struct InteractionService {
     pub store: Arc<dyn TaskStore>,
 }
 impl InteractionService {
-    /// 记录用户对交互的回复；违反任一裁决规则时返回错误且不落库。
+    /// 记录用户对交互的回复；违反任一答复规则时返回错误且不落库。
     pub fn reply(&self, id: &str, response: Value) -> Result<()> {
         ensure!(
             self.store.reply_interaction(id, &response, now())?,
@@ -91,8 +91,8 @@ pub fn option_label(option: &Value) -> String {
     crate::util::truncate_chars(&option.to_string(), 20)
 }
 
-/// 交互卡片：正文（方法 + 截断的 detail + 编号选项）与按钮（`/裁决 <id8> <n>`）。
-/// 按钮动作统一为代用户发出裁决指令，渠道适配器负责翻译成平台键盘。
+/// 交互卡片：正文（方法 + 截断的 detail + 编号选项）与按钮（`/答复 <id8> <n>`）。
+/// 按钮动作统一为代用户发出答复指令，渠道适配器负责翻译成平台键盘。
 pub fn render_card(interaction: &Interaction) -> (String, Vec<String>) {
     let short_id: String = interaction.id.chars().take(8).collect();
     let detail = crate::util::truncate_chars(
@@ -100,7 +100,7 @@ pub fn render_card(interaction: &Interaction) -> (String, Vec<String>) {
         CARD_DETAIL_MAX_CHARS,
     );
     let mut text = format!(
-        "## ❓ 任务请求你的裁决\n\n- **类型**：`{}`\n- **编号**：`{short_id}`\n",
+        "## ❓ 任务请求你的答复\n\n- **类型**：`{}`\n- **编号**：`{short_id}`\n",
         interaction.method
     );
     if !detail.trim().is_empty() && detail != "null" {
@@ -120,11 +120,11 @@ pub fn render_card(interaction: &Interaction) -> (String, Vec<String>) {
     }
     if overflow > 0 {
         text.push_str(&format!(
-            "\n\n> 另有 {overflow} 个选项未展示，用 `/裁决 {short_id} <序号>` 查看完整列表"
+            "\n\n> 另有 {overflow} 个选项未展示，用 `/答复 {short_id} <序号>` 查看完整列表"
         ));
     }
     text.push_str(&format!(
-        "\n\n> 点按钮或回复 `/裁决 {short_id} <序号>`；超时未答复将按预设兜底处理。"
+        "\n\n> 点按钮或回复 `/答复 {short_id} <序号>`；超时未答复将按预设兜底处理。"
     ));
     (text, labels)
 }
@@ -161,7 +161,7 @@ mod tests {
         assert!(text.contains("run1-ab"));
         assert!(text.contains("1. accept"));
         assert!(text.contains("2. decline"));
-        assert!(text.contains("/裁决 run1-ab"));
+        assert!(text.contains("/答复 run1-ab"));
         assert_eq!(labels, vec!["accept", "decline"]);
     }
 
