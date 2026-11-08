@@ -7,11 +7,42 @@ use anyhow::Result;
 /// 待办视图在 vault 里的位置（与数据库双向同步：勾选状态会写回）。
 const TODO_VIEW_PATH: &str = "04-Life-生活/Todo-待办.md";
 
+/// 渲染闸门的持久化戳：上次渲染时的数据版本 / 本地日期 / 文件内容 hash。
+const STAMP_KIND: &str = "obsidian_todo_view";
+const STAMP_ID: &str = "stamp";
+
+/// 内容指纹（DefaultHasher 进程内稳定即可，不持久化跨进程比对需求之外的值）。
+fn content_hash(text: &str) -> u64 {
+    use std::hash::{Hash, Hasher};
+    let mut hasher = std::collections::hash_map::DefaultHasher::new();
+    text.hash(&mut hasher);
+    hasher.finish()
+}
+
+/// 闸门判定：数据库版本没变、没跨天（截止分节随日期翻滚）、
+/// 视图文件没被人手动改过（勾选回写依赖发现文件差异）——三者皆新鲜才跳过。
+fn view_is_fresh(
+    stamp: Option<&serde_json::Value>,
+    version: u64,
+    today: &str,
+    existing_hash: Option<u64>,
+) -> bool {
+    let Some(stamp) = stamp else {
+        return false;
+    };
+    stamp["version"].as_u64() == Some(version)
+        && stamp["date"].as_str() == Some(today)
+        && existing_hash.is_some_and(|hash| stamp["hash"].as_u64() == Some(hash))
+}
+
 impl ObsidianService {
     /// 待办视图：todo 数据库 ↔ `04-Life-生活/Todo-待办.md` 双向同步。
     /// 数据库 → 文件：每轮重渲（内容没变不写）；文件 → 数据库：先读旧文件里的
     /// 勾选状态写回（打勾=完成、取消勾=恢复），再按最新状态渲染。
     /// 变更以 [ru41] 前缀自提交（下一轮游标自认，不会触发整理）。
+    ///
+    /// 渲染闸门（2026-11-08）：数据库版本/日期/文件 hash 都没变就整轮跳过——
+    /// 原来每 5 分钟两次 list(1000) + 全量重渲，空闲时全是空转。
     pub(super) async fn render_todo_view(&self) -> Result<()> {
         let Some(options) = self.todo_options else {
             return Ok(());
@@ -19,8 +50,23 @@ impl ObsidianService {
         let service = crate::app::todo::TodoService::new(self.store.clone(), options);
         let now = crate::util::now();
         let vault = self.vault.clone();
+        let store = self.store.clone();
         tokio::task::spawn_blocking(move || -> Result<()> {
-            if let Some(existing) = vault.read_file(TODO_VIEW_PATH)? {
+            // 闸门：一次文件读 + 两个索引文档读，替代原来的两次全表 list。
+            let existing = vault.read_file(TODO_VIEW_PATH)?;
+            let version = service.data_version()?;
+            let today = crate::domain::todo::local_date(now, options.offset_seconds);
+            let stamp = store.document(STAMP_KIND, STAMP_ID)?;
+            let fresh = view_is_fresh(
+                stamp.as_ref().map(|doc| &doc.value),
+                version,
+                &today,
+                existing.as_deref().map(content_hash),
+            );
+            if fresh {
+                return Ok(());
+            }
+            if let Some(existing) = existing.as_deref() {
                 // 1. 勾选回写：旧文件里用户手动的 [x]/[ ] 变更写回数据库。
                 //    先取当前状态对比，只在勾选与数据库不一致时调用，
                 //    否则每轮都会对同一批条目空调 complete/restore 刷错误日志。
@@ -30,7 +76,7 @@ impl ObsidianService {
                         .into_iter()
                         .map(|item| (item.id, item.status))
                         .collect();
-                for (id, checked) in parse_checkbox_states(&existing) {
+                for (id, checked) in parse_checkbox_states(existing) {
                     let needs_sync = match current.get(&id) {
                         Some(crate::domain::todo::TodoStatus::Completed) => !checked,
                         Some(_) => checked,
@@ -56,7 +102,7 @@ impl ObsidianService {
                     .filter(|item| item.status == crate::domain::todo::TodoStatus::Active)
                     .map(|item| item.title)
                     .collect();
-                for (title, due_text) in parse_new_task_lines(&existing) {
+                for (title, due_text) in parse_new_task_lines(existing) {
                     if known_titles.contains(&title) {
                         continue; // 同名活跃待办已存在，不重复建
                     }
@@ -90,12 +136,28 @@ impl ObsidianService {
                 })
                 .collect();
             let content = render_todo_markdown(&overview, &completed_recent, now, options);
-            if vault.read_file(TODO_VIEW_PATH)?.as_deref() == Some(content.as_str()) {
-                return Ok(());
+            if vault.read_file(TODO_VIEW_PATH)?.as_deref() != Some(content.as_str()) {
+                vault.write_file(TODO_VIEW_PATH, &content)?;
+                if vault.commit_all("[ru41] todo 视图同步")? {
+                    vault.push()?;
+                }
             }
-            vault.write_file(TODO_VIEW_PATH, &content)?;
-            if vault.commit_all("[ru41] todo 视图同步")? {
-                vault.push()?;
+            // 刷新闸门戳：本次完整 pass 后文件内容 == content。
+            // 失败只记日志，下轮多渲染一次兜底。
+            let revision = store
+                .document(STAMP_KIND, STAMP_ID)?
+                .map(|doc| doc.revision);
+            if let Err(error) = store.put_document(
+                STAMP_KIND,
+                STAMP_ID,
+                revision,
+                &serde_json::json!({
+                    "version": version,
+                    "date": today,
+                    "hash": content_hash(&content),
+                }),
+            ) {
+                eprintln!("[obsidian] todo view stamp write failed: {error:#}");
             }
             Ok(())
         })
@@ -261,6 +323,22 @@ mod tests {
                 ("带截止的新待办".to_owned(), Some("2026-10-31".to_owned())),
             ]
         );
+    }
+
+    #[test]
+    fn view_freshness_gate() {
+        let stamp = serde_json::json!({"version": 7, "date": "2026-11-08", "hash": 42});
+        // 三要素全对上才新鲜。
+        assert!(view_is_fresh(Some(&stamp), 7, "2026-11-08", Some(42)));
+        // 数据库有变更 → 重渲。
+        assert!(!view_is_fresh(Some(&stamp), 8, "2026-11-08", Some(42)));
+        // 跨天（截止分节翻滚）→ 重渲。
+        assert!(!view_is_fresh(Some(&stamp), 7, "2026-11-09", Some(42)));
+        // 文件被人动过（勾选回写窗口）→ 重渲。
+        assert!(!view_is_fresh(Some(&stamp), 7, "2026-11-08", Some(43)));
+        // 文件缺失或戳缺失 → 重渲。
+        assert!(!view_is_fresh(Some(&stamp), 7, "2026-11-08", None));
+        assert!(!view_is_fresh(None, 7, "2026-11-08", Some(42)));
     }
 
     #[test]
