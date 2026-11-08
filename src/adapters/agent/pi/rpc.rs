@@ -1007,8 +1007,7 @@ mod tests {
         #[tokio::test]
         async fn confirm_maps_bool_and_decline_dismiss() {
             let (context, canned) = context(json!({"label": "确认", "confirmed": true}));
-            let event =
-                json!({"id": "ui-3", "method": "confirm", "title": "确认？", "message": "真的要删吗"});
+            let event = json!({"id": "ui-3", "method": "confirm", "title": "确认？", "message": "真的要删吗"});
             let response = super::super::pi_ui_interact(&context, &event)
                 .await
                 .unwrap();
