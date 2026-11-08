@@ -305,6 +305,14 @@ impl Vault for GitVault {
         Ok(Some(std::fs::read_to_string(&path)?))
     }
 
+    fn read_bytes(&self, relative: &str) -> Result<Option<Vec<u8>>> {
+        let path = self.path.join(relative);
+        if !path.is_file() {
+            return Ok(None);
+        }
+        Ok(Some(std::fs::read(&path)?))
+    }
+
     fn write_file(&self, relative: &str, content: &str) -> Result<()> {
         self.locked(|vault| {
             let path = vault.path.join(relative);
