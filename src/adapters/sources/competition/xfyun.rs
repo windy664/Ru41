@@ -50,22 +50,37 @@ impl XfyunClient {
 
     /// 渲染列表页并解析赛事卡片；只保留进行中/未开始的（答辩结束/已完赛丢弃）。
     pub async fn fetch_competitions(&self, url: &str) -> Result<Vec<FeedItem>> {
-        let body = self
-            .http
-            .post(format!("{}/content", self.browser_url))
-            .header("Content-Type", "application/json")
-            .body(format!(
-                r#"{{"url":"{url}","gotoOptions":{{"waitUntil":"networkidle2","timeout":30000}}}}"#
-            ))
-            .send()
-            .await
-            .context("xfyun render request failed")?
-            .error_for_status()
-            .context("xfyun render returned error status")?
-            .text()
-            .await
-            .context("xfyun render body read failed")?;
-        Ok(parse_competition_page(&body, url))
+        // 站点分「算法赛 / AI应用赛」两个 tab，默认页只有算法赛——赛季空窗
+        // 期整个 tab 都是已完赛（2026-11-08 实测算法 tab 全灭、应用赛 tab
+        // 还有报名中的）。两个 tab 都渲染，按 id 去重合并。
+        let base = url.split('?').next().unwrap_or(url);
+        let mut items: Vec<FeedItem> = Vec::new();
+        for target in [
+            url.to_owned(),
+            format!("{base}?typeSelected=application"),
+        ] {
+            let body = self
+                .http
+                .post(format!("{}/content", self.browser_url))
+                .header("Content-Type", "application/json")
+                .body(format!(
+                    r#"{{"url":"{target}","gotoOptions":{{"waitUntil":"networkidle2","timeout":30000}}}}"#
+                ))
+                .send()
+                .await
+                .context("xfyun render request failed")?
+                .error_for_status()
+                .context("xfyun render returned error status")?
+                .text()
+                .await
+                .context("xfyun render body read failed")?;
+            for item in parse_competition_page(&body, &target) {
+                if !items.iter().any(|seen| seen.id == item.id) {
+                    items.push(item);
+                }
+            }
+        }
+        Ok(items)
     }
 }
 

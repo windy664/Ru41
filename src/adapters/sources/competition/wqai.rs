@@ -4,7 +4,7 @@
 //! 覆盖活动+赛事，UID 天然去重，含城市/场馆/票务等富描述。
 //! 在 rss 模块里以 `wqai+<url>` 前缀接入，产出与 RSS 条目同构的 FeedItem 进候选池。
 
-use super::super::feed::{FeedItem, fetch_text, strip_tags};
+use super::super::feed::{FeedItem, fetch_text};
 use anyhow::Result;
 
 /// rss feed 列表里的接入前缀：
@@ -46,12 +46,36 @@ impl WqaiClient {
     }
 
     /// 竞赛日程总览用的类型化入口（仅赛事表格页，丢弃状态列）。
+    /// 列表卡片没有奖励字段，逐个详情页补（meta description 带「奖励：…」）。
     pub async fn fetch_races(&self, url: &str) -> Result<Vec<WqaiRace>> {
         let body = fetch_text(self.http.get(url), "wqai").await?;
-        Ok(parse_race_rows(&body, url)
+        let mut races: Vec<WqaiRace> = parse_race_rows(&body, url)
             .into_iter()
             .map(|(race, _)| race)
-            .collect())
+            .collect();
+        for race in &mut races {
+            let Ok(detail) = fetch_text(self.http.get(&race.link), "wqai-detail").await else {
+                continue;
+            };
+            let Some(meta) = capture(
+                &detail,
+                r#"<meta name="description" content="([^"]+)""#,
+            ) else {
+                continue;
+            };
+            if let Some(rewards) = meta.split("奖励：").nth(1) {
+                race.rewards = rewards
+                    .trim()
+                    .trim_end_matches('。')
+                    .chars()
+                    .take(40)
+                    .collect();
+            }
+            if let Some(d) = capture(&meta, r"报名截止\s*(\d{1,2}-\d{1,2})") {
+                race.deadline_raw = d;
+            }
+        }
+        Ok(races)
     }
 }
 
@@ -206,25 +230,58 @@ impl WqaiRace {
     }
 }
 
-/// 解析赛事页表格：<tr><td>截止</td><td><a href="race-rNNN.html">名称</a></td>
-/// <td>地点</td><td>组队</td><td>奖励</td><td>状态</td></tr>。
-/// 只取带 race- 链接且 st open（开放中）的条目。
-pub fn parse_race_rows(html: &str, page_url: &str) -> Vec<(WqaiRace, String)> {
-    let base = page_url.rsplit_once('/').map(|(b, _)| b).unwrap_or("");
+/// 解析赛事页卡片（2026-11 站方改版后的结构）：
+/// <div class="daygroup"><div class="dayhead"><span class="d">11.10</span>…
+/// <a class="ev race" href="../../calendar/race/race-rNNN.html" …>
+///   <div><div class="tt">标题</div><div class="mt"><i>城市</i>…</div>
+///   <div class="st on">报名中 / 即将截止 · 还剩 N 天</div></a>
+/// dayhead 的日期即报名截止（MM.DD → MM-DD）；只取 `st on`（开放中）的
+/// 条目，已截止/赛程进行中丢弃。奖励列表页没有，由 fetch_races 补详情页。
+pub fn parse_race_rows(html: &str, _page_url: &str) -> Vec<(WqaiRace, String)> {
     let mut rows = Vec::new();
-    let mut rest = html;
-    while let Some(row_start) = rest.find("<tr><td>") {
-        // 只跳过 "<tr>"，保留首个 "<td>" 让 split("<td>") 的列对齐
-        rest = &rest[row_start + 4..];
-        let row_end = rest.find("</tr>").unwrap_or(rest.len());
-        let row = &rest[..row_end];
-        rest = &rest[row_end..];
-        let Some(race) = parse_row(row, base) else {
+    for group in html.split("<div class=\"daygroup\"").skip(1) {
+        let Some(deadline) = capture(group, r#"<span class="d">(\d{1,2}\.\d{1,2})</span>"#)
+            .map(|d| d.replace('.', "-"))
+        else {
             continue;
         };
-        rows.push(race);
+        for card in group.split("<a class=\"ev race\" ").skip(1) {
+            if let Some(race) = parse_card(card, &deadline) {
+                rows.push(race);
+            }
+        }
     }
     rows
+}
+
+fn parse_card(card: &str, deadline: &str) -> Option<(WqaiRace, String)> {
+    let href = capture(card, r#"href="[^"]*(race-r\d+\.html)""#)?;
+    let title = capture(card, r#"<div class="tt">([^<]+)</div>"#)?;
+    let venue = capture(card, r#"<div class="mt"><i>([^<]*)</i>"#).unwrap_or_default();
+    // 开放中才是 st on；已截止/赛程进行中是裸 st。
+    if capture(card, r#"<div class="(st[^"]*)">"#).as_deref() != Some("st on") {
+        return None;
+    }
+    let status = capture(card, r#"<div class="st[^"]*">([^<]+)</div>"#).unwrap_or_default();
+    Some((
+        WqaiRace {
+            id: href.trim_end_matches(".html").to_owned(),
+            title,
+            link: format!("https://wqai.ltd/calendar/race/{href}"),
+            deadline_raw: deadline.to_owned(),
+            venue,
+            team: String::new(),
+            rewards: String::new(),
+        },
+        status,
+    ))
+}
+
+/// 第一个捕获组；无匹配或空串返回 None。
+fn capture(text: &str, pattern: &str) -> Option<String> {
+    let re = regex::Regex::new(pattern).ok()?;
+    let value = re.captures(text)?.get(1)?.as_str().trim();
+    (!value.is_empty()).then(|| value.to_owned())
 }
 
 /// 解析赛事页为 FeedItem（雷达入口）。
@@ -235,67 +292,32 @@ fn parse_race_page(html: &str, page_url: &str) -> Result<Vec<FeedItem>> {
         .collect())
 }
 
-fn parse_row(row: &str, base: &str) -> Option<(WqaiRace, String)> {
-    let cells: Vec<&str> = row.split("<td>").skip(1).collect();
-    if cells.len() < 6 {
-        return None;
-    }
-    let cell_text = |i: usize| -> String {
-        let raw = cells[i].split("</td>").next().unwrap_or("");
-        strip_tags(raw)
-    };
-    // 名称列必须是 race- 详情链接，否则不是赛事条目
-    let link_cell = cells[1];
-    let href_start = link_cell.find("href=\"")? + 6;
-    let href_end = link_cell[href_start..].find('"')? + href_start;
-    let href = &link_cell[href_start..href_end];
-    if !href.starts_with("race-") {
-        return None;
-    }
-    let title = cell_text(1);
-    if title.is_empty() {
-        return None;
-    }
-    // 只要开放中的条目：关闭/截止的带 st closed 等其他 class，直接跳过
-    if !row.contains("st open") {
-        return None;
-    }
-    let race = WqaiRace {
-        id: href.trim_end_matches(".html").to_owned(),
-        title,
-        link: format!("{base}/{href}"),
-        deadline_raw: cell_text(0),
-        venue: cell_text(2),
-        team: cell_text(3),
-        rewards: cell_text(4),
-    };
-    Some((race, cell_text(5)))
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
 
     const FIXTURE: &str = r#"
-<table class="tbl"><tr><th>Deadline</th><th>Competitions</th></tr>
-<tr><td>10-28</td><td><a href="race-r009.html">2026 National AI+ Competition</a></td><td>Online</td><td>Individual or team</td><td>E-certificates</td><td><span class="st open">Closing in 3 days</span></td></tr>
-<tr><td>10-30</td><td><a href="race-r070.html">ClawHunt 72-Hour Hackathon</a></td><td>Shanghai</td><td>3-5</td><td>RMB 1.5M</td><td><span class="st open">Open</span></td></tr>
-<tr><td>--</td><td>无链接行</td><td>-</td><td>-</td><td>-</td><td>-</td></tr>
-<tr><td>10-01</td><td><a href="race-r001.html">已结束的比赛</a></td><td>-</td><td>-</td><td>-</td><td><span class="st closed">Closed</span></td></tr>
-</table>"#;
+<div class="rows" id="listBox">
+<div class="daygroup" style="--n:1"><div class="dayhead"><span class="d">11.10</span><span class="w">周二</span><span class="rule"></span><span class="w n-in">2 项</span></div>
+<a class="ev race" href="../../calendar/race/race-r063.html" data-city="zh" data-hay="2026 首届珠海人工智能 OPC 创业大赛 珠海 "><div class="th"><img src="x.webp"></div><div><div class="tt">2026 首届珠海人工智能 OPC 创业大赛</div><div class="mt"><i>珠海</i><span class="k">赛事</span></div></div><div class="st on">即将截止 · 还剩 2 天</div></a>
+<a class="ev race" href="../../calendar/race/race-r070.html" data-city="on" data-hay="PayPal AI Hackathon 2026 线上 "><div class="th"></div><div><div class="tt">PayPal AI Hackathon 2026</div><div class="mt"><i>线上</i><span class="k">赛事</span></div></div><div class="st on">报名中</div></a></div>
+<div class="daygroup" style="--n:1"><div class="dayhead"><span class="d">11.13</span><span class="w">周五</span><span class="rule"></span><span class="w n-in">1 项</span></div>
+<a class="ev race" href="../../calendar/race/race-r071.html" data-city="zh"><div><div class="tt">已截止的旧赛</div><div class="mt"><i>广州</i></div></div><div class="st">报名已截止</div></a></div>
+</div>"#;
 
     #[test]
     fn parses_race_rows_with_stable_ids() {
         let items = parse_race_page(FIXTURE, "https://wqai.ltd/calendar/race/index.html").unwrap();
-        assert_eq!(items.len(), 2, "无链接行和已关闭条目被跳过");
-        assert_eq!(items[0].id, "race-r009");
-        assert_eq!(items[0].title, "2026 National AI+ Competition");
+        assert_eq!(items.len(), 2, "已截止条目被跳过");
+        assert_eq!(items[0].id, "race-r063");
+        assert_eq!(items[0].title, "2026 首届珠海人工智能 OPC 创业大赛");
         assert_eq!(
             items[0].link,
-            "https://wqai.ltd/calendar/race/race-r009.html"
+            "https://wqai.ltd/calendar/race/race-r063.html"
         );
-        assert!(items[0].summary.contains("截止 10-28"));
-        assert!(items[0].summary.contains("Closing in 3 days"));
+        assert!(items[0].summary.contains("截止 11-10"));
+        assert!(items[0].summary.contains("珠海"));
+        assert!(items[0].summary.contains("即将截止 · 还剩 2 天"));
         assert_eq!(items[1].id, "race-r070");
     }
 

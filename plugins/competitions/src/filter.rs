@@ -41,9 +41,18 @@ const GBA_CITIES: &[&str] = &[
 
 /// 有奖判定：现金/奖品/权益类关键词；纯证书/纯头衔不算。
 fn has_prize(text: &str) -> bool {
-    let re = regex::Regex::new(r"奖金|奖池|现金|万元|￥|¥|\$|奖品|权益|投资|兑换券|实物|里数|机票")
-        .expect("prize regex");
-    !text.is_empty() && re.is_match(text)
+    if text.is_empty() {
+        return false;
+    }
+    let money = regex::Regex::new(r"奖金|奖池|现金|万元|￥|¥|\$|奖品|权益|投资|兑换券|实物|里数|机票")
+        .expect("prize money regex");
+    if money.is_match(text) {
+        return true;
+    }
+    // 设奖表述（奖励/一二三等奖）也算——但「一二三等奖电子证书」这类纯证书
+    // 按口径不收（wqai 详情页摘要：高校组与社会组各设一二三等奖）。
+    let award = regex::Regex::new(r"奖励|等奖").expect("prize award regex");
+    award.is_match(text) && !text.contains("证书")
 }
 
 /// 中小学生赛判定：名称直接点名，或受众描述含"面向小学/初中/高中""4-12 年级"
