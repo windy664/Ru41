@@ -321,7 +321,13 @@ impl ObsidianService {
                 )
             })
             .collect();
-        let prompt = organize_prompt(&self.config.inbox_dir, &snapshot);
+        // 行程清单摘要（模糊匹配依据）同样脱敏后进 prompt。
+        let vault = self.vault.clone();
+        let sha = target.to_owned();
+        let digest = tokio::task::spawn_blocking(move || travel_digest(vault.as_ref(), &sha))
+            .await?
+            .map(|d| crate::privacy::scan::redact_secrets(&d));
+        let prompt = organize_prompt(&self.config.inbox_dir, &snapshot, digest.as_deref());
         let result = TaskService::new(self.store.clone()).enqueue_for(
             &format!("obsidian:organize:{target}"),
             &prompt,
@@ -475,13 +481,54 @@ fn ensure_vault_relative(path: &str) -> Result<()> {
     Ok(())
 }
 
+/// 出行规划目录：整理时把现有行程清单注入 prompt，供模糊匹配归档。
+const TRAVEL_DIR: &str = "04-Life-生活/Travel-出行";
+/// 每篇行动版行程注入的正文上限（取 frontmatter 的 title/aliases 足够）。
+const TRAVEL_NOTE_HEAD_CHARS: usize = 600;
+/// 行程摘要总量上限：行程再多也不许撑爆整理 prompt。
+const TRAVEL_DIGEST_MAX_CHARS: usize = 6_000;
+
+/// 行程清单摘要：文件名 + 行动版笔记开头（frontmatter 含目的地别名），
+/// 给整理 Agent 做「这文件属于哪次行程」的模糊匹配依据。
+fn travel_digest(vault: &dyn Vault, at: &str) -> Option<String> {
+    let files = vault.list_files(at, TRAVEL_DIR).ok()?;
+    if files.is_empty() {
+        return None;
+    }
+    let mut out = String::new();
+    for path in &files {
+        if out.len() > TRAVEL_DIGEST_MAX_CHARS {
+            out.push_str("…[行程清单已截断]\n");
+            break;
+        }
+        // 行动版（*出行规划.md，不含 -细节与档案）附带开头，其余只列文件名。
+        if path.ends_with("出行规划.md") {
+            let head = vault
+                .read_file_at(at, path)
+                .ok()
+                .flatten()
+                .map(|c| crate::util::truncate_chars(&c, TRAVEL_NOTE_HEAD_CHARS))
+                .unwrap_or_default();
+            out.push_str(&format!("- `{path}`\n{head}\n"));
+        } else {
+            out.push_str(&format!("- `{path}`\n"));
+        }
+    }
+    Some(out)
+}
+
 /// 快照单文件/总量截断（字符数）：控制 prompt 体积，超限标记截断。
 const SNAPSHOT_FILE_CHARS: usize = 20_000;
 const SNAPSHOT_TOTAL_CHARS: usize = 60_000;
 
 /// 快照收件箱 prompt：待整理文件的脱敏正文内联进 prompt，
 /// Agent 不接触文件系统与 git，只输出 ru41-organize JSON 指令。
-pub fn organize_prompt(inbox_dir: &str, files: &[(String, Option<String>)]) -> String {
+/// `travel_digest` 是 Travel-出行 现有行程清单（模糊匹配依据），无行程时为空。
+pub fn organize_prompt(
+    inbox_dir: &str,
+    files: &[(String, Option<String>)],
+    travel_digest: Option<&str>,
+) -> String {
     let mut out = format!(
         "整理 Obsidian Vault 收件箱：以下 {} 个 `{inbox_dir}/` 变更文件已由程序读取正文快照\n\
          （敏感信息已替换为 <规则名> 占位符，超长已截断）。你无需也无法访问文件系统。\n\n",
@@ -490,7 +537,10 @@ pub fn organize_prompt(inbox_dir: &str, files: &[(String, Option<String>)]) -> S
     let mut used = 0usize;
     for (path, content) in files {
         let body = match content {
-            None => "（非文本或读取失败：请把该文件列入 skipped）".to_owned(),
+            None => {
+                "（非文本或读取失败：按文件名判断归属，能确定就照常给出移动指令，否则列入 skipped）"
+                    .to_owned()
+            }
             Some(text) => {
                 let mut text = text.trim_end().to_owned();
                 if text.chars().count() > SNAPSHOT_FILE_CHARS
@@ -504,13 +554,31 @@ pub fn organize_prompt(inbox_dir: &str, files: &[(String, Option<String>)]) -> S
         };
         out.push_str(&format!("### `{path}`\n\n```markdown\n{body}\n```\n\n"));
     }
+    if let Some(digest) = travel_digest {
+        out.push_str(&format!(
+            "## 现有出行行程（`{TRAVEL_DIR}/`，模糊匹配依据）\n\n{digest}\n\n"
+        ));
+    }
+    let travel_rule = if travel_digest.is_some() {
+        format!(
+            "- 出行相关文件（车票/机票/高铁票/订单/酒店/签证签注/地图/攻略/门票/电话卡等的截图、PDF、笔记）\
+             归入 `{TRAVEL_DIR}/`：按上面的行程清单模糊匹配（目的地、出行日期、别名多路对照）。\n\
+             - 唯一匹配某次行程：文本笔记移到该行程的月份文件夹；图片/PDF 等附件移到该行程的 \
+             `<出行日>-配图/` 目录，按 `<类别>-<简述>.<原扩展名>` 重命名\
+             （类别如 车票/地图/店铺/位置/订单/证件）。\n\
+             - 匹配不到已有行程或不确定：列入 `skipped`——出行规划由用户自己创建，不要新建行程笔记。\n"
+        )
+    } else {
+        String::new()
+    };
     out.push_str(
-        "## 任务\n\
+        &format!("## 任务\n\
          为每个文本文件选择 Vault 内合适的归档路径（课程笔记进 01-Courses-课程/，知识笔记进 \
          03-Knowledge-知识/ 等），给出移动指令；可规范化目标文件名。\n\n\
          规则：\n\
-         - 只依据快照内容判断，不要臆造文件系统状态。\n\
-         - 非文本、读取失败或无法判断归属的文件列入 `skipped`，保持原位。\n\
+         - 只依据快照内容与已提供的清单判断，不要臆造文件系统状态。\n\
+         - 读取失败或无法判断归属的文件列入 `skipped`，保持原位。\n\
+         {travel_rule}\
          - 快照里出现作业/待办事项（标题+截止日期）时输出 `todos`，`due` 用 YYYY-MM-DD。\n\
          - 只有「纯一句话待办」（全文 ≤2 行且待办已进 todos）允许列入 `deletes`；\
          其余文件一律只移动不删除。\n\
@@ -519,25 +587,27 @@ pub fn organize_prompt(inbox_dir: &str, files: &[(String, Option<String>)]) -> S
          ## 输出格式（严格遵守）\n\
          回复只包含一个 ```ru41-organize 代码块，内含如下 JSON，不要输出其它内容：\n\
          ```ru41-organize\n\
-         {\"moves\":[{\"from\":\"Inbox/a.md\",\"to\":\"01-Courses-课程/xxx/a.md\"}],\
+         {{\"moves\":[{{\"from\":\"Inbox/a.md\",\"to\":\"01-Courses-课程/xxx/a.md\"}}],\
          \"deletes\":[\"Inbox/一句话待办.md\"],\
-         \"todos\":[{\"title\":\"交实验报告\",\"due\":\"2026-11-08\"}],\"skipped\":[\"Inbox/img.png\"]}\n\
-         ```",
+         \"todos\":[{{\"title\":\"交实验报告\",\"due\":\"2026-11-08\"}}],\"skipped\":[\"Inbox/img.png\"]}}\n\
+         ```"),
     );
     out
 }
 
-/// 从整理指令落盘（读-写-删经 Vault，纯文本）。已搬过/已删的源视为完成跳过，
-/// 保证重试轮幂等。
+/// 从整理指令落盘（读-写-删经 Vault，文本与二进制均可搬）。已搬过/已删的源
+/// 视为完成跳过，保证重试轮幂等。
 fn execute_plan(vault: &dyn Vault, plan: &OrganizePlan) -> Result<(usize, usize)> {
     let mut applied = 0;
     let mut already = 0;
     for m in &plan.moves {
         ensure_vault_relative(&m.from)?;
         ensure_vault_relative(&m.to)?;
-        match vault.read_file(&m.from)? {
-            Some(content) => {
-                vault.write_file(&m.to, &content)?;
+        // 统一按字节搬：文本是 UTF-8 字节的特例，图片/PDF 也能走同一条路
+        // （此前二进制只能靠 read_file，UTF-8 校验失败直接报错，永远搬不动）。
+        match vault.read_bytes(&m.from)? {
+            Some(data) => {
+                vault.write_bytes(&m.to, &data)?;
                 vault.remove_file(&m.from)?;
                 applied += 1;
             }
@@ -690,6 +760,15 @@ mod tests {
         fn read_file(&self, relative: &str) -> Result<Option<String>> {
             Ok(self.files.lock().unwrap().get(relative).cloned())
         }
+        fn read_bytes(&self, relative: &str) -> Result<Option<Vec<u8>>> {
+            Ok(self
+                .files
+                .lock()
+                .unwrap()
+                .get(relative)
+                .cloned()
+                .map(String::into_bytes))
+        }
         fn write_file(&self, relative: &str, content: &str) -> Result<()> {
             self.files
                 .lock()
@@ -697,7 +776,11 @@ mod tests {
                 .insert(relative.to_owned(), content.to_owned());
             Ok(())
         }
-        fn write_bytes(&self, _: &str, _: &[u8]) -> Result<()> {
+        fn write_bytes(&self, relative: &str, data: &[u8]) -> Result<()> {
+            self.files.lock().unwrap().insert(
+                relative.to_owned(),
+                String::from_utf8_lossy(data).into_owned(),
+            );
             Ok(())
         }
         fn remove_file(&self, relative: &str) -> Result<bool> {
@@ -752,14 +835,29 @@ mod tests {
             ("Inbox/long.md".to_owned(), Some(long.clone())),
             ("Inbox/img.png".to_owned(), None),
         ];
-        let prompt = organize_prompt("00-Inbox-收件箱", &files);
+        let prompt = organize_prompt("00-Inbox-收件箱", &files, None);
         assert!(prompt.contains("Inbox/a.md"));
         assert!(prompt.contains("password=<secret_kv>"));
         assert!(prompt.contains("…[已截断]"));
         assert!(prompt.contains("列入 skipped"));
         assert!(prompt.contains("ru41-organize"));
+        assert!(prompt.contains("按文件名判断归属"));
+        assert!(!prompt.contains("现有出行行程"), "无行程时不注入匹配段");
         assert!(!prompt.contains(&long), "超长正文不整体进 prompt");
         assert!(!prompt.contains("vault_path"));
+    }
+
+    #[test]
+    fn prompt_injects_travel_digest_for_fuzzy_match() {
+        let files = vec![("Inbox/车票截图.png".to_owned(), None)];
+        let digest =
+            "- `2026年11月/2026-11-14-香港出行规划.md`\n---\naliases:\n  - 11.14香港行程\n---\n";
+        let prompt = organize_prompt("00-Inbox-收件箱", &files, Some(digest));
+        assert!(prompt.contains("现有出行行程"));
+        assert!(prompt.contains("2026-11-14-香港出行规划.md"));
+        assert!(prompt.contains("模糊匹配"));
+        assert!(prompt.contains("-配图/"));
+        assert!(prompt.contains("不要新建行程笔记"));
     }
 
     #[test]
