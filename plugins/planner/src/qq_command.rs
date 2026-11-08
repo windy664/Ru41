@@ -247,10 +247,10 @@ impl TodoQqCommand {
             now,
         )?;
         Ok(Reply::text(format!(
-            "## 已加入待办收件箱\n\n- **{}**\n- **ID**：`{}`\n- 查看：`/待办 收件箱`\n- 完成：{}",
+            "## 已加入待办收件箱\n\n- {} **{}**\n- **ID**：`{}`\n- 查看：`/待办 收件箱`",
+            done_chip(&item),
             item.title,
-            item.short_id(),
-            done_chip(&item)
+            item.short_id()
         )))
     }
 
@@ -390,14 +390,14 @@ impl TodoQqCommand {
                 if let Some(location) = &occurrence.location {
                     line.push_str(&format!(" @ {location}"));
                 }
-                // 文本内「取消日程」指令标签：点击即发指令，不再占底部键盘。
+                // 文本内「取消日程」链接：点击直发指令，不再占底部键盘。
                 let short = occurrence
                     .event_id
                     .strip_prefix("evt_")
                     .unwrap_or(&occurrence.event_id);
                 line.push_str(&format!(
                     "　{}",
-                    cmd_enter_chip(&format!("/取消日程 {short}"))
+                    cmd_link("✕", &format!("/取消日程 {short}"))
                 ));
                 lines.push(line);
             }
@@ -419,17 +419,26 @@ impl TodoQqCommand {
     }
 }
 
-/// 待办「完成」入口：QQ markdown 文本内回车指令标签，点击即以用户身份发出
-/// `/完成 <id>`（官方文本交互能力，仅单聊支持；待办本来就限定单聊）。
-/// text 参数按文档要求 urlencode。
+/// 待办「完成」勾选框：QQ markdown 链接 `[☐](mqqapi://aio/inlinecmd?...)`，
+/// 点击即以用户身份直发 `/完成 <id>`（enter=true）。mqqapi 是社区惯用的内联指令
+/// 链接：显示文本可自定义、私聊可用，官方未承诺长期有效——失效时退回
+/// `<qqbot-cmd-enter>` 指令标签形态（git 历史里有）。
 fn done_chip(item: &TodoItem) -> String {
-    cmd_enter_chip(&format!("/完成 {}", item.short_id()))
+    cmd_link("☐", &format!("/完成 {}", item.short_id()))
 }
 
-/// 拼 `<qqbot-cmd-enter>` 标签；text 参数 urlencode（保留 unreserved 字符）。
-fn cmd_enter_chip(command: &str) -> String {
-    let mut encoded = String::with_capacity(command.len() * 3);
-    for byte in command.bytes() {
+/// 拼 mqqapi 内联指令链接；command 需 percent-encode（保留 unreserved 字符）。
+fn cmd_link(label: &str, command: &str) -> String {
+    format!(
+        "[{label}](mqqapi://aio/inlinecmd?command={}&enter=true&reply=false)",
+        url_encode(command)
+    )
+}
+
+/// percent-encode：保留 RFC 3986 unreserved，其余按 UTF-8 字节转义。
+fn url_encode(text: &str) -> String {
+    let mut encoded = String::with_capacity(text.len() * 3);
+    for byte in text.bytes() {
         match byte {
             b'A'..=b'Z' | b'a'..=b'z' | b'0'..=b'9' | b'-' | b'_' | b'.' | b'~' => {
                 encoded.push(byte as char)
@@ -437,7 +446,7 @@ fn cmd_enter_chip(command: &str) -> String {
             _ => encoded.push_str(&format!("%{byte:02X}")),
         }
     }
-    format!("<qqbot-cmd-enter text=\"{encoded}\" />")
+    encoded
 }
 
 /// 时间在先：依次尝试前缀 1..=3 个空白分隔词作为时间文本，命中后其余为标题。
@@ -591,18 +600,19 @@ fn format_item(item: &TodoItem, now: i64, options: TodoOptions) -> String {
         TodoPriority::Low => "，低优先级",
         TodoPriority::Normal => "",
     };
-    let mut line = format!(
-        "- `{}` **{}** — {}{}",
+    // 行首勾选框：活跃条目是可点的「完成」链接，已结束条目是可点的「恢复」链接。
+    let checkbox = match item.status {
+        TodoStatus::Active => done_chip(item),
+        _ => cmd_link("☑", &format!("/恢复 {}", item.short_id())),
+    };
+    format!(
+        "- {} `{}` **{}** — {}{}",
+        checkbox,
         item.short_id(),
         item.title,
         label,
         priority
-    );
-    // 活跃条目行尾挂文本内「完成」指令标签：点击即完成，突破底部键盘行数上限。
-    if item.status == TodoStatus::Active {
-        line.push_str(&format!("　{}", done_chip(item)));
-    }
-    line
+    )
 }
 
 fn usage() -> String {
@@ -618,19 +628,20 @@ fn usage_views() -> String {
 
 #[cfg(test)]
 mod tests {
-    use super::cmd_enter_chip;
+    use super::{cmd_link, url_encode};
 
     #[test]
-    fn cmd_enter_chip_urlencodes_text() {
-        let chip = cmd_enter_chip("/完成 abc123");
-        assert_eq!(
-            chip,
-            "<qqbot-cmd-enter text=\"%2F%E5%AE%8C%E6%88%90%20abc123\" />"
-        );
+    fn url_encode_escapes_non_unreserved() {
+        assert_eq!(url_encode("/完成 abc123"), "%2F%E5%AE%8C%E6%88%90%20abc123");
         // 字母数字与 unreserved 字符不编码，「/」与空格编码。
+        assert_eq!(url_encode("/done a1-b2_c3.4~"), "%2Fdone%20a1-b2_c3.4~");
+    }
+
+    #[test]
+    fn cmd_link_builds_mqqapi_inline_command() {
         assert_eq!(
-            cmd_enter_chip("/done a1-b2_c3.4~"),
-            "<qqbot-cmd-enter text=\"%2Fdone%20a1-b2_c3.4~\" />"
+            cmd_link("☐", "/完成 abc123"),
+            "[☐](mqqapi://aio/inlinecmd?command=%2F%E5%AE%8C%E6%88%90%20abc123&enter=true&reply=false)"
         );
     }
 }
