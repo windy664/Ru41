@@ -11,6 +11,10 @@ use crate::{
 };
 use anyhow::{Context, Result, ensure};
 
+/// 数据版本文档：每次变更 +1（kind 独立，不进 todo 列表查询）。
+const VERSION_KIND: &str = "todo_meta";
+const VERSION_ID: &str = "version";
+
 /// 到点提醒的单轮发送：汇总应提醒条目，经通知渠道送达后成功才去重；
 /// 发送失败不记录，由调度循环下一轮重试。
 pub async fn send_due_reminders(
@@ -67,6 +71,40 @@ impl TodoService {
         &self.store
     }
 
+    /// 当前数据版本（无变更历史时为 0）；obsidian 待办视图用它做渲染闸门。
+    pub fn data_version(&self) -> Result<u64> {
+        Ok(self
+            .store
+            .document(VERSION_KIND, VERSION_ID)?
+            .and_then(|doc| doc.value["v"].as_u64())
+            .unwrap_or(0))
+    }
+
+    /// 每次变更推进版本；失败只记日志——版本停进最坏是视图晚一轮刷新，不阻断业务。
+    fn bump_version(&self) {
+        if let Err(error) = self.bump_version_try() {
+            eprintln!("[todo] version bump failed: {error:#}");
+        }
+    }
+
+    fn bump_version_try(&self) -> Result<()> {
+        for _ in 0..2 {
+            let current = self.store.document(VERSION_KIND, VERSION_ID)?;
+            let revision = current.as_ref().map(|doc| doc.revision);
+            let next = current.and_then(|doc| doc.value["v"].as_u64()).unwrap_or(0) + 1;
+            if self.store.put_document(
+                VERSION_KIND,
+                VERSION_ID,
+                revision,
+                &serde_json::json!({ "v": next }),
+            )? {
+                return Ok(());
+            }
+            // 并发撞车：重读 revision 再来一次；再撞放弃，下一次变更自然推进。
+        }
+        Ok(())
+    }
+
     pub fn add(&self, input: TodoInput, now: i64) -> Result<TodoItem> {
         let mut labels = Vec::new();
         for label in input.labels {
@@ -92,6 +130,7 @@ impl TodoService {
         item.validate()?;
         self.store
             .put_document(TODO_KIND, &item.id, None, &serde_json::to_value(&item)?)?;
+        self.bump_version();
         Ok(item)
     }
 
@@ -286,6 +325,7 @@ impl TodoService {
             )?,
             "todo item changed concurrently"
         );
+        self.bump_version();
         Ok(item)
     }
 
@@ -321,6 +361,7 @@ impl TodoService {
             )?,
             "todo item changed concurrently"
         );
+        self.bump_version();
         Ok(item)
     }
 }
