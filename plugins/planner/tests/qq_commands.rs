@@ -250,8 +250,9 @@ async fn todo_commands_add_list_and_complete_in_private_chat() {
         .await
         .unwrap()
         .unwrap();
-    assert!(completed.text.contains("已完成待办"));
-    assert!(completed.text.contains("写项目周报"));
+    assert!(completed.text.contains("✅ 已完成：写项目周报"));
+    // 回执下方是剩余待办清单（此时已为空），不是已完成条目的详情。
+    assert!(completed.text.contains("## 待办（0）"));
 
     let empty = command
         .handle_command("待办", "", &context)
@@ -328,11 +329,11 @@ async fn quick_note_enters_todo_inbox_without_agent_or_schedule() {
         .unwrap();
     assert!(reply.text.contains("已加入待办收件箱"));
     assert!(reply.text.contains("/待办 收件箱"));
-    // 行首勾选框：mqqapi 内联指令链接，点击直发 /完成 <id>。
+    // 行首勾选框：cmd-input 标签，点击把 /完成 <id> 填进输入框。
     assert!(
         reply
             .text
-            .contains("[☐](mqqapi://aio/inlinecmd?command=%2F%E5%AE%8C%E6%88%90%20")
+            .contains("<qqbot-cmd-input text=\"%2F%E5%AE%8C%E6%88%90%20")
     );
 
     let documents = fixture.store.documents("todo_item", 10).unwrap();
