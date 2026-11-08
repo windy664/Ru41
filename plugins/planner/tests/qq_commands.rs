@@ -327,11 +327,11 @@ async fn quick_note_enters_todo_inbox_without_agent_or_schedule() {
         .unwrap();
     assert!(reply.text.contains("已加入待办收件箱"));
     assert!(reply.text.contains("/待办 收件箱"));
-    // 文本内完成标签：点击即发出 /完成 <id>（QQ 官方回车指令）。
+    // 行首勾选框：mqqapi 内联指令链接，点击直发 /完成 <id>。
     assert!(
         reply
             .text
-            .contains("<qqbot-cmd-enter text=\"%2F%E5%AE%8C%E6%88%90%20")
+            .contains("[☐](mqqapi://aio/inlinecmd?command=%2F%E5%AE%8C%E6%88%90%20")
     );
 
     let documents = fixture.store.documents("todo_item", 10).unwrap();
