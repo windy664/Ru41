@@ -57,10 +57,8 @@ impl WqaiClient {
             let Ok(detail) = fetch_text(self.http.get(&race.link), "wqai-detail").await else {
                 continue;
             };
-            let Some(meta) = capture(
-                &detail,
-                r#"<meta name="description" content="([^"]+)""#,
-            ) else {
+            let Some(meta) = capture(&detail, r#"<meta name="description" content="([^"]+)""#)
+            else {
                 continue;
             };
             if let Some(rewards) = meta.split("奖励：").nth(1) {

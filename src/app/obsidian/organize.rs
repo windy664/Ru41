@@ -110,6 +110,10 @@ impl ObsidianService {
                 if let Err(error) = self.apply_plan_todos(&plan) {
                     eprintln!("[obsidian] organize todos apply failed: {error:#}");
                 }
+                // 行程时间节点入库（按来源笔记整体替换）；同样不因提交冲突丢失。
+                if let Err(error) = self.apply_plan_events(&plan) {
+                    eprintln!("[obsidian] organize events apply failed: {error:#}");
+                }
                 // 提交前再确认远端没动；动了说明人工又推了提交，放弃本次整理下轮重做。
                 let vault = self.vault.clone();
                 let inbox_dir = self.config.inbox_dir.clone();
@@ -244,6 +248,87 @@ impl ObsidianService {
                 },
                 now,
             )?;
+        }
+        Ok(())
+    }
+
+    /// 把 Agent 从出行规划/行程单里提取的时间节点写进行程库：
+    /// 同一来源笔记的既有 obsidian 事件整体替换（重整理=以新内容为准），
+    /// 之后由全事件通用的提醒循环到点推送。
+    fn apply_plan_events(&self, plan: &OrganizePlan) -> Result<()> {
+        if plan.events.is_empty() {
+            return Ok(());
+        }
+        let options = self.todo_options.unwrap_or_default();
+        let offset = options.offset_seconds;
+        let now = crate::util::now();
+        let service = crate::app::schedule::ScheduleService::new(self.store.clone(), options);
+        use crate::domain::schedule::{
+            EVENT_KIND, EventItem, EventRecurrence, EventSource, EventStatus,
+        };
+        // 期望集合：来源笔记 → 事件输入列表（解析失败的单条跳过，不拖垮整批）。
+        use chrono::TimeZone;
+        let mut desired: std::collections::BTreeMap<
+            String,
+            Vec<crate::domain::schedule::EventInput>,
+        > = std::collections::BTreeMap::new();
+        for ev in &plan.events {
+            ensure_vault_relative(&ev.source)?;
+            let parse_ts = |date: &str, hm: &str| -> Option<i64> {
+                let naive = chrono::NaiveDateTime::parse_from_str(
+                    &format!("{date} {hm}"),
+                    "%Y-%m-%d %H:%M",
+                )
+                .ok()?;
+                chrono::FixedOffset::east_opt(offset)?
+                    .from_local_datetime(&naive)
+                    .single()
+                    .map(|dt| dt.timestamp())
+            };
+            let Some(starts_at) = parse_ts(&ev.date, &ev.start) else {
+                eprintln!("[obsidian] organize event time invalid: {ev:?}");
+                continue;
+            };
+            let ends_at = ev
+                .end
+                .as_deref()
+                .and_then(|hm| parse_ts(&ev.date, hm))
+                .unwrap_or(starts_at + 1800);
+            let title = ev.title.trim();
+            if title.is_empty() {
+                continue;
+            }
+            desired.entry(ev.source.clone()).or_default().push(
+                crate::domain::schedule::EventInput {
+                    title: title.to_owned(),
+                    starts_at,
+                    ends_at: ends_at.max(starts_at),
+                    location: ev.location.clone(),
+                    recurrence: EventRecurrence::None,
+                    source: Some(EventSource {
+                        channel: "obsidian".into(),
+                        source_id: Some(ev.source.clone()),
+                    }),
+                },
+            );
+        }
+        for (source, inputs) in &desired {
+            // 该来源的既有活跃事件：整体替换（先取消再按新内容建）。
+            for doc in self.store.documents(EVENT_KIND, 10_000)? {
+                let Ok(item) = serde_json::from_value::<EventItem>(doc.value.clone()) else {
+                    continue;
+                };
+                let Some(src) = &item.source else { continue };
+                if src.channel == "obsidian"
+                    && src.source_id.as_deref() == Some(source.as_str())
+                    && item.status == EventStatus::Active
+                {
+                    service.cancel(&item.id, now)?;
+                }
+            }
+            for input in inputs {
+                service.add(input.clone(), now)?;
+            }
         }
         Ok(())
     }
@@ -444,6 +529,8 @@ pub struct OrganizePlan {
     #[serde(default)]
     pub todos: Vec<OrganizeTodo>,
     #[serde(default)]
+    pub events: Vec<OrganizeEvent>,
+    #[serde(default)]
     pub skipped: Vec<String>,
 }
 
@@ -459,6 +546,24 @@ pub struct OrganizeTodo {
     /// YYYY-MM-DD 或自然语言；解析失败忽略该条截止。
     #[serde(default)]
     pub due: Option<String>,
+}
+
+/// 出行规划/行程单里提取的可提醒时间节点（车次、过关、预约等）。
+/// 由宿主写进行程库（ScheduleService），走全事件通用的到点提醒循环。
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+pub struct OrganizeEvent {
+    /// 来源笔记（移动后的目标路径）：同一笔记重整理时按它整体替换。
+    pub source: String,
+    pub title: String,
+    /// YYYY-MM-DD（正文出发日的绝对日期）。
+    pub date: String,
+    /// HH:MM（北京时间）。
+    pub start: String,
+    /// HH:MM；缺省按开始后 30 分钟。
+    #[serde(default)]
+    pub end: Option<String>,
+    #[serde(default)]
+    pub location: Option<String>,
 }
 
 const PLAN_FENCE: &str = "ru41-organize";
@@ -603,6 +708,10 @@ pub fn organize_prompt(
          - 读取失败或无法判断归属的文件列入 `skipped`，保持原位。\n\
          {travel_rule}\
          - 快照里出现作业/待办事项（标题+截止日期）时输出 `todos`，`due` 用 YYYY-MM-DD。\n\
+         - 文件是出行规划/行程单（正文有日期+时间表）时，除 moves 外输出 `events`：\
+         提取值得到点提醒的时间节点（车次/航班、过关、预约、集合等），\
+         `source` 填该文件移动后的目标路径，`date` 用绝对日期，`start`/`end` 用 HH:MM；\
+         正文没写时间的项不要编造，`end` 可省略。\n\
          - 只有「纯一句话待办」（全文 ≤2 行且待办已进 todos）允许列入 `deletes`；\
          其余文件一律只移动不删除。\n\
          - `from`/`to` 与 `deletes` 都是 Vault 内相对路径：不以 / 开头、不含 `..`。\n\
@@ -612,7 +721,10 @@ pub fn organize_prompt(
          ```ru41-organize\n\
          {{\"moves\":[{{\"from\":\"Inbox/a.md\",\"to\":\"01-Courses-课程/xxx/a.md\"}}],\
          \"deletes\":[\"Inbox/一句话待办.md\"],\
-         \"todos\":[{{\"title\":\"交实验报告\",\"due\":\"2026-11-08\"}}],\"skipped\":[\"Inbox/img.png\"]}}\n\
+         \"todos\":[{{\"title\":\"交实验报告\",\"due\":\"2026-11-08\"}}],\
+         \"events\":[{{\"source\":\"04-Life-生活/Travel-出行/2026年11月/2026-11-14-香港出行规划.md\",\
+         \"title\":\"高铁 G6550 西九龙→常平\",\"date\":\"2026-11-14\",\"start\":\"18:54\",\"end\":\"19:47\",\
+         \"location\":\"西九龙站\"}}],\"skipped\":[\"Inbox/img.png\"]}}\n\
          ```"
     ));
     out
@@ -655,6 +767,12 @@ fn plan_summary(plan: &OrganizePlan, file_count: usize) -> String {
     for t in &plan.todos {
         let due = t.due.as_deref().unwrap_or("无截止");
         lines.push(format!("- 待办：{}（{}）", t.title, due));
+    }
+    for e in &plan.events {
+        lines.push(format!(
+            "- 行程：{}（{} {}，已入提醒）",
+            e.title, e.date, e.start
+        ));
     }
     for s in &plan.skipped {
         lines.push(format!("- 保持原位：`{s}`"));
@@ -894,6 +1012,7 @@ mod tests {
             }],
             deletes: vec!["Inbox/一句话.md".into()],
             todos: vec![],
+            events: vec![],
             skipped: vec![],
         };
         let (applied, already) = execute_plan(&vault, &plan).unwrap();
