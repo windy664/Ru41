@@ -22,7 +22,7 @@ pub enum Command {
     Bind(String),
     Clear,
     Usage,
-    /// 裁决交互（审批/提问卡片）：`/裁决 <编号前缀> <选项序号>`。
+    /// 答复交互（审批/提问卡片）：`/答复 <编号前缀> <选项序号>`。
     Judge(String, usize),
 }
 
@@ -35,7 +35,7 @@ const BUILTIN_HELP: &str = "## Ru41 机器人
 - `/取消 <id>` 或 `/cancel <id>`：取消任务
 - `/用量` 或 `/usage`：token 用量统计（单聊绑定后可用）
 - `/绑定 <口令>` 或 `/bind <口令>`：绑定个人身份
-- `/裁决 <编号> <序号>`：答复审批/提问卡片（需绑定）
+- `/答复 <编号> <序号>`：答复审批/提问卡片（需绑定）
 - `/新建` 或 `/clear`：开始新对话";
 
 const HELP_FOOTER: &str = "> 直接描述你的任务即可，当前对话会自动保留上下文。";
@@ -79,7 +79,7 @@ pub fn parse_command(content: &str) -> Option<Command> {
         "任务" | "task" | "show" => Some(Command::Show(arg?.parse().ok()?)),
         "取消" | "cancel" => Some(Command::Cancel(arg?.parse().ok()?)),
         "绑定" | "bind" => Some(Command::Bind(arg?.to_owned())),
-        "裁决" | "judge" => {
+        "答复" | "judge" => {
             let mut pair = arg?.split_whitespace();
             let id_prefix = pair.next()?;
             let option: usize = pair.next()?.parse().ok()?;
@@ -160,10 +160,10 @@ pub fn execute(
             }
         },
         Command::Judge(id_prefix, option) => {
-            // 裁决权只给绑定用户：交互可能来自群聊卡片，不能谁点都算数。
+            // 答复权只给绑定用户：交互可能来自群聊卡片，不能谁点都算数。
             if !bound {
                 return Ok(Reply::text(
-                    "## 需要身份绑定\n\n请先发送 `/绑定 <口令>`，再裁决。",
+                    "## 需要身份绑定\n\n请先发送 `/绑定 <口令>`，再答复。",
                 ));
             }
             judge(ctx.store, id_prefix, *option)
@@ -205,7 +205,7 @@ pub fn execute(
     }
 }
 
-/// 裁决执行：按编号前缀定位 pending 交互，把对应选项写回。
+/// 答复执行：按编号前缀定位 pending 交互，把对应选项写回。
 /// 过期/已答复/序号越界都给人话回执，不吞错误。
 fn judge(store: &Arc<dyn TaskStore>, id_prefix: &str, option: usize) -> Result<Reply> {
     let docs = store.documents("interaction", 100)?;
@@ -218,12 +218,12 @@ fn judge(store: &Arc<dyn TaskStore>, id_prefix: &str, option: usize) -> Result<R
         .collect();
     let Some(interaction) = matches.pop() else {
         return Ok(Reply::text(format!(
-            "## 裁决失败\n\n没有找到编号 `{id_prefix}` 的交互，它可能已过期。"
+            "## 答复失败\n\n没有找到编号 `{id_prefix}` 的交互，它可能已过期。"
         )));
     };
     if interaction.status != "pending" {
         return Ok(Reply::text(format!(
-            "## 已处理\n\n交互 `{id_prefix}` 当前状态：{}，无需重复裁决。",
+            "## 已处理\n\n交互 `{id_prefix}` 当前状态：{}，无需重复答复。",
             interaction.status
         )));
     }
@@ -239,7 +239,7 @@ fn judge(store: &Arc<dyn TaskStore>, id_prefix: &str, option: usize) -> Result<R
     }
     .reply(&interaction.id, chosen.clone())?;
     Ok(Reply::text(format!(
-        "## ✅ 已裁决\n\n- **编号**：`{id_prefix}`\n- **你的选择**：{label}\n\n任务已继续执行。"
+        "## ✅ 已答复\n\n- **编号**：`{id_prefix}`\n- **你的选择**：{label}\n\n任务已继续执行。"
     )))
 }
 
