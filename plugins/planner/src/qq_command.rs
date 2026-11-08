@@ -548,9 +548,6 @@ fn format_items(title: &str, items: &[TodoItem], now: i64, options: TodoOptions)
         lines.push("\n> 暂无".to_owned());
     } else {
         lines.extend(items.iter().map(|item| format_item(item, now, options)));
-        if items.iter().any(|item| item.status == TodoStatus::Active) {
-            lines.push("\n> 点 ☐ 后指令会填进输入框，再点发送即完成".to_owned());
-        }
     }
     lines.join("\n")
 }
@@ -563,18 +560,12 @@ fn format_item(item: &TodoItem, now: i64, options: TodoOptions) -> String {
         TodoPriority::Normal => "",
     };
     // 行首勾选框：活跃条目是「完成」，已结束条目是「恢复」（☑）。
+    // 勾选框本身就是行标记，不再加列表符号；id 嵌在框的指令里，不在正文展示。
     let checkbox = match item.status {
         TodoStatus::Active => done_chip(item),
         _ => cmd_input_chip("☑", &format!("/恢复 {}", item.short_id())),
     };
-    format!(
-        "- {} `{}` **{}** — {}{}",
-        checkbox,
-        item.short_id(),
-        item.title,
-        label,
-        priority
-    )
+    format!("{} **{}** — {}{}", checkbox, item.title, label, priority)
 }
 
 fn usage() -> String {
