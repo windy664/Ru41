@@ -5,6 +5,7 @@
 
 use crate::ports::{storage::TaskStore, vault::VaultTaskDirs};
 use anyhow::Result;
+use std::sync::Arc;
 
 /// 用户时区（固定偏移，容器安全）的 "%Y-%m-%d %H:%M" 时间戳。
 pub fn local_stamp(now: i64, offset_seconds: i32) -> String {
@@ -291,4 +292,329 @@ pub fn render_homework_dashboard(
 /// 其余（已超时/已提交/评分中/已公布/已批阅）视为收敛。
 pub fn homework_status_open(status: i64) -> bool {
     matches!(status, 1 | 2 | 7)
+}
+
+// ---------------------------------------------------------------------------
+// 临期作业的升级提醒：交互卡片（确认按钮）+ 未确认定时追发。
+// 纯文本提醒发一次就完，用户没看到就是事故（2026-11-08 学习通英语作业
+// 截止当天零提醒——虽然那次另有解析 bug）。首次进入临期窗口就发带按钮的
+// 卡片（知道了 / 已完成），未确认每 REMINDER_NUDGE_INTERVAL 追发一次，
+// 直到确认、作业提交（插件调 close_reminder）或过期兜底。
+// 卡片复用核心 interaction 记录 + dispatcher 管线，插件不碰渠道细节。
+
+use crate::domain::{NotifyRoute, records::Interaction};
+use serde_json::{Value, json};
+
+/// 追发间隔：未确认 2 小时再提醒。
+pub const REMINDER_NUDGE_INTERVAL: i64 = 2 * 3600;
+/// 截止后宽限：超过就停止追发与答复，交给过期的每日提醒路径。
+pub const REMINDER_OVERDUE_GRACE: i64 = 12 * 3600;
+
+/// 一次升级提醒推进的结果（插件写日志行/回勾待办用）。
+#[derive(Debug, Clone, PartialEq)]
+pub enum ReminderAction {
+    /// 首次创建卡片。
+    Created,
+    /// 未确认到点追发。
+    Nudged,
+    /// 用户已确认（选项 JSON 原样带回，插件按 action 字段分支）。
+    Acked(Value),
+    /// 无事发生。
+    Quiet,
+}
+
+fn reminder_alert_kind(plugin: &str) -> String {
+    format!("{plugin}_reminder")
+}
+
+/// 交互 id：QQ 答复按前 8 位前缀定位，前几位必须唯一——
+/// 插件代码 + 作业键的字母数字尾段（变化都在尾部的工作 id 上）。
+fn reminder_interaction_id(plugin_code: &str, work_key: &str) -> String {
+    let alnum: String = work_key
+        .chars()
+        .filter(|c| c.is_ascii_alphanumeric())
+        .collect();
+    let skip = alnum.len().saturating_sub(10);
+    format!("{plugin_code}{}", &alnum[skip..])
+}
+
+fn set_alert_state(
+    store: &Arc<dyn TaskStore>,
+    kind: &str,
+    key: &str,
+    state: &str,
+    now: i64,
+) -> Result<()> {
+    let existing = store.document(kind, key)?;
+    let mut value = existing
+        .as_ref()
+        .map(|d| d.value.clone())
+        .unwrap_or_else(|| json!({}));
+    value["state"] = json!(state);
+    value["last_nudge"] = json!(now);
+    // CAS 失败（并发轮）下轮再写，不算错误。
+    let expected = existing.as_ref().map(|d| d.revision);
+    let _ = store.put_document(kind, key, expected, &value)?;
+    Ok(())
+}
+
+/// 进入临期窗口的作业每轮调一次：首次发卡片，之后按确认/追发/收口推进。
+/// `plugin_code` 取两个独特字母（chaoxing→"cx"、zhihuishu→"zs"），
+/// 保证交互 id 前 8 位全局唯一（QQ 答复按前缀定位）。
+#[allow(clippy::too_many_arguments)]
+pub fn remind_escalating(
+    store: &Arc<dyn TaskStore>,
+    plugin: &str,
+    plugin_code: &str,
+    work_key: &str,
+    method: &str,
+    detail: Value,
+    deadline_ts: i64,
+    route: &NotifyRoute,
+    now: i64,
+) -> Result<ReminderAction> {
+    let alert_kind = reminder_alert_kind(plugin);
+    let interaction_id = reminder_interaction_id(plugin_code, work_key);
+
+    // 已收口（确认/关闭/过期）不再动作。
+    if let Some(alert) = store.document(&alert_kind, work_key)?
+        && alert.value["state"] != "pending"
+    {
+        return Ok(ReminderAction::Quiet);
+    }
+
+    let existing = store.document("interaction", &interaction_id)?;
+    if let Some(doc) = &existing {
+        let interaction: Interaction = serde_json::from_value(doc.value.clone())?;
+        if let Some(response) = interaction.response {
+            set_alert_state(store, &alert_kind, work_key, "acked", now)?;
+            return Ok(ReminderAction::Acked(response));
+        }
+        if interaction.status != "pending" {
+            set_alert_state(store, &alert_kind, work_key, "closed", now)?;
+            return Ok(ReminderAction::Quiet);
+        }
+    }
+
+    // 过宽限：收口，交还给过期的每日提醒路径。
+    if now >= deadline_ts + REMINDER_OVERDUE_GRACE {
+        set_alert_state(store, &alert_kind, work_key, "expired", now)?;
+        return Ok(ReminderAction::Quiet);
+    }
+
+    let Some(doc) = existing else {
+        let interaction = Interaction {
+            id: interaction_id,
+            run_id: format!("plugin:{plugin}"),
+            request_id: json!(work_key),
+            method: method.into(),
+            detail,
+            options: vec![
+                json!({"label": "知道了", "action": "ack"}),
+                json!({"label": "已完成", "action": "done"}),
+            ],
+            expires_at: deadline_ts + REMINDER_OVERDUE_GRACE,
+            status: "pending".into(),
+            response: None,
+            notify: Some(route.clone()),
+            dismiss_response: None,
+            notified: false,
+        };
+        store.put_document(
+            "interaction",
+            &interaction.id,
+            None,
+            &serde_json::to_value(&interaction)?,
+        )?;
+        set_alert_state(store, &alert_kind, work_key, "pending", now)?;
+        return Ok(ReminderAction::Created);
+    };
+    let last_nudge = store
+        .document(&alert_kind, work_key)?
+        .and_then(|a| a.value["last_nudge"].as_i64())
+        .unwrap_or(0);
+    if now - last_nudge < REMINDER_NUDGE_INTERVAL {
+        return Ok(ReminderAction::Quiet);
+    }
+    // 追发：notified 置回 false，dispatcher 会重发卡片；正文顺带刷新。
+    let mut value = doc.value.clone();
+    value["notified"] = json!(false);
+    value["detail"] = detail;
+    if !store.put_document("interaction", &doc.id, Some(doc.revision), &value)? {
+        return Ok(ReminderAction::Quiet); // 并发竞争，下轮再来
+    }
+    set_alert_state(store, &alert_kind, work_key, "pending", now)?;
+    Ok(ReminderAction::Nudged)
+}
+
+/// 作业已提交/不再需要提醒：卡片与状态一起收口。
+pub fn close_reminder(
+    store: &Arc<dyn TaskStore>,
+    plugin: &str,
+    plugin_code: &str,
+    work_key: &str,
+    now: i64,
+) -> Result<()> {
+    let interaction_id = reminder_interaction_id(plugin_code, work_key);
+    if let Some(doc) = store.document("interaction", &interaction_id)?
+        && doc.value["status"] == "pending"
+    {
+        let mut value = doc.value.clone();
+        value["status"] = json!("closed");
+        let _ = store.put_document("interaction", &doc.id, Some(doc.revision), &value)?;
+    }
+    set_alert_state(store, &reminder_alert_kind(plugin), work_key, "closed", now)?;
+    Ok(())
+}
+
+#[cfg(test)]
+mod reminder_tests {
+    use super::*;
+    use crate::adapters::database::sqlite::SqliteTaskStore;
+
+    fn store() -> (tempfile::TempDir, Arc<dyn TaskStore>) {
+        let dir = tempfile::tempdir().unwrap();
+        let store = SqliteTaskStore::open(&dir.path().join("state.db")).unwrap();
+        (dir, Arc::new(store) as Arc<dyn TaskStore>)
+    }
+
+    fn route() -> NotifyRoute {
+        NotifyRoute {
+            channel: "qq".into(),
+            target: "user:U1".into(),
+            msg_id: None,
+        }
+    }
+
+    /// 全生命周期：建卡 → 静默期不追发 → 到点追发 → 答复收口 → 终态静默。
+    #[test]
+    fn escalating_reminder_lifecycle() {
+        let (_dir, store) = store();
+        let now = 1_000_000;
+        let deadline = now + 86_400;
+        let detail = || json!({"course": "英语", "title": "作文", "deadline": "明天"});
+        let created = remind_escalating(
+            &store,
+            "chaoxing",
+            "cx",
+            "1#w1",
+            "作业临期提醒",
+            detail(),
+            deadline,
+            &route(),
+            now,
+        )
+        .unwrap();
+        assert_eq!(created, ReminderAction::Created);
+        let interaction = store
+            .document("interaction", &reminder_interaction_id("cx", "1#w1"))
+            .unwrap()
+            .unwrap();
+        assert_eq!(interaction.value["run_id"], "plugin:chaoxing");
+        assert_eq!(interaction.value["notified"], false);
+
+        // 静默期内：Quiet。
+        let quiet = remind_escalating(
+            &store,
+            "chaoxing",
+            "cx",
+            "1#w1",
+            "作业临期提醒",
+            detail(),
+            deadline,
+            &route(),
+            now + 600,
+        )
+        .unwrap();
+        assert_eq!(quiet, ReminderAction::Quiet);
+
+        // 到点：追发（notified 置回 false）。
+        let nudged = remind_escalating(
+            &store,
+            "chaoxing",
+            "cx",
+            "1#w1",
+            "作业临期提醒",
+            detail(),
+            deadline,
+            &route(),
+            now + REMINDER_NUDGE_INTERVAL + 1,
+        )
+        .unwrap();
+        assert_eq!(nudged, ReminderAction::Nudged);
+        let interaction = store
+            .document("interaction", &reminder_interaction_id("cx", "1#w1"))
+            .unwrap()
+            .unwrap();
+        assert_eq!(interaction.value["notified"], false);
+
+        // 答复（模拟 dispatcher 已发卡、用户点按钮）→ Acked；之后静默。
+        let id = reminder_interaction_id("cx", "1#w1");
+        assert!(
+            store
+                .reply_interaction(&id, &json!({"label": "知道了", "action": "ack"}), now)
+                .unwrap(),
+            "plugin: 交互应可答复"
+        );
+        let acked = remind_escalating(
+            &store,
+            "chaoxing",
+            "cx",
+            "1#w1",
+            "作业临期提醒",
+            detail(),
+            deadline,
+            &route(),
+            now + REMINDER_NUDGE_INTERVAL + 2,
+        )
+        .unwrap();
+        assert!(matches!(acked, ReminderAction::Acked(_)));
+        let after = remind_escalating(
+            &store,
+            "chaoxing",
+            "cx",
+            "1#w1",
+            "作业临期提醒",
+            detail(),
+            deadline,
+            &route(),
+            now + REMINDER_NUDGE_INTERVAL + 3,
+        )
+        .unwrap();
+        assert_eq!(after, ReminderAction::Quiet);
+    }
+
+    /// 提交后 close_reminder 收口，不再追发。
+    #[test]
+    fn close_reminder_stops_nudging() {
+        let (_dir, store) = store();
+        let now = 1_000_000;
+        let deadline = now + 86_400;
+        remind_escalating(
+            &store,
+            "zhihuishu",
+            "zs",
+            "c#t1",
+            "作业临期提醒",
+            json!({}),
+            deadline,
+            &route(),
+            now,
+        )
+        .unwrap();
+        close_reminder(&store, "zhihuishu", "zs", "c#t1", now + 1).unwrap();
+        let action = remind_escalating(
+            &store,
+            "zhihuishu",
+            "zs",
+            "c#t1",
+            "作业临期提醒",
+            json!({}),
+            deadline,
+            &route(),
+            now + REMINDER_NUDGE_INTERVAL + 1,
+        )
+        .unwrap();
+        assert_eq!(action, ReminderAction::Quiet);
+    }
 }

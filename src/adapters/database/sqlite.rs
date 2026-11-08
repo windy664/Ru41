@@ -140,20 +140,24 @@ impl TaskStore for SqliteTaskStore {
                 |r| r.get(0),
             )
             .optional()?;
-        let Some(run_body) = run_body else {
-            return Ok(false);
-        };
-        let run: serde_json::Value = serde_json::from_str(&run_body)?;
-        let (Some(task), Some(attempt)) = (run["task_id"].as_i64(), run["attempt_id"].as_i64())
-        else {
-            return Ok(false);
-        };
-        if run["status"] != "running" {
-            return Ok(false);
-        }
-        let active: bool = tx.query_row("SELECT EXISTS(SELECT 1 FROM tasks WHERE id=?1 AND active_attempt_id=?2 AND status='running' AND lease_until>?3)", params![task,attempt,now], |r| r.get(0))?;
-        if !active {
-            return Ok(false);
+        // 插件来源的交互（run_id 形如 "plugin:<名>"）不挂在任何 agent 运行上，
+        // 跳过运行活性校验——发起者是长驻服务（如作业临期提醒），不是一次性尝试。
+        if !request.run_id.starts_with("plugin:") {
+            let Some(run_body) = run_body else {
+                return Ok(false);
+            };
+            let run: serde_json::Value = serde_json::from_str(&run_body)?;
+            let (Some(task), Some(attempt)) = (run["task_id"].as_i64(), run["attempt_id"].as_i64())
+            else {
+                return Ok(false);
+            };
+            if run["status"] != "running" {
+                return Ok(false);
+            }
+            let active: bool = tx.query_row("SELECT EXISTS(SELECT 1 FROM tasks WHERE id=?1 AND active_attempt_id=?2 AND status='running' AND lease_until>?3)", params![task,attempt,now], |r| r.get(0))?;
+            if !active {
+                return Ok(false);
+            }
         }
         request.status = "answered".into();
         request.response = Some(response.clone());

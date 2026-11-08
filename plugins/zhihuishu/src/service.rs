@@ -2,6 +2,7 @@ use anyhow::Result;
 use ru41::{
     app::homework_work,
     app::todo::TodoService,
+    domain::NotifyRoute,
     domain::todo::{TodoInput, TodoItem, TodoOptions, TodoPriority, TodoSource},
     ports::{channel::NotifyChannel, storage::TaskStore, vault::Vault},
 };
@@ -319,6 +320,8 @@ impl ZhihuishuTracker {
                     }
                 }
                 if completed {
+                    // 临期确认卡片同步收口，不再追发。
+                    let _ = homework_work::close_reminder(&self.store, "zhihuishu", "zs", &key, now);
                     continue;
                 }
 
@@ -353,14 +356,10 @@ impl ZhihuishuTracker {
                         "新作业"
                     };
                 }
-                if is_due_soon || is_overdue {
-                    // 临期按天提醒（{key}:{date}）；过期只提醒一次（{key}:overdue），
+                if is_overdue {
+                    // 过期只提醒一次（{key}:overdue），
                     // 之后它就躺在作业清单/总表里，不再每天刷存在感。
-                    let nag_key = if is_overdue {
-                        format!("{key}:overdue")
-                    } else {
-                        format!("{key}:{today}")
-                    };
+                    let nag_key = format!("{key}:overdue");
                     let nagged = self.store.document("zhihuishu_alert", &nag_key)?.is_some();
                     if !nagged && self.notifier.is_some() {
                         self.store.put_document(
@@ -370,11 +369,64 @@ impl ZhihuishuTracker {
                             &serde_json::json!({ "ts": now }),
                         )?;
                         should_notify = true;
-                        reason = if is_overdue {
-                            "已过期"
-                        } else {
-                            "临近截止"
+                        reason = "已过期";
+                    }
+                } else if is_due_soon && !is_optional(task) {
+                    // 临期（必选）：确认卡片 + 未确认每 2 小时追发，直到确认/提交/过期。
+                    if let (Some(notifier), Some(end)) = (self.notifier.as_ref(), end_ts) {
+                        let route = NotifyRoute {
+                            channel: notifier.channel_id().into(),
+                            target: self.config.notify_target.clone(),
+                            msg_id: None,
                         };
+                        let detail = serde_json::json!({
+                            "课程": course_name,
+                            "作业": task.title,
+                            "截止": task.end_at,
+                        });
+                        match homework_work::remind_escalating(
+                            &self.store,
+                            "zhihuishu",
+                            "zs",
+                            &key,
+                            "作业临期提醒",
+                            detail,
+                            end,
+                            &route,
+                            now,
+                        )? {
+                            homework_work::ReminderAction::Created => {
+                                should_notify = true;
+                                reason = "临近截止";
+                            }
+                            homework_work::ReminderAction::Acked(response) => {
+                                lines.push(format!("- ✅ {label}｜临期提醒已确认"));
+                                // 点「已完成」顺手回勾待办。
+                                if response["action"] == "done"
+                                    && let Some(todo_id) = existing
+                                        .as_ref()
+                                        .and_then(|d| d.value.get("todo_id"))
+                                        .and_then(|v| v.as_str())
+                                {
+                                    let _ = self.todos.complete(todo_id, now);
+                                }
+                            }
+                            _ => {}
+                        }
+                    }
+                } else if is_due_soon {
+                    // 选做：保持每日最多一次的文本提醒，不发确认卡片。
+                    let nag_key = format!("{key}:{today}");
+                    let nagged = self.store.document("zhihuishu_alert", &nag_key)?.is_some();
+                    if !nagged && self.notifier.is_some() {
+                        self.store.put_document(
+                            "zhihuishu_alert",
+                            &nag_key,
+                            None,
+                            &serde_json::json!({ "ts": now }),
+                        )?;
+                        should_notify = true;
+                        reason = "临近截止";
                     }
                 }
                 if should_notify {

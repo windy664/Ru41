@@ -119,7 +119,9 @@ impl ObsidianService {
                     vault.fetch()?;
                     let head = vault.remote_head()?;
                     if head != expected {
-                        vault.checkout_hard(&head)?;
+                        // 远端动了就放弃本轮，不动工作区——checkout_hard 会把
+                        // 其他插件尚未提交的 vault 写入一起抹掉（2026-11-08
+                        // 收件箱 Ru41.md 两次被无关提交误删的病灶）。
                         return Ok("conflict".into());
                     }
                     // Agent 指令落盘：读-写-删经 Vault 执行（重试轮幂等，源缺失=已搬）。
@@ -292,23 +294,35 @@ impl ObsidianService {
         let files: Vec<String> = files
             .into_iter()
             .filter(|f| f.starts_with(&inbox_prefix))
+            // 点文件（.gitkeep 等）是占位，不参与整理——空目录不进 git，
+            // 收件箱清空后没占位的话，本地 reset --hard 会把整个目录抹掉。
+            .filter(|f| !f.rsplit('/').next().unwrap_or("").starts_with('.'))
             .collect();
         if files.is_empty() {
             state.processed_sha = target.to_owned();
             return Ok("skipped");
         }
-        // 工作区对齐到目标提交后读取文件快照；正文先过红区替换再进 prompt，
-        // vault 全文不出宿主——worker 里的 Agent 只看到脱敏快照。
+        // 快照直接按提交读（git show），不动工作区：checkout_hard 会跟其他
+        // vault 写者抢工作区，把别人未提交的写入抹掉再被无关提交扫进删除
+        // （2026-11-08 收件箱 Ru41.md 两次误删）。正文先过红区替换再进
+        // prompt，vault 全文不出宿主——worker 里的 Agent 只看到脱敏快照。
         let vault = self.vault.clone();
         let sha = target.to_owned();
-        tokio::task::spawn_blocking(move || vault.checkout_hard(&sha)).await??;
-        let vault = self.vault.clone();
         let snapshot_files = files.clone();
         let snapshot: Vec<(String, Option<String>)> =
             tokio::task::spawn_blocking(move || -> Vec<(String, Option<String>)> {
                 snapshot_files
                     .iter()
-                    .map(|f| (f.clone(), vault.read_file(f).ok().flatten()))
+                    .map(|f| {
+                        let content = vault
+                            .read_file_at(&sha, f)
+                            .ok()
+                            .flatten()
+                            // read_file_at 是 lossy 解码：二进制会变成替换符串，
+                            // 按 NUL 字节判非文本，别拿乱码快照喂 Agent。
+                            .filter(|c| !c.contains('\0'));
+                        (f.clone(), content)
+                    })
                     .collect()
             })
             .await?;
