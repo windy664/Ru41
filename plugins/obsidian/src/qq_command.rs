@@ -73,7 +73,7 @@ impl ObsidianQqCommand {
             self.offset_seconds,
         )?;
         Ok(Some(Reply::text(format!(
-            "## 已记录\n\n已写入 `{path}` 并推送，后台整理后会归档到合适位置。"
+            "## 已记录\n\n已写入 `{path}` 并推送，每周整理时会归档到合适位置。"
         ))))
     }
 }

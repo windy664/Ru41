@@ -133,6 +133,20 @@ impl RepoFixture {
         git(&self.seed, &["push", "origin", "master"]);
         git(&self.seed, &["rev-parse", "HEAD"])
     }
+
+    fn set_last_organized_at(&self, timestamp: i64) {
+        let current = self.store.document("obsidian_state", "main").unwrap();
+        let revision = current.as_ref().map(|doc| doc.revision);
+        let mut state = current
+            .map(|doc| doc.value)
+            .unwrap_or_else(|| serde_json::json!({}));
+        state["last_organized_at"] = serde_json::json!(timestamp);
+        assert!(
+            self.store
+                .put_document("obsidian_state", "main", revision, &state)
+                .unwrap()
+        );
+    }
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
@@ -206,9 +220,10 @@ async fn inbox_change_enqueues_organize_task() {
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn self_commit_advances_cursor_without_task() {
+async fn self_commit_does_not_trigger_task_before_weekly_deadline() {
     let fx = RepoFixture::new();
     let tracker = fx.tracker();
+    fx.set_last_organized_at(ru41::util::now());
     fx.push_change(
         "00-Inbox-收件箱/整理结果.md",
         "已整理",
@@ -217,6 +232,36 @@ async fn self_commit_advances_cursor_without_task() {
     let report = tracker.poll_once().await.unwrap();
     assert_eq!(report.action, "self-commit");
     assert!(fx.store.list(10).unwrap().is_empty());
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn weekly_organize_scans_files_accumulated_since_last_run() {
+    let fx = RepoFixture::new();
+    let tracker = fx.tracker();
+    fx.set_last_organized_at(ru41::util::now());
+    fx.push_change("00-Inbox-收件箱/本地想法.md", "一个想法", "本地提交");
+    let report = tracker.poll_once().await.unwrap();
+    assert_eq!(report.action, "skipped");
+    assert!(fx.store.list(10).unwrap().is_empty());
+
+    // 快速记录等 Ru41 自提交也不立即整理，但到周期时要纳入全量快照。
+    fx.push_change(
+        "00-Inbox-收件箱/QQ记录.md",
+        "QQ 里记下的内容",
+        "[ru41] quick note",
+    );
+    let report = tracker.poll_once().await.unwrap();
+    assert_eq!(report.action, "self-commit");
+    assert!(fx.store.list(10).unwrap().is_empty());
+
+    fx.set_last_organized_at(ru41::util::now() - 7 * 24 * 60 * 60);
+    let report = tracker.poll_once().await.unwrap();
+    assert_eq!(report.action, "enqueued");
+    assert_eq!(report.changed_files, 2);
+    let tasks = fx.store.list(10).unwrap();
+    assert_eq!(tasks.len(), 1);
+    assert!(tasks[0].prompt.contains("00-Inbox-收件箱/本地想法.md"));
+    assert!(tasks[0].prompt.contains("00-Inbox-收件箱/QQ记录.md"));
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
@@ -458,7 +503,7 @@ async fn failure_notifies_once_retries_then_abandons() {
     assert!(recorder.sends.lock().unwrap()[0].contains("整理失败"));
 
     let report = tracker.poll_once().await.unwrap();
-    assert_eq!(report.action, "abandoned");
+    assert_eq!(report.action, "idle");
     assert_eq!(sends(), 2);
 }
 

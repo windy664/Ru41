@@ -1,15 +1,17 @@
-//! 收件箱整理闭环：发现新提交 → 入队 Agent 整理任务 → 解析指令落盘 →
-//! 提交推送 → 通知。Agent 只输出 ru41-organize JSON 指令，落盘由宿主经
-//! Vault 执行——vault 全文与文件系统对 Agent 不可见。
+//! 收件箱整理闭环：每七天扫描当前 Inbox → 入队 Agent 整理任务 →
+//! 解析指令落盘 → 提交推送 → 通知。Agent 只输出 ru41-organize JSON 指令，
+//! 落盘由宿主经 Vault 执行——vault 全文与文件系统对 Agent 不可见。
 
 use super::{ObsidianService, ObsidianState, PendingOrganize};
-use crate::{adapters::vault::EMPTY_TREE, app::task::TaskService, ports::vault::Vault};
+use crate::{app::task::TaskService, ports::vault::Vault};
 use anyhow::{Context, Result, bail};
 
 /// 收件箱整理索引笔记（收件箱目录内，程序自动生成，agent 不得改动）。
 pub const ORGANIZE_INDEX_FILE: &str = "整理索引.md";
 /// 整理索引回溯的时间窗（天）。
 const ORGANIZE_INDEX_DAYS: u32 = 7;
+/// AI 收件箱整理周期；Git 同步频率不受它影响。
+const ORGANIZE_INTERVAL_SECS: i64 = 7 * 24 * 60 * 60;
 
 /// 由去向记录渲染索引 markdown；没有记录时也生成占位，让用户知道这页是活的。
 fn organize_index_markdown(moves: &[crate::ports::vault::InboxMove], today: &str) -> String {
@@ -87,6 +89,7 @@ impl ObsidianService {
                         if state.failed_count >= MAX_RETRIES {
                             state.pending = None;
                             state.abandoned = Some(pending.target_sha.clone());
+                            state.last_organized_at = crate::util::now();
                             self.notify_abandoned(pending).await?;
                             return Ok(("abandoned", true));
                         }
@@ -163,6 +166,7 @@ impl ObsidianService {
                     _ => {
                         state.processed_sha = pending.target_sha.clone();
                         state.pending = None;
+                        state.last_organized_at = crate::util::now();
                         state.failed_sha = None;
                         state.failed_count = 0;
                         if outcome == "committed" && target == pending.target_sha {
@@ -195,6 +199,7 @@ impl ObsidianService {
                 if state.failed_count >= MAX_RETRIES {
                     state.pending = None;
                     state.abandoned = Some(pending.target_sha.clone());
+                    state.last_organized_at = crate::util::now();
                     self.notify_abandoned(pending).await?;
                     return Ok(("abandoned", true));
                 }
@@ -347,8 +352,33 @@ impl ObsidianService {
         Ok(self.notifier.is_some() && !self.notify_target.is_empty())
     }
 
-    /// 发现新提交：自身提交直接推进游标；Inbox 变更入队整理任务；其余只推进游标。
+    /// 新提交只推进同步/索引游标，不再触发 AI 整理。
     pub(super) async fn handle_new_head(
+        &self,
+        state: &mut ObsidianState,
+        target: &str,
+    ) -> Result<&'static str> {
+        state.processed_sha = target.to_owned();
+        if state.abandoned.as_deref() == Some(target) {
+            return Ok("abandoned");
+        }
+        let vault = self.vault.clone();
+        let sha = target.to_owned();
+        let subject = tokio::task::spawn_blocking(move || vault.head_subject(&sha)).await??;
+        Ok(if subject.starts_with("[ru41]") {
+            "self-commit"
+        } else {
+            "skipped"
+        })
+    }
+
+    pub(super) fn organize_due(&self, state: &ObsidianState) -> bool {
+        state.last_organized_at == 0
+            || crate::util::now() - state.last_organized_at >= ORGANIZE_INTERVAL_SECS
+    }
+
+    /// 七天周期到点：整理该提交里当前仍位于 Inbox 的全部文件。
+    pub(super) async fn start_organize(
         &self,
         state: &mut ObsidianState,
         target: &str,
@@ -358,33 +388,22 @@ impl ObsidianService {
         }
         let vault = self.vault.clone();
         let sha = target.to_owned();
-        let subject = tokio::task::spawn_blocking(move || vault.head_subject(&sha)).await??;
-        if subject.starts_with("[ru41]") {
-            state.processed_sha = target.to_owned();
-            return Ok("self-commit");
-        }
-        let vault = self.vault.clone();
-        let sha = target.to_owned();
-        let from = state.processed_sha.clone();
-        let files = tokio::task::spawn_blocking(move || -> Result<Vec<String>> {
-            let base = if from.is_empty() {
-                EMPTY_TREE.to_owned()
-            } else {
-                from
-            };
-            vault.changed_files(&base, &sha)
-        })
-        .await??;
+        let inbox_dir = self.config.inbox_dir.clone();
+        let files =
+            tokio::task::spawn_blocking(move || vault.list_files(&sha, &inbox_dir)).await??;
         let inbox_prefix = format!("{}/", self.config.inbox_dir);
-        let files: Vec<String> = files
+        let index_path = format!("{inbox_prefix}{ORGANIZE_INDEX_FILE}");
+        let mut files: Vec<String> = files
             .into_iter()
-            .filter(|f| f.starts_with(&inbox_prefix))
+            .filter(|f| f.starts_with(&inbox_prefix) && f != &index_path)
             // 点文件（.gitkeep 等）是占位，不参与整理——空目录不进 git，
             // 收件箱清空后没占位的话，本地 reset --hard 会把整个目录抹掉。
             .filter(|f| !f.rsplit('/').next().unwrap_or("").starts_with('.'))
             .collect();
+        files.sort();
         if files.is_empty() {
             state.processed_sha = target.to_owned();
+            state.last_organized_at = crate::util::now();
             return Ok("skipped");
         }
         // 快照直接按提交读（git show），不动工作区：checkout_hard 会跟其他
