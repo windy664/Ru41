@@ -750,17 +750,32 @@ pub fn organize_prompt(
 }
 
 /// 从整理指令落盘（读-写-删经 Vault，文本与二进制均可搬）。已搬过/已删的源
-/// 视为完成跳过，保证重试轮幂等。
+/// 视为完成跳过，保证重试轮幂等。普通目标已存在且内容不同则拒绝覆盖；
+/// 只有出行规划按既定协议允许同行程新版本覆盖。
 fn execute_plan(vault: &dyn Vault, plan: &OrganizePlan) -> Result<(usize, usize)> {
     let mut applied = 0;
     let mut already = 0;
     for m in &plan.moves {
         ensure_vault_relative(&m.from)?;
         ensure_vault_relative(&m.to)?;
+        if m.from == m.to {
+            already += 1;
+            continue;
+        }
         // 统一按字节搬：文本是 UTF-8 字节的特例，图片/PDF 也能走同一条路
         // （此前二进制只能靠 read_file，UTF-8 校验失败直接报错，永远搬不动）。
         match vault.read_bytes(&m.from)? {
             Some(data) => {
+                if let Some(existing) = vault.read_bytes(&m.to)? {
+                    if existing == data {
+                        vault.remove_file(&m.from)?;
+                        already += 1;
+                        continue;
+                    }
+                    if !m.to.starts_with(&format!("{TRAVEL_DIR}/")) {
+                        bail!("归档目标已存在且内容不同，拒绝覆盖: {}", m.to);
+                    }
+                }
                 vault.write_bytes(&m.to, &data)?;
                 vault.remove_file(&m.from)?;
                 applied += 1;
@@ -1047,5 +1062,65 @@ mod tests {
         // 重试轮：源已不在 → 全部视为已完成，不报错。
         let (applied, already) = execute_plan(&vault, &plan).unwrap();
         assert_eq!((applied, already), (0, 1));
+    }
+
+    #[test]
+    fn execute_plan_protects_existing_files_and_deduplicates_identical_content() {
+        let vault = FakeVault::new(&[
+            ("Inbox/old.md", "收件箱旧版"),
+            ("02-Projects-项目/Ru41/doc.md", "项目目录新版"),
+            ("Inbox/duplicate.md", "完全相同"),
+            ("03-Knowledge-知识/duplicate.md", "完全相同"),
+            ("Inbox/identity.md", "不能原地删除"),
+        ]);
+        let conflicting = OrganizePlan {
+            moves: vec![OrganizeMove {
+                from: "Inbox/old.md".into(),
+                to: "02-Projects-项目/Ru41/doc.md".into(),
+            }],
+            ..Default::default()
+        };
+        let error = execute_plan(&vault, &conflicting).unwrap_err();
+        assert!(error.to_string().contains("拒绝覆盖"));
+        {
+            let files = vault.files.lock().unwrap();
+            assert_eq!(
+                files.get("Inbox/old.md").map(String::as_str),
+                Some("收件箱旧版")
+            );
+            assert_eq!(
+                files
+                    .get("02-Projects-项目/Ru41/doc.md")
+                    .map(String::as_str),
+                Some("项目目录新版")
+            );
+        }
+
+        let duplicates = OrganizePlan {
+            moves: vec![
+                OrganizeMove {
+                    from: "Inbox/duplicate.md".into(),
+                    to: "03-Knowledge-知识/duplicate.md".into(),
+                },
+                OrganizeMove {
+                    from: "Inbox/identity.md".into(),
+                    to: "Inbox/identity.md".into(),
+                },
+            ],
+            ..Default::default()
+        };
+        assert_eq!(execute_plan(&vault, &duplicates).unwrap(), (0, 2));
+        let files = vault.files.lock().unwrap();
+        assert!(!files.contains_key("Inbox/duplicate.md"));
+        assert_eq!(
+            files
+                .get("03-Knowledge-知识/duplicate.md")
+                .map(String::as_str),
+            Some("完全相同")
+        );
+        assert_eq!(
+            files.get("Inbox/identity.md").map(String::as_str),
+            Some("不能原地删除")
+        );
     }
 }
