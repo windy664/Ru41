@@ -85,7 +85,7 @@ cp target-docker/release/libru41_plugin_foo.so <服务器>:/etc/ru41/plugins/
 | library | `plugins/library/` | 图书馆：CAS→超星统一认证→libsp，到期催还提醒（3/1/0 天分级）、`/借阅`、`/续借`（带按钮）、`/找书`（免登录公开馆藏检索，索书号+在架）；协议见 `docs/library-recon.md` |
 | events | `plugins/events/` | 活动日程：茶思屋会议日历 + 活动行大湾区三城 → 科技向筛选 → vault `Events-活动/活动总览.md`；只写 Obsidian 不推送 |
 | youtube | `plugins/youtube/` | YouTube 英语预习：频道轮询 + `/英语` QQ 命令 + `ru41 youtube prep` 专属 CLI（cli 钩子的参考实现） |
-| teachermate | `plugins/teachermate/` | 微助教：openid 直连签到监控 + 作业提醒 + `ru41 teachermate work/bind/sign` 专属 CLI（cli 钩子多子命令参考实现） |
+| teachermate | `plugins/teachermate/` | 微助教：openid 直连签到监控 + 作业提醒 + `ru41 teachermate work/bind/sign` 专属 CLI（cli 钩子多子命令参考实现）。**2026-11-08 生产已下线**（openid 寿命 ~2h，需人工微信复制链接续命，上线零数据；容器已停删，代码保留随时可复活） |
 | chaoxing | `plugins/chaoxing/` | 学习通：签到监控（全类型 sign + 二维码照片消费者）+ 作业提醒 + `ru41 chaoxing work/sign` 专属 CLI（image_consumers 接线测试被 DEF 直调钉住） |
 | jwxt | `plugins/jwxt/` | 教务课表：CAS 登录 + 变更检测 + 明日课表提醒 + `ru41 jwxt classes/login` 专属 CLI（fixtures 自包含） |
 | planner | `plugins/planner/` | 日程：todo-remind job + `/日程` `/待办` QQ 命令（读 domain::timetable 课表契约，最小 JwxtSemesterRef 取学期起点） |
