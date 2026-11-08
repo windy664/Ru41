@@ -89,7 +89,7 @@ cp target-docker/release/libru41_plugin_foo.so <服务器>:/etc/ru41/plugins/
 | chaoxing | `plugins/chaoxing/` | 学习通：签到监控（全类型 sign + 二维码照片消费者）+ 作业提醒 + `ru41 chaoxing work/sign` 专属 CLI（image_consumers 接线测试被 DEF 直调钉住） |
 | jwxt | `plugins/jwxt/` | 教务课表：CAS 登录 + 变更检测 + 明日课表提醒 + `ru41 jwxt classes/login` 专属 CLI（fixtures 自包含） |
 | planner | `plugins/planner/` | 日程：todo-remind job + `/日程` `/待办` QQ 命令（读 domain::timetable 课表契约，最小 JwxtSemesterRef 取学期起点） |
-| obsidian | `plugins/obsidian/` | Obsidian 同步入口：vault 同步 job + `/记一下` 快记（业务服务在核心 app::obsidian，本插件只是 DEF+命令装配） |
+| obsidian | `plugins/obsidian/` | Obsidian 同步入口：vault 同步 job + `#临时想法` / `/记一下` 快记（业务服务在核心 app::obsidian，本插件只是 DEF+命令装配） |
 
 **至此 src/modules/ 清空**（2026-11-03）：所有附属插件化完成，内建注册表只剩空壳，
 `/日程` 合并课表走 `ru41::domain::timetable` 数据契约，不依赖任何插件代码。

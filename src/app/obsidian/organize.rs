@@ -6,17 +6,17 @@ use super::{ObsidianService, ObsidianState, PendingOrganize};
 use crate::{app::task::TaskService, ports::vault::Vault};
 use anyhow::{Context, Result, bail};
 
-/// 收件箱整理索引笔记（收件箱目录内，程序自动生成，agent 不得改动）。
+/// 收件箱去向总览（收件箱目录内，程序自动生成，agent 不得改动）。
 pub const ORGANIZE_INDEX_FILE: &str = "整理索引.md";
-/// 整理索引回溯的时间窗（天）。
-const ORGANIZE_INDEX_DAYS: u32 = 7;
+/// 去向总览回溯的时间窗（天）。
+const ORGANIZE_INDEX_DAYS: u32 = 30;
 /// AI 收件箱整理周期；Git 同步频率不受它影响。
 const ORGANIZE_INTERVAL_SECS: i64 = 7 * 24 * 60 * 60;
 
-/// 由去向记录渲染索引 markdown；没有记录时也生成占位，让用户知道这页是活的。
+/// 由去向记录渲染总览 markdown；没有记录时也生成占位，让用户知道这页是活的。
 fn organize_index_markdown(moves: &[crate::ports::vault::InboxMove], today: &str) -> String {
     let header = format!(
-        "# 收件箱整理索引\n\n\
+        "# 收件箱总览\n\n\
          > 程序自动生成（{today}）：近 {ORGANIZE_INDEX_DAYS} 天从收件箱归档的文件去向。\n"
     );
     if moves.is_empty() {
@@ -141,7 +141,7 @@ impl ObsidianService {
                         &expected[..expected.len().min(7)]
                     ))?;
                     if committed {
-                        // 近 7 天整理去向索引：失败不影响整理产物推送。
+                        // 近 30 天整理去向总览：失败不影响整理产物推送。
                         if let Err(error) = update_organize_index(vault.as_ref(), &inbox_dir) {
                             eprintln!("[obsidian] organize index update failed: {error:#}");
                         }
