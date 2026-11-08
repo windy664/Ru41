@@ -1,6 +1,5 @@
 use anyhow::Result;
-use ru41::ports::commands::{CommandContext, CommandHandler, Reply};
-use std::{future::Future, pin::Pin};
+use ru41::ports::commands::{CommandContext, Reply, SimpleCommand};
 
 use crate::{service::prep_video_task, source::YtDlpClient};
 
@@ -32,34 +31,18 @@ impl YoutubeQqCommand {
     }
 }
 
-impl CommandHandler for YoutubeQqCommand {
-    fn matches(&self, verb: &str) -> bool {
-        matches!(
-            verb,
-            "英语"
-                | "english"
-                | "复习"
-                | "review"
-                | "定级"
-                | "level"
-                | "答案"
-                | "answer"
-                | "学习"
-                | "study"
-        )
+impl SimpleCommand for YoutubeQqCommand {
+    fn verbs(&self) -> &'static [&'static str] {
+        &[
+            "英语", "english", "复习", "review", "定级", "level", "答案", "answer", "学习", "study",
+        ]
     }
 
     fn help(&self) -> &'static str {
         "`/英语 <YouTube链接>`：生成该视频的学习单（重点词句，看片前用）；`/复习 <不会的编号>`（如 /复习 2 4，其余记会；全部都会回 /复习 all）；`/定级`：英语水平测试（3 句翻译），结果用于调整难度；`/学习`：最近一期完整学习单（听前自测+看后检测）；`/答案`：最近一期检测的答案"
     }
 
-    fn handle_command<'a>(
-        &'a self,
-        verb: &'a str,
-        arg: &'a str,
-        ctx: &'a CommandContext<'a>,
-    ) -> Pin<Box<dyn Future<Output = Result<Option<Reply>>> + Send + 'a>> {
-        Box::pin(async move {
+    async fn run_command(&self, verb: &str, arg: &str, ctx: &CommandContext<'_>) -> Result<Option<Reply>> {
             if matches!(verb, "复习" | "review") {
                 let feedback = if arg.trim().is_empty() { "all" } else { arg };
                 return Ok(Some(Reply::text(super::review::apply_feedback(
@@ -109,15 +92,10 @@ impl CommandHandler for YoutubeQqCommand {
             .await
             .map(Reply::text)
             .map(Some)
-        })
     }
 
-    fn handle<'a>(
-        &'a self,
-        arg: &'a str,
-        ctx: &'a CommandContext<'a>,
-    ) -> Pin<Box<dyn Future<Output = Result<Option<Reply>>> + Send + 'a>> {
-        self.handle_command("预习", arg, ctx)
+    async fn run(&self, arg: &str, ctx: &CommandContext<'_>) -> Result<Option<Reply>> {
+        self.run_command("预习", arg, ctx).await
     }
 }
 

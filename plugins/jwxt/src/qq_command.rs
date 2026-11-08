@@ -1,10 +1,8 @@
 use anyhow::Result;
 use chrono::{Datelike, Duration, NaiveDate};
-use ru41::ports::commands::{CommandContext, CommandHandler, Reply};
+use ru41::ports::commands::{CommandContext, Reply, SimpleCommand};
 
 use ru41::domain::timetable::SectionClock;
-use std::future::Future;
-use std::pin::Pin;
 
 /// QQ 课表查询命令；读 jwxt_timetable 缓存快照，不触网、不做登录。
 pub struct JwxtQqCommand {
@@ -23,55 +21,40 @@ impl JwxtQqCommand {
     }
 }
 
-impl CommandHandler for JwxtQqCommand {
-    fn matches(&self, verb: &str) -> bool {
-        matches!(verb, "课表" | "明日课表" | "课程表" | "schedule")
+impl SimpleCommand for JwxtQqCommand {
+    fn verbs(&self) -> &'static [&'static str] {
+        &["课表", "明日课表", "课程表", "schedule"]
     }
 
     fn help(&self) -> &'static str {
         "`/课表 [明天|周]`：查今天/明天/本周课表（需绑定身份，仅单聊）；也可问“明天有什么课”"
     }
 
-    fn handle<'a>(
-        &'a self,
-        arg: &'a str,
-        ctx: &'a CommandContext<'a>,
-    ) -> Pin<Box<dyn Future<Output = Result<Option<Reply>>> + Send + 'a>> {
-        Box::pin(async move { self.respond("课表", arg, ctx).await })
+    async fn run(&self, arg: &str, ctx: &CommandContext<'_>) -> Result<Option<Reply>> {
+        self.respond("课表", arg, ctx).await
     }
 
     /// 区分动词：/明日课表 即使不带参数也查明天。
-    fn handle_command<'a>(
-        &'a self,
-        verb: &'a str,
-        arg: &'a str,
-        ctx: &'a CommandContext<'a>,
-    ) -> Pin<Box<dyn Future<Output = Result<Option<Reply>>> + Send + 'a>> {
-        Box::pin(async move { self.respond(verb, arg, ctx).await })
+    async fn run_command(&self, verb: &str, arg: &str, ctx: &CommandContext<'_>) -> Result<Option<Reply>> {
+        self.respond(verb, arg, ctx).await
     }
 
-    fn handle_message<'a>(
-        &'a self,
-        content: &'a str,
-        ctx: &'a CommandContext<'a>,
-    ) -> Pin<Box<dyn Future<Output = Result<Option<Reply>>> + Send + 'a>> {
-        Box::pin(async move {
-            let Some(date) = looks_like_timetable_question(content) else {
-                return Ok(None);
-            };
-            if let Some(reply) = ctx.require_private("查询课表", "课表属于个人信息")? {
-                return Ok(Some(reply.into()));
-            }
-            Ok(Some(
-                ru41::domain::timetable::describe_day_from_store(
-                    ctx.store,
-                    self.semester_start,
-                    self.clock.as_ref(),
-                    date,
-                )?
-                .into(),
-            ))
-        })
+    async fn run_message(&self, content: &str, ctx: &CommandContext<'_>) -> Result<Option<Reply>> {
+        let Some(date) = looks_like_timetable_question(content) else {
+            return Ok(None);
+        };
+        if let Some(reply) = ctx.require_private("查询课表", "课表属于个人信息")? {
+            return Ok(Some(reply.into()));
+        }
+        Ok(Some(
+            ru41::domain::timetable::describe_day_from_store(
+                ctx.store,
+                self.semester_start,
+                self.clock.as_ref(),
+                date,
+            )?
+            .into(),
+        ))
     }
 }
 

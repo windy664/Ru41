@@ -9,11 +9,11 @@ use ru41::{
         },
     },
     ports::{
-        commands::{CommandContext, CommandHandler, MarkupButton, Reply, ReplyMarkup},
+        commands::{CommandContext, MarkupButton, Reply, ReplyMarkup, SimpleCommand},
         storage::TaskStore,
     },
 };
-use std::{future::Future, pin::Pin, sync::Arc};
+use std::sync::Arc;
 
 /// QQ 私人待办入口；持久化与日期视图由核心 TodoService 提供。
 /// `jwxt_semester_start` 来自 jwxt 模块配置，/日程 用它把课表并进同一条时间轴。
@@ -39,52 +39,42 @@ impl TodoQqCommand {
     }
 }
 
-impl CommandHandler for TodoQqCommand {
-    fn matches(&self, verb: &str) -> bool {
-        matches!(
-            verb,
-            "待办"
-                | "todo"
-                | "记待办"
-                | "新增待办"
-                | "todo-add"
-                | "完成待办"
-                | "完成"
-                | "done"
-                | "推迟待办"
-                | "推迟"
-                | "取消待办"
-                | "恢复待办"
-                | "restore"
-                | "日程"
-                | "行程"
-                | "schedule"
-                | "记日程"
-                | "加日程"
-                | "schedule-add"
-                | "取消日程"
-        )
+impl SimpleCommand for TodoQqCommand {
+    fn verbs(&self) -> &'static [&'static str] {
+        &[
+            "待办",
+            "todo",
+            "记待办",
+            "新增待办",
+            "todo-add",
+            "完成待办",
+            "完成",
+            "done",
+            "推迟待办",
+            "推迟",
+            "取消待办",
+            "恢复待办",
+            "restore",
+            "日程",
+            "行程",
+            "schedule",
+            "记日程",
+            "加日程",
+            "schedule-add",
+            "取消日程",
+        ]
     }
 
     fn help(&self) -> &'static str {
         "`/待办`：今日、逾期、长期事项；`/记待办 [时间] <内容>` 新增；`/日程`：今日与未来行程；`/记日程 <时间> <标题>` 新增"
     }
 
-    fn handle<'a>(
-        &'a self,
-        _arg: &'a str,
-        _ctx: &'a CommandContext<'a>,
-    ) -> Pin<Box<dyn Future<Output = Result<Option<Reply>>> + Send + 'a>> {
-        Box::pin(async { Ok(Some(Reply::text(usage()))) })
+    async fn run(&self, _arg: &str, _ctx: &CommandContext<'_>) -> Result<Option<Reply>> {
+        Ok(Some(Reply::text(usage())))
     }
 
-    fn handle_command<'a>(
-        &'a self,
-        verb: &'a str,
-        arg: &'a str,
-        ctx: &'a CommandContext<'a>,
-    ) -> Pin<Box<dyn Future<Output = Result<Option<Reply>>> + Send + 'a>> {
-        Box::pin(async move {
+    async fn run_command(&self, verb: &str, arg: &str, ctx: &CommandContext<'_>) -> Result<Option<Reply>> {
+        {
             if let Some(reply) = ctx.require_private("使用私人待办", "待办属于个人信息")?
             {
                 return Ok(Some(Reply::text(reply)));
@@ -154,7 +144,7 @@ impl CommandHandler for TodoQqCommand {
                 _ => Reply::text(usage()),
             };
             Ok(Some(reply))
-        })
+        }
     }
 }
 

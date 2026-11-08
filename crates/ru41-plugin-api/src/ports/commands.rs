@@ -199,3 +199,77 @@ impl CommandContext<'_> {
 pub fn msg_request_key(msg_id: &str) -> String {
     format!("qq:msg:{msg_id}")
 }
+
+/// 声明式命令：只填命令词、帮助与业务逻辑，`Pin<Box<dyn Future>>` 仪式、
+/// verb 匹配、多命令词分发、自然语言兜底的样板由本 crate 的统一实现代劳。
+///
+/// 本 trait 返回 `impl Future`，不是 dyn-safe——插件不直接拿它当对象用，
+/// 实现它即自动获得 [`CommandHandler`]（统一实现在此 crate 内）。
+/// 触网调用仍须显式过 `crate::bridge::bridge`（cdylib reactor 与宿主不通用），
+/// 这一步无法由样板代劳，漏了照样炸网关。
+pub trait SimpleCommand: Send + Sync {
+    /// 命令词（小写）；verb 命中任意一个即分发到本 handler。
+    fn verbs(&self) -> &'static [&'static str];
+    /// 单行帮助文本。
+    fn help(&self) -> &'static str;
+    /// 命中命令后的业务逻辑；返回 Ok(None) 表示不拦截，消息继续走 Agent。
+    fn run<'a>(
+        &'a self,
+        arg: &'a str,
+        ctx: &'a CommandContext<'a>,
+    ) -> impl Future<Output = Result<Option<Reply>>> + Send + 'a;
+    /// 一个 handler 支持多个命令词时覆盖它来区分 verb；默认与 run 相同。
+    fn run_command<'a>(
+        &'a self,
+        verb: &'a str,
+        arg: &'a str,
+        ctx: &'a CommandContext<'a>,
+    ) -> impl Future<Output = Result<Option<Reply>>> + Send + 'a {
+        let _ = verb;
+        self.run(arg, ctx)
+    }
+    /// 可选的自然语言处理；默认不拦截，消息继续入队给 Agent。
+    fn run_message<'a>(
+        &'a self,
+        content: &'a str,
+        ctx: &'a CommandContext<'a>,
+    ) -> impl Future<Output = Result<Option<Reply>>> + Send + 'a {
+        let _ = (content, ctx);
+        async { Ok(None) }
+    }
+}
+
+impl<T: SimpleCommand> CommandHandler for T {
+    fn matches(&self, verb: &str) -> bool {
+        self.verbs().contains(&verb)
+    }
+
+    fn help(&self) -> &'static str {
+        SimpleCommand::help(self)
+    }
+
+    fn handle<'a>(
+        &'a self,
+        arg: &'a str,
+        ctx: &'a CommandContext<'a>,
+    ) -> Pin<Box<dyn Future<Output = Result<Option<Reply>>> + Send + 'a>> {
+        Box::pin(self.run(arg, ctx))
+    }
+
+    fn handle_command<'a>(
+        &'a self,
+        verb: &'a str,
+        arg: &'a str,
+        ctx: &'a CommandContext<'a>,
+    ) -> Pin<Box<dyn Future<Output = Result<Option<Reply>>> + Send + 'a>> {
+        Box::pin(self.run_command(verb, arg, ctx))
+    }
+
+    fn handle_message<'a>(
+        &'a self,
+        content: &'a str,
+        ctx: &'a CommandContext<'a>,
+    ) -> Pin<Box<dyn Future<Output = Result<Option<Reply>>> + Send + 'a>> {
+        Box::pin(self.run_message(content, ctx))
+    }
+}

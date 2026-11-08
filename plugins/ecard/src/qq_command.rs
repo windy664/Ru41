@@ -3,11 +3,11 @@ use ru41::{
     app::task::TaskService,
     domain::records::Document,
     ports::{
-        commands::{CommandContext, CommandHandler, Reply, msg_request_key},
+        commands::{CommandContext, Reply, SimpleCommand, msg_request_key},
         storage::TaskStore,
     },
 };
-use std::{future::Future, pin::Pin, sync::Arc};
+use std::sync::Arc;
 
 /// QQ 水电查询命令；读数 schema 与权限语义都留在 ecard 模块内。
 pub struct EcardQqCommand {
@@ -20,39 +20,29 @@ impl EcardQqCommand {
     }
 }
 
-impl CommandHandler for EcardQqCommand {
-    fn matches(&self, verb: &str) -> bool {
-        matches!(verb, "水电" | "电费" | "水费" | "utility")
+impl SimpleCommand for EcardQqCommand {
+    fn verbs(&self) -> &'static [&'static str] {
+        &["水电", "电费", "水费", "utility"]
     }
 
     fn help(&self) -> &'static str {
         "`/水电`：查询宿舍水电余额（需绑定身份，仅单聊）；也可直接问“电费还剩多少”"
     }
 
-    fn handle<'a>(
-        &'a self,
-        arg: &'a str,
-        ctx: &'a CommandContext<'a>,
-    ) -> Pin<Box<dyn Future<Output = Result<Option<Reply>>> + Send + 'a>> {
-        Box::pin(async move {
-            if !arg.is_empty() {
-                return Ok(None);
-            }
-            if let Some(reply) = ctx.require_private("查询水电", "水电属于个人信息")? {
-                return Ok(Some(Reply::text(reply)));
-            }
-            Ok(Some(Reply::text(format_utility(
-                latest_reading(ctx.store)?.as_ref(),
-            ))))
-        })
+    async fn run(&self, arg: &str, ctx: &CommandContext<'_>) -> Result<Option<Reply>> {
+        if !arg.is_empty() {
+            return Ok(None);
+        }
+        if let Some(reply) = ctx.require_private("查询水电", "水电属于个人信息")? {
+            return Ok(Some(Reply::text(reply)));
+        }
+        Ok(Some(Reply::text(format_utility(
+            latest_reading(ctx.store)?.as_ref(),
+        ))))
     }
 
-    fn handle_message<'a>(
-        &'a self,
-        content: &'a str,
-        ctx: &'a CommandContext<'a>,
-    ) -> Pin<Box<dyn Future<Output = Result<Option<Reply>>> + Send + 'a>> {
-        Box::pin(async move {
+    async fn run_message(&self, content: &str, ctx: &CommandContext<'_>) -> Result<Option<Reply>> {
+        {
             if !looks_like_utility_question(content) {
                 return Ok(None);
             }
@@ -92,7 +82,7 @@ impl CommandHandler for EcardQqCommand {
                 readings.len(),
                 latest.id
             ))))
-        })
+        }
     }
 }
 
