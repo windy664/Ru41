@@ -43,4 +43,15 @@ pub struct Interaction {
     pub expires_at: i64,
     pub status: String,
     pub response: Option<Value>,
+    /// 通知路由：worker 注入，dispatcher 按它把卡片发回会话；None 不推送。
+    #[serde(default)]
+    pub notify: Option<super::NotifyRoute>,
+    /// 到期未答复时的自动回复（dismiss 语义：用户关掉问题就当没问）。
+    /// 审批类填"拒绝"，提问类填"用户未答复，按你的判断继续"；
+    /// None 维持旧行为（过期即错误）。
+    #[serde(default)]
+    pub dismiss_response: Option<Value>,
+    /// 卡片已转发到渠道（dispatcher 写，防重发）。
+    #[serde(default)]
+    pub notified: bool,
 }

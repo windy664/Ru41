@@ -13,8 +13,6 @@ use anyhow::Result;
 use std::sync::Arc;
 
 /// QQ 内置固定命令：精确命中才拦截，其余消息先尝试扩展命令，再入队给 Agent。
-// TODO: 审批命令（审批/裁决）待核心的 Interaction 回复与租约原子性、崩溃恢复
-// 完成后再接入（docs/core-status.md 未完成清单第 1、2 条）；届时仅绑定用户可裁决。
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Command {
     Help,
@@ -24,6 +22,8 @@ pub enum Command {
     Bind(String),
     Clear,
     Usage,
+    /// 裁决交互（审批/提问卡片）：`/裁决 <编号前缀> <选项序号>`。
+    Judge(String, usize),
 }
 
 const BUILTIN_HELP: &str = "## Ru41 机器人
@@ -35,6 +35,7 @@ const BUILTIN_HELP: &str = "## Ru41 机器人
 - `/取消 <id>` 或 `/cancel <id>`：取消任务
 - `/用量` 或 `/usage`：token 用量统计（单聊绑定后可用）
 - `/绑定 <口令>` 或 `/bind <口令>`：绑定个人身份
+- `/裁决 <编号> <序号>`：答复审批/提问卡片（需绑定）
 - `/新建` 或 `/clear`：开始新对话";
 
 const HELP_FOOTER: &str = "> 直接描述你的任务即可，当前对话会自动保留上下文。";
@@ -78,6 +79,12 @@ pub fn parse_command(content: &str) -> Option<Command> {
         "任务" | "task" | "show" => Some(Command::Show(arg?.parse().ok()?)),
         "取消" | "cancel" => Some(Command::Cancel(arg?.parse().ok()?)),
         "绑定" | "bind" => Some(Command::Bind(arg?.to_owned())),
+        "裁决" | "judge" => {
+            let mut pair = arg?.split_whitespace();
+            let id_prefix = pair.next()?;
+            let option: usize = pair.next()?.parse().ok()?;
+            (option >= 1).then(|| Command::Judge(id_prefix.to_owned(), option))
+        }
         _ => None,
     }
 }
@@ -152,6 +159,15 @@ pub fn execute(
                 }
             }
         },
+        Command::Judge(id_prefix, option) => {
+            // 裁决权只给绑定用户：交互可能来自群聊卡片，不能谁点都算数。
+            if !bound {
+                return Ok(Reply::text(
+                    "## 需要身份绑定\n\n请先发送 `/绑定 <口令>`，再裁决。",
+                ));
+            }
+            judge(ctx.store, id_prefix, *option)
+        }
         Command::Usage => {
             // 用量是全局个人数据，只在绑定身份的单聊里开放。
             if !aggregate {
@@ -187,6 +203,44 @@ pub fn execute(
             ))
         }
     }
+}
+
+/// 裁决执行：按编号前缀定位 pending 交互，把对应选项写回。
+/// 过期/已答复/序号越界都给人话回执，不吞错误。
+fn judge(store: &Arc<dyn TaskStore>, id_prefix: &str, option: usize) -> Result<Reply> {
+    let docs = store.documents("interaction", 100)?;
+    let mut matches: Vec<crate::domain::records::Interaction> = docs
+        .into_iter()
+        .filter_map(|doc| serde_json::from_value(doc.value).ok())
+        .filter(|interaction: &crate::domain::records::Interaction| {
+            interaction.id.starts_with(id_prefix)
+        })
+        .collect();
+    let Some(interaction) = matches.pop() else {
+        return Ok(Reply::text(format!(
+            "## 裁决失败\n\n没有找到编号 `{id_prefix}` 的交互，它可能已过期。"
+        )));
+    };
+    if interaction.status != "pending" {
+        return Ok(Reply::text(format!(
+            "## 已处理\n\n交互 `{id_prefix}` 当前状态：{}，无需重复裁决。",
+            interaction.status
+        )));
+    }
+    let Some(chosen) = interaction.options.get(option - 1) else {
+        return Ok(Reply::text(format!(
+            "## 序号越界\n\n交互 `{id_prefix}` 只有 {} 个选项。",
+            interaction.options.len()
+        )));
+    };
+    let label = crate::app::interactions::option_label(chosen);
+    crate::app::interactions::InteractionService {
+        store: store.clone(),
+    }
+    .reply(&interaction.id, chosen.clone())?;
+    Ok(Reply::text(format!(
+        "## ✅ 已裁决\n\n- **编号**：`{id_prefix}`\n- **你的选择**：{label}\n\n任务已继续执行。"
+    )))
 }
 
 /// /帮助 的快捷按钮：常用入口两行。

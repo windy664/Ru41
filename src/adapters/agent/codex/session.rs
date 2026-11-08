@@ -139,6 +139,11 @@ impl CodexSession {
                         expires_at: now() + 300,
                         status: "pending".into(),
                         response: None,
+                        notify: context.notify.clone(),
+                        // 审批超时未答复 = 拒绝（dismiss 语义：不让 agent 白等，
+                        // 也绝不默认放行）。
+                        dismiss_response: Some(json!({"decision":"decline"})),
+                        notified: false,
                     })
                     .await?;
                 send(&mut writer, json!({"id":frame["id"],"result":result})).await?;

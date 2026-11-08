@@ -30,6 +30,9 @@ fn seed(store: &dyn TaskStore) -> ru41::domain::Claim {
                 expires_at: 200,
                 status: "pending".into(),
                 response: None,
+                notify: None,
+                dismiss_response: None,
+                notified: false,
             })
             .unwrap(),
         )

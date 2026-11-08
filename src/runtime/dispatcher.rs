@@ -1,6 +1,10 @@
 use crate::{
-    domain::{Task, TaskStatus},
-    ports::{channel::NotifyChannel, storage::TaskStore},
+    domain::{Task, TaskStatus, records::Interaction},
+    ports::{
+        channel::NotifyChannel,
+        commands::{MarkupButton, ReplyMarkup},
+        storage::TaskStore,
+    },
 };
 use anyhow::Result;
 use std::{sync::Arc, time::Duration};
@@ -34,7 +38,77 @@ impl NotifyDispatcher {
     /// 处理一批终态通知、进度通知与活动流 chunk，返回成功送达的总数。
     pub async fn run_once(&self) -> Result<usize> {
         let sent = self.dispatch_terminal().await?;
-        Ok(sent + self.dispatch_progress().await? + self.dispatch_activity().await?)
+        Ok(sent
+            + self.dispatch_progress().await?
+            + self.dispatch_activity().await?
+            + self.dispatch_interactions().await?)
+    }
+
+    /// 交互卡片：底座在运行中发起的审批/提问，渲染成带按钮的卡片发回
+    /// 会话，用户点按钮（代发 `/裁决 <编号> <序号>`）或超时由 dismiss 兜底。
+    /// 发送成功后把 notified 置位（CAS），失败留待下一轮重试。
+    async fn dispatch_interactions(&self) -> Result<usize> {
+        let docs = self.store.documents("interaction", self.batch)?;
+        let mut sent = 0;
+        for doc in docs {
+            let interaction: Interaction = match serde_json::from_value(doc.value.clone()) {
+                Ok(interaction) => interaction,
+                Err(_) => continue,
+            };
+            if interaction.status != "pending" || interaction.notified {
+                continue;
+            }
+            let Some(route) = &interaction.notify else {
+                continue;
+            };
+            let Some(channel) = self
+                .channels
+                .iter()
+                .find(|c| c.channel_id() == route.channel)
+            else {
+                continue;
+            };
+            let (text, labels) = crate::app::interactions::render_card(&interaction);
+            let short_id: String = interaction.id.chars().take(8).collect();
+            let mut markup = ReplyMarkup::new();
+            // 每行 3 个按钮（QQ 键盘行宽经验值），最多 4 行。
+            for row in labels
+                .iter()
+                .enumerate()
+                .take(12)
+                .collect::<Vec<_>>()
+                .chunks(3)
+            {
+                markup.push_row(
+                    row.iter()
+                        .map(|(index, label)| {
+                            MarkupButton::new(*label, format!("/裁决 {short_id} {}", index + 1))
+                        })
+                        .collect(),
+                );
+            }
+            let result = tokio::time::timeout(
+                Duration::from_secs(30),
+                channel.send_with_markup(&route.target, route.msg_id.as_deref(), &text, &markup),
+            )
+            .await;
+            match result {
+                Ok(Ok(())) => {
+                    let mut value = doc.value.clone();
+                    value["notified"] = serde_json::json!(true);
+                    if self.store.put_document(
+                        "interaction",
+                        &doc.id,
+                        Some(doc.revision),
+                        &value,
+                    )? {
+                        sent += 1;
+                    }
+                }
+                _ => eprintln!("[notify] interaction {} delivery failed", doc.id),
+            }
+        }
+        Ok(sent)
     }
 
     /// 终态任务通知：成功用结果摘要（带页脚），失败带原因。
