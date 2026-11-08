@@ -42,6 +42,10 @@ impl SimpleCommand for YoutubeQqCommand {
         "`/英语 <YouTube链接>`：生成该视频的学习单（重点词句，看片前用）；`/复习 <不会的编号>`（如 /复习 2 4，其余记会；全部都会回 /复习 all）；`/定级`：英语水平测试（3 句翻译），结果用于调整难度；`/学习`：最近一期完整学习单（听前自测+看后检测）；`/答案`：最近一期检测的答案"
     }
 
+    fn help_section(&self) -> &'static str {
+        "信息与学习"
+    }
+
     async fn run_command(&self, verb: &str, arg: &str, ctx: &CommandContext<'_>) -> Result<Option<Reply>> {
             if matches!(verb, "复习" | "review") {
                 let feedback = if arg.trim().is_empty() { "all" } else { arg };

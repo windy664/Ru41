@@ -29,6 +29,10 @@ impl SimpleCommand for PapersQqCommand {
         "`/精读 <arxiv-id>`：精读指定论文（如 `/精读 2510.12345`）"
     }
 
+    fn help_section(&self) -> &'static str {
+        "信息与学习"
+    }
+
     async fn run(&self, arg: &str, ctx: &CommandContext<'_>) -> Result<Option<Reply>> {
         if !is_arxiv_id(arg) {
             return Ok(None);

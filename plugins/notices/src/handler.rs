@@ -26,6 +26,10 @@ impl CommandHandler for NoticeHandler {
         "（自动）识别班会/活动通知并加入行程"
     }
 
+    fn help_section(&self) -> &'static str {
+        "记录与日程"
+    }
+
     fn handle<'a>(
         &'a self,
         _arg: &'a str,

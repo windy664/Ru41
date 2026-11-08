@@ -140,12 +140,14 @@ static DEF: ru41::modules::ModuleDef = ru41::modules::ModuleDef {
 （2026-11-08 起）：只填 `verbs()` / `help()` / `run(arg, ctx)`，verb 匹配、
 `Pin<Box<dyn Future>>` 仪式、多命令词分发（`run_command`）、自然语言兜底
 （`run_message`）由 plugin-api 的统一实现代劳，实现它即自动获得
-`CommandHandler`，注册处不用改。
+`CommandHandler`，注册处不用改。`help_section()` 可声明帮助页分区
+（记录与日程 / 课程与学习 / 信息与学习 / 校园生活），缺省进入“其他能力”。
 
 ```rust
 impl SimpleCommand for FooQqCommand {
     fn verbs(&self) -> &'static [&'static str] { &["foo", "富"] }
     fn help(&self) -> &'static str { "`/foo`：……" }
+    fn help_section(&self) -> &'static str { "其他能力" }
     async fn run(&self, arg: &str, ctx: &CommandContext<'_>) -> Result<Option<Reply>> {
         if arg.is_empty() { return Ok(None); }  // 不拦截，交回 Agent
         Ok(Some(Reply::text("……")))

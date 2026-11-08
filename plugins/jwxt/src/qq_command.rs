@@ -30,6 +30,10 @@ impl SimpleCommand for JwxtQqCommand {
         "`/课表 [明天|周]`：查今天/明天/本周课表（需绑定身份，仅单聊）；也可问“明天有什么课”"
     }
 
+    fn help_section(&self) -> &'static str {
+        "课程与学习"
+    }
+
     async fn run(&self, arg: &str, ctx: &CommandContext<'_>) -> Result<Option<Reply>> {
         self.respond("课表", arg, ctx).await
     }

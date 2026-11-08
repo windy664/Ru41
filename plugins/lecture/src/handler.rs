@@ -206,6 +206,10 @@ impl CommandHandler for LectureHandler {
         "（自动）单聊发课堂录音文件，自动转写并整理成课堂笔记"
     }
 
+    fn help_section(&self) -> &'static str {
+        "课程与学习"
+    }
+
     fn handle<'a>(
         &'a self,
         _arg: &'a str,

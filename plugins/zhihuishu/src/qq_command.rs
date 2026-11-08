@@ -28,6 +28,10 @@ impl SimpleCommand for ZhihuishuQqCommand {
         "`/作业`：查询智慧树未完成作业与截止时间（需绑定身份，仅单聊）"
     }
 
+    fn help_section(&self) -> &'static str {
+        "课程与学习"
+    }
+
     async fn run(&self, arg: &str, ctx: &CommandContext<'_>) -> Result<Option<Reply>> {
         // 带参数的「/作业 xxx」不拦截：避免误吞自然语言, 交给 Agent。
         if !arg.is_empty() {
