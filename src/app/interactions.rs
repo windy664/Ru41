@@ -106,6 +106,13 @@ pub fn render_card(interaction: &Interaction) -> (String, Vec<String>) {
     if !detail.trim().is_empty() && detail != "null" {
         text.push_str(&format!("\n```json\n{detail}\n```\n"));
     }
+    if interaction.options.is_empty() {
+        // 开放题（pi input/editor）：没有选项，下一条回复就是答案。
+        text.push_str(
+            "\n\n> 请直接回复你的答案：本会话的下一条消息即视为答复；超时未答复将按取消处理。",
+        );
+        return (text, Vec::new());
+    }
     let mut labels = Vec::new();
     let overflow = interaction.options.len().saturating_sub(CARD_MAX_OPTIONS);
     for (index, option) in interaction
@@ -175,6 +182,15 @@ mod tests {
         let (text, labels) = render_card(&interaction);
         assert_eq!(labels.len(), CARD_MAX_OPTIONS);
         assert!(text.contains("另有 3 个选项未展示"));
+    }
+
+    #[test]
+    fn open_question_card_asks_for_free_text_reply() {
+        let interaction = interaction(Vec::new());
+        let (text, labels) = render_card(&interaction);
+        assert!(labels.is_empty());
+        assert!(text.contains("下一条消息即视为答复"));
+        assert!(!text.contains("/答复"));
     }
 
     #[test]

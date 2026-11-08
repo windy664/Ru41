@@ -711,7 +711,7 @@ impl PiAgent {
                         let ui_id = event["id"].clone();
                         let ui_method = event["method"].as_str().unwrap_or("");
                         let response = match ui_method {
-                            "select" | "confirm" => {
+                            "select" | "confirm" | "input" | "editor" => {
                                 match request.context.as_ref() {
                                     Some(context) => pi_ui_interact(context, &event).await?,
                                     // 无交互通道（不应发生）：按取消处理。
@@ -829,7 +829,18 @@ async fn pi_ui_interact(context: &RunContext, event: &Value) -> Result<Value> {
     let ui_id = event["id"].clone();
     let method = event["method"].as_str().unwrap_or("");
     let title = event["title"].as_str().unwrap_or("").to_owned();
-    let (detail, options, dismiss) = if method == "select" {
+    let (detail, options, dismiss) = if method == "input" || method == "editor" {
+        // 开放题：无选项，用户在 QQ 里的下一条回复即答案（QQ 侧按
+        // pending 开放交互路由）；超时按 pi 协议的取消语义继续。
+        let mut detail = json!({"title": title});
+        if let Some(placeholder) = event["placeholder"].as_str() {
+            detail["placeholder"] = json!(placeholder);
+        }
+        if let Some(prefill) = event["prefill"].as_str() {
+            detail["prefill"] = json!(crate::util::truncate_chars(prefill, 500));
+        }
+        (detail, Vec::new(), json!({"__pi_cancelled": true}))
+    } else if method == "select" {
         let options: Vec<Value> = event["options"]
             .as_array()
             .map(|items| {
@@ -883,12 +894,13 @@ async fn pi_ui_interact(context: &RunContext, event: &Value) -> Result<Value> {
     };
     let response = if answered.get("__pi_cancelled").is_some() {
         json!({"type":"extension_ui_response","id":ui_id,"cancelled":true})
-    } else if method == "select" {
-        let value = answered["value"].as_str().unwrap_or_default().to_owned();
-        json!({"type":"extension_ui_response","id":ui_id,"value":value})
-    } else {
+    } else if method == "confirm" {
         let confirmed = answered["confirmed"].as_bool().unwrap_or(false);
         json!({"type":"extension_ui_response","id":ui_id,"confirmed":confirmed})
+    } else {
+        // select / input / editor 统一回 value 文本。
+        let value = answered["value"].as_str().unwrap_or_default().to_owned();
+        json!({"type":"extension_ui_response","id":ui_id,"value":value})
     };
     Ok(response)
 }
@@ -974,10 +986,29 @@ mod tests {
         }
 
         #[tokio::test]
+        async fn input_maps_free_text_value_and_cancels_on_dismiss() {
+            let (context, canned) = context(json!({"value": "叫 ru41-notes.md 就行"}));
+            let event = json!({"id": "ui-4", "method": "input", "title": "文件叫什么？", "placeholder": "name.md"});
+            let response = super::super::pi_ui_interact(&context, &event)
+                .await
+                .unwrap();
+            assert_eq!(response["value"], "叫 ru41-notes.md 就行");
+            let seen = canned.seen.lock().unwrap().clone().unwrap();
+            assert_eq!(seen.method, "pi/input");
+            assert!(seen.options.is_empty(), "开放题没有选项");
+            assert!(
+                seen.dismiss_response
+                    .unwrap()
+                    .get("__pi_cancelled")
+                    .is_some()
+            );
+        }
+
+        #[tokio::test]
         async fn confirm_maps_bool_and_decline_dismiss() {
             let (context, canned) = context(json!({"label": "确认", "confirmed": true}));
             let event =
-                json!({"id": "ui-3", "method": "confirm", "title": "确认？", "method": "msg"});
+                json!({"id": "ui-3", "method": "confirm", "title": "确认？", "message": "真的要删吗"});
             let response = super::super::pi_ui_interact(&context, &event)
                 .await
                 .unwrap();

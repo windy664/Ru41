@@ -457,6 +457,14 @@ impl QqBot {
                 }
             }
         }
+        // 开放题路由：会话里有待答复的开放交互（pi input/editor）时，
+        // 这条消息就是答案——不走命令、不入队、不参与合并排水。
+        if let Some(reply) = self
+            .answer_open_interaction(&target, author_openid, is_c2c, content)
+            .await?
+        {
+            return Ok(DispatchOutcome::Reply(reply));
+        }
         if let Some(command) = commands::parse_command(content) {
             let reply = if command == commands::Command::Help {
                 // 帮助文本需汇总扩展命令，单独构造；按钮与 /帮助 execute 一致。
@@ -705,6 +713,43 @@ impl QqBot {
         };
         let receipt = self.ingest(&event)?;
         Ok((FlushOutcome::Receipt(receipt), target, last_msg_id))
+    }
+
+    /// 开放题应答：会话有待答复的开放交互时，把消息内容写回交互。
+    /// 单聊直接答；群聊里只认绑定用户（与 /答复 同一权限边界）。
+    async fn answer_open_interaction(
+        &self,
+        target: &str,
+        author_openid: &str,
+        is_c2c: bool,
+        content: &str,
+    ) -> Result<Option<Reply>> {
+        let now = crate::util::now();
+        let mut candidates = Vec::new();
+        for doc in self.store.documents("interaction", 100)? {
+            let Ok(interaction) =
+                serde_json::from_value::<crate::domain::records::Interaction>(doc.value)
+            else {
+                continue;
+            };
+            if is_open_question(&interaction, target, now) {
+                candidates.push(interaction);
+            }
+        }
+        let Some(interaction) = candidates.pop() else {
+            return Ok(None);
+        };
+        if !is_c2c
+            && !crate::app::identity::IdentityService::new(self.store.clone())
+                .is_bound("qq", author_openid)?
+        {
+            return Ok(None);
+        }
+        crate::app::interactions::InteractionService {
+            store: self.store.clone(),
+        }
+        .reply(&interaction.id, serde_json::json!({"value": content}))?;
+        Ok(Some(Reply::text("## ✅ 已收到答复\n\n任务已继续执行。")))
     }
 
     /// 可插话的任务：同会话正在运行的 pi 任务（只有运行中的进程才插得进去）。
@@ -985,6 +1030,23 @@ fn render_message_prompt(content: &str, attachments: &[gateway::MessageAttachmen
     prompt
 }
 
+/// 开放交互判定（纯函数，可测）：pending、未过期、pi 开放题（input/editor）、
+/// 属于该会话。开放题没有选项，用户在 QQ 的下一条回复就是答案。
+fn is_open_question(
+    interaction: &crate::domain::records::Interaction,
+    target: &str,
+    now: i64,
+) -> bool {
+    interaction.status == "pending"
+        && interaction.expires_at > now
+        && matches!(interaction.method.as_str(), "pi/input" | "pi/editor")
+        && interaction.options.is_empty()
+        && interaction
+            .notify
+            .as_ref()
+            .is_some_and(|route| route.target == target)
+}
+
 /// 可插话判定（纯函数，可测）：运行中的 pi 任务且属于该会话。
 /// 排队中的不行（进程还没起）、codex 不行（适配器没接 steer）。
 fn is_steerable(task: &crate::domain::Task, target: &str) -> bool {
@@ -1098,6 +1160,40 @@ mod tests {
         // 别的会话不算。
         task.backend_id = "pi".into();
         assert!(!super::is_steerable(&task, "user:U2"));
+    }
+
+    #[test]
+    fn open_question_matches_pending_input_in_same_conversation() {
+        use crate::domain::records::Interaction;
+        let base = Interaction {
+            id: "r-1".into(),
+            run_id: "r".into(),
+            request_id: serde_json::json!(1),
+            method: "pi/input".into(),
+            detail: serde_json::json!({"title": "文件名？"}),
+            options: vec![],
+            expires_at: 200,
+            status: "pending".into(),
+            response: None,
+            notify: Some(crate::domain::NotifyRoute {
+                channel: "qq".into(),
+                target: "user:U1".into(),
+                msg_id: None,
+            }),
+            dismiss_response: None,
+            notified: false,
+        };
+        assert!(super::is_open_question(&base, "user:U1", 100));
+        // 过期、已答复、别的会话、选项题都不算。
+        assert!(!super::is_open_question(&base, "user:U1", 300));
+        let mut answered = base.clone();
+        answered.status = "answered".into();
+        assert!(!super::is_open_question(&answered, "user:U1", 100));
+        assert!(!super::is_open_question(&base, "user:U2", 100));
+        let mut select = base.clone();
+        select.method = "pi/select".into();
+        select.options = vec![serde_json::json!({"label": "A"})];
+        assert!(!super::is_open_question(&select, "user:U1", 100));
     }
 
     #[test]
