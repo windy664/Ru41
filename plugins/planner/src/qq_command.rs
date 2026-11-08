@@ -152,10 +152,17 @@ impl SimpleCommand for TodoQqCommand {
                 "完成待办" | "完成" | "done" => {
                     ensure!(!arg.is_empty(), "用法：`/完成 <待办ID>`");
                     let item = service.complete(arg, now)?;
+                    // 回执 = 完成确认 + 剩余待办清单：立刻看到划掉一项后的全貌，
+                    // 不用再发一次 /待办 确认它还在不在。
+                    let remaining: Vec<TodoItem> = service
+                        .list(TodoView::All, now, 50)?
+                        .into_iter()
+                        .filter(|todo| todo.status == TodoStatus::Active)
+                        .collect();
                     Reply::text(format!(
-                        "## 已完成待办\n\n- **{}**\n- **ID**：`{}`",
-                        item.title,
-                        item.short_id()
+                        "## ✅ 已完成：{}\n\n{}",
+                        truncate_title(&item.title, 14),
+                        format_items("待办", &remaining, now, self.options)
                     ))
                 }
                 "推迟待办" | "推迟" => {
@@ -381,14 +388,14 @@ impl TodoQqCommand {
                 if let Some(location) = &occurrence.location {
                     line.push_str(&format!(" @ {location}"));
                 }
-                // 文本内「取消日程」链接：点击直发指令，不再占底部键盘。
+                // 文本内「取消日程」✕：点击填入输入框，再点发送即取消。
                 let short = occurrence
                     .event_id
                     .strip_prefix("evt_")
                     .unwrap_or(&occurrence.event_id);
                 line.push_str(&format!(
                     "　{}",
-                    cmd_link("✕", &format!("/取消日程 {short}"))
+                    cmd_input_chip("✕", &format!("/取消日程 {short}"))
                 ));
                 lines.push(line);
             }
@@ -410,19 +417,20 @@ impl TodoQqCommand {
     }
 }
 
-/// 待办「完成」勾选框：QQ markdown 链接 `[☐](mqqapi://aio/inlinecmd?...)`，
-/// 点击即以用户身份直发 `/完成 <id>`（enter=true）。mqqapi 是社区惯用的内联指令
-/// 链接：显示文本可自定义、私聊可用，官方未承诺长期有效——失效时退回
-/// `<qqbot-cmd-enter>` 指令标签形态（git 历史里有）。
+/// 待办「完成」勾选框：`<qqbot-cmd-input show="☐">`，点击后指令填入输入框、
+/// 再点发送即完成（两跳是官方能力的代价：cmd-enter 一跳但不支持自定义显示——
+/// 平台报错 40034108；mqqapi 链接能显示但新版客户端点击无响应）。
 fn done_chip(item: &TodoItem) -> String {
-    cmd_link("☐", &format!("/完成 {}", item.short_id()))
+    cmd_input_chip("☐", &format!("/完成 {}", item.short_id()))
 }
 
-/// 拼 mqqapi 内联指令链接；command 需 percent-encode（保留 unreserved 字符）。
-fn cmd_link(label: &str, command: &str) -> String {
+/// 拼 `<qqbot-cmd-input>` 标签：show 是显示文本（复选框样式），
+/// text 是点击后填入输入框的指令；两个参数按文档要求 urlencode。
+fn cmd_input_chip(show: &str, command: &str) -> String {
     format!(
-        "[{label}](mqqapi://aio/inlinecmd?command={}&enter=true&reply=false)",
-        url_encode(command)
+        "<qqbot-cmd-input text=\"{}\" show=\"{}\" reference=\"false\" />",
+        url_encode(command),
+        url_encode(show)
     )
 }
 
@@ -438,6 +446,17 @@ fn url_encode(text: &str) -> String {
         }
     }
     encoded
+}
+
+/// 回执标题截断：最多 max 个字符，超出补省略号。
+fn truncate_title(title: &str, max: usize) -> String {
+    let mut chars = title.chars();
+    let truncated: String = chars.by_ref().take(max).collect();
+    if chars.next().is_some() {
+        format!("{truncated}…")
+    } else {
+        truncated
+    }
 }
 
 /// 时间在先：依次尝试前缀 1..=3 个空白分隔词作为时间文本，命中后其余为标题。
@@ -524,6 +543,9 @@ fn format_items(title: &str, items: &[TodoItem], now: i64, options: TodoOptions)
         lines.push("\n> 暂无".to_owned());
     } else {
         lines.extend(items.iter().map(|item| format_item(item, now, options)));
+        if items.iter().any(|item| item.status == TodoStatus::Active) {
+            lines.push("\n> 点 ☐ 后指令会填进输入框，再点发送即完成".to_owned());
+        }
     }
     lines.join("\n")
 }
@@ -535,10 +557,10 @@ fn format_item(item: &TodoItem, now: i64, options: TodoOptions) -> String {
         TodoPriority::Low => "，低优先级",
         TodoPriority::Normal => "",
     };
-    // 行首勾选框：活跃条目是可点的「完成」链接，已结束条目是可点的「恢复」链接。
+    // 行首勾选框：活跃条目是「完成」，已结束条目是「恢复」（☑）。
     let checkbox = match item.status {
         TodoStatus::Active => done_chip(item),
-        _ => cmd_link("☑", &format!("/恢复 {}", item.short_id())),
+        _ => cmd_input_chip("☑", &format!("/恢复 {}", item.short_id())),
     };
     format!(
         "- {} `{}` **{}** — {}{}",
@@ -563,7 +585,7 @@ fn usage_views() -> String {
 
 #[cfg(test)]
 mod tests {
-    use super::{cmd_link, url_encode};
+    use super::{cmd_input_chip, truncate_title, url_encode};
 
     #[test]
     fn url_encode_escapes_non_unreserved() {
@@ -573,10 +595,25 @@ mod tests {
     }
 
     #[test]
-    fn cmd_link_builds_mqqapi_inline_command() {
+    fn cmd_input_chip_encodes_show_and_text() {
         assert_eq!(
-            cmd_link("☐", "/完成 abc123"),
-            "[☐](mqqapi://aio/inlinecmd?command=%2F%E5%AE%8C%E6%88%90%20abc123&enter=true&reply=false)"
+            cmd_input_chip("☐", "/完成 abc123"),
+            "<qqbot-cmd-input text=\"%2F%E5%AE%8C%E6%88%90%20abc123\" \
+             show=\"%E2%98%90\" reference=\"false\" />"
+        );
+    }
+
+    #[test]
+    fn truncate_title_caps_at_max_chars() {
+        assert_eq!(truncate_title("短标题", 14), "短标题");
+        let long = "这是一段特别特别长的待办标题内容";
+        let truncated = truncate_title(long, 14);
+        assert_eq!(truncated.chars().count(), 15); // 14 字 + 省略号
+        assert!(truncated.ends_with('…'));
+        // 恰好 14 字不补省略号。
+        assert_eq!(
+            truncate_title("一二三四五六七八九十一二三四", 14),
+            "一二三四五六七八九十一二三四"
         );
     }
 }
