@@ -164,7 +164,7 @@ impl ProjectsTracker {
         let outcome = match outcome {
             Ok(outcome) => outcome,
             Err(error) => {
-                let Some((_, payload)) = cached else {
+                let Some((_, payload)) = cached.clone() else {
                     return Err(error);
                 };
                 eprintln!("[projects] 仓库清单拉取失败，沿用缓存清单: {error:#}");
