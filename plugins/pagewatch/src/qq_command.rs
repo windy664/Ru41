@@ -30,6 +30,10 @@ impl SimpleCommand for PagewatchQqCommand {
         "`/页面监控`：查看被监控页面的最近内容变更时间"
     }
 
+    fn help_section(&self) -> &'static str {
+        "信息与学习"
+    }
+
     async fn run(&self, arg: &str, ctx: &CommandContext<'_>) -> Result<Option<Reply>> {
         if !arg.is_empty() {
             return Ok(None);

@@ -309,8 +309,9 @@ fn extension_commands_match_aliases_and_join_help() {
 
     let handlers: Vec<Arc<dyn CommandHandler>> = vec![Arc::new(todo)];
     let help = commands::help_text(&handlers);
-    assert!(help.contains("## Ru41 机器人"));
-    assert!(help.contains("**扩展指令**"));
+    assert!(help.contains("# Ru41 · 个人 AI 助理"));
+    assert!(help.contains("## 记录与日程"));
+    assert!(!help.contains("## 其他能力"));
     assert!(help.contains("`/待办`：今日、逾期、长期事项"));
     assert!(help.contains("当前对话会自动保留上下文"));
 }
@@ -395,6 +396,9 @@ fn c2c_new_message_interrupts_unfinished_tasks_same_conversation() {
         command_handlers: vec![],
         image_consumers: vec![],
         sequencer: Arc::new(ru41::channels::qq::ReplySequencer::default()),
+        coalesce: Arc::new(std::sync::Mutex::new(
+            ru41::channels::qq::CoalesceState::default(),
+        )),
         typing_sent_at: std::sync::Mutex::new(std::collections::HashMap::new()),
         pricing: ru41::app::usage_report::Pricing::builtin(),
     };

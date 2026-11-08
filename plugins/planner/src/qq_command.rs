@@ -69,6 +69,10 @@ impl SimpleCommand for TodoQqCommand {
         "`/待办`：今日、逾期、长期事项；`/记待办 [时间] <内容>` 新增；`/日程`：今日与未来行程；`/记日程 <时间> <标题>` 新增"
     }
 
+    fn help_section(&self) -> &'static str {
+        "记录与日程"
+    }
+
     async fn run(&self, _arg: &str, _ctx: &CommandContext<'_>) -> Result<Option<Reply>> {
         Ok(Some(Reply::text(usage())))
     }

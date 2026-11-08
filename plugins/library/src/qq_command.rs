@@ -32,6 +32,10 @@ impl SimpleCommand for LibraryQqCommand {
         "`/借阅`：在借清单（可点续借按钮）；`/续借 书名`：续借；`/找书 关键词`：查馆藏（索书号/在架）；`/追书 书名`：馆藏可借到货提醒"
     }
 
+    fn help_section(&self) -> &'static str {
+        "校园生活"
+    }
+
     async fn run(&self, arg: &str, ctx: &CommandContext<'_>) -> Result<Option<Reply>> {
         if let Some(reply) = ctx.require_private("查询借阅", "借阅记录属于个人数据")? {
             return Ok(Some(Reply::text(reply)));

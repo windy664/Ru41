@@ -90,6 +90,10 @@ impl SimpleCommand for ObsidianQqCommand {
         "`#临时想法` 或 `/记一下 <内容>`：写进 Obsidian 收件箱（单聊，需绑定）；整理时自动识别待办"
     }
 
+    fn help_section(&self) -> &'static str {
+        "记录与日程"
+    }
+
     async fn run(&self, arg: &str, ctx: &CommandContext<'_>) -> Result<Option<Reply>> {
         if arg.trim().is_empty() {
             return Ok(None);

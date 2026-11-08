@@ -29,6 +29,10 @@ impl SimpleCommand for EcardQqCommand {
         "`/水电`：查询宿舍水电余额（需绑定身份，仅单聊）；也可直接问“电费还剩多少”"
     }
 
+    fn help_section(&self) -> &'static str {
+        "校园生活"
+    }
+
     async fn run(&self, arg: &str, ctx: &CommandContext<'_>) -> Result<Option<Reply>> {
         if !arg.is_empty() {
             return Ok(None);

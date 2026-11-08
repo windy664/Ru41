@@ -15,6 +15,7 @@ fn papers_matches_aliases_and_help() {
 
     let handlers: Vec<Arc<dyn CommandHandler>> = vec![Arc::new(papers)];
     let help = commands::help_text(&handlers);
-    assert!(help.contains("## Ru41 机器人"));
+    assert!(help.contains("# Ru41 · 个人 AI 助理"));
+    assert!(help.contains("## 信息与学习"));
     assert!(help.contains("精读 <arxiv-id>"));
 }

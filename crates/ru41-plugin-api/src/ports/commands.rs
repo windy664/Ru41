@@ -118,6 +118,10 @@ pub trait CommandHandler: Send + Sync {
     fn matches(&self, verb: &str) -> bool;
     /// 单行帮助文本。
     fn help(&self) -> &'static str;
+    /// 帮助页分区；插件按业务场景覆盖，渠道只负责排版。
+    fn help_section(&self) -> &'static str {
+        "其他能力"
+    }
     fn handle<'a>(
         &'a self,
         arg: &'a str,
@@ -212,6 +216,10 @@ pub trait SimpleCommand: Send + Sync {
     fn verbs(&self) -> &'static [&'static str];
     /// 单行帮助文本。
     fn help(&self) -> &'static str;
+    /// 帮助页分区；默认进入“其他能力”。
+    fn help_section(&self) -> &'static str {
+        "其他能力"
+    }
     /// 命中命令后的业务逻辑；返回 Ok(None) 表示不拦截，消息继续走 Agent。
     fn run<'a>(
         &'a self,
@@ -246,6 +254,10 @@ impl<T: SimpleCommand> CommandHandler for T {
 
     fn help(&self) -> &'static str {
         SimpleCommand::help(self)
+    }
+
+    fn help_section(&self) -> &'static str {
+        SimpleCommand::help_section(self)
     }
 
     fn handle<'a>(

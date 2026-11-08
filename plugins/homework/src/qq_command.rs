@@ -30,6 +30,10 @@ impl SimpleCommand for HomeworkQqCommand {
         "`/作业`：跨平台未完成作业清单（学习通 + 智慧树；需绑定身份，仅单聊）"
     }
 
+    fn help_section(&self) -> &'static str {
+        "课程与学习"
+    }
+
     async fn run(&self, arg: &str, ctx: &CommandContext<'_>) -> Result<Option<Reply>> {
         // 带参数不拦截：避免误吞自然语言，交给 Agent
         if !arg.is_empty() {

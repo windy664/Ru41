@@ -26,26 +26,48 @@ pub enum Command {
     Judge(String, usize),
 }
 
-const BUILTIN_HELP: &str = "## Ru41 机器人
+const BUILTIN_HELP: &str = "# Ru41 · 个人 AI 助理
 
-**基础指令**
-- `/帮助` 或 `/help`：查看这份说明
-- `/任务` 或 `/tasks`：最近 10 条任务
-- `/任务 <id>` 或 `/task <id>`：查看任务详情
-- `/取消 <id>` 或 `/cancel <id>`：取消任务
-- `/用量` 或 `/usage`：token 用量统计（单聊绑定后可用）
-- `/绑定 <口令>` 或 `/bind <口令>`：绑定个人身份
-- `/答复 <编号> <序号>`：答复审批/提问卡片（需绑定）
-- `/新建` 或 `/clear`：开始新对话";
+> 校园事务、学习资料、信息订阅与个人知识库，统一从这里调用。
 
-const HELP_FOOTER: &str = "> 直接描述你的任务即可，当前对话会自动保留上下文。";
+---
 
-/// 内置命令与装配层注册的扩展命令共同组成帮助文本。
+## 基础指令
+
+| 命令 | 用途 |
+|---|---|
+| `/帮助` · `/help` | 查看这份说明 |
+| `/任务` · `/tasks` | 最近 10 条任务 |
+| `/任务 <id>` · `/task <id>` | 查看任务详情 |
+| `/取消 <id>` · `/cancel <id>` | 取消任务 |
+| `/用量` · `/usage` | Token 用量与实际消耗（单聊绑定后可用） |
+| `/绑定 <口令>` · `/bind <口令>` | 绑定个人身份 |
+| `/答复 <编号> <序号>` | 答复审批或提问卡片（需绑定） |
+| `/新建` · `/clear` | 开始新对话 |";
+
+const HELP_FOOTER: &str = "---\n> 不必记命令，直接描述任务即可，例如“明天有什么课”或“整理这篇文章”。\n> 当前对话会自动保留上下文；发送 `/新建` 可重新开始。";
+const HELP_SECTIONS: &[&str] = &[
+    "记录与日程",
+    "课程与学习",
+    "信息与学习",
+    "校园生活",
+    "其他能力",
+];
+
+/// 内置命令与当前启用的扩展命令共同组成帮助文本，扩展命令由插件声明分区。
 pub fn help_text(handlers: &[Arc<dyn crate::ports::commands::CommandHandler>]) -> String {
     let mut text = BUILTIN_HELP.to_owned();
-    if !handlers.is_empty() {
-        text.push_str("\n\n**扩展指令**");
-        for handler in handlers {
+    for section in HELP_SECTIONS {
+        let mut entries = handlers
+            .iter()
+            .filter(|handler| handler.help_section() == *section)
+            .peekable();
+        if entries.peek().is_none() {
+            continue;
+        }
+        text.push_str("\n\n---\n\n## ");
+        text.push_str(section);
+        for handler in entries {
             text.push_str("\n- ");
             text.push_str(handler.help());
         }
