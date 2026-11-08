@@ -317,6 +317,7 @@ impl Worker {
             prompt,
             run_dir: run_dir.clone(),
             contract: claim.task.contract,
+            cancel: None,
         };
         // 活动流推送器：尾随底座的 events.jsonl，把执行过程实时写进 store，
         // QQ 网关的通知循环扫描后发回会话（像正常使用 codex 那样可见）。
@@ -343,6 +344,11 @@ impl Worker {
             ))
         };
         let agent_start = std::time::Instant::now();
+        // 协作式取消通道：适配器收到信号后走底座原生优雅终止（pi abort），
+        // 宽限结束后 future 仍被 drop，由 kill_on_drop 兜底硬杀。
+        let (cancel_tx, cancel_rx) = watch::channel(false);
+        let mut request = request;
+        request.cancel = Some(cancel_rx);
         let execution = agent.run(request);
         tokio::pin!(execution);
         let timeout = tokio::time::sleep(self.config.timeout);
@@ -351,17 +357,25 @@ impl Worker {
         poll.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
         // loop/break 结构：所有退出路径统一在循环外停掉活动流，避免泄漏推送任务。
         let outcome: Result<Option<String>> = loop {
+            macro_rules! abort_run {
+                ($error:expr) => {{
+                    let _ = cancel_tx.send(true);
+                    // 优雅终止宽限：适配器收尾（写回会话等）；超时照常失败。
+                    let _ = tokio::time::timeout(Duration::from_secs(3), &mut execution).await;
+                    break Err($error);
+                }};
+            }
             tokio::select! {
                 biased;
-                _ = shutdown.changed() => break Err(anyhow::anyhow!("worker shutting down")),
-                _ = &mut timeout => break Err(Ru41Error::Timeout.into()),
+                _ = shutdown.changed() => abort_run!(anyhow::anyhow!("worker shutting down")),
+                _ = &mut timeout => abort_run!(Ru41Error::Timeout.into()),
                 _ = poll.tick() => {
                     if *shutdown.borrow() {
-                        break Err(anyhow::anyhow!("worker shutting down"));
+                        abort_run!(anyhow::anyhow!("worker shutting down"));
                     }
                     match self.store.heartbeat(claim, now(), self.config.lease_secs) {
                         Ok(true) => {}
-                        Ok(false) => break Err(anyhow::anyhow!("task cancelled or lease lost")),
+                        Ok(false) => abort_run!(anyhow::anyhow!("task cancelled or lease lost")),
                         Err(error) => break Err(error),
                     }
                 }

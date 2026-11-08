@@ -26,6 +26,7 @@ fn request(dir: &Path) -> AgentRequest {
         run_dir: dir.into(),
         prompt: "测试 Unicode".into(),
         contract: RunContract::AnalysisV1,
+        cancel: None,
     }
 }
 #[tokio::test]

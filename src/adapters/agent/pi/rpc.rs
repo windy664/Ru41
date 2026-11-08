@@ -566,6 +566,7 @@ impl PiAgent {
                 .as_ref()
                 .map_or(&[][..], |context| context.skills.as_slice()),
         );
+        let mut cancel_rx = request.cancel.clone();
         let protocol = async {
             stdin
                 .write_all(
@@ -600,11 +601,25 @@ impl PiAgent {
                 let n = {
                     let mut limited = (&mut reader).take(1_048_577);
                     tokio::select! {
+                        biased;
                         n = limited.read_until(b'\n', &mut line) => n?,
                         _ = steer_tick.tick() => {
                             if let Some(run_context) = request.context.as_ref() {
                                 pump_steers(run_context, &mut stdin).await?;
                             }
+                            continue;
+                        }
+                        _ = async {
+                            match cancel_rx.as_mut() {
+                                Some(rx) => rx.changed().await.map(|_| ()).unwrap_or(()),
+                                None => std::future::pending::<()>().await,
+                            }
+                        } => {
+                            // 协作式取消：走 pi 原生 abort 让它收尾（落会话状态），
+                            // 宽限后仍不退出则由 kill_on_drop 兜底。
+                            let abort = format!("{}\n", json!({"id":"ru41-abort","type":"abort"}));
+                            let _ = stdin.write_all(abort.as_bytes()).await;
+                            let _ = stdin.flush().await;
                             continue;
                         }
                     }
