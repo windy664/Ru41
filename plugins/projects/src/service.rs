@@ -273,13 +273,53 @@ impl ProjectsTracker {
                 }
             }
             synced += 1;
-            // 分组迁移：只有新位置确认有内容后才删旧文件——
-            // 先删后写会把限流期的仓库 README 整个抹掉。
-            if write_ok && self.vault.remove_file(&stale_path).unwrap_or(false) {
+            // 分组迁移：只有新位置确认有内容后才动旧目录——先删后写会把
+            // 限流期的仓库内容整个抹掉。整目录搬迁（GitHub-Docs、人写笔记
+            // 一起带走），不是只删 README.md。
+            if write_ok && self.migrate_group(&entry, other)? {
                 updated.push(format!("{}（移至 {group}）", entry.name));
             }
         }
         Ok(synced)
+    }
+
+    /// 分组迁移：把旧分组目录的全部剩余文件搬到新位置（GitHub-Docs、人写
+    /// 笔记一起带走），再清掉旧目录。此前只删 README.md，剩下的文件让旧
+    /// 目录死而复生——Active/Archived 两边各挂一份（2026-11-08 实测服务器
+    /// 上 37 个重复目录）。目标已有同名文件时保留新位置版本，不互相覆盖。
+    /// 返回是否有实际文件搬迁（空幽灵目录只清理不算迁移）。
+    fn migrate_group(&self, entry: &ProjectEntry, other: &str) -> Result<bool> {
+        let old_rel = format!("{}/{other}/{}", self.config.projects_dir, entry.name);
+        let old_root = self.config.vault_root.join(&old_rel);
+        if !old_root.is_dir() {
+            return Ok(false);
+        }
+        let mut migrated = false;
+        let mut stack = vec![old_root.clone()];
+        while let Some(dir) = stack.pop() {
+            for item in std::fs::read_dir(&dir)?.flatten() {
+                let path = item.path();
+                if path.is_dir() {
+                    stack.push(path);
+                    continue;
+                }
+                let rel = path
+                    .strip_prefix(&old_root)
+                    .map_err(anyhow::Error::from)?
+                    .to_string_lossy()
+                    .replace('\\', "/");
+                let data = std::fs::read(&path)?;
+                let target = format!("{}/{rel}", entry.rel_dir);
+                if self.vault.read_bytes(&target)?.is_none() {
+                    self.vault.write_bytes(&target, &data)?;
+                }
+                self.vault.remove_file(&format!("{old_rel}/{rel}"))?;
+                migrated = true;
+            }
+        }
+        // 清残余空目录：git 不跟踪空目录，但服务器工作区会留幽灵目录。
+        let _ = std::fs::remove_dir_all(&old_root);
+        Ok(migrated)
     }
 
     /// 扫描项目库：projects_dir/<分组>/<项目>/ 下找带 `repo:` 的手工锚点笔记。
