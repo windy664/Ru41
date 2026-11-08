@@ -593,12 +593,22 @@ impl PiAgent {
             let mut usage: Option<TokenUsage> = None;
             let mut session_id: Option<String> = None;
             let mut asked_state = false;
+            let mut steer_tick = tokio::time::interval(std::time::Duration::from_secs(2));
+            steer_tick.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
             loop {
                 let mut line = Vec::new();
-                let n = (&mut reader)
-                    .take(1_048_577)
-                    .read_until(b'\n', &mut line)
-                    .await?;
+                let n = {
+                    let mut limited = (&mut reader).take(1_048_577);
+                    tokio::select! {
+                        n = limited.read_until(b'\n', &mut line) => n?,
+                        _ = steer_tick.tick() => {
+                            if let Some(run_context) = request.context.as_ref() {
+                                pump_steers(run_context, &mut stdin).await?;
+                            }
+                            continue;
+                        }
+                    }
+                };
                 ensure!(
                     n > 0,
                     Ru41Error::AgentProcess("Pi exited before completion".into())
@@ -769,6 +779,34 @@ impl PiAgent {
     }
 }
 
+/// steer 泵：把 QQ 侧写入的插话记录（steer 文档）注入运行中的 pi 进程。
+/// 用户续发的消息不再打断任务——插进去，agent 干完当前步骤自然看到。
+async fn pump_steers(context: &RunContext, stdin: &mut tokio::process::ChildStdin) -> Result<()> {
+    let Some(store) = &context.store else {
+        return Ok(());
+    };
+    for doc in store.documents("steer", 100)? {
+        if doc.value["run_id"].as_str() != Some(context.run_id.as_str())
+            || doc.value["status"] != "pending"
+        {
+            continue;
+        }
+        let text = doc.value["text"].as_str().unwrap_or_default();
+        if text.is_empty() {
+            continue;
+        }
+        let command =
+            json!({"id": format!("ru41-steer-{}", doc.id), "type": "steer", "message": text});
+        stdin.write_all(format!("{command}\n").as_bytes()).await?;
+        stdin.flush().await?;
+        let mut value = doc.value.clone();
+        value["status"] = json!("injected");
+        store.put_document("steer", &doc.id, Some(doc.revision), &value)?;
+        eprintln!("[pi] steer injected: {}", doc.id);
+    }
+    Ok(())
+}
+
 /// pi 原生交互（select/confirm）→ 宿主交互通道：卡片经 notify 路由发回会话，
 /// 用户点按钮（/答复）或超时由 dismiss 兜底——confirm 超时=拒绝、select 超时=
 /// 按 pi 协议的 cancelled 语义继续，运行都不中断。
@@ -882,6 +920,7 @@ mod tests {
                 resume_session_id: None,
                 skills: Vec::new(),
                 notify: None,
+                store: None,
             };
             (context, canned)
         }

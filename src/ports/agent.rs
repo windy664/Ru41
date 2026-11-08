@@ -100,4 +100,7 @@ pub struct RunContext {
     pub skills: Vec<crate::skills::SkillPackage>,
     /// 任务的通知路由：交互卡片按它发回会话；None 时交互只在 HTTP/API 可见。
     pub notify: Option<crate::domain::NotifyRoute>,
+    /// 运行期存储：steer 泵（把用户插话写进运行中的 pi 进程）等底座侧
+    /// 数据通道用；None 时该能力关闭（测试与一次性运行）。
+    pub store: Option<Arc<dyn crate::ports::storage::TaskStore>>,
 }

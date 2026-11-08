@@ -585,8 +585,20 @@ impl QqBot {
                 Ok(CoalesceOutcome::Buffered)
             }
             Action::Flush => {
-                let (receipt, _, _) = self.flush_coalesce_now(&key)?;
-                Ok(CoalesceOutcome::Receipt(receipt))
+                let (outcome, target, last_msg_id) = self.flush_coalesce_now(&key)?;
+                match outcome {
+                    FlushOutcome::Receipt(receipt) => Ok(CoalesceOutcome::Receipt(receipt)),
+                    FlushOutcome::Steered(task_id) => {
+                        // 同步 flush 路径也要给用户插话回执。
+                        self.reply(
+                            &target,
+                            &last_msg_id,
+                            &Reply::text(format!("📨 已插话给正在运行的任务 `#{task_id}`")),
+                        )
+                        .await?;
+                        Ok(CoalesceOutcome::Buffered)
+                    }
+                }
             }
         }
     }
@@ -605,16 +617,28 @@ impl QqBot {
                 _ => {}
             }
         }
-        let (receipt, target, last_msg_id) = self.flush_coalesce_now(key)?;
-        if let Some(text) = receipt.interrupt_text() {
-            self.reply(&target, &last_msg_id, &Reply::text(text))
+        let (outcome, target, last_msg_id) = self.flush_coalesce_now(key)?;
+        match outcome {
+            FlushOutcome::Receipt(receipt) => {
+                if let Some(text) = receipt.interrupt_text() {
+                    self.reply(&target, &last_msg_id, &Reply::text(text))
+                        .await?;
+                }
+            }
+            FlushOutcome::Steered(task_id) => {
+                self.reply(
+                    &target,
+                    &last_msg_id,
+                    &Reply::text(format!("📨 已插话给正在运行的任务 `#{task_id}`")),
+                )
                 .await?;
+            }
         }
         Ok(())
     }
 
-    /// 取出缓冲并合并入队；返回 (回执, target, 末条 msg_id)。
-    fn flush_coalesce_now(&self, key: &str) -> Result<(IngestReceipt, String, String)> {
+    /// 取出缓冲并合并入队（或插话）；返回 (出口, target, 末条 msg_id)。
+    fn flush_coalesce_now(&self, key: &str) -> Result<(FlushOutcome, String, String)> {
         let (target, items, is_c2c) = {
             let mut state = self
                 .coalesce
@@ -638,6 +662,30 @@ impl QqBot {
             .map(|item| item.prompt)
             .collect::<Vec<_>>()
             .join("\n\n");
+        // pi steer：会话正忙且跑的是 pi 底座——把合并后的消息插进活着的进程，
+        // 不打断不重跑（OpenMausBot 的 steer-first 语义）；其余情况维持
+        // 「取消旧任务 + 新任务重跑」。
+        if let Some(task) = self.steerable_task(&target)? {
+            let run_id = format!("run-{}-{}", task.id, task.active_attempt_id.unwrap_or(0));
+            let written = self.store.put_document(
+                "steer",
+                &last_msg_id,
+                None,
+                &serde_json::json!({
+                    "run_id": run_id,
+                    "task_id": task.id,
+                    "text": merged,
+                    "status": "pending",
+                    "notify": task.notify,
+                    "created_at": crate::util::now(),
+                }),
+            )?;
+            if written {
+                return Ok((FlushOutcome::Steered(task.id), target, last_msg_id));
+            }
+            // 同 msg_id 已写过（flush 重试）：按已插话处理，不重复写。
+            return Ok((FlushOutcome::Steered(task.id), target, last_msg_id));
+        }
         let event = if is_c2c {
             GatewayEvent::C2cMessage {
                 msg_id: last_msg_id.clone(),
@@ -656,7 +704,16 @@ impl QqBot {
             }
         };
         let receipt = self.ingest(&event)?;
-        Ok((receipt, target, last_msg_id))
+        Ok((FlushOutcome::Receipt(receipt), target, last_msg_id))
+    }
+
+    /// 可插话的任务：同会话正在运行的 pi 任务（只有运行中的进程才插得进去）。
+    fn steerable_task(&self, target: &str) -> Result<Option<crate::domain::Task>> {
+        Ok(self
+            .store
+            .list(50)?
+            .into_iter()
+            .find(|task| is_steerable(task, target)))
     }
 
     /// 会话是否有未完成（排队/运行/等待重试）的任务。
@@ -874,6 +931,13 @@ enum CoalesceOutcome {
     Receipt(IngestReceipt),
 }
 
+/// flush 的出口：合并入队（可能打断旧任务），或插话进正在运行的 pi 进程。
+enum FlushOutcome {
+    Receipt(IngestReceipt),
+    /// 已写入 steer 记录；括号里是目标任务 id。
+    Steered(i64),
+}
+
 /// 把消息正文与附件渲染成 prompt：语音用平台 ASR 转写，文件/视频给下载地址
 /// 让 agent 自取。图片不走这里（image_url 有独立通道，由消费方处理）。
 /// 合并排水与 ingest 共用同一份渲染，保证合并后的 prompt 形态一致。
@@ -921,6 +985,14 @@ fn render_message_prompt(content: &str, attachments: &[gateway::MessageAttachmen
     prompt
 }
 
+/// 可插话判定（纯函数，可测）：运行中的 pi 任务且属于该会话。
+/// 排队中的不行（进程还没起）、codex 不行（适配器没接 steer）。
+fn is_steerable(task: &crate::domain::Task, target: &str) -> bool {
+    task.status == crate::domain::TaskStatus::Running
+        && task.backend_id.starts_with("pi")
+        && task.notify.as_ref().map(|route| route.target.as_str()) == Some(target)
+}
+
 /// 消息入队后的回执：任务 id、是否新创建、打断数量。
 /// 默认不回执（用户直接看活动流）；只有打断时才需要即时说明。
 pub struct IngestReceipt {
@@ -946,6 +1018,28 @@ mod tests {
         reconnect_delay,
     };
     use std::time::Duration;
+
+    pub(crate) fn task_stub() -> crate::domain::Task {
+        crate::domain::Task {
+            id: 1,
+            request_key: "k".into(),
+            backend_id: "pi".into(),
+            contract: crate::domain::RunContract::AnalysisV1,
+            prompt: "p".into(),
+            status: crate::domain::TaskStatus::Queued,
+            created_at: String::new(),
+            updated_at: String::new(),
+            attempt_count: 0,
+            max_attempts: 3,
+            active_attempt_id: Some(1),
+            lease_until: None,
+            available_at: 0,
+            result: None,
+            last_error: None,
+            notify: None,
+            notified_at: None,
+        }
+    }
 
     #[test]
     fn coalesce_idle_ingests_immediately() {
@@ -980,6 +1074,30 @@ mod tests {
             coalesce_decision(false, 2, Duration::from_secs(3)),
             CoalesceDecision::Buffer
         );
+    }
+
+    #[test]
+    fn steerable_only_for_running_pi_in_same_conversation() {
+        use crate::domain::{NotifyRoute, TaskStatus};
+        let mut task = super::tests::task_stub();
+        task.status = TaskStatus::Running;
+        task.backend_id = "pi".into();
+        task.notify = Some(NotifyRoute {
+            channel: "qq".into(),
+            target: "user:U1".into(),
+            msg_id: None,
+        });
+        assert!(super::is_steerable(&task, "user:U1"));
+        // 排队中的插不进去。
+        task.status = TaskStatus::Queued;
+        assert!(!super::is_steerable(&task, "user:U1"));
+        // codex 底座没接 steer。
+        task.status = TaskStatus::Running;
+        task.backend_id = "codex".into();
+        assert!(!super::is_steerable(&task, "user:U1"));
+        // 别的会话不算。
+        task.backend_id = "pi".into();
+        assert!(!super::is_steerable(&task, "user:U2"));
     }
 
     #[test]

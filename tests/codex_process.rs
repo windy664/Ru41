@@ -405,6 +405,7 @@ printf '%s\n' '{"type":"thread.started","thread_id":"thread-abc"}' '{"type":"ite
             }],
         }],
         notify: None,
+        store: None,
     });
     let output = agent.run(request).await.unwrap();
     assert!(
@@ -465,6 +466,7 @@ printf '%s' 'resumed-from-file' > "$output"
         resume_session_id: Some("thread-abc".into()),
         skills: vec![],
         notify: None,
+        store: None,
     });
     let output = agent.run(request).await.unwrap();
     assert_eq!(output.result.summary, "resumed-from-file");

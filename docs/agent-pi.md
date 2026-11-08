@@ -35,6 +35,9 @@ ru41 --config ru41.toml worker --once
 - 交互（2026-11-08 起）：pi 原生 `extension_ui_request` 的 `select`/`confirm` 经宿主交互
   通道转发（QQ 卡片 + `/答复`），confirm 超时=拒绝、select 超时=pi 协议 cancelled；
   `input`/`editor` 等其余 UI 方法按 cancelled 回复，运行不中断。
+- 插话（2026-11-08 起）：会话繁忙时用户续发的消息经合并排水（12s 窗口）写入 `steer`
+  记录，运行循环每 2s 泵入 pi 进程（`steer` 命令），不再打断重跑；
+  超 30s 未消费的孤儿插话由 dispatcher 转成新任务，话不落空。
 - 超时、取消、租约与回填复用 Worker；取消时终止进程组并回收直接子进程。
 - stdout 按有界 JSONL 读取，stderr 持续排空并限制总量。
 - 关闭工具属于 Pi 启动配置，不是独立的操作系统沙箱；不可信可执行程序仍可能读取宿主环境。
