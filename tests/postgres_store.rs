@@ -201,6 +201,9 @@ fn interaction_reply_is_fenced_by_current_attempt() {
         expires_at: 200,
         status: "pending".into(),
         response: None,
+        notify: None,
+        dismiss_response: None,
+        notified: false,
     };
     store
         .put_document(

@@ -311,6 +311,7 @@ impl Worker {
                 conversation_id: conversation_id.clone(),
                 resume_session_id,
                 skills: self.backends.skills.clone(),
+                notify: claim.task.notify.clone(),
             }),
             prompt,
             run_dir: run_dir.clone(),

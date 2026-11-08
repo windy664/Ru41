@@ -56,7 +56,7 @@ pub struct Task {
 }
 
 /// 任务终态后的渠道通知路由；target 格式由各渠道适配器定义。
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
 pub struct NotifyRoute {
     pub channel: String,
     pub target: String,

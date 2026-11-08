@@ -98,4 +98,6 @@ pub struct RunContext {
     pub conversation_id: Option<String>,
     pub resume_session_id: Option<String>,
     pub skills: Vec<crate::skills::SkillPackage>,
+    /// 任务的通知路由：交互卡片按它发回会话；None 时交互只在 HTTP/API 可见。
+    pub notify: Option<crate::domain::NotifyRoute>,
 }
