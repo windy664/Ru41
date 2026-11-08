@@ -55,10 +55,7 @@ impl XfyunClient {
         // 还有报名中的）。两个 tab 都渲染，按 id 去重合并。
         let base = url.split('?').next().unwrap_or(url);
         let mut items: Vec<FeedItem> = Vec::new();
-        for target in [
-            url.to_owned(),
-            format!("{base}?typeSelected=application"),
-        ] {
+        for target in [url.to_owned(), format!("{base}?typeSelected=application")] {
             let body = self
                 .http
                 .post(format!("{}/content", self.browser_url))
