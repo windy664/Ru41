@@ -20,7 +20,6 @@ use ru41::{
     app::task::TaskService,
     bootstrap::assembly,
     domain::NotifyRoute,
-    ingress::schedule::PollJob,
     ports::{channel::NotifyChannel, storage::TaskStore},
 };
 use std::sync::Arc;
@@ -1116,19 +1115,15 @@ fn eval_prompt(questions: &str, translations: &str) -> String {
     )
 }
 
-impl PollJob for YoutubeReviewJob {
-    /// 15 分钟一跳；日报窗口 15 分钟宽，保证每天必有一次落在窗口内。
-    fn job_interval(&self) -> std::time::Duration {
+impl ru41::ingress::schedule::SimplePollJob for YoutubeReviewJob {
+    type Report = serde_json::Value;
+
+    fn interval(&self) -> std::time::Duration {
         std::time::Duration::from_secs(15 * 60)
     }
 
-    fn poll_json(
-        &self,
-    ) -> std::pin::Pin<
-        Box<dyn std::future::Future<Output = anyhow::Result<serde_json::Value>> + Send + '_>,
-    > {
-        let owned = self.clone();
-        ru41::plugins::bridge(async move { owned.review_pass().await })
+    async fn poll(&self) -> anyhow::Result<Self::Report> {
+        self.review_pass().await
     }
 }
 

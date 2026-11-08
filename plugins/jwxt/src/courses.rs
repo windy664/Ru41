@@ -90,6 +90,7 @@ pub struct CourseSyncReport {
 }
 
 /// 课程目录同步器。
+#[derive(Clone)]
 pub struct CourseSyncService {
     store: Arc<dyn TaskStore>,
     vault: Arc<dyn Vault>,
@@ -276,15 +277,14 @@ pub fn render_overview(entries: &[CourseEntry]) -> String {
 }
 
 /// 轮询任务接口：课程目录同步每小时跑一次。
-impl ru41::ingress::schedule::PollJob for CourseSyncService {
-    fn job_interval(&self) -> std::time::Duration {
+impl ru41::ingress::schedule::SimplePollJob for CourseSyncService {
+    type Report = CourseSyncReport;
+
+    fn interval(&self) -> std::time::Duration {
         std::time::Duration::from_secs(3_600)
     }
 
-    fn poll_json(
-        &self,
-    ) -> std::pin::Pin<Box<dyn std::future::Future<Output = Result<serde_json::Value>> + Send + '_>>
-    {
-        Box::pin(async move { Ok(serde_json::to_value(self.sync().await?)?) })
+    async fn poll(&self) -> anyhow::Result<Self::Report> {
+        self.sync().await
     }
 }

@@ -447,18 +447,15 @@ pub fn format_loan_reply(page: &crate::source::LoanPage) -> ReplyMarkup {
     markup
 }
 
-impl ru41::ingress::schedule::PollJob for LibraryTracker {
-    fn job_interval(&self) -> std::time::Duration {
+impl ru41::ingress::schedule::SimplePollJob for LibraryTracker {
+    type Report = LibraryPollReport;
+
+    fn interval(&self) -> std::time::Duration {
         std::time::Duration::from_secs(self.config.interval_secs)
     }
 
-    fn poll_json(
-        &self,
-    ) -> std::pin::Pin<
-        Box<dyn std::future::Future<Output = anyhow::Result<serde_json::Value>> + Send + '_>,
-    > {
-        let owned = self.clone();
-        ru41::plugins::bridge(async move { Ok(serde_json::to_value(owned.poll_once().await?)?) })
+    async fn poll(&self) -> anyhow::Result<Self::Report> {
+        self.poll_once().await
     }
 }
 

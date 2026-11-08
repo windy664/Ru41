@@ -74,3 +74,32 @@ where
     }
     Ok(())
 }
+
+/// 声明式定时任务：只填间隔与单轮业务逻辑，bridge（cdylib reactor 边界）
+/// 与报告序列化的样板由本 crate 的统一实现代劳。
+///
+/// 实现它即自动获得 [`PollJob`]，装配层不用改。2026-11-04 的 class-remind
+/// 崩溃循环就是手抄 poll_json 时漏了 bridge——统一实现后这个错在类型上
+/// 不可能再犯。
+pub trait SimplePollJob: Send + Sync + Clone + 'static {
+    /// 单轮报告：序列化后作为 `schedule run` 输出与容器日志行。
+    type Report: serde::Serialize + Send + 'static;
+    /// 轮询间隔；`run_periodic` 有 30s 下限兜底。
+    fn interval(&self) -> Duration;
+    /// 单轮业务逻辑；经 bridge 跑在插件自己的 tokio 上，可直接触网。
+    fn poll(&self) -> impl Future<Output = Result<Self::Report>> + Send + '_;
+}
+
+impl<T: SimplePollJob> PollJob for T {
+    fn job_interval(&self) -> Duration {
+        self.interval()
+    }
+
+    fn poll_json(&self) -> Pin<Box<dyn Future<Output = Result<serde_json::Value>> + Send + '_>> {
+        let owned = self.clone();
+        Box::pin(async move {
+            crate::bridge::bridge(async move { Ok(serde_json::to_value(owned.poll().await?)?) })
+                .await
+        })
+    }
+}

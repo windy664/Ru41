@@ -157,6 +157,25 @@ impl SimpleCommand for FooQqCommand {
 宿主不通用，漏了第一个 reqwest await 就炸网关）——这一步样板代劳不了。
 参考：plugins/pagewatch（最简）、plugins/library（bridge + 多命令词）。
 
+## 定时任务（SimplePollJob）
+
+`tracker` 返回的轮询任务统一实现 `ingress::schedule::SimplePollJob`
+（2026-11-08 起）：只填 `interval()` 和 `poll()`，bridge 与报告序列化由
+统一实现代劳，实现它即自动获得 `PollJob`——手抄 `poll_json` 漏 bridge
+造成的崩溃循环（2026-11-04 class-remind）在类型上不可能再犯。
+
+```rust
+impl ru41::ingress::schedule::SimplePollJob for FooTracker {
+    type Report = FooReport;              // serde::Serialize + Send + 'static
+    fn interval(&self) -> std::time::Duration {
+        std::time::Duration::from_secs(self.config.interval_secs)
+    }
+    async fn poll(&self) -> anyhow::Result<Self::Report> {
+        self.poll_once().await            // 业务方法保持原样，可直接触网
+    }
+}
+```
+
 ## 部署拓扑
 
 插件目录默认 `/etc/ru41/plugins`（`[plugins] dir` 可改、`enabled = false` 可关）。

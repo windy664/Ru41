@@ -115,17 +115,15 @@ impl ProgramsService {
     }
 }
 
-impl ru41::ingress::schedule::PollJob for ProgramsService {
-    fn job_interval(&self) -> std::time::Duration {
+impl ru41::ingress::schedule::SimplePollJob for ProgramsService {
+    type Report = serde_json::Value;
+
+    fn interval(&self) -> std::time::Duration {
         std::time::Duration::from_secs(self.interval_secs)
     }
 
-    fn poll_json(
-        &self,
-    ) -> std::pin::Pin<Box<dyn std::future::Future<Output = Result<serde_json::Value>> + Send + '_>>
-    {
-        let owned = self.clone();
-        ru41::plugins::bridge(async move { owned.poll_once().await })
+    async fn poll(&self) -> anyhow::Result<Self::Report> {
+        self.poll_once().await
     }
 }
 
