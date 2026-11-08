@@ -333,3 +333,19 @@ fn homework_items_are_hidden_from_personal_todo_views() {
     assert_eq!(due.len(), 1);
     assert_eq!(due[0].id, personal.id);
 }
+
+#[test]
+fn rename_updates_title_by_exact_id() {
+    let (_dir, store, options, now) = fixture();
+    let service = TodoService::new(store, options);
+    let item = add(&service, "旧标题", None, now, &options);
+
+    let renamed = service.rename(&item.id, "  新标题  ", now + 60).unwrap();
+    assert_eq!(renamed.title, "新标题");
+    assert_eq!(renamed.status, TodoStatus::Active);
+    assert!(renamed.updated_at > item.updated_at);
+
+    // 空标题拒绝；未知 id 报错。
+    assert!(service.rename(&item.id, "   ", now + 120).is_err());
+    assert!(service.rename("todo_missing", "x", now + 120).is_err());
+}

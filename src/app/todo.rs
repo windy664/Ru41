@@ -232,6 +232,16 @@ impl TodoService {
         })
     }
 
+    /// Obsidian 视图里的标题编辑按锚点 id 写回：只改标题，不动状态与时间。
+    pub fn rename(&self, id: &str, title: &str, now: i64) -> Result<TodoItem> {
+        let title = title.trim();
+        ensure!(!title.is_empty(), "todo title is required");
+        self.update_exact(id, now, |item| {
+            item.title = title.to_owned();
+            Ok(())
+        })
+    }
+
     /// 已到提醒时间且本提醒尚未送达的活跃事项。
     pub fn due_reminders(&self, now: i64, limit: usize) -> Result<Vec<TodoItem>> {
         ensure!(
