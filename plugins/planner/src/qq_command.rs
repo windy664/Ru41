@@ -9,7 +9,7 @@ use ru41::{
         },
     },
     ports::{
-        commands::{CommandContext, MarkupButton, Reply, ReplyMarkup, SimpleCommand},
+        commands::{CommandContext, Reply, SimpleCommand},
         storage::TaskStore,
     },
 };
@@ -246,14 +246,12 @@ impl TodoQqCommand {
             },
             now,
         )?;
-        Ok(Reply::with_markup(
-            format!(
-                "## 已加入待办收件箱\n\n- **{}**\n- **ID**：`{}`\n- 查看：`/待办 收件箱`",
-                item.title,
-                item.short_id()
-            ),
-            done_markup(std::slice::from_ref(&item)),
-        ))
+        Ok(Reply::text(format!(
+            "## 已加入待办收件箱\n\n- **{}**\n- **ID**：`{}`\n- 查看：`/待办 收件箱`\n- 完成：{}",
+            item.title,
+            item.short_id(),
+            done_chip(&item)
+        )))
     }
 
     fn list_reply(
@@ -266,11 +264,12 @@ impl TodoQqCommand {
         if arg.trim().is_empty() {
             let overview = service.overview(now, 20)?;
             let today_events = events.today(now)?;
-            let markup = done_markup(&overview.today);
-            return Ok(Reply::with_markup(
-                format_overview(&overview, &today_events, now, self.options),
-                markup,
-            ));
+            return Ok(Reply::text(format_overview(
+                &overview,
+                &today_events,
+                now,
+                self.options,
+            )));
         }
         let Some(view) = parse_view(arg) else {
             return Ok(Reply::text(format!(
@@ -287,10 +286,7 @@ impl TodoQqCommand {
             TodoView::Inbox => "收件箱",
             TodoView::All => "全部待办",
         };
-        Ok(Reply::with_markup(
-            format_items(title, &items, now, self.options),
-            done_markup(&items),
-        ))
+        Ok(Reply::text(format_items(title, &items, now, self.options)))
     }
 
     fn add_reply(
@@ -394,6 +390,15 @@ impl TodoQqCommand {
                 if let Some(location) = &occurrence.location {
                     line.push_str(&format!(" @ {location}"));
                 }
+                // 文本内「取消日程」指令标签：点击即发指令，不再占底部键盘。
+                let short = occurrence
+                    .event_id
+                    .strip_prefix("evt_")
+                    .unwrap_or(&occurrence.event_id);
+                line.push_str(&format!(
+                    "　{}",
+                    cmd_enter_chip(&format!("/取消日程 {short}"))
+                ));
                 lines.push(line);
             }
         }
@@ -410,31 +415,29 @@ impl TodoQqCommand {
             lines.push(format!("\n### 📚 课表（{} 天内有课）", courses.len()));
             lines.extend(courses);
         }
-        let mut markup = ReplyMarkup::new();
-        for occurrence in occurrences.iter().take(4) {
-            let short = occurrence
-                .event_id
-                .strip_prefix("evt_")
-                .unwrap_or(&occurrence.event_id);
-            markup.push_row(vec![MarkupButton::new(
-                format!("取消日程 {}", occurrence.title),
-                format!("/取消日程 {short}"),
-            )]);
-        }
-        Ok(Reply::with_markup(lines.join("\n"), markup))
+        Ok(Reply::text(lines.join("\n")))
     }
 }
 
-/// 待办「完成」按钮：每个待办一行，最多 4 行（QQ 键盘上限）。
-fn done_markup(items: &[TodoItem]) -> ReplyMarkup {
-    let mut markup = ReplyMarkup::new();
-    for item in items.iter().take(4) {
-        markup.push_row(vec![MarkupButton::new(
-            format!("完成 {}", item.title),
-            format!("/完成 {}", item.short_id()),
-        )]);
+/// 待办「完成」入口：QQ markdown 文本内回车指令标签，点击即以用户身份发出
+/// `/完成 <id>`（官方文本交互能力，仅单聊支持；待办本来就限定单聊）。
+/// text 参数按文档要求 urlencode。
+fn done_chip(item: &TodoItem) -> String {
+    cmd_enter_chip(&format!("/完成 {}", item.short_id()))
+}
+
+/// 拼 `<qqbot-cmd-enter>` 标签；text 参数 urlencode（保留 unreserved 字符）。
+fn cmd_enter_chip(command: &str) -> String {
+    let mut encoded = String::with_capacity(command.len() * 3);
+    for byte in command.bytes() {
+        match byte {
+            b'A'..=b'Z' | b'a'..=b'z' | b'0'..=b'9' | b'-' | b'_' | b'.' | b'~' => {
+                encoded.push(byte as char)
+            }
+            _ => encoded.push_str(&format!("%{byte:02X}")),
+        }
     }
-    markup
+    format!("<qqbot-cmd-enter text=\"{encoded}\" />")
 }
 
 /// 时间在先：依次尝试前缀 1..=3 个空白分隔词作为时间文本，命中后其余为标题。
@@ -588,13 +591,18 @@ fn format_item(item: &TodoItem, now: i64, options: TodoOptions) -> String {
         TodoPriority::Low => "，低优先级",
         TodoPriority::Normal => "",
     };
-    format!(
+    let mut line = format!(
         "- `{}` **{}** — {}{}",
         item.short_id(),
         item.title,
         label,
         priority
-    )
+    );
+    // 活跃条目行尾挂文本内「完成」指令标签：点击即完成，突破底部键盘行数上限。
+    if item.status == TodoStatus::Active {
+        line.push_str(&format!("　{}", done_chip(item)));
+    }
+    line
 }
 
 fn usage() -> String {
@@ -606,4 +614,23 @@ fn usage() -> String {
 
 fn usage_views() -> String {
     "今日|近期|长期|逾期|收件箱|全部".to_owned()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::cmd_enter_chip;
+
+    #[test]
+    fn cmd_enter_chip_urlencodes_text() {
+        let chip = cmd_enter_chip("/完成 abc123");
+        assert_eq!(
+            chip,
+            "<qqbot-cmd-enter text=\"%2F%E5%AE%8C%E6%88%90%20abc123\" />"
+        );
+        // 字母数字与 unreserved 字符不编码，「/」与空格编码。
+        assert_eq!(
+            cmd_enter_chip("/done a1-b2_c3.4~"),
+            "<qqbot-cmd-enter text=\"%2Fdone%20a1-b2_c3.4~\" />"
+        );
+    }
 }
