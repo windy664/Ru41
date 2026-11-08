@@ -251,11 +251,16 @@ impl TodoQqCommand {
             },
             now,
         )?;
+        // 回执 = 记入确认 + 当前完整待办清单；ID 与查看指令没有信息量，不展示。
+        let items: Vec<TodoItem> = service
+            .list(TodoView::All, now, 50)?
+            .into_iter()
+            .filter(|todo| todo.status == TodoStatus::Active)
+            .collect();
         Ok(Reply::text(format!(
-            "## 已记入待办\n\n- {} **{}**\n- **ID**：`{}`\n- 查看：`/待办`（无截止时间，排在未排期）",
-            done_chip(&item),
-            item.title,
-            item.short_id()
+            "## ✅ 已记入：{}\n\n{}",
+            truncate_title(&item.title, 14),
+            format_items("待办", &items, now, self.options)
         )))
     }
 

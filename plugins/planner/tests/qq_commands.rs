@@ -326,8 +326,9 @@ async fn quick_note_enters_todo_inbox_without_agent_or_schedule() {
         .await
         .unwrap()
         .unwrap();
-    assert!(reply.text.contains("已记入待办"));
-    assert!(reply.text.contains("/待办"));
+    assert!(reply.text.contains("✅ 已记入：有空整理一下英文播客订阅"));
+    // 回执下方直接是当前完整待办清单。
+    assert!(reply.text.contains("## 待办（1）"));
     // 行首勾选框：cmd-input 标签，点击把 /完成 <id> 填进输入框。
     assert!(
         reply
