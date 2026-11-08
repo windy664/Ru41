@@ -36,6 +36,7 @@ fn request(dir: &Path) -> AgentRequest {
         prompt: "hello".into(),
         run_dir: run,
         contract: ru41::domain::RunContract::AnalysisV1,
+        cancel: None,
     }
 }
 

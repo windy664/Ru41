@@ -186,6 +186,7 @@ async fn model_smoke(backends: &BackendRegistry, default_backend: &str) -> Resul
         prompt: "Return only a JSON object with summary set to ok.".into(),
         run_dir: run_dir.clone(),
         contract: RunContract::AnalysisV1,
+        cancel: None,
     };
     let result = tokio::time::timeout(Duration::from_secs(120), backend.run(request)).await;
     let _ = tokio::fs::remove_dir_all(&run_dir).await;

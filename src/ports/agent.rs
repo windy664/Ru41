@@ -18,6 +18,10 @@ pub struct AgentRequest {
     pub prompt: String,
     pub run_dir: PathBuf,
     pub contract: RunContract,
+    /// 协作式取消：worker 在超时/取消/停机时置位，适配器收到后应走底座
+    /// 原生的优雅终止（pi 的 abort 命令），而不是等 future 被 drop 后
+    /// 由 kill_on_drop 直接 SIGKILL。None 时只能硬杀。
+    pub cancel: Option<tokio::sync::watch::Receiver<bool>>,
 }
 
 /// 一次 agent 运行的 token 用量，类型与提取逻辑见 [`crate::domain::TokenUsage`]。
