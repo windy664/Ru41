@@ -127,9 +127,7 @@ impl SimpleCommand for TodoQqCommand {
             let service = self.service(ctx.store);
             let now = ru41::util::now();
             let reply = match verb {
-                "待办" | "todo" => {
-                    self.list_reply(&service, &self.event_service(ctx.store), arg, now)?
-                }
+                "待办" | "todo" => self.list_reply(&service, arg, now)?,
                 "记日程" | "加日程" | "schedule-add" => {
                     self.event_add_reply(&self.event_service(ctx.store), arg, ctx, now)?
                 }
@@ -254,22 +252,10 @@ impl TodoQqCommand {
         )))
     }
 
-    fn list_reply(
-        &self,
-        service: &TodoService,
-        events: &ScheduleService,
-        arg: &str,
-        now: i64,
-    ) -> Result<Reply> {
+    fn list_reply(&self, service: &TodoService, arg: &str, now: i64) -> Result<Reply> {
         if arg.trim().is_empty() {
             let overview = service.overview(now, 20)?;
-            let today_events = events.today(now)?;
-            return Ok(Reply::text(format_overview(
-                &overview,
-                &today_events,
-                now,
-                self.options,
-            )));
+            return Ok(Reply::text(format_overview(&overview, now, self.options)));
         }
         let Some(view) = parse_view(arg) else {
             return Ok(Reply::text(format!(
@@ -529,12 +515,11 @@ fn split_selector_and_time(arg: &str) -> Option<(&str, &str)> {
 
 fn format_overview(
     overview: &ru41::domain::todo::TodoOverview,
-    today_events: &[ru41::domain::schedule::EventOccurrence],
     now: i64,
     options: TodoOptions,
 ) -> String {
-    if overview.active_count() == 0 && today_events.is_empty() {
-        return "## 待办摘要\n\n> 暂无未完成待办与今日行程".to_owned();
+    if overview.active_count() == 0 {
+        return "## 待办摘要\n\n> 暂无未完成待办".to_owned();
     }
     let mut lines = vec![format!(
         "## 待办摘要\n\n> 共 {} 项未完成",
@@ -545,26 +530,6 @@ fn format_overview(
     push_section(&mut lines, "近期", &overview.recent, now, options);
     push_section(&mut lines, "长期", &overview.long_term, now, options);
     push_section(&mut lines, "收件箱", &overview.inbox, now, options);
-    lines.push(format!("\n### 今日行程（{}）", today_events.len()));
-    if today_events.is_empty() {
-        lines.push("> 暂无".to_owned());
-    } else {
-        for occurrence in today_events {
-            let mut line = format!(
-                "- {} **{}**",
-                event_time_label(
-                    occurrence.starts_at,
-                    occurrence.recurring,
-                    options.offset_seconds
-                ),
-                occurrence.title
-            );
-            if let Some(location) = &occurrence.location {
-                line.push_str(&format!(" @ {location}"));
-            }
-            lines.push(line);
-        }
-    }
     lines.join("\n")
 }
 
@@ -617,7 +582,7 @@ fn format_item(item: &TodoItem, now: i64, options: TodoOptions) -> String {
 
 fn usage() -> String {
     format!(
-        "## 待办用法\n\n- `/待办`：今日、逾期、近期、长期摘要（含今日行程）\n- `/待办 <{}>`\n- `/记待办 [时间] <内容>`\n- `/完成 <待办ID>`\n- `/推迟 <待办ID> 到 <时间>`\n- `/取消待办 <待办ID>`\n\n## 日程用法\n\n- `/日程 [今天|明天|N天]`：今日起行程\n- `/记日程 <时间> <标题>`：如 `明天14:00-16:00 班会`、`每周二14:00-15:40 体育课`\n- `/取消日程 <日程ID>`",
+        "## 待办用法\n\n- `/待办`：今日、逾期、近期、长期、收件箱摘要\n- `/待办 <{}>`\n- `/记待办 [时间] <内容>`\n- `/完成 <待办ID>`\n- `/推迟 <待办ID> 到 <时间>`\n- `/取消待办 <待办ID>`\n\n## 日程用法\n\n- `/日程 [今天|明天|N天]`：今日起行程\n- `/记日程 <时间> <标题>`：如 `明天14:00-16:00 班会`、`每周二14:00-15:40 体育课`\n- `/取消日程 <日程ID>`",
         usage_views()
     )
 }
