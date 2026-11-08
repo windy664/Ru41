@@ -88,11 +88,6 @@ pub trait Vault: Send + Sync {
     fn read_file_at(&self, at: &str, relative: &str) -> Result<Option<String>>;
     /// 读取 Vault 内文件；不存在返回 None。只读不入锁。
     fn read_file(&self, relative: &str) -> Result<Option<String>>;
-    /// 读取 Vault 内文件的原始字节（含二进制附件）；不存在返回 None。
-    /// 默认实现经 `read_file` 兜底（二进制会失败/失真），真实实现应覆盖。
-    fn read_bytes(&self, relative: &str) -> Result<Option<Vec<u8>>> {
-        Ok(self.read_file(relative)?.map(String::into_bytes))
-    }
     /// 写入 Vault 内文件（自动创建父目录）；不写锁外目录，提交推送由调用方负责。
     fn write_file(&self, relative: &str, content: &str) -> Result<()>;
     /// 写入 Vault 内二进制文件（附件等）；路径与锁语义同 `write_file`。
