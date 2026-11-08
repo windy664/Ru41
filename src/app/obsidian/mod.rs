@@ -154,12 +154,15 @@ pub struct ObsidianPollReport {
 /// 处理状态：records 文档 obsidian_state:main。
 #[derive(Debug, Default, Clone, serde::Serialize, serde::Deserialize)]
 pub(crate) struct ObsidianState {
-    /// 已处理（含跳过）到的远端提交；空表示尚未建立基线。
+    /// 已同步/索引到的远端提交；空表示尚未建立基线，不作为整理触发器。
     #[serde(default)]
     pub(crate) processed_sha: String,
     /// 正在由 Agent 整理的提交。
     #[serde(default)]
     pub(crate) pending: Option<PendingOrganize>,
+    /// 最近一次完成每周整理的时间；0 表示尚未整理，首轮立即执行。
+    #[serde(default)]
+    pub(crate) last_organized_at: i64,
     /// 最近一次失败/冲突已通知的目标提交（同一提交不重复通知）。
     #[serde(default)]
     pub(crate) failed_sha: Option<String>,
@@ -317,9 +320,16 @@ impl ObsidianService {
             report.notified = notified;
             report.committed = action == "committed";
             report.changed_files = pending.files.len();
-        } else if target != state.processed_sha {
-            report.action = self.handle_new_head(&mut state, &target).await?;
-            report.changed_files = state.pending.as_ref().map(|p| p.files.len()).unwrap_or(0);
+        } else {
+            if target != state.processed_sha {
+                report.action = self.handle_new_head(&mut state, &target).await?;
+            }
+            // Git 同步仍每轮进行，AI 整理只按七天周期启动；到点时扫描
+            // 当前 Inbox 全量文件，不能依赖新提交 diff，否则周期内写入会漏掉。
+            if self.organize_due(&state) {
+                report.action = self.start_organize(&mut state, &target).await?;
+                report.changed_files = state.pending.as_ref().map(|p| p.files.len()).unwrap_or(0);
+            }
         }
         self.maybe_reindex(&mut state, &head_before, &target, report.committed);
         self.save_state(&state)?;
