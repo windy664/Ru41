@@ -27,14 +27,14 @@ ru41 --config ru41.toml worker --once
 
 认证、模型提供方和自定义 API 配置由 Pi 原生环境变量与配置管理，Ru41 不复制密钥。启用后同一 Worker 注册表包含 Codex 与 Pi；默认不启用 Pi。
 
-## 首版范围
+## 当前范围
 
 - 只实现 analysis_v1：输入脱敏后的文本，输出经校验的 JSON summary。
 - 不把 prompt 接受回执或 agent_end 当作完成；等待 agent_settled，再验证最终 assistant message 的 stopReason 和内容。
-- 无会话持久化、无工具、无扩展/MCP/技能/上下文文件发现。不声明恢复能力。
-- 交互（2026-11-08 起）：pi 原生 `extension_ui_request` 的 `select`/`confirm` 经宿主交互
-  通道转发（QQ 卡片 + `/答复`），confirm 超时=拒绝、select 超时=pi 协议 cancelled；
-  `input`/`editor` 等其余 UI 方法按 cancelled 回复，运行不中断。
+- 工具按配置白名单开放（生产含 `read,write,edit,bash,browser_execute`）；扩展只显式加载配置写下的文件，不做扩展发现。
+- 浏览器走 Pi 生态的 `pi-chrome-use` 扩展：Pi 原生拿到 `browser_execute` 工具，实际 Chromium 是 Ru41 部署的共享 `ru41-browser` 容器，经 CDP 连接。
+- 会话持久化可选：`session = true` 时通过 `get_state` 取会话 ID，后续按 `resume_session_id` 用 `--session` 续跑；会话底座单独注册为 `pi-session`。
+- 交互（2026-11-08 起）：pi 原生 `extension_ui_request` 的 `select`/`confirm`/`input`/`editor` 经宿主交互通道转发（QQ 卡片 + `/答复`），confirm 超时=拒绝，其余按 pi 协议的取消语义继续，运行不中断。
 - 插话（2026-11-08 起）：会话繁忙时用户续发的消息经合并排水（12s 窗口）写入 `steer`
   记录，运行循环每 2s 泵入 pi 进程（`steer` 命令），不再打断重跑；
   超 30s 未消费的孤儿插话由 dispatcher 转成新任务，话不落空。
