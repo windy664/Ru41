@@ -400,18 +400,15 @@ fn build_note_prompt(p: &NotePrompt<'_>) -> String {
     )
 }
 
-impl ru41::ingress::schedule::PollJob for LectureWorker {
-    fn job_interval(&self) -> Duration {
+impl ru41::ingress::schedule::SimplePollJob for LectureWorker {
+    type Report = serde_json::Value;
+
+    fn interval(&self) -> std::time::Duration {
         Duration::from_secs(crate::config::LectureSection::DEFAULT_INTERVAL_SECS)
     }
 
-    fn poll_json(
-        &self,
-    ) -> std::pin::Pin<Box<dyn Future<Output = Result<serde_json::Value>> + Send + '_>> {
-        // bridge：插件 cdylib 带独立 tokio 副本，网络 I/O 必须跑在插件自己的
-        // runtime 里（宿主 runtime 的 reactor TLS 跨不过 .so 边界）。
-        let owned = self.clone();
-        ru41::plugins::bridge(async move { owned.poll_once().await })
+    async fn poll(&self) -> anyhow::Result<Self::Report> {
+        self.poll_once().await
     }
 }
 

@@ -171,18 +171,14 @@ impl CompetitionsService {
     }
 }
 
-impl ru41::ingress::schedule::PollJob for CompetitionsService {
-    fn job_interval(&self) -> std::time::Duration {
+impl ru41::ingress::schedule::SimplePollJob for CompetitionsService {
+    type Report = serde_json::Value;
+
+    fn interval(&self) -> std::time::Duration {
         std::time::Duration::from_secs(self.interval_secs)
     }
 
-    fn poll_json(
-        &self,
-    ) -> std::pin::Pin<Box<dyn std::future::Future<Output = Result<serde_json::Value>> + Send + '_>>
-    {
-        // 插件态：真实工作必须在插件自己的 tokio runtime 上跑（dylib 各自
-        // 静态链接 tokio，宿主 reactor 对本插件代码不可见）；桥内 catch_unwind。
-        let owned = self.clone();
-        ru41::plugins::bridge(async move { owned.poll_once().await })
+    async fn poll(&self) -> anyhow::Result<Self::Report> {
+        self.poll_once().await
     }
 }
