@@ -270,12 +270,7 @@ fn render_todo_markdown(
     options: crate::domain::todo::TodoOptions,
 ) -> String {
     use crate::domain::todo::due_label;
-    let mut out = String::from(
-        "# 待办清单\n\n\
-         > 双向同步：打勾 = 完成、取消勾 = 恢复、改标题 = 重命名，下一轮写回数据库。\n\
-         > 新增：写一行 `- [ ] 标题`（支持 `📅 YYYY-MM-DD` 截止），或在 QQ 发 `#内容`。\n\
-         > 删除走 QQ `/取消待办`：直接删行不会删库（防止误清空），下一轮渲染会补回。\n",
-    );
+    let mut out = String::from("# 待办清单\n");
     let sections: [(&str, &Vec<crate::domain::todo::TodoItem>, bool); 5] = [
         ("已过期", &overview.overdue, true),
         ("今天", &overview.today, false),
