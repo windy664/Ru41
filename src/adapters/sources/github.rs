@@ -1,7 +1,7 @@
 use anyhow::{Context, Result};
 
 /// GitHub 仓库元数据（api.github.com/repos/{owner}/{repo} 的子集）。
-#[derive(Debug, Clone, serde::Deserialize)]
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 pub struct GithubRepoMeta {
     pub full_name: String,
     pub description: Option<String>,
@@ -12,8 +12,17 @@ pub struct GithubRepoMeta {
     pub archived: bool,
 }
 
+/// 条件请求的结果：304 = 内容没变（不占配额），调用方沿用本地缓存。
+#[derive(Debug)]
+pub enum Conditional<T> {
+    NotModified,
+    /// 新数据 + 服务端新发的 ETag（没有 ETag 头时为 None）。
+    Fresh(T, Option<String>),
+}
+
 /// GitHub 公共客户端：免鉴权（60 次/时/IP），公开仓库的 README 与元数据抓取。
-/// 速率预算由调用方控制——projects 同步为低频任务，项目数量级远低于上限。
+/// 速率预算由调用方控制——高频调用方应使用 *_conditional 变体配合 ETag
+/// 缓存（304 响应不计入配额）。
 #[derive(Clone)]
 pub struct GithubClient {
     http: reqwest::Client,
@@ -54,17 +63,61 @@ impl GithubClient {
     }
 
     pub async fn repo_meta(&self, owner: &str, repo: &str) -> Result<GithubRepoMeta> {
+        match self.repo_meta_conditional(owner, repo, None).await? {
+            Conditional::Fresh(meta, _) => Ok(meta),
+            Conditional::NotModified => anyhow::bail!("无条件请求不应返回 304"),
+        }
+    }
+
+    /// 条件拉取元数据：带上次响应的 ETag；内容没变返回 NotModified
+    /// （304 不占免鉴权配额），变了返回新数据与新 ETag。
+    pub async fn repo_meta_conditional(
+        &self,
+        owner: &str,
+        repo: &str,
+        etag: Option<&str>,
+    ) -> Result<Conditional<GithubRepoMeta>> {
         let url = format!("https://api.github.com/repos/{owner}/{repo}");
-        self.http
-            .get(&url)
-            .send()
-            .await
-            .context("github api request failed")?
+        self.get_json_conditional(&url, etag).await
+    }
+
+    /// 列出账号全部公开仓库（条件版）：304 时调用方沿用缓存清单。
+    pub async fn list_user_repos_conditional(
+        &self,
+        user: &str,
+        etag: Option<&str>,
+    ) -> Result<Conditional<Vec<GithubRepoMeta>>> {
+        let url = format!("https://api.github.com/users/{user}/repos?per_page=100&sort=updated");
+        self.get_json_conditional(&url, etag).await
+    }
+
+    /// 条件 GET JSON：ETag 命中返回 NotModified（304 不计配额），
+    /// 否则返回解析后的 JSON 与新 ETag。
+    async fn get_json_conditional<T: serde::de::DeserializeOwned>(
+        &self,
+        url: &str,
+        etag: Option<&str>,
+    ) -> Result<Conditional<T>> {
+        let mut request = self.http.get(url);
+        if let Some(etag) = etag {
+            request = request.header(reqwest::header::IF_NONE_MATCH, etag);
+        }
+        let response = request.send().await.context("github api request failed")?;
+        if response.status() == reqwest::StatusCode::NOT_MODIFIED {
+            return Ok(Conditional::NotModified);
+        }
+        let new_etag = response
+            .headers()
+            .get(reqwest::header::ETAG)
+            .and_then(|v| v.to_str().ok())
+            .map(str::to_owned);
+        let body = response
             .error_for_status()
             .context("github api returned error status")?
             .json()
             .await
-            .context("github api json decode failed")
+            .context("github api json decode failed")?;
+        Ok(Conditional::Fresh(body, new_etag))
     }
 
     /// 拉取仓库 README 原文（raw 直链，先默认分支再 main/master 兜底）。
