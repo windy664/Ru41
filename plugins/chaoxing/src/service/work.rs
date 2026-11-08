@@ -305,9 +305,12 @@ impl ChaoxingWorkTracker {
                                 {
                                     let _ = self.todos.complete(todo_id, now);
                                 }
+                                // 临期确认卡片同步收口，不再追发。
+                                let _ = work_common::close_reminder(
+                                    &self.store, "chaoxing", "cx", &key, now,
+                                );
                             }
                         } else if open {
-                            // 临期/过期每日最多提醒一次
                             let end_ts = deadline.as_deref().and_then(|s| {
                                 work_common::platform_ts(s, offset, DEADLINE_FORMATS)
                             });
@@ -315,9 +318,9 @@ impl ChaoxingWorkTracker {
                             let is_due_soon = end_ts
                                 .map(|ts| ts - now <= urgent_window && ts > now)
                                 .unwrap_or(false);
-                            if is_overdue || is_due_soon {
-                                let category = if is_overdue { "overdue" } else { "due" };
-                                let alert_key = format!("{category}:{today}:{key}");
+                            if is_overdue {
+                                // 过期：每日最多提醒一次（文本）。
+                                let alert_key = format!("overdue:{today}:{key}");
                                 if self
                                     .store
                                     .document("chaoxing_work_alert", &alert_key)?
@@ -329,23 +332,72 @@ impl ChaoxingWorkTracker {
                                         None,
                                         &serde_json::json!({ "ts": now }),
                                     )?;
-                                    if is_overdue {
-                                        overdue_total += 1;
-                                        lines.push(format!(
-                                            "- ⚠️{}｜{}｜已过期未交（截止 {}）",
-                                            self.display_course(&course.title),
-                                            work.title,
-                                            deadline.as_deref().unwrap_or("未知"),
-                                        ));
-                                    } else {
-                                        due_soon += 1;
-                                        lines.push(format!(
-                                            "- ⏰{}｜{}｜{}内截止（{}）",
-                                            self.display_course(&course.title),
-                                            work.title,
-                                            self.config.work_due_days,
-                                            deadline.as_deref().unwrap_or("未知"),
-                                        ));
+                                    overdue_total += 1;
+                                    lines.push(format!(
+                                        "- ⚠️{}｜{}｜已过期未交（截止 {}）",
+                                        self.display_course(&course.title),
+                                        work.title,
+                                        deadline.as_deref().unwrap_or("未知"),
+                                    ));
+                                }
+                            } else if is_due_soon {
+                                // 临期：确认卡片 + 未确认每 2 小时追发（直到确认/提交/过期）。
+                                if let (Some(notifier), Some(end)) =
+                                    (self.notifier.as_ref(), end_ts)
+                                {
+                                    let route = ru41::domain::NotifyRoute {
+                                        channel: notifier.channel_id().into(),
+                                        target: self.config.notify_target.clone(),
+                                        msg_id: None,
+                                    };
+                                    let detail = serde_json::json!({
+                                        "课程": self.display_course(&course.title),
+                                        "作业": work.title,
+                                        "截止": deadline.as_deref().unwrap_or("未知"),
+                                    });
+                                    match work_common::remind_escalating(
+                                        &self.store,
+                                        "chaoxing",
+                                        "cx",
+                                        &key,
+                                        "作业临期提醒",
+                                        detail,
+                                        end,
+                                        &route,
+                                        now,
+                                    )? {
+                                        work_common::ReminderAction::Created => {
+                                            due_soon += 1;
+                                            lines.push(format!(
+                                                "- ⏰{}｜{}｜{}天内截止（{}）｜已发确认卡片，未确认每 2 小时追发",
+                                                self.display_course(&course.title),
+                                                work.title,
+                                                self.config.work_due_days,
+                                                deadline.as_deref().unwrap_or("未知"),
+                                            ));
+                                        }
+                                        work_common::ReminderAction::Acked(response) => {
+                                            lines.push(format!(
+                                                "- ✅{}｜{}｜临期提醒已确认",
+                                                self.display_course(&course.title),
+                                                work.title,
+                                            ));
+                                            // 点「已完成」顺手回勾待办。
+                                            if response["action"] == "done"
+                                                && let Some(todo_id) = self
+                                                    .store
+                                                    .document("chaoxing_work", &key)?
+                                                    .and_then(|d| {
+                                                        d.value
+                                                            .get("todo_id")
+                                                            .and_then(|v| v.as_str())
+                                                            .map(str::to_owned)
+                                                    })
+                                            {
+                                                let _ = self.todos.complete(&todo_id, now);
+                                            }
+                                        }
+                                        _ => {}
                                     }
                                 }
                             }

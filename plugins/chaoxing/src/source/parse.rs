@@ -130,20 +130,23 @@ fn decode_entities(text: &str) -> String {
 }
 
 /// 从详情页提取截止时间，归一化为 "YYYY-MM-DD HH:MM"。
-/// 平台渲染「作答时间: MM-DD HH:MM 至 MM-DD HH:MM」（缺年份）；
+/// 平台渲染「作答时间: MM-DD HH:MM 至 MM-DD HH:MM」（缺年份），且日期常裹在
+/// `<em>` 等内联标签里（2026-11-08 实测「描述打扫卫生」作业，标签让旧正则
+/// 全程失配、截止时间一直是 null、临期提醒从未发出）——先剥标签再匹配。
 /// 跨年按「距今不超过 180 天的最近未来」补年。
 pub(super) fn parse_work_deadline(html: &str, now: i64) -> Option<String> {
+    let plain = re_tags().replace_all(html, "");
     // 全格式（含年份）
     if let Some(end) = capture(
-        html,
-        r"作答时间[^<]*?\d{4}-\d{2}-\d{2} \d{2}:\d{2}[^<]*?至[^<]*?(\d{4}-\d{2}-\d{2} \d{2}:\d{2})",
+        &plain,
+        r"(?s)作答时间.{0,40}?\d{4}-\d{2}-\d{2} \d{2}:\d{2}.{0,20}?至.{0,20}?(\d{4}-\d{2}-\d{2} \d{2}:\d{2})",
     ) {
         return Some(end);
     }
     // 缺年份变体：按「距今不超过 180 天的最近合理年份」补全
     let end = capture(
-        html,
-        r"作答时间[^<]*?\d{2}-\d{2} \d{2}:\d{2}[^<]*?至[^<]*?(\d{2}-\d{2} \d{2}:\d{2})",
+        &plain,
+        r"(?s)作答时间.{0,40}?\d{2}-\d{2} \d{2}:\d{2}.{0,20}?至.{0,20}?(\d{2}-\d{2} \d{2}:\d{2})",
     )?;
     let year = infer_deadline_year(now, &end)?;
     Some(format!("{year}-{end}"))
@@ -209,6 +212,15 @@ pub(super) fn capture(text: &str, pattern: &str) -> Option<String> {
 mod tests {
     use super::*;
     use crate::source::model::ChaoxingActivity;
+
+    /// 平台详情页的日期裹在 <em> 等内联标签里（2026-11-08 实测），剥标签后也要解析得出。
+    #[test]
+    fn parse_work_deadline_tolerates_inline_tags() {
+        let html = r#"<p>作答时间:<em>11-06 16:42</em>至<em>11-08 17:42</em></p>"#;
+        let now = 1_793_563_170; // 2026-11-05 晚间附近
+        let deadline = parse_work_deadline(html, now).expect("应解析出截止时间");
+        assert_eq!(deadline, "2026-11-08 17:42");
+    }
 
     /// 题干可能只有一张图（讲卫生那类作业），文字与图片都要抓到。
     #[test]
