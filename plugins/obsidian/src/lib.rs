@@ -1,12 +1,9 @@
 //! Obsidian 附属的入口层：Vault 核心服务在 `app::obsidian`（端口 `ports::vault`），
-//! 这里只保留 QQ 快速记录命令与归档技能，业务逻辑不落地。
-
-pub mod qq_command;
+//! 这里只保留同步/整理调度，业务逻辑不落地。
 
 use ru41::app::obsidian::ObsidianSectionExt;
-pub use qq_command::ObsidianQqCommand;
 
-/// 注册表定义：obsidian 同步服务（含知识库索引挂载）与 /记一下 命令闭环。
+/// 注册表定义：obsidian 同步服务（含知识库索引挂载）。
 pub static DEF: ru41::modules::ModuleDef = ru41::modules::ModuleDef {
     name: "obsidian",
     priority: ru41::modules::DEFAULT_PRIORITY,
@@ -61,18 +58,7 @@ pub static DEF: ru41::modules::ModuleDef = ru41::modules::ModuleDef {
         };
         Ok(Some(Box::new(service)))
     },
-    qq_handlers: |config, _| {
-        // 未配置 vault_path 时不注册 /记一下，避免半配置状态下写空气。
-        if !config.obsidian.is_ready() {
-            return Ok(Vec::new());
-        }
-        let resolved = config.obsidian.resolved_with_provider(None, &config.agent)?;
-        Ok(vec![std::sync::Arc::new(ObsidianQqCommand::new(
-            ru41::bootstrap::assembly::vault_client(&resolved),
-            resolved.inbox_dir.clone(),
-            config.todo.options()?.offset_seconds,
-        ))])
-    },
+    qq_handlers: |_, _| Ok(Vec::new()),
     image_consumers: ru41::modules::no_image_consumers,
     cli: ru41::modules::no_cli,
 };

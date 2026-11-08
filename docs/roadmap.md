@@ -40,7 +40,7 @@
 
 - [x] Git 同步游标与每周整理周期（`modules/obsidian`：fetch + processed_sha 游标 + pending 任务态；每 7 天扫描当前 Inbox 全量文件，远端前进时放弃重做）
 - [x] Agent 归档任务：`obsidian-organize` skill + 幂等键 `obsidian:organize:<sha>`，周期到点入队 Worker 整理；去向总览展示近 30 天记录
-- [x] 提交推送与自身提交去重（`[ru41]` 消息前缀标记，不依赖 git 身份）；QQ `#临时想法` 或 `/记一下` 直接追加 Inbox 并推送
+- [x] 提交推送与自身提交去重（`[ru41]` 消息前缀标记，不依赖 git 身份）；QQ `#临时想法` 或 `/记一下` 直接进入 Todo 收件箱，不写 Obsidian 文件、不交给 Agent 二次判断
 - [ ] 内容指纹复核（整理前记录文件 hash，提交前校验人工未改动；当前以「远端 HEAD 不变」代替）
 - [ ] 临时 Vault 验证并发编辑、重复事件和崩溃恢复（已有本地 git 仓库测试 `tests/obsidian.rs`，端到端联调待做）
 

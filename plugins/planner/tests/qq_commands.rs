@@ -300,10 +300,67 @@ async fn todo_commands_reject_group_chat_and_parse_views() {
     assert!(overdue.text.contains("暂无"));
 }
 
+#[tokio::test]
+async fn quick_note_enters_todo_inbox_without_agent_or_schedule() {
+    let fixture = fixture();
+    let command = TodoQqCommand::new(ru41::domain::todo::TodoOptions::default(), None);
+    let context = ctx(&fixture, "user:U1", "U1", true);
+
+    let unbound = command
+        .handle_message("#临时想法", &context)
+        .await
+        .unwrap()
+        .unwrap();
+    assert!(unbound.text.contains("身份绑定"));
+    assert_eq!(fixture.store.documents("todo_item", 10).unwrap().len(), 0);
+
+    commands::execute(
+        &Command::Bind("s3cret".into()),
+        &context,
+        &ru41::app::usage_report::Pricing::builtin(),
+    )
+    .unwrap();
+    let reply = command
+        .handle_message("#有空整理一下英文播客订阅", &context)
+        .await
+        .unwrap()
+        .unwrap();
+    assert!(reply.text.contains("已加入待办收件箱"));
+    assert!(reply.text.contains("/待办 收件箱"));
+
+    let documents = fixture.store.documents("todo_item", 10).unwrap();
+    assert_eq!(documents.len(), 1);
+    let item: ru41::domain::todo::TodoItem =
+        serde_json::from_value(documents[0].value.clone()).unwrap();
+    assert_eq!(item.title, "有空整理一下英文播客订阅");
+    assert_eq!(item.labels, vec!["临时想法"]);
+    assert!(item.due_at.is_none());
+    assert!(item.remind_at.is_none());
+
+    // 非整句前缀不拦截，仍交给自然语言任务链路。
+    assert!(
+        command
+            .handle_message("聊天记录里的 #标签 不算", &context)
+            .await
+            .unwrap()
+            .is_none()
+    );
+}
+
 #[test]
 fn extension_commands_match_aliases_and_join_help() {
     let todo = TodoQqCommand::new(ru41::domain::todo::TodoOptions::default(), None);
-    for verb in ["待办", "记待办", "完成", "推迟", "取消待办", "恢复待办"] {
+    for verb in [
+        "待办",
+        "记待办",
+        "记一下",
+        "想法",
+        "note",
+        "完成",
+        "推迟",
+        "取消待办",
+        "恢复待办",
+    ] {
         assert!(todo.matches(verb));
     }
 
