@@ -242,7 +242,7 @@ async fn todo_commands_add_list_and_complete_in_private_chat() {
         .await
         .unwrap()
         .unwrap();
-    assert!(summary.text.contains("待办摘要"));
+    assert!(summary.text.contains("## 待办（1）"));
     assert!(summary.text.contains("写项目周报"));
 
     let completed = command
@@ -258,7 +258,8 @@ async fn todo_commands_add_list_and_complete_in_private_chat() {
         .await
         .unwrap()
         .unwrap();
-    assert!(empty.text.contains("暂无未完成待办"));
+    assert!(empty.text.contains("## 待办（0）"));
+    assert!(empty.text.contains("暂无"));
 }
 
 #[tokio::test]

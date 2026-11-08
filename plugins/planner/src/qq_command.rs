@@ -254,8 +254,13 @@ impl TodoQqCommand {
 
     fn list_reply(&self, service: &TodoService, arg: &str, now: i64) -> Result<Reply> {
         if arg.trim().is_empty() {
-            let overview = service.overview(now, 20)?;
-            return Ok(Reply::text(format_overview(&overview, now, self.options)));
+            // 主视图就是一排勾选框：全部未完成按截止时间排序，不再分节。
+            let items: Vec<TodoItem> = service
+                .list(TodoView::All, now, 50)?
+                .into_iter()
+                .filter(|item| item.status == TodoStatus::Active)
+                .collect();
+            return Ok(Reply::text(format_items("待办", &items, now, self.options)));
         }
         let Some(view) = parse_view(arg) else {
             return Ok(Reply::text(format!(
@@ -513,41 +518,6 @@ fn split_selector_and_time(arg: &str) -> Option<(&str, &str)> {
     (!selector.is_empty() && !until.is_empty()).then_some((selector, until))
 }
 
-fn format_overview(
-    overview: &ru41::domain::todo::TodoOverview,
-    now: i64,
-    options: TodoOptions,
-) -> String {
-    if overview.active_count() == 0 {
-        return "## 待办摘要\n\n> 暂无未完成待办".to_owned();
-    }
-    let mut lines = vec![format!(
-        "## 待办摘要\n\n> 共 {} 项未完成",
-        overview.active_count()
-    )];
-    push_section(&mut lines, "逾期未完成", &overview.overdue, now, options);
-    push_section(&mut lines, "今日", &overview.today, now, options);
-    push_section(&mut lines, "近期", &overview.recent, now, options);
-    push_section(&mut lines, "长期", &overview.long_term, now, options);
-    push_section(&mut lines, "收件箱", &overview.inbox, now, options);
-    lines.join("\n")
-}
-
-fn push_section(
-    lines: &mut Vec<String>,
-    title: &str,
-    items: &[TodoItem],
-    now: i64,
-    options: TodoOptions,
-) {
-    lines.push(format!("\n### {title}（{}）", items.len()));
-    if items.is_empty() {
-        lines.push("> 暂无".to_owned());
-    } else {
-        lines.extend(items.iter().map(|item| format_item(item, now, options)));
-    }
-}
-
 fn format_items(title: &str, items: &[TodoItem], now: i64, options: TodoOptions) -> String {
     let mut lines = vec![format!("## {title}（{}）", items.len())];
     if items.is_empty() {
@@ -582,7 +552,7 @@ fn format_item(item: &TodoItem, now: i64, options: TodoOptions) -> String {
 
 fn usage() -> String {
     format!(
-        "## 待办用法\n\n- `/待办`：今日、逾期、近期、长期、收件箱摘要\n- `/待办 <{}>`\n- `/记待办 [时间] <内容>`\n- `/完成 <待办ID>`\n- `/推迟 <待办ID> 到 <时间>`\n- `/取消待办 <待办ID>`\n\n## 日程用法\n\n- `/日程 [今天|明天|N天]`：今日起行程\n- `/记日程 <时间> <标题>`：如 `明天14:00-16:00 班会`、`每周二14:00-15:40 体育课`\n- `/取消日程 <日程ID>`",
+        "## 待办用法\n\n- `/待办`：全部未完成（勾选框列表，按截止时间排序）\n- `/待办 <{}>`\n- `/记待办 [时间] <内容>`\n- `/完成 <待办ID>`\n- `/推迟 <待办ID> 到 <时间>`\n- `/取消待办 <待办ID>`\n\n## 日程用法\n\n- `/日程 [今天|明天|N天]`：今日起行程\n- `/记日程 <时间> <标题>`：如 `明天14:00-16:00 班会`、`每周二14:00-15:40 体育课`\n- `/取消日程 <日程ID>`",
         usage_views()
     )
 }
