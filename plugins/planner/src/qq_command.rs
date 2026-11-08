@@ -22,6 +22,38 @@ pub struct TodoQqCommand {
     jwxt_semester_start: Option<chrono::NaiveDate>,
 }
 
+/// 自然语言快速捕获的触发前缀；长的在前，避免「记录一下」被「记一下」截断。
+/// 只做整句前缀匹配——闲聊句中路过这几个字不算记录意图。
+const TRIGGER_PREFIXES: &[&str] = &[
+    "帮我记一下",
+    "记录一下",
+    "记一下",
+    "记住",
+    "别忘了",
+    "别忘记",
+    "提醒我",
+    "记着",
+    "note:",
+    "remember:",
+];
+
+/// 剥掉 `#` 或触发前缀与紧随的分隔符，取出正文；不是捕获语则返回 None。
+fn extract_note(content: &str) -> Option<String> {
+    let trimmed = content.trim();
+    if let Some(rest) = trimmed.strip_prefix('#') {
+        return Some(rest.trim().to_owned());
+    }
+    let lower = trimmed.to_lowercase();
+    let prefix = TRIGGER_PREFIXES
+        .iter()
+        .find(|prefix| lower.starts_with(**prefix))?;
+    // 触发词不含大小写敏感字符，lower 与原文前缀等长，按字节切安全。
+    let rest = trimmed[prefix.len()..]
+        .trim_start_matches(['：', ':', '，', ',', '、', ' '])
+        .trim();
+    Some(rest.to_owned())
+}
+
 impl TodoQqCommand {
     pub fn new(options: TodoOptions, jwxt_semester_start: Option<chrono::NaiveDate>) -> Self {
         Self {
@@ -47,6 +79,10 @@ impl SimpleCommand for TodoQqCommand {
             "记待办",
             "新增待办",
             "todo-add",
+            "记一下",
+            "想法",
+            "note",
+            "idea",
             "完成待办",
             "完成",
             "done",
@@ -66,7 +102,7 @@ impl SimpleCommand for TodoQqCommand {
     }
 
     fn help(&self) -> &'static str {
-        "`/待办`：今日、逾期、长期事项；`/记待办 [时间] <内容>` 新增；`/日程`：今日与未来行程；`/记日程 <时间> <标题>` 新增"
+        "`#临时想法` 或 `/记一下 <内容>`：直接进待办收件箱；`/待办`：今日、逾期、长期事项；`/记待办 [时间] <内容>` 新增；`/日程`：今日与未来行程"
     }
 
     fn help_section(&self) -> &'static str {
@@ -77,7 +113,12 @@ impl SimpleCommand for TodoQqCommand {
         Ok(Some(Reply::text(usage())))
     }
 
-    async fn run_command(&self, verb: &str, arg: &str, ctx: &CommandContext<'_>) -> Result<Option<Reply>> {
+    async fn run_command(
+        &self,
+        verb: &str,
+        arg: &str,
+        ctx: &CommandContext<'_>,
+    ) -> Result<Option<Reply>> {
         {
             if let Some(reply) = ctx.require_private("使用私人待办", "待办属于个人信息")?
             {
@@ -103,6 +144,9 @@ impl SimpleCommand for TodoQqCommand {
                         item.title,
                         item.short_id()
                     ))
+                }
+                "记一下" | "想法" | "note" | "idea" => {
+                    self.quick_capture_reply(&service, arg, ctx, now)?
                 }
                 "记待办" | "新增待办" | "todo-add" => {
                     self.add_reply(&service, arg, ctx, now)?
@@ -150,10 +194,65 @@ impl SimpleCommand for TodoQqCommand {
             Ok(Some(reply))
         }
     }
+
+    /// 自然语言捕获：整句以 `#` 或触发前缀开头即视为记录意图。
+    async fn run_message(&self, content: &str, ctx: &CommandContext<'_>) -> Result<Option<Reply>> {
+        let Some(note) = extract_note(content) else {
+            return Ok(None);
+        };
+        if note.is_empty() {
+            return Ok(Some(Reply::text(
+                "## 记一下\n\n在 `#` 后跟上内容即可，例如：\n`#周六下午三点社团开会`",
+            )));
+        }
+        if let Some(reply) = ctx.require_private("记录想法", "临时想法属于个人信息")?
+        {
+            return Ok(Some(Reply::text(reply)));
+        }
+        let service = self.service(ctx.store);
+        Ok(Some(self.quick_capture_reply(
+            &service,
+            &note,
+            ctx,
+            ru41::util::now(),
+        )?))
+    }
 }
 
 /// 私人待办必须保持与水电一致的单聊和身份边界（由 CommandContext::require_private 统一执行）。
 impl TodoQqCommand {
+    /// 快速捕获：`#临时想法` / `/记一下` 只写 Todo 收件箱，不做时间解析、
+    /// 不写 Obsidian 文件、也不交给 Agent 二次判断。
+    fn quick_capture_reply(
+        &self,
+        service: &TodoService,
+        title: &str,
+        ctx: &CommandContext<'_>,
+        now: i64,
+    ) -> Result<Reply> {
+        let title = title.trim();
+        ensure!(!title.is_empty(), "用法：`#临时想法` 或 `/记一下 <内容>`");
+        let item = service.add(
+            TodoInput {
+                title: title.to_owned(),
+                priority: TodoPriority::Normal,
+                labels: vec!["临时想法".to_owned()],
+                due_at: None,
+                remind_at: None,
+                source: Some(TodoSource {
+                    channel: ctx.reply_channel.into(),
+                    source_id: Some(ctx.msg_id.to_owned()),
+                }),
+            },
+            now,
+        )?;
+        Ok(Reply::text(format!(
+            "## 已加入待办收件箱\n\n- **{}**\n- **ID**：`{}`\n- 查看：`/待办 收件箱`",
+            item.title,
+            item.short_id()
+        )))
+    }
+
     fn list_reply(
         &self,
         service: &TodoService,
