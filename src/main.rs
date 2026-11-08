@@ -9,7 +9,7 @@ use ru41::bootstrap::store::{open_store, resolve as resolve_store};
 use ru41::{
     app::{schedule::ScheduleService, task::TaskService, todo::TodoService},
     bootstrap::config::Config,
-    channels::qq::{QqBot, ReplySequencer},
+    channels::qq::{CoalesceState, QqBot, ReplySequencer},
     domain::schedule::{EventInput, EventSource, parse_event_when},
     domain::todo::{TodoInput, parse_due},
     ingress::cli::{
@@ -210,7 +210,7 @@ async fn main() -> Result<()> {
                 // 回执与终态/进度通知共享序号器，同 msg_id 被动回复 seq 不撞车。
                 let sequencer = Arc::new(ReplySequencer::default());
                 let pricing = ru41::app::usage_report::Pricing::from_config(&config.pricing);
-                let bot = QqBot {
+                let bot = Arc::new(QqBot {
                     api: api.clone(),
                     store: store.clone(),
                     backend,
@@ -219,8 +219,9 @@ async fn main() -> Result<()> {
                     image_consumers,
                     sequencer: sequencer.clone(),
                     typing_sent_at: Mutex::new(HashMap::new()),
+                    coalesce: Arc::new(Mutex::new(CoalesceState::default())),
                     pricing,
-                };
+                });
                 let dispatcher = NotifyDispatcher {
                     store,
                     channels: notify_channels(&config, Some(api), Some(sequencer))?,

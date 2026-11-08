@@ -151,6 +151,8 @@ pub struct QqBot {
     pub image_consumers: Vec<Arc<dyn crate::ports::commands::ImageConsumer>>,
     /// 与 QqNotifier 共享的被动回复序号器，防止同 msg_id 下 seq 撞车。
     pub sequencer: Arc<ReplySequencer>,
+    /// 合并排水状态（忙会话的连续消息缓冲）。
+    pub coalesce: Arc<Mutex<CoalesceState>>,
     /// 「正在输入」指示的发送时间（按 user_openid 去抖，平台指示有效 60s）。
     pub typing_sent_at: Mutex<HashMap<String, Instant>>,
     /// 供应商定价：用量报告折算「实际花费」用。
@@ -161,6 +163,63 @@ pub struct QqBot {
 enum DispatchOutcome {
     Reply(Reply),
     Ingested,
+}
+
+/// 合并排水（参考 OpenMausBot admission.ts 的 drain coalescing）：
+/// 会话「忙」（有排队/运行中的任务）时，续发的自然语言消息不再立即
+/// 入队打断前一条，而是攒进缓冲，静默窗口结束后合并成一个任务——
+/// 连发消息从「互相打断、上下文割裂」变成「一轮答完」。
+/// 闲会话不延迟：第一条消息仍然即时入队。
+#[derive(Default)]
+pub struct CoalesceState {
+    /// key = "{target}|{author_openid}"（群聊按人分缓冲，单人话题不串）。
+    buffers: HashMap<String, CoalesceBuffer>,
+}
+
+#[derive(Default)]
+struct CoalesceBuffer {
+    /// 代数：每来一条新消息 +1；过期的 flush 任务看到代数变了就让位。
+    generation: u64,
+    items: Vec<CoalesceItem>,
+    /// 首条入缓冲时间：封顶窗口，连续输入也不无限顺延。
+    first_at: Option<Instant>,
+    is_c2c: bool,
+}
+
+struct CoalesceItem {
+    msg_id: String,
+    /// 已渲染的 prompt 片段（附件说明 + 正文）。
+    prompt: String,
+}
+
+/// 静默窗口：最后一条消息到达后这么久没有续杯就合并入队。
+const COALESCE_DEBOUNCE: Duration = Duration::from_secs(12);
+/// 首条入缓冲后的最长等待：连续输入最多顺延到这个上限。
+const COALESCE_MAX_WAIT: Duration = Duration::from_secs(60);
+/// 缓冲条数上限：到顶立即合并（连续发文件/语音时不等窗口）。
+const COALESCE_MAX_ITEMS: usize = 5;
+
+/// 合并决策（纯函数，可测）：busy = 会话有未完成任务；
+/// buffered = 当前缓冲条数；first_wait = 首条已等待时长。
+#[derive(Debug, PartialEq, Eq)]
+enum CoalesceDecision {
+    /// 闲会话且无缓冲：立即入队（零延迟路径）。
+    IngestNow,
+    /// 攒进缓冲等静默窗口。
+    Buffer,
+    /// 到上限（条数/最长等待）：立即连新消息一起合并入队。
+    FlushNow,
+}
+
+fn coalesce_decision(busy: bool, buffered: usize, first_wait: Duration) -> CoalesceDecision {
+    if buffered > 0 && (buffered + 1 >= COALESCE_MAX_ITEMS || first_wait >= COALESCE_MAX_WAIT) {
+        return CoalesceDecision::FlushNow;
+    }
+    if busy || buffered > 0 {
+        CoalesceDecision::Buffer
+    } else {
+        CoalesceDecision::IngestNow
+    }
 }
 
 /// 连接存活不足此时长视为「秒断」（凭据/权限问题的典型形态）。
@@ -197,7 +256,7 @@ impl QqBot {
     }
 
     /// 长驻运行 gateway 事件循环，收到 shutdown 后优雅退出。
-    pub async fn run(&self, mut shutdown: watch::Receiver<bool>) -> Result<()> {
+    pub async fn run(self: &Arc<Self>, mut shutdown: watch::Receiver<bool>) -> Result<()> {
         let (events, mut receiver) = mpsc::channel::<GatewayEvent>(256);
         let gateway = self.gateway_loop(events, shutdown.clone());
         let ingest = async {
@@ -275,7 +334,7 @@ impl QqBot {
     /// 命令执行与入队是同步存储 I/O，经 block_in_place 让出 executor 线程
     /// （与 HTTP/consumer 的 spawn_blocking 同一纪律）；扩展命令内部的
     /// 真实 async（如 /精读 拉取 arXiv）由 Handle::block_on 驱动。
-    async fn handle(&self, event: &GatewayEvent) -> Result<()> {
+    async fn handle(self: &Arc<Self>, event: &GatewayEvent) -> Result<()> {
         let outcome = tokio::task::block_in_place(|| {
             tokio::runtime::Handle::current().block_on(self.dispatch(event))
         })?;
@@ -310,7 +369,7 @@ impl QqBot {
     }
 
     /// 命令分发与消息入队；同步存储 I/O 全部在此路径上（调用方已做 block_in_place）。
-    async fn dispatch(&self, event: &GatewayEvent) -> Result<DispatchOutcome> {
+    async fn dispatch(self: &Arc<Self>, event: &GatewayEvent) -> Result<DispatchOutcome> {
         let (msg_id, content, target, author_openid, is_c2c, image_url) = match event {
             GatewayEvent::GroupMessage {
                 msg_id,
@@ -425,13 +484,190 @@ impl QqBot {
                 return Ok(DispatchOutcome::Reply(reply));
             }
         }
-        let receipt = self.ingest(event)?;
+        let receipt = match self.coalesce_or_ingest(event).await? {
+            // 已进缓冲：合并后的任务由 flush 任务落盘，这里不再回执。
+            CoalesceOutcome::Buffered => return Ok(DispatchOutcome::Ingested),
+            CoalesceOutcome::Receipt(receipt) => receipt,
+        };
         // 只有发生打断才即时回复；正常入队不再发接单回执，
         // 用户直接看活动流（原生 codex 消息）即可。
         if let Some(text) = receipt.interrupt_text() {
             return Ok(DispatchOutcome::Reply(text.into()));
         }
         Ok(DispatchOutcome::Ingested)
+    }
+
+    /// 合并排水入口：闲会话立即入队；忙会话把消息攒进缓冲，
+    /// 静默窗口结束后由 flush 合并成一个任务。
+    async fn coalesce_or_ingest(self: &Arc<Self>, event: &GatewayEvent) -> Result<CoalesceOutcome> {
+        let (msg_id, target, author, is_c2c) = match event {
+            GatewayEvent::GroupMessage {
+                msg_id,
+                group_openid,
+                author_openid,
+                ..
+            } => (
+                msg_id.clone(),
+                format!("{TARGET_GROUP_PREFIX}{group_openid}"),
+                author_openid.clone(),
+                false,
+            ),
+            GatewayEvent::C2cMessage {
+                msg_id,
+                user_openid,
+                ..
+            } => (
+                msg_id.clone(),
+                format!("{TARGET_C2C_PREFIX}{user_openid}"),
+                user_openid.clone(),
+                true,
+            ),
+            _ => bail!("unsupported gateway event for ingest"),
+        };
+        let prompt = render_message_prompt(
+            match event {
+                GatewayEvent::GroupMessage { content, .. } => content,
+                GatewayEvent::C2cMessage { content, .. } => content,
+                _ => "",
+            },
+            event_attachments(event),
+        );
+        let busy = self.conversation_busy(&target)?;
+        let key = format!("{target}|{author}");
+        let notify_msg_id = msg_id.clone();
+        enum Action {
+            Ingest,
+            Buffer(u64),
+            Flush,
+        }
+        let action = {
+            let mut state = self
+                .coalesce
+                .lock()
+                .unwrap_or_else(|poisoned| poisoned.into_inner());
+            let buffer = state.buffers.entry(key.clone()).or_default();
+            buffer.is_c2c = is_c2c;
+            // 平台重推去重：同 msg_id 已在缓冲里就当已处理。
+            if buffer.items.iter().any(|item| item.msg_id == msg_id) {
+                return Ok(CoalesceOutcome::Buffered);
+            }
+            let first_wait = buffer.first_at.map(|at| at.elapsed()).unwrap_or_default();
+            match coalesce_decision(busy, buffer.items.len(), first_wait) {
+                CoalesceDecision::IngestNow => Action::Ingest,
+                CoalesceDecision::FlushNow => {
+                    buffer.items.push(CoalesceItem { msg_id, prompt });
+                    Action::Flush
+                }
+                CoalesceDecision::Buffer => {
+                    if buffer.items.is_empty() {
+                        buffer.first_at = Some(Instant::now());
+                    }
+                    buffer.items.push(CoalesceItem { msg_id, prompt });
+                    buffer.generation += 1;
+                    Action::Buffer(buffer.generation)
+                }
+            }
+        };
+        match action {
+            Action::Ingest => Ok(CoalesceOutcome::Receipt(self.ingest(event)?)),
+            Action::Buffer(generation) => {
+                if is_c2c {
+                    self.maybe_input_notify(&notify_msg_id, &author).await;
+                }
+                let bot = self.clone();
+                let key = key.clone();
+                tokio::spawn(async move {
+                    tokio::time::sleep(COALESCE_DEBOUNCE).await;
+                    if let Err(error) = bot.flush_coalesce(&key, generation).await {
+                        eprintln!("[qq] coalesce flush failed: {error:#}");
+                    }
+                });
+                Ok(CoalesceOutcome::Buffered)
+            }
+            Action::Flush => {
+                let (receipt, _, _) = self.flush_coalesce_now(&key)?;
+                Ok(CoalesceOutcome::Receipt(receipt))
+            }
+        }
+    }
+
+    /// 静默窗口到点：缓冲没被别人续杯（代数一致）就合并入队。
+    async fn flush_coalesce(self: &Arc<Self>, key: &str, generation: u64) -> Result<()> {
+        {
+            let state = self
+                .coalesce
+                .lock()
+                .unwrap_or_else(|poisoned| poisoned.into_inner());
+            match state.buffers.get(key) {
+                // 代数变了：有更新的 flush 排班，本任务让位。
+                Some(buffer) if buffer.generation != generation => return Ok(()),
+                None => return Ok(()),
+                _ => {}
+            }
+        }
+        let (receipt, target, last_msg_id) = self.flush_coalesce_now(key)?;
+        if let Some(text) = receipt.interrupt_text() {
+            self.reply(&target, &last_msg_id, &Reply::text(text))
+                .await?;
+        }
+        Ok(())
+    }
+
+    /// 取出缓冲并合并入队；返回 (回执, target, 末条 msg_id)。
+    fn flush_coalesce_now(&self, key: &str) -> Result<(IngestReceipt, String, String)> {
+        let (target, items, is_c2c) = {
+            let mut state = self
+                .coalesce
+                .lock()
+                .unwrap_or_else(|poisoned| poisoned.into_inner());
+            let Some(buffer) = state.buffers.remove(key) else {
+                bail!("coalesce buffer vanished: {key}");
+            };
+            let target = key
+                .split_once('|')
+                .map(|(target, _)| target.to_owned())
+                .unwrap_or_default();
+            (target, buffer.items, buffer.is_c2c)
+        };
+        let Some(last) = items.last() else {
+            bail!("coalesce buffer empty: {key}");
+        };
+        let last_msg_id = last.msg_id.clone();
+        let merged = items
+            .into_iter()
+            .map(|item| item.prompt)
+            .collect::<Vec<_>>()
+            .join("\n\n");
+        let event = if is_c2c {
+            GatewayEvent::C2cMessage {
+                msg_id: last_msg_id.clone(),
+                content: merged,
+                user_openid: String::new(),
+                image_url: None,
+                attachments: Vec::new(),
+            }
+        } else {
+            GatewayEvent::GroupMessage {
+                msg_id: last_msg_id.clone(),
+                content: merged,
+                group_openid: String::new(),
+                author_openid: String::new(),
+                attachments: Vec::new(),
+            }
+        };
+        let receipt = self.ingest(&event)?;
+        Ok((receipt, target, last_msg_id))
+    }
+
+    /// 会话是否有未完成（排队/运行/等待重试）的任务。
+    fn conversation_busy(&self, target: &str) -> Result<bool> {
+        use crate::domain::TaskStatus;
+        Ok(self.store.list(50)?.iter().any(|task| {
+            matches!(
+                task.status,
+                TaskStatus::Queued | TaskStatus::Running | TaskStatus::RetryScheduled
+            ) && task.notify.as_ref().map(|route| route.target.as_str()) == Some(target)
+        }))
     }
 
     /// 命令的即时被动回复；msg_seq 经共享序号器分配，与终态/进度通知不撞车。
@@ -551,48 +787,7 @@ impl QqBot {
             ),
             _ => bail!("unsupported gateway event for ingest"),
         };
-        // 富媒体合成进 prompt：语音用平台 ASR 转写，文件给下载地址让 agent 自取。
-        // 图片不走这里（image_url 有独立通道，由消费方处理）。
-        let mut prompt = String::new();
-        for attachment in attachments {
-            match attachment.kind {
-                gateway::AttachmentKind::Voice => {
-                    if let Some(text) = &attachment.asr_text {
-                        prompt.push_str(&format!("[语音转写] {text}\n"));
-                    } else {
-                        prompt.push_str(&format!(
-                            "[语音] 平台未提供转写，WAV 地址：https://{}\n",
-                            attachment.url
-                        ));
-                    }
-                }
-                gateway::AttachmentKind::File => {
-                    let name = attachment.filename.as_deref().unwrap_or("未命名文件");
-                    let size = attachment
-                        .size
-                        .map(|s| format!(" {} KB", s / 1024))
-                        .unwrap_or_default();
-                    prompt.push_str(&format!(
-                        "[文件] {name}{size}\n下载地址（有时效，请尽快下载）：https://{}\n请下载后按我的要求处理。\n",
-                        attachment.url
-                    ));
-                }
-                gateway::AttachmentKind::Video => {
-                    let name = attachment.filename.as_deref().unwrap_or("未命名视频");
-                    prompt.push_str(&format!(
-                        "[视频] {name}\n下载地址（有时效，请尽快下载）：https://{}\n",
-                        attachment.url
-                    ));
-                }
-                gateway::AttachmentKind::Image => {}
-            }
-        }
-        if !content.is_empty() {
-            if !prompt.is_empty() {
-                prompt.push('\n');
-            }
-            prompt.push_str(content);
-        }
+        let prompt = render_message_prompt(content, attachments);
         // 幂等短路：同 msg_id 已入过队则直接回执原任务，不得先打断再判重
         // （否则平台重推同一条消息会反而把原任务取消掉）。
         let request_key = msg_request_key(msg_id);
@@ -673,6 +868,59 @@ fn event_attachments(event: &GatewayEvent) -> &[gateway::MessageAttachment] {
     }
 }
 
+/// 合并排水的分发结果：已入缓冲（窗口结束再合并），或已入队（回执）。
+enum CoalesceOutcome {
+    Buffered,
+    Receipt(IngestReceipt),
+}
+
+/// 把消息正文与附件渲染成 prompt：语音用平台 ASR 转写，文件/视频给下载地址
+/// 让 agent 自取。图片不走这里（image_url 有独立通道，由消费方处理）。
+/// 合并排水与 ingest 共用同一份渲染，保证合并后的 prompt 形态一致。
+fn render_message_prompt(content: &str, attachments: &[gateway::MessageAttachment]) -> String {
+    let mut prompt = String::new();
+    for attachment in attachments {
+        match attachment.kind {
+            gateway::AttachmentKind::Voice => {
+                if let Some(text) = &attachment.asr_text {
+                    prompt.push_str(&format!("[语音转写] {text}\n"));
+                } else {
+                    prompt.push_str(&format!(
+                        "[语音] 平台未提供转写，WAV 地址：https://{}\n",
+                        attachment.url
+                    ));
+                }
+            }
+            gateway::AttachmentKind::File => {
+                let name = attachment.filename.as_deref().unwrap_or("未命名文件");
+                let size = attachment
+                    .size
+                    .map(|s| format!(" {} KB", s / 1024))
+                    .unwrap_or_default();
+                prompt.push_str(&format!(
+                    "[文件] {name}{size}\n下载地址（有时效，请尽快下载）：https://{}\n请下载后按我的要求处理。\n",
+                    attachment.url
+                ));
+            }
+            gateway::AttachmentKind::Video => {
+                let name = attachment.filename.as_deref().unwrap_or("未命名视频");
+                prompt.push_str(&format!(
+                    "[视频] {name}\n下载地址（有时效，请尽快下载）：https://{}\n",
+                    attachment.url
+                ));
+            }
+            gateway::AttachmentKind::Image => {}
+        }
+    }
+    if !content.is_empty() {
+        if !prompt.is_empty() {
+            prompt.push('\n');
+        }
+        prompt.push_str(content);
+    }
+    prompt
+}
+
 /// 消息入队后的回执：任务 id、是否新创建、打断数量。
 /// 默认不回执（用户直接看活动流）；只有打断时才需要即时说明。
 pub struct IngestReceipt {
@@ -693,8 +941,46 @@ impl IngestReceipt {
 
 #[cfg(test)]
 mod tests {
-    use super::{QUICK_DISCONNECT_THRESHOLD, reconnect_delay};
+    use super::{
+        COALESCE_MAX_WAIT, CoalesceDecision, QUICK_DISCONNECT_THRESHOLD, coalesce_decision,
+        reconnect_delay,
+    };
     use std::time::Duration;
+
+    #[test]
+    fn coalesce_idle_ingests_immediately() {
+        // 闲会话零延迟：不管有没有等待都直接入队。
+        assert_eq!(
+            coalesce_decision(false, 0, Duration::ZERO),
+            CoalesceDecision::IngestNow
+        );
+    }
+
+    #[test]
+    fn coalesce_busy_buffers_and_caps() {
+        // 忙会话进缓冲；缓冲到顶或超过最长等待立即合并。
+        assert_eq!(
+            coalesce_decision(true, 0, Duration::ZERO),
+            CoalesceDecision::Buffer
+        );
+        assert_eq!(
+            coalesce_decision(true, 3, Duration::from_secs(5)),
+            CoalesceDecision::Buffer
+        );
+        assert_eq!(
+            coalesce_decision(true, 4, Duration::from_secs(5)),
+            CoalesceDecision::FlushNow
+        );
+        assert_eq!(
+            coalesce_decision(true, 1, COALESCE_MAX_WAIT),
+            CoalesceDecision::FlushNow
+        );
+        // 已有缓冲时新消息一律进缓冲（保持顺序），即使任务刚好跑完。
+        assert_eq!(
+            coalesce_decision(false, 2, Duration::from_secs(3)),
+            CoalesceDecision::Buffer
+        );
+    }
 
     #[test]
     fn reconnect_backoff_grows_and_caps() {
