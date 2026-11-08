@@ -120,8 +120,15 @@ fn today() -> String {
     ru41::util::today_utc(ru41::util::now())
 }
 
+/// 进入 digest 的候选上限：首轮无基线时可能一次涌入上百篇，
+/// 全量塞 prompt 会超任务上限（64KB）。
+const DIGEST_MAX_CANDIDATES: usize = 40;
+/// 单篇摘要截断（字符）：摘要级判断不需要全文，控制 prompt 体积。
+const DIGEST_SUMMARY_CHARS: usize = 800;
+
 /// 每日精选 prompt：要求 Codex 按个人方向筛选并输出结构化摘要。
 fn digest_prompt(interests: &str, candidates: &[ArxivEntry]) -> String {
+    let omitted = candidates.len().saturating_sub(DIGEST_MAX_CANDIDATES);
     let mut prompt = format!(
         "你是论文筛选助手。以下是 arXiv 最新提交的候选论文（均为摘要级信息）。\n\
          个人关注方向：{interests}\n\n\
@@ -129,10 +136,15 @@ fn digest_prompt(interests: &str, candidates: &[ArxivEntry]) -> String {
          标题 / arXiv 链接 / 研究问题 / 方法 / 主要结果 / 局限 / 与我的相关性（1-5 分及理由）/ 建议的下一步。\n\
          所有判断仅基于摘要，明确标注「基于摘要」，不要补写摘要中没有的实验结论。\n\
          如果全部不相关，直接说明「本批次无相关论文」。\n\n\
-         == 候选论文（{} 篇）==\n",
-        candidates.len()
+         == 候选论文（{} 篇{}）==\n",
+        candidates.len().min(DIGEST_MAX_CANDIDATES),
+        if omitted > 0 {
+            format!("，另有 {omitted} 篇因数量上限未纳入")
+        } else {
+            String::new()
+        }
     );
-    for entry in candidates {
+    for entry in candidates.iter().take(DIGEST_MAX_CANDIDATES) {
         prompt.push_str(&format!(
             "\n---\n[{}] {}\n作者：{}\n发布：{}\n链接：{}\n摘要：{}\n",
             entry.id,
@@ -140,7 +152,7 @@ fn digest_prompt(interests: &str, candidates: &[ArxivEntry]) -> String {
             entry.authors.join(", "),
             entry.published,
             entry.abs_url,
-            entry.summary
+            ru41::util::truncate_chars(&entry.summary, DIGEST_SUMMARY_CHARS)
         ));
     }
     prompt
