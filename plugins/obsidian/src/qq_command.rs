@@ -13,7 +13,7 @@ use std::sync::Arc;
 /// Vault 写入走核心服务（`ports::vault`），本模块只做鉴权与交互。
 ///
 /// 两种入口：`/记一下 <内容>` 显式命令，或自然语言前缀
-/// （「记一下：」「记住：」等，见 TRIGGER_PREFIXES）。
+/// （`#临时想法`、`记一下：`、`记住：` 等，见 TRIGGER_PREFIXES）。
 pub struct ObsidianQqCommand {
     vault: Arc<dyn Vault>,
     inbox_dir: String,
@@ -35,9 +35,12 @@ const TRIGGER_PREFIXES: &[&str] = &[
     "remember:",
 ];
 
-/// 剥掉触发前缀与紧随的分隔符，取出正文；不是捕获语则返回 None。
+/// 剥掉 `#` 或触发前缀与紧随的分隔符，取出正文；不是捕获语则返回 None。
 fn extract_note(content: &str) -> Option<String> {
     let trimmed = content.trim();
+    if let Some(rest) = trimmed.strip_prefix('#') {
+        return Some(rest.trim().to_owned());
+    }
     let lower = trimmed.to_lowercase();
     let prefix = TRIGGER_PREFIXES
         .iter()
@@ -84,7 +87,7 @@ impl SimpleCommand for ObsidianQqCommand {
     }
 
     fn help(&self) -> &'static str {
-        "`/记一下 <内容>`：写进 Obsidian 收件箱（单聊，需绑定）；直接说「记一下：内容」也行"
+        "`#临时想法` 或 `/记一下 <内容>`：写进 Obsidian 收件箱（单聊，需绑定）；整理时自动识别待办"
     }
 
     async fn run(&self, arg: &str, ctx: &CommandContext<'_>) -> Result<Option<Reply>> {
@@ -94,14 +97,14 @@ impl SimpleCommand for ObsidianQqCommand {
         self.record(arg, ctx).await
     }
 
-    /// 自然语言捕获：整句以触发前缀开头即视为记录意图，不写命令词。
+    /// 自然语言捕获：整句以 `#` 或触发前缀开头即视为记录意图。
     async fn run_message(&self, content: &str, ctx: &CommandContext<'_>) -> Result<Option<Reply>> {
         let Some(note) = extract_note(content) else {
             return Ok(None);
         };
         if note.is_empty() {
             return Ok(Some(Reply::text(
-                "## 记一下\n\n触发词后跟上内容即可，例如：\n`记一下：周六下午三点社团开会`",
+                "## 记一下\n\n在 `#` 后跟上内容即可，例如：\n`#周六下午三点社团开会`",
             )));
         }
         self.record(&note, ctx).await
@@ -136,6 +139,14 @@ mod tests {
         );
         assert_eq!(extract_note("记着买火车票").as_deref(), Some("买火车票"));
         assert_eq!(extract_note("Note: buy milk").as_deref(), Some("buy milk"));
+    }
+
+    #[test]
+    fn hash_prefix_captures_quick_notes() {
+        assert_eq!(extract_note("#一个临时想法").as_deref(), Some("一个临时想法"));
+        assert_eq!(extract_note("# 明天交实验报告").as_deref(), Some("明天交实验报告"));
+        assert_eq!(extract_note("#").as_deref(), Some(""));
+        assert!(extract_note("聊天记录里的 #标签 不算").is_none());
     }
 
     #[test]

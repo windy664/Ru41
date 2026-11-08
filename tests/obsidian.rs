@@ -303,12 +303,13 @@ async fn succeeded_task_commits_and_pushes() {
     git(&fx.seed, &["fetch", "origin"]);
     let log = git(&fx.seed, &["log", "--format=%s", "origin/master", "-2"]);
     assert!(log.contains("[ru41] organize inbox"), "{log}");
-    // 整理索引已生成并推送：记录本次归档去向。
+    // 近 30 天去向总览已生成并推送：记录本次归档去向。
     let index = git(
         &fx.seed,
         &["show", "origin/master:00-Inbox-收件箱/整理索引.md"],
     );
-    assert!(index.contains("整理索引"), "{index}");
+    assert!(index.contains("收件箱总览"), "{index}");
+    assert!(index.contains("近 30 天"), "{index}");
     assert!(index.contains("新想法.md"), "{index}");
     assert!(index.contains("03-Knowledge-知识/新想法.md"), "{index}");
     // 游标推进后再次轮询：ru41 自己的提交只走 self-commit。
