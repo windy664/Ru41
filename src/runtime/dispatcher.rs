@@ -41,7 +41,40 @@ impl NotifyDispatcher {
         Ok(sent
             + self.dispatch_progress().await?
             + self.dispatch_activity().await?
-            + self.dispatch_interactions().await?)
+            + self.dispatch_interactions().await?
+            + self.convert_stale_steers().await?)
+    }
+
+    /// 孤儿插话兜底：steer 记录超过 30s 仍 pending，说明插话时任务已结束
+    /// （运行结束的竞速、worker 崩溃），转成新任务继续处理，不让话落空。
+    pub async fn convert_stale_steers(&self) -> Result<usize> {
+        let docs = self.store.documents("steer", self.batch)?;
+        let now = crate::util::now();
+        let mut converted = 0;
+        for doc in docs {
+            if doc.value["status"] != "pending"
+                || now - doc.value["created_at"].as_i64().unwrap_or(now) < 30
+            {
+                continue;
+            }
+            let text = doc.value["text"].as_str().unwrap_or_default();
+            let route: Option<crate::domain::NotifyRoute> =
+                serde_json::from_value(doc.value["notify"].clone()).unwrap_or(None);
+            let (Some(route), false) = (route, text.is_empty()) else {
+                self.mark_doc("steer", &doc, "invalid")?;
+                continue;
+            };
+            crate::app::task::TaskService::new(self.store.clone()).enqueue_with_notify(
+                &format!("steer:requeue:{}", doc.id),
+                text,
+                "pi",
+                &route,
+            )?;
+            if self.mark_doc("steer", &doc, "requeued")? {
+                converted += 1;
+            }
+        }
+        Ok(converted)
     }
 
     /// 交互卡片：底座在运行中发起的审批/提问，渲染成带按钮的卡片发回

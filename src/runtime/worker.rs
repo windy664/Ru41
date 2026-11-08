@@ -312,6 +312,7 @@ impl Worker {
                 resume_session_id,
                 skills: self.backends.skills.clone(),
                 notify: claim.task.notify.clone(),
+                store: Some(self.store.clone()),
             }),
             prompt,
             run_dir: run_dir.clone(),
