@@ -28,6 +28,10 @@ pub struct PendingItem {
     pub error: Option<String>,
     #[serde(default)]
     pub course: Option<String>,
+    /// 转写全文（持久化到记录里）：工作区会被清理，转写不能只活在磁盘上——
+    /// 丢了就再也补不回来（2026-11-09 就丢过一次课堂转写）。
+    #[serde(default)]
+    pub transcript: Option<String>,
 }
 
 fn default_status() -> String {
@@ -404,6 +408,7 @@ mod tests {
             status: "pending".into(),
             error: None,
             course: None,
+            transcript: None,
         };
         assert_eq!(item.recorded_time(), 1_700_000_000);
         item.filename = "20261103_143000.m4a".into();

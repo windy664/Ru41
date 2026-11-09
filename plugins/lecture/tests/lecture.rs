@@ -96,6 +96,51 @@ fn worker(store: Arc<dyn TaskStore>, tmp: &tempfile::TempDir) -> LectureWorker {
     )
 }
 
+/// 转写产出后不能把整个会话目录删掉：2026-11-09 丢过一节网络空间安全导论的
+/// 转写（连原始录音一起没了，笔记只能写「待补」）。切片立刻删（磁盘大头），
+/// 原始音频按保留期留，转写文本留着。
+#[test]
+fn cleanup_keeps_transcript_and_audio_until_retention() {
+    let tmp = tempfile::tempdir().unwrap();
+    let store: Arc<dyn TaskStore> =
+        Arc::new(SqliteTaskStore::open(&tmp.path().join("state.db")).unwrap());
+    let worker = worker(store, &tmp);
+
+    let work = tmp.path().join("m1");
+    std::fs::create_dir_all(work.join("slices")).unwrap();
+    std::fs::create_dir_all(work.join("raw")).unwrap();
+    std::fs::write(work.join("slices").join("a.mp3"), b"x").unwrap();
+    std::fs::write(work.join("raw").join("a.mp3"), b"x").unwrap();
+    std::fs::write(work.join("transcript.md"), "老师讲了导数").unwrap();
+
+    let item = ru41_plugin_lecture::pending::PendingItem {
+        file: String::new(),
+        filename: "a.mp3".into(),
+        size: 1,
+        channel: "qq".into(),
+        target: "u".into(),
+        msg_id: "m1".into(),
+        received_at: ru41::util::now(),
+        status: "done".into(),
+        error: None,
+        course: None,
+        transcript: Some("老师讲了导数".into()),
+    };
+
+    // 刚转写完：切片删掉（磁盘大头），原始音频与转写文本都留着。
+    worker.cleanup_workspace(&work, &item, ru41::util::now());
+    assert!(!work.join("slices").exists(), "切片应立即删除");
+    assert!(work.join("raw").exists(), "原始音频应按保留期留着");
+    assert!(work.join("transcript.md").exists(), "转写文件应留着");
+
+    // 过保留期（默认 7 天）：原始音频也删，转写文本仍在。
+    let mut aged = item.clone();
+    aged.received_at = ru41::util::now() - 8 * 86_400;
+    worker.cleanup_workspace(&work, &aged, ru41::util::now());
+    assert!(!work.join("raw").exists(), "过保留期应删除原始音频");
+    assert!(work.join("transcript.md").exists(), "转写文件应留着");
+}
+
 #[test]
 fn non_audio_attachments_are_not_intercepted() {
     let tmp = tempfile::tempdir().unwrap();
