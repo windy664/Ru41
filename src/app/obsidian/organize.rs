@@ -220,7 +220,10 @@ impl ObsidianService {
         if plan.todos.is_empty() {
             return Ok(());
         }
-        let options = self.todo_options.unwrap_or_default();
+        let options = crate::domain::todo::TodoOptions {
+            offset_seconds: self.local_offset.unwrap_or_default(),
+            ..Default::default()
+        };
         let service = crate::app::todo::TodoService::new(self.store.clone(), options);
         let now = crate::util::now();
         let existing: std::collections::HashSet<String> = service
@@ -264,7 +267,10 @@ impl ObsidianService {
         if plan.events.is_empty() {
             return Ok(());
         }
-        let options = self.todo_options.unwrap_or_default();
+        let options = crate::domain::todo::TodoOptions {
+            offset_seconds: self.local_offset.unwrap_or_default(),
+            ..Default::default()
+        };
         let offset = options.offset_seconds;
         let now = crate::util::now();
         let service = crate::app::schedule::ScheduleService::new(self.store.clone(), options);

@@ -461,26 +461,8 @@ async fn main() -> Result<()> {
             let live = |doc: &ru41::domain::records::Document| {
                 doc.value["deleted"].as_bool() != Some(true)
             };
-            // 寻址：先按唯一标识，再按唯一标签（标签重复宁可报错也不猜）。
-            let resolve = |selector: &str| -> Result<Option<ru41::domain::records::Document>> {
-                if let Some(doc) = store.document(cred::KIND, selector)? {
-                    if live(&doc) {
-                        return Ok(Some(doc));
-                    }
-                    return Ok(None);
-                }
-                let hits: Vec<_> = store
-                    .documents(cred::KIND, 500)?
-                    .into_iter()
-                    .filter(live)
-                    .filter(|doc| doc.value["label"].as_str() == Some(selector))
-                    .collect();
-                match hits.len() {
-                    0 => Ok(None),
-                    1 => Ok(hits.into_iter().next()),
-                    _ => anyhow::bail!("标签「{selector}」对应多条凭据，请用唯一标识"),
-                }
-            };
+            // 寻址：按标识或唯一标签（共享实现，标签重复宁可报错也不猜）。
+            let resolve = |selector: &str| cred::resolve(store.as_ref(), selector);
             match command {
                 SecretCommand::Exec { id, command } => {
                     if command.is_empty() {

@@ -5,6 +5,7 @@
 //! 真值只在执行期注入，永远不进模型上下文。描述性文字只是标签
 //! （给人看：名单里能认出这是哪条），不参与寻址、也不构成层级。
 
+use anyhow::Result;
 use rand::Rng;
 use serde::{Deserialize, Serialize};
 
@@ -30,6 +31,34 @@ pub fn is_id(text: &str) -> bool {
         && text[ID_PREFIX.len()..]
             .bytes()
             .all(|b| b.is_ascii_hexdigit())
+}
+
+/// 按标识或唯一标签解析凭据。
+///
+/// 标识优先；标识不认识时按标签唯一匹配（标签重复返回歧义错误——宁可不给，
+/// 也不拿错一条）。核心 CLI 与 credentials 插件共用这一份寻址逻辑。
+pub fn resolve(
+    store: &dyn crate::ports::storage::TaskStore,
+    selector: &str,
+) -> Result<Option<crate::domain::records::Document>> {
+    let live =
+        |doc: &crate::domain::records::Document| doc.value["deleted"].as_bool() != Some(true);
+    if let Some(doc) = store.document(KIND, selector)?
+        && live(&doc)
+    {
+        return Ok(Some(doc));
+    }
+    let hits: Vec<_> = store
+        .documents(KIND, 500)?
+        .into_iter()
+        .filter(live)
+        .filter(|doc| doc.value["label"].as_str() == Some(selector))
+        .collect();
+    match hits.len() {
+        0 => Ok(None),
+        1 => Ok(hits.into_iter().next()),
+        _ => anyhow::bail!("标签「{selector}」对应多条凭据，请用唯一标识"),
+    }
 }
 
 /// 一条凭据（`records` 里 `credential` 类的 body）。

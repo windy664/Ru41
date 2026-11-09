@@ -3,7 +3,6 @@
 
 mod organize;
 mod sync;
-mod todo;
 
 pub use organize::{
     ORGANIZE_INDEX_FILE, OrganizeMove, OrganizePlan, OrganizeTodo, append_quick_note, extract_plan,
@@ -199,8 +198,9 @@ pub struct ObsidianService {
     pub(crate) config: ObsidianConfig,
     /// 可选的知识库索引器：vault 内容变更后后台重建向量索引（RAG）。
     knowledge: Option<Arc<crate::app::knowledge::KnowledgeService>>,
-    /// 可选的待办视图投影：todo 数据库 → `07-Todo-待办/当前待办.md`（机器文件）。
-    pub(crate) todo_options: Option<crate::domain::todo::TodoOptions>,
+    /// 本地时区偏移（秒）：收件箱整理写待办/日程时解析时间用。
+    /// 待办视图本身已下线——待办只认数据库，QQ 是唯一界面。
+    pub(crate) local_offset: Option<i32>,
 }
 
 impl ObsidianService {
@@ -222,7 +222,7 @@ impl ObsidianService {
             notify_target,
             config,
             knowledge: None,
-            todo_options: None,
+            local_offset: None,
         }
     }
 
@@ -235,10 +235,9 @@ impl ObsidianService {
         self
     }
 
-    /// 挂载待办视图投影：每轮把 todo 数据库概况渲染进
-    /// `07-Todo-待办/当前待办.md`（内容没变不写；变更自提交）。
-    pub fn with_todo_view(mut self, options: crate::domain::todo::TodoOptions) -> Self {
-        self.todo_options = Some(options);
+    /// 挂载本地时区偏移（收件箱整理解析待办/日程时间用）。
+    pub fn with_local_offset(mut self, offset_seconds: i32) -> Self {
+        self.local_offset = Some(offset_seconds);
         self
     }
 
@@ -333,10 +332,6 @@ impl ObsidianService {
         }
         self.maybe_reindex(&mut state, &head_before, &target, report.committed);
         self.save_state(&state)?;
-        if let Err(error) = self.render_todo_view().await {
-            // 视图渲染失败不影响 git 闭环本体，下轮自然重试。
-            eprintln!("[obsidian] todo view render failed: {error:#}");
-        }
         Ok(report)
     }
 
