@@ -11,9 +11,9 @@ description: 用于回答和管理用户的私人待办与行程：今天有什�
 
 ## 查询（经 CLI，配置文件用任务注入的路径或 `--config`）
 
-- 行程：`ru41 event list --days 1`；往后一周用 `--days 7`。输出 JSON，含 `title`、`starts_at`、`ends_at`、`location`（秒级时间戳）。
-- 课表：`event list` **不含教务课表**。回答「今天全部安排」时再跑一次 `ru41 jwxt classes today`；整周比较用 `ru41 jwxt classes week` 一次取全。
-- 待办：`ru41 todo list`。
+- 问待办：只跑 `ru41 todo list`，不要顺带查行程、课表或当前日期。
+- 问行程：只查用户指定的范围；问今天就 `--days 1`，问最近一周才 `--days 7`。
+- 课表：`event list` **不含教务课表**。只有用户问「今天全部安排」「什么时候有空」这类合并视图时，才再跑一次 `ru41 jwxt classes today`；整周比较用 `ru41 jwxt classes week` 一次取全。
 - 冲突：`ru41 event conflicts --when "<时间>"`，如 `明天14:00-16:00`、`每周三19:00-21:00`。
 
 时间戳转成北京时间（Asia/Shanghai）的「周X 时:分—时:分」并写明地点。「什么时候有空」按当天行程与课表排序后计算空档；排满了就直说。
