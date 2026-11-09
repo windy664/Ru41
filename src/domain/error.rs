@@ -10,7 +10,7 @@ use anyhow::Error;
 pub enum FailureKind {
     /// 瞬态：超时、进程崩溃、网络故障——退避后重试。
     Transient,
-    /// 永久：配置错误、契约不支持、输出非法、审批过期——重试无意义。
+    /// 永久：重试也不会变的（配置错误、审批过期）——直接终态，不消耗重试预算。
     Permanent,
 }
 
@@ -42,10 +42,11 @@ impl Ru41Error {
     pub fn kind(&self) -> FailureKind {
         match self {
             Self::Timeout | Self::AgentProcess(_) => FailureKind::Transient,
-            Self::InvalidOutput(_)
-            | Self::UnsupportedContract(_)
-            | Self::Config(_)
-            | Self::ApprovalExpired => FailureKind::Permanent,
+            // 模型输出不合契约（少 summary、多代码块、字段不对）是采样问题：
+            // 重试一次通常就过了。只有配置错误、审批过期这类「重试也不会变」
+            // 的才算永久失败。持续不合契约 → 预算耗尽后自然放弃。
+            Self::InvalidOutput(_) | Self::UnsupportedContract(_) => FailureKind::Transient,
+            Self::Config(_) | Self::ApprovalExpired => FailureKind::Permanent,
         }
     }
 }
