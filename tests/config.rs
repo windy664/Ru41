@@ -140,3 +140,50 @@ fn parses_agent_skills_roots() {
         vec![PathBuf::from("one"), PathBuf::from("two")]
     );
 }
+
+#[test]
+fn plugin_config_layers_merge_with_local_override() {
+    #[derive(Debug, Default, serde::Deserialize)]
+    #[serde(default)]
+    struct Rss {
+        keywords: Vec<String>,
+        interests: String,
+        max_items_per_feed: Option<u32>,
+    }
+
+    let cwd = tempfile::tempdir().unwrap();
+    std::fs::write(
+        cwd.path().join("ru41.toml"),
+        "[sources.rss]\nkeywords = [\"main\"]\ninterests = \"main\"\nmax_items_per_feed = 50\n",
+    )
+    .unwrap();
+    let plugin_dir = cwd.path().join("plugins.d/rss");
+    std::fs::create_dir_all(&plugin_dir).unwrap();
+    std::fs::write(
+        plugin_dir.join("config.toml"),
+        "[rss]\ninterests = \"plugin\"\nmax_items_per_feed = 10\n",
+    )
+    .unwrap();
+    std::fs::write(
+        plugin_dir.join("config.local.toml"),
+        "[rss]\nmax_items_per_feed = 20\n",
+    )
+    .unwrap();
+
+    let (config, _) = Config::load_from_with_plugin_root(None, cwd.path(), None, None).unwrap();
+    let rss = config.sources.get::<Rss>("rss").unwrap();
+    assert_eq!(rss.keywords, vec!["main"]);
+    assert_eq!(rss.interests, "plugin");
+    assert_eq!(rss.max_items_per_feed, Some(20));
+}
+
+#[test]
+fn invalid_plugin_config_is_reported() {
+    let cwd = tempfile::tempdir().unwrap();
+    std::fs::write(cwd.path().join("ru41.toml"), "").unwrap();
+    let plugin_dir = cwd.path().join("plugins.d/bad");
+    std::fs::create_dir_all(&plugin_dir).unwrap();
+    std::fs::write(plugin_dir.join("config.toml"), "not toml [").unwrap();
+
+    assert!(Config::load_from_with_plugin_root(None, cwd.path(), None, None).is_err());
+}

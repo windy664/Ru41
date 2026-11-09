@@ -130,6 +130,10 @@ static DEF: ru41::modules::ModuleDef = ru41::modules::ModuleDef {
 
 - DEF 与内建模块完全同构：配置读取（`config.sources.get::<T>(name)`）、
   vault、通知路由、`Arc<dyn TaskStore>` 全可用，签名一致。
+- 插件配置的源文件模板放 `plugins/<插件>/config.example.toml`；运行时真实配置放主配置旁的
+  `plugins.d/<插件>/config.toml`（顶层写配置段名，如 papers 的 `[arxiv]`），设备本地覆盖放
+  `config.local.toml`。真实 `config.toml` / `config.local.toml` 已 gitignore，插件代码仍统一用
+  `config.sources.get::<T>(name)` 读取，不需要感知文件来自哪里。
 - 插件**不用** linkme 自注册（dylib 独立 section，宿主 slice 看不到），
   必须走入口函数显式返回 DEF。
 - `ModuleDef` 是 Copy，宿主 `Box::leak` 成 `'static`，插件 .so 永不卸载。

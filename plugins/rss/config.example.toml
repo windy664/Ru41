@@ -1,0 +1,17 @@
+# RSS 插件配置模板；复制到主配置旁的 plugins.d/rss/config.toml 后修改。
+# 顶层段名必须与插件 config_key 一致：这里是 [rss]。
+
+[rss]
+feeds = ["https://www.jiqizhixin.com/rss"]
+keywords = ["agent", "llm", "安全"]
+interests = "AI 安全、Rust、个人自动化、免费 AI 额度、黑客松与实习机会"
+max_items_per_feed = 50
+interval_secs = 21600
+backend = "pi"
+notify = true
+digest_mode = "daily"
+morning_hour = 8
+evening_hour = 21
+max_age_days = 2
+pool_keyword_filter = true
+drop_title_patterns = ["^\\[推广\\]", "^\\[中转站\\]"]

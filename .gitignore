@@ -11,6 +11,9 @@
 *.sqlite-wal
 /config/local.toml
 /ru41.toml
+/plugins.d/
+plugins/*/config.toml
+plugins/*/config.local.toml
 templates/*/target*/
 plugins/*/target*/
 plugins/target-plugins/
