@@ -13,8 +13,8 @@ use ru41::{
     domain::schedule::{EventInput, EventSource, parse_event_when},
     domain::todo::{TodoInput, parse_due},
     ingress::cli::{
-        Cli, Command, EventCommand, KnowledgeCommand, QqCommand, ScheduleCommand, TaskCommand,
-        TodoCommand, TrackerCommand,
+        Cli, Command, EventCommand, KnowledgeCommand, QqCommand, ScheduleCommand, SecretCommand,
+        TaskCommand, TodoCommand, TrackerCommand,
     },
     ingress::cli_ops,
     privacy::{NoopSanitizer, RandomSanitizer, Sanitizer},
@@ -451,6 +451,53 @@ async fn main() -> Result<()> {
                     return Ok(());
                 }
             }
+        }
+        // 凭据托管：get 把真值原样写 stdout（给 shell `$(ru41 secret get <名>)`
+        // 内联展开用，真值不进模型上下文），list 只列名称。记录墓碑
+        //（deleted=true）当作不存在。
+        Command::Secret { command } => {
+            let store = open_store(&store_config)?;
+            match command {
+                SecretCommand::Get { name } => {
+                    let doc = store.document("credential", &name)?;
+                    let value = doc
+                        .as_ref()
+                        .filter(|doc| doc.value["deleted"].as_bool() != Some(true))
+                        .and_then(|doc| doc.value["value"].as_str().map(str::to_owned));
+                    let Some(value) = value else {
+                        anyhow::bail!("凭据不存在或已删除：{name}");
+                    };
+                    println!("{value}");
+                }
+                SecretCommand::List => {
+                    let mut names: Vec<String> = store
+                        .documents("credential", 500)?
+                        .into_iter()
+                        .filter(|doc| doc.value["deleted"].as_bool() != Some(true))
+                        .map(|doc| doc.id)
+                        .collect();
+                    names.sort();
+                    for name in names {
+                        println!("{name}");
+                    }
+                }
+                SecretCommand::Delete { name } => {
+                    let doc = store
+                        .document("credential", &name)?
+                        .filter(|doc| doc.value["deleted"].as_bool() != Some(true));
+                    let Some(doc) = doc else {
+                        anyhow::bail!("凭据不存在或已删除：{name}");
+                    };
+                    store.put_document(
+                        "credential",
+                        &name,
+                        Some(doc.revision),
+                        &serde_json::json!({"deleted": true, "updated_at": ru41::util::now()}),
+                    )?;
+                    println!("deleted: {name}");
+                }
+            }
+            return Ok(());
         }
         Command::Event { command } => {
             let options = config.todo.options()?;
