@@ -357,7 +357,11 @@ async fn quick_note_enters_todo_inbox_without_agent_or_schedule() {
     );
 
     // 单独一个 `#`：列出全部待办（等同 /待办）。
-    let list = command.handle_message("#", &context).await.unwrap().unwrap();
+    let list = command
+        .handle_message("#", &context)
+        .await
+        .unwrap()
+        .unwrap();
     assert!(list.text.contains("## 待办（1）"));
     assert!(list.text.contains("有空整理一下英文播客订阅"));
 }
@@ -365,13 +369,7 @@ async fn quick_note_enters_todo_inbox_without_agent_or_schedule() {
 #[test]
 fn extension_commands_match_aliases_and_join_help() {
     let todo = TodoQqCommand::new(ru41::domain::todo::TodoOptions::default(), None);
-    for verb in [
-        "待办",
-        "完成",
-        "推迟",
-        "取消待办",
-        "恢复待办",
-    ] {
+    for verb in ["待办", "完成", "推迟", "取消待办", "恢复待办"] {
         assert!(todo.matches(verb));
     }
     // 录入类命令词已下线：记待办/记一下 等不再匹配，统一走 `#` 自然语言入口。
