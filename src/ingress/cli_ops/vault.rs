@@ -13,14 +13,16 @@ pub(crate) async fn run(cli: &Cli, command: &VaultCommand) -> OpsOutcome {
         VaultCommand::ScanSecrets { vault, out } => {
             scan_secrets(cli, vault.as_deref(), out.as_deref())
         }
-        VaultCommand::MigrateSecrets { vault, apply } => {
-            migrate_secrets(cli, vault.as_deref(), *apply)
-        }
+        VaultCommand::MigrateSecrets {
+            vault,
+            apply,
+            exclude,
+        } => migrate_secrets(cli, vault.as_deref(), *apply, exclude),
     }
 }
 
 /// 明文密码迁移：计划模式只报位置与名字；--apply 才写凭据库并改写笔记。
-fn migrate_secrets(cli: &Cli, vault: Option<&Path>, apply: bool) -> OpsOutcome {
+fn migrate_secrets(cli: &Cli, vault: Option<&Path>, apply: bool, exclude: &[String]) -> OpsOutcome {
     let root = match vault {
         Some(path) => path.to_path_buf(),
         None => match default_vault_path(cli) {
@@ -29,7 +31,7 @@ fn migrate_secrets(cli: &Cli, vault: Option<&Path>, apply: bool) -> OpsOutcome {
         },
     };
     if !apply {
-        let plan = match migrate::plan(&root) {
+        let plan = match migrate::plan(&root, exclude) {
             Ok(plan) => plan,
             Err(error) => return OpsOutcome::failure(format!("扫描 {}: {error}", root.display())),
         };
@@ -55,7 +57,7 @@ fn migrate_secrets(cli: &Cli, vault: Option<&Path>, apply: bool) -> OpsOutcome {
         Ok(store) => store,
         Err(error) => return OpsOutcome::failure(error.to_string()),
     };
-    let applied = match migrate::apply(&root, store.as_ref(), crate::util::now()) {
+    let applied = match migrate::apply(&root, store.as_ref(), crate::util::now(), exclude) {
         Ok(applied) => applied,
         Err(error) => return OpsOutcome::failure(error.to_string()),
     };
