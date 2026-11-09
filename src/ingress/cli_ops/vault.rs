@@ -1,8 +1,8 @@
 use super::OpsOutcome;
 use crate::{
-    bootstrap::config::Config,
+    bootstrap::{config::Config, store},
     ingress::cli::{Cli, VaultCommand},
-    privacy::scan,
+    privacy::{migrate, scan},
 };
 use anyhow::{Context, Result};
 use serde_json::json;
@@ -13,7 +13,59 @@ pub(crate) async fn run(cli: &Cli, command: &VaultCommand) -> OpsOutcome {
         VaultCommand::ScanSecrets { vault, out } => {
             scan_secrets(cli, vault.as_deref(), out.as_deref())
         }
+        VaultCommand::MigrateSecrets { vault, apply } => {
+            migrate_secrets(cli, vault.as_deref(), *apply)
+        }
     }
+}
+
+/// 明文密码迁移：计划模式只报位置与名字；--apply 才写凭据库并改写笔记。
+fn migrate_secrets(cli: &Cli, vault: Option<&Path>, apply: bool) -> OpsOutcome {
+    let root = match vault {
+        Some(path) => path.to_path_buf(),
+        None => match default_vault_path(cli) {
+            Ok(path) => path,
+            Err(error) => return OpsOutcome::failure(error.to_string()),
+        },
+    };
+    if !apply {
+        let plan = match migrate::plan(&root) {
+            Ok(plan) => plan,
+            Err(error) => return OpsOutcome::failure(format!("扫描 {}: {error}", root.display())),
+        };
+        return OpsOutcome::success(json!({
+            "mode": "dry-run",
+            "vault": root.display().to_string(),
+            "planned": plan.entries.len(),
+            "entries": plan.entries,
+            "hint": "加 --apply 执行：写凭据库并把笔记里的明文换成凭据引用",
+        }));
+    }
+    let (config, _) = match Config::load(cli.config.as_deref()) {
+        Ok(pair) => pair,
+        Err(error) => return OpsOutcome::failure(error.to_string()),
+    };
+    let store_options = store::resolve(
+        cli.store.clone(),
+        cli.db.clone(),
+        cli.pg_url.clone(),
+        &config,
+    );
+    let store = match store::open_store(&store_options) {
+        Ok(store) => store,
+        Err(error) => return OpsOutcome::failure(error.to_string()),
+    };
+    let applied = match migrate::apply(&root, store.as_ref(), crate::util::now()) {
+        Ok(applied) => applied,
+        Err(error) => return OpsOutcome::failure(error.to_string()),
+    };
+    OpsOutcome::success(json!({
+        "mode": "applied",
+        "vault": root.display().to_string(),
+        "credentials": applied.credentials,
+        "rewritten_files": applied.rewritten_files,
+        "entries": applied.entries,
+    }))
 }
 
 fn scan_secrets(cli: &Cli, vault: Option<&Path>, out: Option<&Path>) -> OpsOutcome {
