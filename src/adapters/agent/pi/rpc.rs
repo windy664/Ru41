@@ -269,7 +269,23 @@ fn pick_full_report(candidates: &[String], summary: &str) -> Option<String> {
         || best.contains("\n## ")
         || best.contains("\n- **")
         || best.contains("\n### ");
-    looks_like_report.then(|| best.trim().to_owned())
+    if !looks_like_report {
+        return None;
+    }
+    // 报告候选也可能是「正文 + 契约 JSON」：这里同样剥掉信封，
+    // 否则 parse_agent_result 已清理的最终消息会被这个兜底重新弄脏。
+    let body = match extract_contract_json(best) {
+        Some((contract, summary)) => {
+            let prose = clean_contract_prose(&best.replace(contract, ""));
+            if prose.chars().count() >= 20 {
+                prose
+            } else {
+                summary
+            }
+        }
+        None => best.trim().to_owned(),
+    };
+    Some(body)
 }
 
 /// 契约 JSON 只是信封：挖掉它以后，把包它的 Markdown 代码围栏与前置分隔线也去掉。
@@ -1155,6 +1171,19 @@ mod tests {
         let summary = "今日筛选出 7 条值得关注的条目：1) ……；2) ……";
         let picked = pick_full_report(std::slice::from_ref(&report), summary);
         assert_eq!(picked.as_deref(), Some(report.trim()));
+    }
+
+    #[test]
+    fn strips_contract_envelope_from_picked_report() {
+        let body = format!(
+            "# 未交作业\n\n## 已过期\n\n- **作业 A** —— 截止 2026-11-08\n{}",
+            "补充说明。".repeat(400)
+        );
+        let report = format!("{body}\n\n```json\n{{\"summary\":\"压缩摘要\"}}\n```");
+        let picked = pick_full_report(&[report], "压缩摘要").unwrap();
+        assert_eq!(picked, body);
+        assert!(!picked.contains("```json"));
+        assert!(!picked.contains("压缩摘要"));
     }
 
     /// 正文不够长、或不像交付物时，不动 summary。
