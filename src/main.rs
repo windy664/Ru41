@@ -43,7 +43,9 @@ async fn main() -> Result<()> {
         cli.pg_url.clone(),
         &config,
     );
-    if let Some(path) = &config_path {
+    if let Some(path) = &config_path
+        && std::env::var("RU41_VERBOSE").is_ok()
+    {
         eprintln!("[config] using {}", path.display());
     }
     // 动态插件（cdylib）：启动时扫描加载，失败只告警不挡启动。
