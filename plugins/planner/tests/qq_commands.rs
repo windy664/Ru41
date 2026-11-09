@@ -210,7 +210,7 @@ async fn todo_commands_add_list_and_complete_in_private_chat() {
     let context = ctx(&fixture, "user:U1", "U1", true);
 
     let unbound = command
-        .handle_command("待办", "", &context)
+        .handle_message("#", &context)
         .await
         .unwrap()
         .unwrap();
@@ -240,7 +240,7 @@ async fn todo_commands_add_list_and_complete_in_private_chat() {
     assert!(item.due_at.is_some());
 
     let summary = command
-        .handle_command("待办", "", &context)
+        .handle_message("#", &context)
         .await
         .unwrap()
         .unwrap();
@@ -272,7 +272,7 @@ async fn todo_commands_add_list_and_complete_in_private_chat() {
     assert!(completed.text.contains("# **待办（0）**"));
 
     let empty = command
-        .handle_command("待办", "", &context)
+        .handle_message("#", &context)
         .await
         .unwrap()
         .unwrap();
@@ -281,7 +281,7 @@ async fn todo_commands_add_list_and_complete_in_private_chat() {
 }
 
 #[tokio::test]
-async fn todo_commands_reject_group_chat_and_parse_views() {
+async fn todo_list_rejects_group_chat() {
     let fixture = fixture();
     let command = TodoQqCommand::new(ru41::domain::todo::TodoOptions::default(), None);
     let private = ctx(&fixture, "user:U1", "U1", true);
@@ -291,31 +291,13 @@ async fn todo_commands_reject_group_chat_and_parse_views() {
         &ru41::app::usage_report::Pricing::builtin(),
     )
     .unwrap();
-    command
-        .handle_message("#未排期事项", &private)
-        .await
-        .unwrap();
 
     let group = command
-        .handle_command("待办", "", &ctx(&fixture, "group:G1", "U1", false))
+        .handle_message("#", &ctx(&fixture, "group:G1", "U1", false))
         .await
         .unwrap()
         .unwrap();
     assert!(group.text.contains("群聊"));
-
-    let inbox = command
-        .handle_command("待办", "未排期", &private)
-        .await
-        .unwrap()
-        .unwrap();
-    assert!(inbox.text.contains("未排期"));
-
-    let overdue = command
-        .handle_command("待办", "逾期", &private)
-        .await
-        .unwrap()
-        .unwrap();
-    assert!(overdue.text.contains("暂无"));
 }
 
 #[tokio::test]
@@ -352,7 +334,7 @@ async fn quick_note_enters_todo_inbox_without_agent_or_schedule() {
             .text
             .contains("<qqbot-cmd-input text=\"%2F%E5%AE%8C%E6%88%90%20")
     );
-    // 复选框符号是 囗（U+56D7，CJK 全角字），按汉字尺寸渲染，大且有边框。
+    // 复选框符号是 ☐，与完成态的 ☑ 对齐。
     assert!(reply.text.contains("show=\"%E2%98%90\""));
 
     let documents = fixture.store.documents("todo_item", 10).unwrap();
@@ -373,7 +355,7 @@ async fn quick_note_enters_todo_inbox_without_agent_or_schedule() {
             .is_none()
     );
 
-    // 单独一个 `#`：列出全部待办（等同 /待办）。
+    // 单独一个 `#`：列出全部待办。
     let list = command
         .handle_message("#", &context)
         .await

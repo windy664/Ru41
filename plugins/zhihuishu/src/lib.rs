@@ -1,10 +1,8 @@
 pub mod config;
-pub mod qq_command;
 pub mod service;
 pub mod source;
 
 pub use config::ZhihuishuSection;
-pub use qq_command::ZhihuishuQqCommand;
 pub use service::{ZhihuishuConfig, ZhihuishuPollReport, ZhihuishuTracker};
 pub use source::{
     ZhihuishuAttachment, ZhihuishuCourse, ZhihuishuReport, ZhihuishuTask, load_report,
@@ -49,15 +47,8 @@ pub static DEF: ru41::modules::ModuleDef = ru41::modules::ModuleDef {
             vault,
         ))))
     },
-    qq_handlers: |config, _| {
-        Ok(vec![std::sync::Arc::new(ZhihuishuQqCommand::new(
-            config
-                .sources
-                .get::<crate::ZhihuishuSection>("zhihuishu")?
-                .resolved(String::new())?
-                .report_path,
-        ))])
-    },
+    // 作业查询统一由 homework 插件聚合学习通与智慧树，这里只负责采集。
+    qq_handlers: |_, _| Ok(Vec::new()),
     image_consumers: ru41::modules::no_image_consumers,
     cli: ru41::modules::no_cli,
 };

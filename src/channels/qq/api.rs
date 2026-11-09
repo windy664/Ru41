@@ -673,7 +673,7 @@ mod tests {
     fn keyboard_payload_uses_inline_command_buttons() {
         let markup = crate::ports::commands::ReplyMarkup::new().row(vec![
             crate::ports::commands::MarkupButton::new("任务", "/任务"),
-            crate::ports::commands::MarkupButton::new("待办", "/待办"),
+            crate::ports::commands::MarkupButton::new("待办", "#"),
         ]);
         let keyboard = qq_keyboard(&markup).unwrap();
         let rows = &keyboard["content"]["rows"];

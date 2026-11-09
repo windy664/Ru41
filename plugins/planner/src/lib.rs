@@ -4,7 +4,7 @@ mod view;
 pub mod qq_command;
 pub use qq_command::TodoQqCommand;
 
-/// 注册表定义：todo-remind 调度（CLI `todo remind` 驱动，无 schedule run 装配）与 /待办 命令。
+/// 注册表定义：todo-remind 调度（CLI `todo remind` 驱动，无 schedule run 装配）与 # 待办入口。
 pub static DEF: ru41::modules::ModuleDef = ru41::modules::ModuleDef {
     name: "planner",
     priority: ru41::modules::DEFAULT_PRIORITY,

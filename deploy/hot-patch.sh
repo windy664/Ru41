@@ -98,17 +98,10 @@ scp "$so" "$server:~/ru41-mimo-smoke/plugins/$tmp_name"
 ssh "$server" "mv ~/ru41-mimo-smoke/plugins/$tmp_name ~/ru41-mimo-smoke/plugins/$(basename "$so")"
 
 # 技能包也在宿主目录（挂载到 /usr/share/ru41/plugins），改了就一并同步。
-# 目录形状必须是 <插件>/skills/<技能>/SKILL.md —— 加载器按这个结构找。
-# 技能放在插件根的 skills/ 或 src/skills/ 两种位置都认。
-skill_src=""
-for candidate in "$plugin_dir/skills" "$plugin_dir/src/skills"; do
-  if [[ -d "$candidate" ]]; then
-    skill_src="$candidate"
-    break
-  fi
-done
-if [[ -n "$skill_src" ]]; then
-  echo "==> 同步技能包 $name（$(basename "$(dirname "$skill_src")")/skills）"
+# 仓库唯一布局：<插件>/skills/<技能>/SKILL.md；镜像打包与加载器都按这个结构找。
+skill_src="$plugin_dir/skills"
+if [[ -d "$skill_src" ]]; then
+  echo "==> 同步技能包 $name"
   ssh "$server" "mkdir -p ~/ru41-mimo-smoke/skills/$name/skills"
   # 按内容拷（scp 的 "src/." 语义不可靠，会多套一层同名目录）。
   scp -r "$skill_src/"* "$server:~/ru41-mimo-smoke/skills/$name/skills/"

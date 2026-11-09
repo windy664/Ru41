@@ -3,7 +3,7 @@
 
 use ru41::domain::{
     schedule::parse_event_when,
-    todo::{TodoOptions, TodoView, parse_due},
+    todo::{TodoOptions, parse_due},
 };
 
 /// 待办的唯一录入入口是 `#`：剥掉 `#` 与紧随的分隔符取出正文；
@@ -42,18 +42,6 @@ pub(super) fn parse_event_view(arg: &str) -> Option<i64> {
             .strip_suffix('天')
             .and_then(|n| n.parse::<i64>().ok())
             .filter(|n| (1..=30).contains(n)),
-    }
-}
-
-pub(super) fn parse_view(text: &str) -> Option<TodoView> {
-    match text.trim().to_lowercase().as_str() {
-        "今日" | "今天" | "today" => Some(TodoView::Today),
-        "近期" | "最近" | "recent" => Some(TodoView::Recent),
-        "长期" | "long" | "long-term" => Some(TodoView::LongTerm),
-        "逾期" | "过期" | "overdue" => Some(TodoView::Overdue),
-        "收件箱" | "未排期" | "inbox" => Some(TodoView::Inbox),
-        "全部" | "所有" | "all" => Some(TodoView::All),
-        _ => None,
     }
 }
 
