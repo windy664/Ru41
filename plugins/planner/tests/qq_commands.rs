@@ -329,11 +329,14 @@ async fn quick_note_enters_todo_inbox_without_agent_or_schedule() {
     assert!(reply.text.contains("✅ 已记入：有空整理一下英文播客订阅"));
     // 回执下方直接是当前完整待办清单。
     assert!(reply.text.contains("## 待办（1）"));
-    // 完成操作在消息底部的原生按钮键盘：label 带标题，command 是 /完成 <id>。
-    let markup = reply.markup.expect("待办清单应附带按钮键盘");
-    let button = &markup.rows[0][0];
-    assert!(button.label.starts_with("✅ "));
-    assert!(button.command.starts_with("/完成 "));
+    // 行首大复选框：cmd-input 标签，点击把 /完成 <id> 填进输入框。
+    assert!(
+        reply
+            .text
+            .contains("<qqbot-cmd-input text=\"%2F%E5%AE%8C%E6%88%90%20")
+    );
+    // 复选框符号是 emoji 态 ⬜️（U+2B1C+VS16），QQ 按表情尺寸渲染。
+    assert!(reply.text.contains("show=\"%E2%AC%9C%EF%B8%8F\""));
 
     let documents = fixture.store.documents("todo_item", 10).unwrap();
     assert_eq!(documents.len(), 1);
