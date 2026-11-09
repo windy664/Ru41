@@ -14,10 +14,10 @@ use std::sync::Arc;
 
 use crate::{
     parse::{
-        extract_note, parse_event_view, parse_view, split_leading_time, split_selector_and_time,
+        extract_note, parse_event_view, split_leading_time, split_selector_and_time,
         split_when_and_title,
     },
-    view::{cmd_input_chip, format_items, usage, usage_views},
+    view::{cmd_input_chip, format_items, usage},
 };
 
 /// QQ 私人待办入口；持久化与日期视图由核心 TodoService 提供。
@@ -91,7 +91,6 @@ impl SimpleCommand for TodoQqCommand {
             let service = self.service(ctx.store);
             let now = ru41::util::now();
             let reply = match verb {
-                "待办" | "todo" => self.list_reply(&service, arg, now)?,
                 "记日程" | "加日程" | "schedule-add" => {
                     self.event_add_reply(&self.event_service(ctx.store), arg, ctx, now)?
                 }
@@ -136,7 +135,7 @@ impl SimpleCommand for TodoQqCommand {
     }
 
     /// 自然语言捕获：整句以 `#` 或触发前缀开头即视为记录意图。
-    /// 单独一个 `#` 相当于 `/待办`：列出全部未完成。
+    /// 单独一个 `#`：列出全部未完成。
     async fn run_message(&self, content: &str, ctx: &CommandContext<'_>) -> Result<Option<Reply>> {
         let Some(note) = extract_note(content) else {
             return Ok(None);
@@ -148,7 +147,7 @@ impl SimpleCommand for TodoQqCommand {
         let service = self.service(ctx.store);
         let now = ru41::util::now();
         if note.is_empty() {
-            return self.list_reply(&service, "", now).map(Some);
+            return self.list_reply(&service, now).map(Some);
         }
         Ok(Some(self.quick_capture_reply(&service, &note, ctx, now)?))
     }
@@ -200,25 +199,10 @@ impl TodoQqCommand {
         Ok(todo_list_reply(&service, now, self.options)?)
     }
 
-    fn list_reply(&self, service: &TodoService, arg: &str, now: i64) -> Result<Reply> {
-        if arg.trim().is_empty() {
-            // 主视图：未完成清单（按截止时间排序）+ 底部近 7 天已完成。
-            let items: Vec<TodoItem> = service.list(TodoView::All, now, 50)?;
-            return Ok(Reply::text(format_items("待办", &items, now, self.options)));
-        }
-        let Some(view) = parse_view(arg) else {
-            return Ok(Reply::text(format!("待办视图不存在\n\n{}", usage_views())));
-        };
-        let items = service.list(view, now, 50)?;
-        let title = match view {
-            TodoView::Today => "今日待办",
-            TodoView::Recent => "近期待办",
-            TodoView::LongTerm => "长期待办",
-            TodoView::Overdue => "逾期未完成",
-            TodoView::Inbox => "未排期",
-            TodoView::All => "全部待办",
-        };
-        Ok(Reply::text(format_items(title, &items, now, self.options)))
+    fn list_reply(&self, service: &TodoService, now: i64) -> Result<Reply> {
+        // 唯一清单视图：未完成（按截止时间排序）+ 底部近 7 天已完成。
+        let items: Vec<TodoItem> = service.list(TodoView::All, now, 50)?;
+        Ok(Reply::text(format_items("待办", &items, now, self.options)))
     }
 
     /// `/记日程 <时间> <标题>`：时间在先，支持「明天14:00-16:00」「每周二14:00-15:40」。

@@ -269,7 +269,7 @@ fn judge(store: &Arc<dyn TaskStore>, id_prefix: &str, option: usize) -> Result<R
 fn help_markup() -> ReplyMarkup {
     ReplyMarkup::new()
         .row(vec![
-            MarkupButton::new("待办", "/待办"),
+            MarkupButton::new("待办", "#"),
             MarkupButton::new("日程", "/日程"),
             MarkupButton::new("任务", "/任务"),
         ])

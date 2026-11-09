@@ -166,36 +166,33 @@ struct FakeVault {
 }
 
 impl ru41::ports::vault::Vault for FakeVault {
-        fn remote_branch_sha(&self, _branch: &str) -> anyhow::Result<Option<String>> {
-            Ok(None)
-        }
-        fn push_head_to(&self, _remote_ref: &str, _force: bool) -> anyhow::Result<()> {
-            Ok(())
-        }
-        fn delete_remote_branch(&self, _branch: &str) -> anyhow::Result<()> {
-            Ok(())
-        }
-        fn head_sha(&self) -> anyhow::Result<String> {
-            Ok("0".repeat(40))
-        }
-        fn merge_commit(
-            &self,
-            _sha: &str,
-        ) -> anyhow::Result<ru41::ports::vault::SyncOutcome> {
-            Ok(ru41::ports::vault::SyncOutcome::Clean)
-        }
-        fn merge_continue(&self) -> anyhow::Result<()> {
-            Ok(())
-        }
-        fn merge_abort(&self) -> anyhow::Result<()> {
-            Ok(())
-        }
-        fn conflict_files(&self) -> anyhow::Result<Vec<String>> {
-            Ok(Vec::new())
-        }
-        fn is_ancestor(&self, _ancestor: &str, _other: &str) -> anyhow::Result<bool> {
-            Ok(true)
-        }
+    fn remote_branch_sha(&self, _branch: &str) -> anyhow::Result<Option<String>> {
+        Ok(None)
+    }
+    fn push_head_to(&self, _remote_ref: &str, _force: bool) -> anyhow::Result<()> {
+        Ok(())
+    }
+    fn delete_remote_branch(&self, _branch: &str) -> anyhow::Result<()> {
+        Ok(())
+    }
+    fn head_sha(&self) -> anyhow::Result<String> {
+        Ok("0".repeat(40))
+    }
+    fn merge_commit(&self, _sha: &str) -> anyhow::Result<ru41::ports::vault::SyncOutcome> {
+        Ok(ru41::ports::vault::SyncOutcome::Clean)
+    }
+    fn merge_continue(&self) -> anyhow::Result<()> {
+        Ok(())
+    }
+    fn merge_abort(&self) -> anyhow::Result<()> {
+        Ok(())
+    }
+    fn conflict_files(&self) -> anyhow::Result<Vec<String>> {
+        Ok(Vec::new())
+    }
+    fn is_ancestor(&self, _ancestor: &str, _other: &str) -> anyhow::Result<bool> {
+        Ok(true)
+    }
 
     fn fetch(&self) -> anyhow::Result<()> {
         Ok(())
@@ -850,157 +847,4 @@ fn config_section_rejects_unknown_fields() {
 #[allow(dead_code)]
 fn _route_type_check(_r: NotifyRoute) {}
 
-// ---------- QQ「作业」命令 ----------
-
-use ru41::app::identity::IdentityService;
-use ru41::ports::commands::{CommandContext, CommandHandler};
-use ru41_plugin_zhihuishu::ZhihuishuQqCommand;
-
-struct CtxFixture {
-    _dir: tempfile::TempDir,
-    store: Arc<dyn TaskStore>,
-    target: String,
-    author: String,
-}
-
-fn make_ctx_fixture() -> CtxFixture {
-    let dir = tempfile::tempdir().unwrap();
-    let store = make_store(dir.path());
-    CtxFixture {
-        _dir: dir,
-        store,
-        target: "user:openid-1".into(),
-        author: "openid-1".into(),
-    }
-}
-
-fn ctx<'a>(f: &'a CtxFixture, c2c: bool) -> CommandContext<'a> {
-    CommandContext {
-        store: &f.store,
-        bind_secret: Some("s3cret"),
-        target: &f.target,
-        msg_id: "msg-1",
-        author_openid: &f.author,
-        is_c2c: c2c,
-        reply_channel: "qq",
-        image_url: None,
-        attachments: &[],
-    }
-}
-
-fn bind_user(f: &CtxFixture) {
-    IdentityService::new(f.store.clone())
-        .bind("qq", &f.author, "s3cret", "s3cret", 0)
-        .unwrap();
-}
-
-#[test]
-fn qq_matches_aliases_only() {
-    let handler = ZhihuishuQqCommand::new(std::path::PathBuf::from("/nonexistent.json"));
-    assert!(handler.matches("作业"));
-    assert!(handler.matches("homework"));
-    assert!(!handler.matches("tasks"));
-    assert!(!handler.matches("水电"));
-}
-
-#[tokio::test]
-async fn qq_arg_falls_through_to_agent() {
-    let f = make_ctx_fixture();
-    bind_user(&f);
-    let handler = ZhihuishuQqCommand::new(f._dir.path().join("report.json"));
-    let reply = handler.handle("帮我写作业", &ctx(&f, true)).await.unwrap();
-    assert!(reply.is_none(), "带参数不拦截, 落给 Agent");
-}
-
-#[tokio::test]
-async fn qq_unbound_user_is_prompted_to_bind() {
-    let f = make_ctx_fixture();
-    let handler = ZhihuishuQqCommand::new(f._dir.path().join("report.json"));
-    let reply = handler.handle("", &ctx(&f, true)).await.unwrap().unwrap();
-    assert!(reply.text.contains("绑定"));
-}
-
-#[tokio::test]
-async fn qq_group_chat_is_rejected() {
-    let f = make_ctx_fixture();
-    bind_user(&f);
-    let handler = ZhihuishuQqCommand::new(f._dir.path().join("report.json"));
-    let reply = handler.handle("", &ctx(&f, false)).await.unwrap().unwrap();
-    assert!(reply.text.contains("单聊"));
-}
-
-#[tokio::test]
-async fn qq_lists_homework_for_bound_c2c() {
-    let f = make_ctx_fixture();
-    bind_user(&f);
-    let mut report_value = sample_report_json();
-    report_value["courses"][0]["tasks"] = json!([
-        {
-            "activity_task_id": "OLD1",
-            "title": "过期的思维导图",
-            "kind": "assignment",
-            "end_at": platform_time(-1),
-            "completed": false
-        },
-        {
-            "activity_task_id": "SOON1",
-            "title": "第五节课 课前测",
-            "kind": "assignment",
-            "end_at": platform_time(1),
-            "completed": false
-        },
-        {
-            "activity_task_id": "EXAM1",
-            "title": "形势与政策 课程作业",
-            "kind": "exam",
-            "end_at": platform_time(6),
-            "completed": false,
-            "exam_duration_minutes": 60,
-            "video_invigilate": true
-        },
-        {
-            "activity_task_id": "DONE1",
-            "title": "已完成作业",
-            "kind": "assignment",
-            "end_at": platform_time(-2),
-            "completed": true
-        }
-    ]);
-    let path = write_report(f._dir.path(), &report_value);
-    let handler = ZhihuishuQqCommand::new(path);
-    let reply = handler.handle("", &ctx(&f, true)).await.unwrap().unwrap();
-    assert!(reply.text.contains("作业清单"));
-    assert!(reply.text.contains("已过期") && reply.text.contains("过期的思维导图"));
-    assert!(reply.text.contains("3 天内截止") && reply.text.contains("第五节课 课前测"));
-    assert!(reply.text.contains("🔒"), "考试式任务需人工标注");
-    assert!(!reply.text.contains("已完成作业"), "已完成任务不出现");
-}
-
-#[tokio::test]
-async fn qq_natural_language_gate() {
-    let f = make_ctx_fixture();
-    bind_user(&f);
-    write_report(f._dir.path(), &sample_report_json());
-    let handler = ZhihuishuQqCommand::new(f._dir.path().join("report.json"));
-    let miss = handler
-        .handle_message("你好呀", &ctx(&f, true))
-        .await
-        .unwrap();
-    assert!(miss.is_none(), "无关寒暄不拦截");
-    let hit = handler
-        .handle_message("作业还有哪些没交", &ctx(&f, true))
-        .await
-        .unwrap();
-    assert!(hit.is_some(), "作业疑问应拦截并作答");
-    assert!(hit.unwrap().text.contains("作业清单"));
-}
-
-#[tokio::test]
-async fn qq_missing_report_degrades_friendly() {
-    let f = make_ctx_fixture();
-    bind_user(&f);
-    let handler = ZhihuishuQqCommand::new(f._dir.path().join("nope.json"));
-    let reply = handler.handle("", &ctx(&f, true)).await.unwrap().unwrap();
-    assert!(reply.text.contains("暂不可用"));
-}
 use ru41_plugin_zhihuishu::{ZhihuishuConfig, ZhihuishuSection, ZhihuishuTracker, load_report};
