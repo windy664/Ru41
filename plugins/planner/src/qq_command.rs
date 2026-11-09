@@ -562,9 +562,12 @@ fn format_items(title: &str, items: &[TodoItem], now: i64, options: TodoOptions)
     lines.join("\n")
 }
 
-/// 已完成条目：**🗹** 粗勾 + 标题划横线。
+/// 已完成条目：粗勾 + 标题划横线。
+///
+/// 候选符号（想换回只改这一处）：`☑`（2026-11-09 用户选定，粗勾更像复选框）、
+/// `🗹`（前一版）、`✅`。已完成态不再可点，所以不用 cmd-input 标签。
 fn format_completed(item: &TodoItem) -> String {
-    format!("**🗹** ~~{}~~", item.title)
+    format!("**☑** ~~{}~~", item.title)
 }
 
 /// 近 7 天的已完成：完成时间在窗口内，或创建时间在窗口内（近七天创建的待办也留着）。
@@ -701,8 +704,8 @@ mod tests {
         assert!(!text.contains("　**板子焊接**"), "{text}");
         // 底部完成项：粗勾 + 划横线，不带「已完成」标题，也不留空行。
         assert!(!text.contains("已完成"), "{text}");
-        assert!(text.contains("**🗹** ~~写周报~~"), "{text}");
-        assert!(!text.contains("\n\n**🗹**"), "{text}");
+        assert!(text.contains("**☑** ~~写周报~~"), "{text}");
+        assert!(!text.contains("\n\n**☑**"), "{text}");
         active.completed_at = None;
     }
 
