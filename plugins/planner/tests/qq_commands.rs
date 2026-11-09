@@ -335,8 +335,8 @@ async fn quick_note_enters_todo_inbox_without_agent_or_schedule() {
             .text
             .contains("<qqbot-cmd-input text=\"%2F%E5%AE%8C%E6%88%90%20")
     );
-    // 复选框符号是 emoji 态 ⬜️（U+2B1C+VS16），QQ 按表情尺寸渲染。
-    assert!(reply.text.contains("show=\"%E2%AC%9C%EF%B8%8F\""));
+    // 复选框符号是 囗（U+56D7，CJK 全角字），按汉字尺寸渲染，大且有边框。
+    assert!(reply.text.contains("show=\"%E5%9B%97\""));
 
     let documents = fixture.store.documents("todo_item", 10).unwrap();
     assert_eq!(documents.len(), 1);

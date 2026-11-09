@@ -561,13 +561,13 @@ fn format_item(item: &TodoItem, now: i64, options: TodoOptions) -> String {
     format!("{} **{}** — {}{}", checkbox, item.title, label, priority)
 }
 
-/// 待办「完成」复选框：`<qqbot-cmd-input show="⬜️">`，点击后指令填入输入框、
+/// 待办「完成」复选框：`<qqbot-cmd-input show="囗">`，点击后指令填入输入框、
 /// 再点发送即完成（两跳是官方能力的代价：cmd-enter 一跳但不支持自定义显示——
 /// 平台报错 40034108；mqqapi 链接能显示但新版客户端点击无响应）。
-/// 符号选 emoji 态的 ⬜️（U+2B1C+VS16）而不是文本态 ☐（U+2610）：QQ 按表情
-/// 尺寸渲染，视觉上大一圈（2026-11-09 用户反馈 ☐ 太小）。
+/// 符号选型（2026-11-09）：☐（U+2610）文本态太小、⬜️（U+2B1C）是无边框白块；
+/// 囗（U+56D7，CJK 表意文字）按汉字全角尺寸渲染——大、有边框、空心，像复选框。
 fn done_chip(item: &TodoItem) -> String {
-    cmd_input_chip("⬜\u{fe0f}", &format!("/完成 {}", item.short_id()))
+    cmd_input_chip("囗", &format!("/完成 {}", item.short_id()))
 }
 
 fn usage() -> String {
