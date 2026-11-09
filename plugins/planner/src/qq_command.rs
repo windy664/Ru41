@@ -195,7 +195,10 @@ impl TodoQqCommand {
         now: i64,
     ) -> Result<Reply> {
         let title = title.trim();
-        ensure!(!title.is_empty(), "用法：`#内容`（开头可带时间词，如 `#明天下午三点交报告`）");
+        ensure!(
+            !title.is_empty(),
+            "用法：`#内容`（开头可带时间词，如 `#明天下午三点交报告`）"
+        );
         let (title, due_at) = match split_leading_time(title, now, &self.options) {
             Some((rest, due)) => (rest, Some(due)),
             None => (title.to_owned(), None),
@@ -229,12 +232,8 @@ impl TodoQqCommand {
 
     fn list_reply(&self, service: &TodoService, arg: &str, now: i64) -> Result<Reply> {
         if arg.trim().is_empty() {
-            // 主视图就是一排大复选框：全部未完成按截止时间排序，不再分节。
-            let items: Vec<TodoItem> = service
-                .list(TodoView::All, now, 50)?
-                .into_iter()
-                .filter(|item| item.status == TodoStatus::Active)
-                .collect();
+            // 主视图：未完成清单（按截止时间排序）+ 底部近 7 天已完成。
+            let items: Vec<TodoItem> = service.list(TodoView::All, now, 50)?;
             return Ok(Reply::text(format_items("待办", &items, now, self.options)));
         }
         let Some(view) = parse_view(arg) else {
@@ -537,13 +536,44 @@ fn split_selector_and_time(arg: &str) -> Option<(&str, &str)> {
 }
 
 fn format_items(title: &str, items: &[TodoItem], now: i64, options: TodoOptions) -> String {
-    let mut lines = vec![format!("## {title}（{}）", items.len())];
-    if items.is_empty() {
+    let active: Vec<&TodoItem> = items
+        .iter()
+        .filter(|item| item.status == TodoStatus::Active)
+        .collect();
+    let mut lines = vec![format!("## {title}（{}）", active.len())];
+    if active.is_empty() {
         lines.push("\n> 暂无".to_owned());
     } else {
-        lines.extend(items.iter().map(|item| format_item(item, now, options)));
+        lines.extend(active.iter().map(|item| format_item(item, now, options)));
+    }
+    // 底部：近 7 天的已完成（粗勾 + 划横线）——一眼看到「干掉了多少」。
+    let mut completed: Vec<&TodoItem> = items
+        .iter()
+        .filter(|item| item.status != TodoStatus::Active && is_recent_completed(item, now))
+        .collect();
+    // 最近完成的排最前。
+    completed.sort_by(|a, b| {
+        b.completed_at
+            .unwrap_or(b.created_at)
+            .cmp(&a.completed_at.unwrap_or(a.created_at))
+    });
+    if !completed.is_empty() {
+        lines.push(String::new());
+        lines.push(format!("### 🏁 已完成（近 7 天，{}）", completed.len()));
+        lines.extend(completed.iter().map(|item| format_completed(item)));
     }
     lines.join("\n")
+}
+
+/// 已完成条目：**🗹** 粗勾 + 标题划横线。
+fn format_completed(item: &TodoItem) -> String {
+    format!("**🗹** ~~{}~~", item.title)
+}
+
+/// 近 7 天的已完成：完成时间在窗口内，或创建时间在窗口内（近七天创建的待办也留着）。
+fn is_recent_completed(item: &TodoItem, now: i64) -> bool {
+    const WEEK: i64 = 7 * 86_400;
+    item.completed_at.is_some_and(|at| at >= now - WEEK) || item.created_at >= now - WEEK
 }
 
 fn format_item(item: &TodoItem, now: i64, options: TodoOptions) -> String {
@@ -552,12 +582,9 @@ fn format_item(item: &TodoItem, now: i64, options: TodoOptions) -> String {
         TodoPriority::Low => "，低优先级",
         TodoPriority::Normal => "",
     };
-    // 行首大复选框：活跃条目是「完成」（囗），已结束条目是「恢复」（☑️）。
-    // 复选框本身就是行标记，不再加列表符号；id 嵌在框的指令里，不在正文展示。
-    let checkbox = match item.status {
-        TodoStatus::Active => done_chip(item),
-        _ => cmd_input_chip("☑\u{fe0f}", &format!("/恢复 {}", item.short_id())),
-    };
+    // 行首大复选框：活跃条目是「完成」（囗）。复选框后不加空格，
+    // 标题紧随其后（加粗复选框 QQ 客户端不渲染，试过，不管用）。
+    let checkbox = done_chip(item);
     // 未排期（无截止时间）不显示时间尾巴——「未排期」三个字没有信息量。
     let due = if item.due_at.is_some() {
         format!(
@@ -567,8 +594,7 @@ fn format_item(item: &TodoItem, now: i64, options: TodoOptions) -> String {
     } else {
         String::new()
     };
-    // 复选框后空一个全角空格：半角空格在 QQ 渲染里几乎看不见。
-    format!("{checkbox}　**{}**{due}{priority}", item.title)
+    format!("{checkbox}**{}**{due}{priority}", item.title)
 }
 
 /// 待办「完成」复选框：`<qqbot-cmd-input show="囗">`，点击后指令填入输入框、
@@ -593,7 +619,7 @@ fn usage_views() -> String {
 
 #[cfg(test)]
 mod tests {
-    use super::{cmd_input_chip, split_leading_time, truncate_title, url_encode};
+    use super::{cmd_input_chip, format_items, split_leading_time, truncate_title, url_encode};
 
     #[test]
     fn split_leading_time_extracts_compact_relative_time() {
@@ -603,8 +629,7 @@ mod tests {
         };
         let now = 1_794_152_881; // 2026-11-08 傍晚（UTC+8）
         // 紧凑写法：日期词 + 时段 + 钟点。
-        let (title, due) =
-            split_leading_time("明天下午三点交实验报告", now, &options).unwrap();
+        let (title, due) = split_leading_time("明天下午三点交实验报告", now, &options).unwrap();
         assert_eq!(title, "交实验报告");
         let offset = chrono::FixedOffset::east_opt(8 * 3600).unwrap();
         let local = chrono::DateTime::from_timestamp(due, 0)
@@ -619,13 +644,14 @@ mod tests {
         // 只有时段没有钟点：不识别（不随便安默认时间）。
         assert!(split_leading_time("下午交作业", now, &options).is_none());
         // 裸数字不算钟点：「明天3号」不吃成凌晨三点。
-        assert!(split_leading_time("明天3号交报告", now, &options)
-            .is_none_or(|(_, due)| {
+        assert!(
+            split_leading_time("明天3号交报告", now, &options).is_none_or(|(_, due)| {
                 let local = chrono::DateTime::from_timestamp(due, 0)
                     .unwrap()
                     .with_timezone(&offset);
                 local.format("%H:%M").to_string() == "22:00"
-            }));
+            })
+        );
         // 没有时间词：不识别。
         assert!(split_leading_time("板子焊接", now, &options).is_none());
         // 整句都是时间词：不识别（没有标题内容）。
@@ -646,6 +672,43 @@ mod tests {
             "<qqbot-cmd-input text=\"%2F%E5%AE%8C%E6%88%90%20abc123\" \
              show=\"%E2%98%90\" reference=\"false\" />"
         );
+    }
+
+    #[test]
+    fn renders_active_list_and_recent_completed_footer() {
+        use ru41::domain::todo::{TodoItem, TodoOptions, TodoStatus};
+        let options = TodoOptions::default();
+        let now = 1_794_152_881;
+        let mut active = TodoItem {
+            id: "todo_1".into(),
+            title: "板子焊接".into(),
+            status: TodoStatus::Active,
+            priority: ru41::domain::todo::TodoPriority::Normal,
+            labels: vec![],
+            due_at: None,
+            remind_at: None,
+            last_reminded_at: None,
+            completed_at: None,
+            created_at: now,
+            updated_at: now,
+            source: None,
+        };
+        let mut done = active.clone();
+        done.id = "todo_2".into();
+        done.title = "写周报".into();
+        done.status = TodoStatus::Completed;
+        done.completed_at = Some(now - 3600);
+        done.created_at = now - 7200;
+        let text = format_items("待办", &[active.clone(), done], now, options);
+        // 未完成在前，计数只算未完成。
+        assert!(text.contains("## 待办（1）"), "{text}");
+        // 复选框后没有空格。
+        assert!(text.contains("**板子焊接**"), "{text}");
+        assert!(!text.contains("　**板子焊接**"), "{text}");
+        // 底部已完成区：粗勾 + 划横线。
+        assert!(text.contains("### 🏁 已完成（近 7 天，1）"), "{text}");
+        assert!(text.contains("**🗹** ~~写周报~~"), "{text}");
+        active.completed_at = None;
     }
 
     #[test]
