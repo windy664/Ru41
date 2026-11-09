@@ -103,6 +103,7 @@ pub fn registry(
             extensions: pi.extensions.clone(),
             extra_env: pi.extra_env.clone(),
             fallback_models: pi.fallback_models.clone(),
+            input: pi.input.clone(),
             id: "pi".into(),
         };
         backends.register(base)?;
@@ -124,6 +125,7 @@ pub fn registry(
                     extensions: pi.extensions.clone(),
                     extra_env: pi.extra_env.clone(),
                     fallback_models: pi.fallback_models.clone(),
+                    input: pi.input.clone(),
                     id: "pi".into(),
                 }
             })?;
