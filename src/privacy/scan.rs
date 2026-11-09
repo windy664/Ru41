@@ -33,6 +33,8 @@ pub struct ScanReport {
 struct Pattern {
     rule: &'static str,
     regex: regex::Regex,
+    /// 敏感值所在捕获组；捕获到的值是掩码（********）时不算命中。
+    value_group: usize,
 }
 
 /// 扫描用的形态库：脱敏规则（secret_kv/bearer/jwt）的父集 + 常见厂商密钥特征。
@@ -40,31 +42,36 @@ struct Pattern {
 fn patterns() -> &'static [Pattern] {
     static PATTERNS: OnceLock<Vec<Pattern>> = OnceLock::new();
     PATTERNS.get_or_init(|| {
-        let make = |rule: &'static str, pattern: &str| Pattern {
+        let make = |rule: &'static str, pattern: &str, value_group: usize| Pattern {
             rule,
             regex: regex::Regex::new(pattern).expect("scan pattern must compile"),
+            value_group,
         };
         vec![
             make(
                 "secret_kv",
                 r#"(?i)(?:^|[^0-9A-Za-z_])?(?:password|passwd|pwd|密码|口令|secret|api[_-]?key|apikey|access[_-]?token|refresh[_-]?token|client[_-]?secret|token)\b\W*[:：=]\W*(?:"|')?([!-~]{6,})(?:"|')?"#,
+                1,
             ),
-            make("bearer_token", r"\b[Bb]earer\s+([A-Za-z0-9._~+/=-]{10,})"),
+            make("bearer_token", r"\b[Bb]earer\s+([A-Za-z0-9._~+/=-]{10,})", 1),
             make(
                 "jwt",
                 r"\beyJ[A-Za-z0-9_-]{8,}\.[A-Za-z0-9_-]{8,}\.[A-Za-z0-9_-]{8,}",
+                0,
             ),
-            make("aws_access_key", r"\bAKIA[0-9A-Z]{16}\b"),
-            make("slack_token", r"\bxox[baprs]-[A-Za-z0-9-]{10,}"),
-            make("github_token", r"\b(?:ghp|gho|ghu|ghs)_[A-Za-z0-9]{30,}\b"),
-            make("openai_key", r"\bsk-(?:proj-)?[A-Za-z0-9_-]{20,}\b"),
+            make("aws_access_key", r"\bAKIA[0-9A-Z]{16}\b", 0),
+            make("slack_token", r"\bxox[baprs]-[A-Za-z0-9-]{10,}", 0),
+            make("github_token", r"\b(?:ghp|gho|ghu|ghs)_[A-Za-z0-9]{30,}\b", 0),
+            make("openai_key", r"\bsk-(?:proj-)?[A-Za-z0-9_-]{20,}\b", 0),
             make(
                 "private_key",
                 r"-----BEGIN (?:RSA |EC |OPENSSH |PGP |DSA )?PRIVATE KEY-----",
+                0,
             ),
             make(
                 "cred_url",
-                r"\b(?:postgres(?:ql)?|mysql|redis|mongodb(?:\+srv)?|amqp)://[^\s/:@]+:[^\s/@]+@",
+                r"\b(?:postgres(?:ql)?|mysql|redis|mongodb(?:\+srv)?|amqp)://[^\s/:@]+:([^\s/@]+)@",
+                1,
             ),
         ]
     })
@@ -76,7 +83,13 @@ pub fn scan_text(text: &str) -> Vec<SecretHit> {
     for (idx, line) in text.lines().enumerate() {
         let mut masked = line.to_owned();
         for pattern in patterns() {
-            if pattern.regex.is_match(line) {
+            // 掩码值（********、your_password）不是真凭据，不报警。
+            let hit = pattern.regex.captures_iter(line).any(|caps| {
+                caps.get(pattern.value_group)
+                    .map(|value| !crate::privacy::is_placeholder(value.as_str()))
+                    .unwrap_or(false)
+            });
+            if hit {
                 masked = pattern
                     .regex
                     .replace_all(&masked, format!("<{}>", pattern.rule))
@@ -205,6 +218,15 @@ mod tests {
         assert!(rules.contains(&"secret_kv"), "rules: {rules:?}");
         assert!(rules.contains(&"aws_access_key"));
         assert!(hits.iter().all(|h| !h.preview.contains("Sup3rSecret99")));
+    }
+
+    #[test]
+    fn masked_values_are_not_flagged() {
+        // 掩码值不是真凭据：迁移不搬、扫描不报警（否则门槛永远归不了零）。
+        let text = "mySQLPassword: \"********\"\n密码: your_password_here\n";
+        assert!(scan_text(text).is_empty(), "{:?}", scan_text(text));
+        // 真密码仍然报警。
+        assert!(!scan_text("密码: hunter2secret\n").is_empty());
     }
 
     #[test]
