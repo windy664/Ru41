@@ -19,7 +19,7 @@ use std::{
 };
 use tokio::io::{AsyncBufReadExt, AsyncReadExt, AsyncWriteExt, BufReader};
 
-/// 候选模型：供应方 + 模型 ID。fallback 链里逐个尝试。
+/// 候选模型：供应方 + 模型 ID；主模型与 fallback 共同注入 Pi virtual model。
 #[derive(Clone, Debug)]
 struct Candidate {
     model: String,
@@ -27,8 +27,22 @@ struct Candidate {
 }
 
 impl Candidate {
+    /// 拆成 Pi 认识的 provider 与物理模型 ID；`provider/model` 里只有第一段是 provider。
+    fn parts(&self) -> (String, String) {
+        match self.model.split_once('/') {
+            Some((provider, model)) => (provider.to_owned(), model.to_owned()),
+            None => (
+                self.provider.clone().unwrap_or_default(),
+                self.model.clone(),
+            ),
+        }
+    }
+
     /// 展示名（供应方/模型），用于日志与用量归属。
     fn label(&self) -> String {
+        if self.model.contains('/') {
+            return self.model.clone();
+        }
         match &self.provider {
             Some(provider) if !provider.is_empty() => format!("{provider}/{}", self.model),
             _ => self.model.clone(),
@@ -68,7 +82,7 @@ pub struct PiAgent {
     /// 模型输入模态（text/image）：写进 models.json，声明 image 后 Pi 的
     /// read 工具才会把图片作为附件发给模型。
     pub input: Vec<String>,
-    /// 备用模型链：主模型失败（限流/服务端错误/协议中断）时按顺序切换。
+    /// 备用模型链：主模型失败（限流/服务端错误/协议中断）时由 Pi virtual model 按顺序切换。
     /// 每项写 `供应方/模型` 或裸 `模型`（沿用主供应方）。
     pub fallback_models: Vec<String>,
     /// 底座 ID（pi / pi-session）。
@@ -464,7 +478,7 @@ impl PiAgent {
             .filter(|p| !p.is_empty())
             .unwrap_or("ru41")
             .to_owned();
-        let model_id = model.rsplit_once('/').map_or(model, |(_, id)| id);
+        let model_id = model.split_once('/').map_or(model, |(_, id)| id);
         let mut provider = serde_json::Map::new();
         provider.insert(
             "baseUrl".into(),
@@ -474,12 +488,27 @@ impl PiAgent {
         if let Some(env_name) = self.api_key_env.as_deref() {
             provider.insert("apiKey".into(), Value::String(format!("${env_name}")));
         }
-        let mut entry = serde_json::Map::new();
-        entry.insert("id".into(), Value::String(model_id.to_owned()));
-        if !self.input.is_empty() {
-            entry.insert("input".into(), json!(self.input));
+        let mut entries = Vec::new();
+        let mut push_model = |id: &str| {
+            let mut entry = serde_json::Map::new();
+            entry.insert("id".into(), Value::String(id.to_owned()));
+            if !self.input.is_empty() {
+                entry.insert("input".into(), json!(self.input));
+            }
+            entries.push(Value::Object(entry));
+        };
+        push_model(model_id);
+        for fallback in &self.fallback_models {
+            let candidate = Candidate {
+                model: fallback.clone(),
+                provider: self.provider.clone(),
+            };
+            let (fallback_provider, fallback_id) = candidate.parts();
+            if fallback_provider == provider_id && fallback_id != model_id {
+                push_model(&fallback_id);
+            }
         }
-        provider.insert("models".into(), Value::Array(vec![Value::Object(entry)]));
+        provider.insert("models".into(), Value::Array(entries));
         let mut root = serde_json::Map::new();
         root.insert(
             "providers".into(),
@@ -502,6 +531,61 @@ impl PiAgent {
         .with_context(|| format!("写 models.json 失败 {}", models_path.display()))?;
         Ok(agent_dir)
     }
+
+    /// 生成 Pi 原生 virtual model：同一个 Pi 进程内处理 retry 时的模型切换。
+    /// 密钥不进入 extension；物理模型认证仍由 models.json / Pi 内置 provider 处理。
+    fn write_fallback_extension(&self, run_dir: &Path, chain: &[Candidate]) -> Result<PathBuf> {
+        let chain_json = serde_json::to_string(
+            &chain
+                .iter()
+                .map(|candidate| {
+                    let (provider, id) = candidate.parts();
+                    json!({"provider": provider, "id": id})
+                })
+                .collect::<Vec<_>>(),
+        )
+        .context("序列化 fallback 模型链失败")?;
+        let source = format!(
+            r#"const CHAIN = {chain_json};
+
+function sameModel(model, candidate) {{
+  return model && model.provider === candidate.provider && model.id === candidate.id;
+}}
+
+function pick(request, ctx, candidate) {{
+  const model = ctx.modelRegistry.find(candidate.provider, candidate.id);
+  if (!model) throw new Error(`Model ${{candidate.provider}}/${{candidate.id}} is not in the catalog`);
+  return {{ model, thinkingLevel: request.thinkingLevel }};
+}}
+
+export default function (pi) {{
+  pi.registerVirtualModel({{
+    provider: "ru41",
+    id: "auto",
+    name: "Ru41 Auto Fallback",
+    thinkingLevels: ["off", "minimal", "low", "medium", "high", "xhigh", "max"],
+    route(request, ctx) {{
+      if (request.reason === "retry" && request.failed?.model) {{
+        const failed = CHAIN.findIndex((candidate) => sameModel(request.failed.model, candidate));
+        if (failed >= 0 && failed + 1 < CHAIN.length) return pick(request, ctx, CHAIN[failed + 1]);
+        return pick(request, ctx, CHAIN[CHAIN.length - 1]);
+      }}
+      if (request.reason !== "user" && request.previous?.model) {{
+        const previous = CHAIN.findIndex((candidate) => sameModel(request.previous.model, candidate));
+        if (previous >= 0) return pick(request, ctx, CHAIN[previous]);
+      }}
+      return pick(request, ctx, CHAIN[0]);
+    }},
+  }});
+}}
+"#
+        );
+        let path = run_dir.join("ru41-fallback.ts");
+        std::fs::write(&path, source)
+            .with_context(|| format!("写 Pi fallback extension 失败 {}", path.display()))?;
+        Ok(path)
+    }
+
     /// 候选链：主模型在前，备用模型按配置顺序在后。
     fn candidates(&self) -> Vec<Candidate> {
         let mut list = Vec::new();
@@ -527,16 +611,6 @@ impl PiAgent {
         list
     }
 
-    /// 换模型也救不了的错误：契约不支持、配置缺失、结果不合约。
-    fn is_fatal(error: &anyhow::Error) -> bool {
-        matches!(
-            error.downcast_ref::<Ru41Error>(),
-            Some(Ru41Error::UnsupportedContract(_))
-                | Some(Ru41Error::Config(_))
-                | Some(Ru41Error::InvalidOutput(_))
-        )
-    }
-
     async fn execute(&self, request: AgentRequest) -> Result<AgentOutput> {
         ensure!(
             request.contract == RunContract::AnalysisV1,
@@ -551,35 +625,21 @@ impl PiAgent {
             !candidates.is_empty(),
             Ru41Error::Config("Pi requires a model".into())
         );
-        if candidates.len() == 1 {
-            return self.run_candidate(&request, &candidates[0]).await;
-        }
-        let mut last_error = None;
-        for candidate in &candidates {
-            match self.run_candidate(&request, candidate).await {
-                Ok(output) => return Ok(output),
-                Err(error) => {
-                    if Self::is_fatal(&error) {
-                        return Err(error);
-                    }
-                    eprintln!(
-                        "[pi] model {} failed ({error:#}); trying next candidate",
-                        candidate.label()
-                    );
-                    last_error = Some(error);
-                }
-            }
-        }
-        Err(last_error.unwrap_or_else(|| {
-            Ru41Error::AgentProcess("Pi candidate chain exhausted".into()).into()
-        }))
+        // fallback 由 Pi 原生 virtual model 在同一个进程里处理；Ru41 不再重启候选链。
+        self.run_candidate(&request, &candidates).await
     }
 
     async fn run_candidate(
         &self,
         request: &AgentRequest,
-        candidate: &Candidate,
+        candidates: &[Candidate],
     ) -> Result<AgentOutput> {
+        let candidate = &candidates[0];
+        let fallback_extension = if candidates.len() > 1 {
+            Some(self.write_fallback_extension(&request.run_dir, candidates)?)
+        } else {
+            None
+        };
         let skills = request
             .context
             .as_ref()
@@ -609,6 +669,9 @@ impl PiAgent {
         // 扩展：只加载配置里显式写下的那几个。
         // --no-extensions 保留（不做扩展发现），但 Pi 允许显式 -e 覆盖它。
         for extension in &self.extensions {
+            command.arg("--extension").arg(extension);
+        }
+        if let Some(extension) = &fallback_extension {
             command.arg("--extension").arg(extension);
         }
         for (key, value) in &self.extra_env {
@@ -672,11 +735,15 @@ impl PiAgent {
         } else {
             command.arg("--no-session");
         }
-        if !candidate.model.is_empty() {
-            command.args(["--model", &candidate.model]);
-        }
-        if let Some(provider) = &candidate.provider {
-            command.args(["--provider", provider]);
+        if fallback_extension.is_some() {
+            command.args(["--model", "ru41/auto"]);
+        } else {
+            if !candidate.model.is_empty() {
+                command.args(["--model", &candidate.model]);
+            }
+            if let Some(provider) = &candidate.provider {
+                command.args(["--provider", provider]);
+            }
         }
         // 密钥只走环境变量；配置与日志里只有变量名。
         if let Some(env_name) = &self.api_key_env {
@@ -745,6 +812,7 @@ impl PiAgent {
             let mut total = 0_usize;
             let mut usage: Option<TokenUsage> = None;
             let mut session_id: Option<String> = None;
+            let mut actual_model: Option<String> = None;
             let mut asked_state = false;
             let mut steer_tick = tokio::time::interval(std::time::Duration::from_secs(2));
             steer_tick.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
@@ -827,6 +895,12 @@ impl PiAgent {
                         }
                     }
                     Some("message_end") if event["message"]["role"] == "assistant" => {
+                        if let (Some(provider), Some(model)) = (
+                            event["message"]["provider"].as_str(),
+                            event["message"]["model"].as_str(),
+                        ) {
+                            actual_model = Some(format!("{provider}/{model}"));
+                        }
                         // 权威用量在最终消息上：Anthropic 协议端点（如 MiniMax）
                         // 流式期间 message_update 一直是 0，只有收尾才给真值。
                         if let Some(reported) = usage_from_event(&event["message"]) {
@@ -901,7 +975,7 @@ impl PiAgent {
                         result,
                         session_id,
                         usage,
-                        model: Some(candidate.label()),
+                        model: actual_model.or_else(|| Some(candidate.label())),
                     });
                 }
             }

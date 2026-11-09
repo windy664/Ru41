@@ -255,36 +255,38 @@ async fn accepts_json_wrapped_in_code_fence_or_prose() {
 }
 
 #[tokio::test]
-async fn falls_back_to_next_model_and_reports_the_used_one() {
-    // 主模型直接退出（模拟限流/服务端错误），应自动切到备用模型，
-    // 并把「实际使用的模型」报回去，供用量按模型分摊。
+async fn fallback_uses_pi_virtual_model_in_one_process() {
+    let _guard = SERIAL.lock().await;
     let dir = tempfile::tempdir().unwrap();
     let agent = PiAgent {
         executable: executable(
             dir.path(),
             r#"
-if [ ! -f attempt.txt ]; then
-  touch attempt.txt
-  printf '%s\n' '{"id":"ru41-prompt","type":"response","success":true}' 
-  exit 1
-fi
 printf '%s\n' '{"id":"ru41-prompt","type":"response","success":true,"data":{"disposition":"started"}}'
-printf '%s\n' '{"type":"message_end","message":{"role":"assistant","stopReason":"stop","usage":{"input":10,"output":5,"cacheRead":0,"cacheWrite":0,"totalTokens":15},"content":[{"type":"text","text":"{\"summary\":\"ok\"}"}]}}'
+printf '%s\n' '{"type":"message_end","message":{"role":"assistant","provider":"deepseek","model":"deepseek-chat","stopReason":"stop","usage":{"input":10,"output":5,"cacheRead":0,"cacheWrite":0,"totalTokens":15},"content":[{"type":"text","text":"{\"summary\":\"ok\"}"}]}}'
 printf '%s\n' '{"type":"agent_settled","aborted":false}'
-while read -r _; do :; done
 "#,
         ),
         model: Some("minimax/MiniMax-M3".into()),
         provider: Some("minimax".into()),
-        fallback_models: vec!["zhipu/glm-4.6".into()],
+        fallback_models: vec!["deepseek/deepseek-chat".into()],
         ..Default::default()
     };
-    let output = tokio::time::timeout(Duration::from_secs(15), agent.run(request(dir.path())))
+    let output = tokio::time::timeout(Duration::from_secs(10), agent.run(request(dir.path())))
         .await
         .unwrap()
         .unwrap();
     assert_eq!(output.result.summary, "ok");
-    assert_eq!(output.model.as_deref(), Some("zhipu/glm-4.6"));
+    assert_eq!(output.model.as_deref(), Some("deepseek/deepseek-chat"));
+
+    let args = std::fs::read_to_string(dir.path().join("args.txt")).unwrap();
+    assert!(args.lines().any(|line| line == "--model"));
+    assert!(args.lines().any(|line| line == "ru41/auto"));
+    assert!(!args.lines().any(|line| line == "--provider"));
+    let extension = std::fs::read_to_string(dir.path().join("ru41-fallback.ts")).unwrap();
+    assert!(extension.contains("MiniMax-M3"));
+    assert!(extension.contains("deepseek-chat"));
+    assert!(extension.contains("request.reason === \"retry\""));
 }
 
 #[tokio::test]
@@ -438,6 +440,10 @@ printf '%s\n' '{"type":"agent_settled","aborted":false}'
         base_url: Some("https://api.minimaxi.chat/anthropic".into()),
         api: Some("anthropic-messages".into()),
         api_key_env: Some("RU41_TEST_PI_KEY".into()),
+        fallback_models: vec![
+            "minimax/MiniMax-M3.1-Flash".into(),
+            "deepseek/deepseek-chat".into(),
+        ],
         ..Default::default()
     };
     // models.json 内容与写盘无关，直接断言结构：密钥只以环境变量引用出现。
@@ -449,6 +455,9 @@ printf '%s\n' '{"type":"agent_settled","aborted":false}'
     assert_eq!(provider["api"], "anthropic-messages");
     assert_eq!(provider["apiKey"], "$RU41_TEST_PI_KEY");
     assert_eq!(provider["models"][0]["id"], "MiniMax-M3");
+    assert_eq!(provider["models"][1]["id"], "MiniMax-M3.1-Flash");
+    assert_eq!(provider["models"].as_array().unwrap().len(), 2);
+    assert!(models["providers"].get("deepseek").is_none());
     let raw = serde_json::to_string(&models).unwrap();
     assert!(!raw.contains("sk-"));
     // 端点协议不支持时直接报错。
