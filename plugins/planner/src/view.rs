@@ -110,9 +110,9 @@ pub(super) fn format_item(item: &TodoItem, now: i64, options: TodoOptions) -> St
     };
     // 正文用三级标题：QQ markdown 没有字号语法，只有标题层级能放大。
     // 层级：## 栏目标题 > ### 正文条目。
-    // 复选框后面补一个英文空格：QQ 在行内标签后会自动插零宽空格（不可见），
-    // 不补空格的话未完成项会紧贴标题，和完成项「☑ 标题」对不齐。
-    format!("### {checkbox} {}{due}{priority}", item.title)
+    // 复选框与它后面的空格一起放进 chip 的 show 里：点的时候连空格一起点，
+    // 命中区域更大；外面不再单独补空格（否则会出现两个间隙）。
+    format!("### {checkbox}{}{due}{priority}", item.title)
 }
 
 /// 待办「完成」复选框：`<qqbot-cmd-input show="囗">`，点击后指令填入输入框、
@@ -122,7 +122,8 @@ pub(super) fn format_item(item: &TodoItem, now: i64, options: TodoOptions) -> St
 /// 普通复选框 ☐ 反而是经典清单的样子（此前用囗 U+56D7 是因为整行都是普通文字时
 /// 复选框显得太小；⬜️ U+1B1C 是无边框白块，都不如 ☐ 干净）。
 pub(super) fn done_chip(item: &TodoItem) -> String {
-    cmd_input_chip("☐", &format!("/完成 {}", item.short_id()))
+    // show = 复选框 + 一个英文空格（点击区域含空格，显示与「☑ 标题」对齐）。
+    cmd_input_chip("☐ ", &format!("/完成 {}", item.short_id()))
 }
 
 pub(super) fn usage() -> String {
@@ -147,9 +148,9 @@ mod tests {
     #[test]
     fn cmd_input_chip_encodes_show_and_text() {
         assert_eq!(
-            cmd_input_chip("☐", "/完成 abc123"),
+            cmd_input_chip("☐ ", "/完成 abc123"),
             "<qqbot-cmd-input text=\"%2F%E5%AE%8C%E6%88%90%20abc123\" \
-             show=\"%E2%98%90\" reference=\"false\" />"
+             show=\"%E2%98%90%20\" reference=\"false\" />"
         );
     }
 
