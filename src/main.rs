@@ -486,37 +486,56 @@ async fn main() -> Result<()> {
                     if command.is_empty() {
                         anyhow::bail!("用法：ru41 secret exec --id <标识> -- <命令>");
                     }
-                    let Some(doc) = resolve(&id)? else {
-                        anyhow::bail!("凭据不存在或已删除：{id}");
-                    };
-                    let value = doc.value["value"].as_str().unwrap_or_default().to_owned();
-                    if value.is_empty() {
-                        anyhow::bail!("凭据为空：{id}");
+                    // 多条凭据一起注入：FTP 这类要账号+密码的场景不用跑两次。
+                    let mut docs = Vec::new();
+                    for selector in &id {
+                        let Some(doc) = resolve(selector)? else {
+                            anyhow::bail!("凭据不存在或已删除：{selector}");
+                        };
+                        docs.push(doc);
                     }
-                    // 真值注入子进程环境变量；命令里用 $RU41_SECRET 引用。
-                    let line = command.join(" ");
-                    let output = tokio::process::Command::new("sh")
-                        .arg("-c")
-                        .arg(&line)
-                        .env("RU41_SECRET", &value)
-                        .env("RU41_SECRET_ID", &doc.id)
-                        .output()
-                        .await
-                        .context("执行命令失败")?;
+                    let mut cmd = tokio::process::Command::new("sh");
+                    cmd.arg("-c").arg(command.join(" "));
+                    let mut ids = Vec::new();
+                    for (index, doc) in docs.iter().enumerate() {
+                        let value = doc.value["value"].as_str().unwrap_or_default().to_owned();
+                        if value.is_empty() {
+                            anyhow::bail!("凭据为空：{}", doc.id);
+                        }
+                        // 第一条进 RU41_SECRET，其余进 RU41_SECRET_2/3…
+                        let var = if index == 0 {
+                            "RU41_SECRET".to_owned()
+                        } else {
+                            format!("RU41_SECRET_{}", index + 1)
+                        };
+                        cmd.env(&var, &value);
+                        ids.push(doc.id.clone());
+                    }
+                    cmd.env("RU41_SECRET_ID", ids.first().cloned().unwrap_or_default());
+                    cmd.env("RU41_SECRET_IDS", ids.join(","));
+                    let output = cmd.output().await.context("执行命令失败")?;
                     // stdout/stderr 里的真值一律掩码——模型看到的不是凭据本身。
                     let mask = "••••••••";
-                    let stdout = String::from_utf8_lossy(&output.stdout).replace(&value, mask);
-                    let stderr = String::from_utf8_lossy(&output.stderr).replace(&value, mask);
-                    // 审计：只记标识、标签、命令（命令里的真值同样掩码）。
-                    let audit_id = format!("{}-{}", ru41::util::now(), doc.id);
+                    let scrub = |text: &str| -> String {
+                        let mut out = text.to_owned();
+                        for doc in &docs {
+                            if let Some(value) = doc.value["value"].as_str() {
+                                out = out.replace(value, mask);
+                            }
+                        }
+                        out
+                    };
+                    let stdout = scrub(&String::from_utf8_lossy(&output.stdout));
+                    let stderr = scrub(&String::from_utf8_lossy(&output.stderr));
+                    // 审计：只记标识与命令（命令里的真值同样掩码）。
+                    let audit_id = format!("{}-{}", ru41::util::now(), ids.join("_"));
                     let _ = store.put_document(
                         "credential_audit",
                         &audit_id,
                         None,
                         &serde_json::json!({
-                            "credential_id": doc.id,
-                            "label": doc.value["label"].clone(),
-                            "command": line.replace(&value, mask).chars().take(200).collect::<String>(),
+                            "credential_ids": ids,
+                            "command": scrub(&command.join(" ")).chars().take(200).collect::<String>(),
                             "at": ru41::util::now(),
                             "exit_code": output.status.code(),
                         }),
@@ -598,10 +617,15 @@ async fn main() -> Result<()> {
                                     .as_i64()
                                     .map(|at| at.to_string())
                                     .unwrap_or_default(),
-                                doc.value["credential_id"]
-                                    .as_str()
-                                    .unwrap_or_default()
-                                    .to_owned(),
+                                doc.value["credential_ids"]
+                                    .as_array()
+                                    .map(|ids| {
+                                        ids.iter()
+                                            .filter_map(|v| v.as_str())
+                                            .collect::<Vec<_>>()
+                                            .join(",")
+                                    })
+                                    .unwrap_or_default(),
                                 doc.value["command"].as_str().unwrap_or_default().to_owned(),
                             )
                         })
