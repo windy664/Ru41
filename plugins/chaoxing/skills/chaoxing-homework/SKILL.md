@@ -13,9 +13,10 @@ description: 回答作业与截止相关问题（学习通/智慧树）。当用
 
 ## 怎么回答
 
-- 先读作业总表，按截止时间排序回答；区分「未交」「临期」「已过期未交」。
+- 问「有什么作业/什么时候截止」：最多先用一次 `find` 定位当前学期的 `作业总表.md`，然后只读这个总表回答；不要列无关目录、读课程子目录或逐份打开作业。
+- 不要主动刷新平台。只有用户明确要求「刷新/查最新」，或总表不存在时，才可运行一次刷新：`ru41 --config /etc/ru41/ru41.toml --db /data/state.db chaoxing work`（学习通）或 `ru41 --config /etc/ru41/ru41.toml --db /data/state.db zhihuishu poll`（智慧树）。平台有限流，一次问答最多刷新一个平台，不要反复轮询。
+- 按截止时间排序回答；区分「未交」「临期」「已过期未交」。
 - 标注数据时间：总表是周期刷新的快照（学习通约 30 分钟一轮），不要说成实时查询。
-- 确实需要刷新时再运行：`ru41 --config /etc/ru41/ru41.toml --db /data/state.db chaoxing work`（学习通）或 `ru41 --config /etc/ru41/ru41.toml --db /data/state.db zhihuishu poll`（智慧树）。平台有限流，一次问答最多触发一次刷新，不要反复轮询。
 
 ## 纪律（红线）
 

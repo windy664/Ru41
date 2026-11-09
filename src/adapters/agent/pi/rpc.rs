@@ -614,6 +614,11 @@ impl PiAgent {
                      source of truth — if it does not contain the answer, use a tool \
                      (read/bash, or a CLI such as 'ru41 event list --days 1' for today's \
                      schedule) before answering. \
+                     Use the minimum number of tool calls that directly answers the \
+                     user's exact request. Do not inspect directories, run general \
+                     --help commands, or gather adjacent/background data unless the \
+                     user asked for it or the selected skill explicitly requires it. \
+                     Stop once you have enough evidence for the requested scope. \
                      When finished, your last message must be a JSON object with one \
                      nonempty string field named summary. The summary field must \
                      contain the COMPLETE deliverable (the full report or full answer, \
