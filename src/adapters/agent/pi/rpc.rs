@@ -564,6 +564,13 @@ impl PiAgent {
         request: &AgentRequest,
         candidate: &Candidate,
     ) -> Result<AgentOutput> {
+        let skills = request
+            .context
+            .as_ref()
+            .map_or(&[][..], |context| context.skills.as_slice());
+        // 与 codex 同一套技能落盘：有工具时只给索引，模型按需 Read SKILL.md；
+        // 无工具的纯文本任务读不了文件，仍内联全文。
+        crate::skills::materialize(&request.run_dir, skills)?;
         let mut command = tokio::process::Command::new(&self.executable);
         command
             .current_dir(&request.run_dir)
@@ -682,13 +689,15 @@ impl PiAgent {
         let mut stdin = child.stdin.take().context("Pi stdin missing")?;
         let stdout = child.stdout.take().context("Pi stdout missing")?;
         let mut stderr = child.stderr.take().context("Pi stderr missing")?;
-        let prompt = crate::skills::render_for_prompt(
-            &request.prompt,
-            request
-                .context
-                .as_ref()
-                .map_or(&[][..], |context| context.skills.as_slice()),
-        );
+        let prompt = if self
+            .tools
+            .as_deref()
+            .is_some_and(|tools| !tools.trim().is_empty())
+        {
+            crate::skills::skills_index_prefix(skills) + &request.prompt
+        } else {
+            crate::skills::render_for_prompt(&request.prompt, skills)
+        };
         let mut cancel_rx = request.cancel.clone();
         let protocol = async {
             stdin
