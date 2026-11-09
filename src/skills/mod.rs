@@ -231,7 +231,7 @@ pub fn skills_index_prefix(skills: &[SkillPackage]) -> String {
         return String::new();
     }
     let mut out = String::from(
-        "可用技能（已在工作目录 .agents/skills/ 下，匹配需求时先读对应 SKILL.md 再行动）：\n",
+        "可用技能（已在工作目录 .agents/skills/ 下，匹配需求时先读对应 SKILL.md 再行动；索引已给出准确路径，第一轮只读最匹配的一份 SKILL.md，不要同时执行 ls、pwd、find 或 --help 等环境侦察）：\n",
     );
     for skill in skills {
         out.push_str(&format!(

@@ -57,6 +57,7 @@ fn tool_enabled_agents_get_only_the_skill_index() {
     assert!(prompt.contains("arxiv-research"));
     assert!(prompt.contains("Research papers"));
     assert!(prompt.contains(".agents/skills/arxiv-research/SKILL.md"));
+    assert!(prompt.contains("第一轮只读最匹配的一份 SKILL.md"));
     assert!(!prompt.contains("Follow the test workflow"));
 }
 
