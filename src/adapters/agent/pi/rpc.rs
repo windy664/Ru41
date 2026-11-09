@@ -141,6 +141,63 @@ fn session_id_from_state(data: &Value) -> Option<String> {
         .map(str::to_owned)
 }
 
+/// 从模型输出里取出**契约对象**（带 summary 字段的 JSON）。
+///
+/// 模型常把契约 JSON 附在散文后面（2026-11-09 课堂笔记就是：先写「本次笔记要点」，
+/// 末尾再补一段 `{"summary": ...}`）。这时只认「带 summary 的那个对象」——
+/// 散文里的括号不该把契约 JSON 抢掉。
+fn extract_contract_json(text: &str) -> Option<(&str, String)> {
+    let mut offset = 0usize;
+    while let Some(found) = text[offset..].find('{') {
+        let start = offset + found;
+        let Some(end) = balanced_object_end(text, start) else {
+            offset = start + 1;
+            continue;
+        };
+        let candidate = &text[start..=end];
+        if let Ok(value) = serde_json::from_str::<Value>(candidate)
+            && let Some(summary) = value.get("summary").and_then(|v| v.as_str())
+        {
+            return Some((candidate, summary.to_owned()));
+        }
+        offset = end + 1;
+    }
+    None
+}
+
+/// 从 `start`（一个 `{`）开始找配平的 `}`，返回它的位置。
+fn balanced_object_end(text: &str, start: usize) -> Option<usize> {
+    let bytes = text.as_bytes();
+    let mut depth = 0_usize;
+    let mut in_string = false;
+    let mut escaped = false;
+    for (offset, byte) in bytes.iter().enumerate().skip(start) {
+        let ch = *byte as char;
+        if in_string {
+            if escaped {
+                escaped = false;
+            } else if ch == '\\' {
+                escaped = true;
+            } else if ch == '"' {
+                in_string = false;
+            }
+            continue;
+        }
+        match ch {
+            '"' => in_string = true,
+            '{' => depth += 1,
+            '}' => {
+                depth -= 1;
+                if depth == 0 {
+                    return Some(offset);
+                }
+            }
+            _ => {}
+        }
+    }
+    None
+}
+
 /// 从模型输出里取出 JSON 对象。
 /// Pi 没有 codex 那样的输出 schema 强制，模型常把 JSON 包在 ```json 代码块里
 /// 或前后加说明；这里取第一个配平的 `{...}` 再解析，别让格式噪声废掉整次运行。
@@ -217,6 +274,28 @@ fn pick_full_report(candidates: &[String], summary: &str) -> Option<String> {
 
 fn parse_agent_result(text: &str) -> Result<AgentResult> {
     let trimmed = text.trim();
+    // 模型常在散文后面附一段契约 JSON（课堂笔记实测：先写要点，末尾再补
+    // `{"summary": ...}`）。契约对象取「带 summary 的那个」，不是「第一个 {」。
+    if let Some((contract, summary)) = extract_contract_json(trimmed) {
+        let media = serde_json::from_str::<Value>(contract)
+            .map(|value| parse_media_list(value.get("media")))
+            .unwrap_or_default();
+        // JSON 之外还有正经正文就交正文（那段才是给用户看的），JSON 只是信封。
+        let prose = trimmed.replace(contract, "").trim().to_owned();
+        let prose = prose
+            .trim_start_matches("```")
+            .trim_end_matches("```")
+            .trim()
+            .to_owned();
+        let summary = if prose.chars().count() >= 20 {
+            prose
+        } else {
+            summary
+        };
+        let result = AgentResult { summary, media };
+        result.validate().map_err(Ru41Error::InvalidOutput)?;
+        return Ok(result);
+    }
     let candidate = extract_json_object(trimmed).unwrap_or(trimmed);
     // 先按值解析再挑字段：底座给的 media 可能是字符串路径，也可能是对象，
     // 直接反序列化 AgentResult 遇到不认的形状会整条判失败——那就白跑一次。
@@ -1096,6 +1175,43 @@ mod tests {
             parse_agent_result(raw).is_err(),
             "无 summary 的 JSON 不该当交付物"
         );
+    }
+
+    /// 散文 + 契约 JSON（模型把 JSON 附在末尾）：交散文，JSON 是信封不外发。
+    #[test]
+    fn prose_wins_over_trailing_contract_json() {
+        let raw = "Vault is clean and the commit landed.\n\n本次笔记要点\n1. OSI 架构\n2. 身份鉴别\n\n{\"summary\":\"## 2026-11-09 课堂笔记全文\"}\n";
+        let result = parse_agent_result(raw).unwrap();
+        assert!(
+            result.summary.contains("本次笔记要点"),
+            "{}",
+            result.summary
+        );
+        assert!(
+            !result.summary.contains("\"summary\""),
+            "{}",
+            result.summary
+        );
+        assert!(
+            !result.summary.contains("课堂笔记全文"),
+            "{}",
+            result.summary
+        );
+    }
+
+    /// 散文里带括号、契约 JSON 在后面：仍要认出契约对象，不能被散文里的 { 抢走。
+    #[test]
+    fn contract_json_survives_braces_in_prose() {
+        let raw = "说明：集合 {A, B} 之类的记号。\n\n{\"summary\":\"报告正文\"}\n";
+        let result = parse_agent_result(raw).unwrap();
+        assert_eq!(result.summary, "报告正文");
+    }
+
+    /// 只有契约 JSON：交 summary（日报/论文那类就是这种形态）。
+    #[test]
+    fn contract_json_only_delivers_summary() {
+        let result = parse_agent_result("{\"summary\":\"报告正文\"}").unwrap();
+        assert_eq!(result.summary, "报告正文");
     }
 
     /// JSON 之外还有正经正文时取正文，JSON 丢掉。
