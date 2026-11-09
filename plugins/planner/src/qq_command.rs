@@ -271,7 +271,7 @@ impl TodoQqCommand {
         let days = parse_event_view(arg).unwrap_or(7);
         let occurrences = service.upcoming(now, days, 50)?;
         let mut lines = vec![format!(
-            "日程（未来 {} 天，行程 {} 项）",
+            "**日程（未来 {} 天，行程 {} 项）**",
             days,
             occurrences.len()
         )];

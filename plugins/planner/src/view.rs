@@ -50,8 +50,8 @@ pub(super) fn format_items(
         .filter(|item| item.status == TodoStatus::Active)
         .collect();
     // 主标题保留 markdown 标题格式（`## 待办（3）`）；下面的完成项不另起栏目。
-    // 栏目标题：标题层级 + 显式加粗（移动端对 ## 的加粗渲染不一定稳，双保险）。
-    let mut lines = vec![format!("## **{title}（{}）**", active.len())];
+    // 栏目标题：一级标题（最大号）+ 显式加粗（移动端渲染双保险）。
+    let mut lines = vec![format!("# **{title}（{}）**", active.len())];
     if active.is_empty() {
         lines.push("\n> 暂无".to_owned());
     } else {
@@ -181,7 +181,7 @@ mod tests {
         assert!(body_line.starts_with("### "), "{text}");
         assert!(body_line.ends_with("板子焊接"), "{text}");
         // 主标题是 markdown 标题；完成项不另起栏目。
-        assert!(text.starts_with("## **待办（1）**"), "{text}");
+        assert!(text.starts_with("# **待办（1）**"), "{text}");
         assert!(!text.contains("已完成"), "{text}");
         assert!(!text.contains("已完成"), "{text}");
         assert!(text.contains("### ☑ ~~写周报~~"), "{text}");
