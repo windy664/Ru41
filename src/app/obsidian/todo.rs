@@ -1,5 +1,7 @@
-//! 待办视图双向同步：todo 数据库 → `04-Life-生活/Todo-待办.md` 每轮重渲；
-//! 文件里的勾选变更、标题改名与手写新行回写数据库（删行不删库，防止误清空）。
+//! 待办视图双向同步：todo 数据库 → `04-Life-生活/Todo-待办.md` 每轮重渲。
+//! 数据库是权威存储；文件回写走差量——只有相对「上次渲染快照」被用户
+//! 改过的勾选/标题才写回数据库，没动过的行以数据库为准（QQ 侧 /完成
+//! 不会再被旧文件顶回去）。删行不删库，防止误清空。
 
 use super::ObsidianService;
 use anyhow::Result;
@@ -37,12 +39,15 @@ fn view_is_fresh(
 
 impl ObsidianService {
     /// 待办视图：todo 数据库 ↔ `04-Life-生活/Todo-待办.md` 双向同步。
-    /// 数据库 → 文件：每轮重渲（内容没变不写）；文件 → 数据库：先读旧文件里的
-    /// 勾选状态写回（打勾=完成、取消勾=恢复），再按最新状态渲染。
+    /// 数据库 → 文件：每轮重渲（内容没变不写）；文件 → 数据库：差量回写——
+    /// 只把「相对上次渲染快照」的勾选翻转与标题改名写回（打勾=完成、取消勾=恢复），
+    /// 用户没碰过的行不参与对拍，数据库状态原样渲染。无快照（首发/清戳恢复）
+    /// 时整轮只渲染不回写，数据库全量说了算。
     /// 变更以 [ru41] 前缀自提交（下一轮游标自认，不会触发整理）。
     ///
     /// 渲染闸门（2026-11-08）：数据库版本/日期/文件 hash 都没变就整轮跳过——
     /// 原来每 5 分钟两次 list(1000) + 全量重渲，空闲时全是空转。
+    /// 快照回写（2026-11-09）：闸门戳里多存一份上次渲染正文，回写只认差量。
     pub(super) async fn render_todo_view(&self) -> Result<()> {
         let Some(options) = self.todo_options else {
             return Ok(());
@@ -67,24 +72,28 @@ impl ObsidianService {
                 return Ok(());
             }
             if let Some(existing) = existing.as_deref() {
-                // 1. 勾选与标题回写：旧文件里用户手动的 [x]/[ ] 变更写回数据库；
-                //    带锚点行的标题被改过也写回（重命名）。先取当前状态对比，
-                //    只在不一致时调用，否则每轮都会对同一批条目空刷错误日志。
                 let current: std::collections::HashMap<String, crate::domain::todo::TodoItem> =
                     service
                         .list(crate::domain::todo::TodoView::All, now, 1000)?
                         .into_iter()
                         .map(|item| (item.id.clone(), item))
                         .collect();
-                for (id, checked, middle) in parse_anchored_lines(existing) {
-                    let Some(item) = current.get(&id) else {
-                        continue; // id 已失效（被删/重建），忽略
-                    };
-                    let needs_sync = match item.status {
-                        crate::domain::todo::TodoStatus::Completed => !checked,
-                        _ => checked,
-                    };
-                    if needs_sync {
+                // 1. 勾选与标题差量回写：只对相对快照被用户翻转/改名的行动手。
+                //    没有快照（首发或清戳恢复）时跳过整段回写，避免把数据库状态
+                //    按旧文件「恢复」回去。
+                if let Some(snapshot) = stamp.as_ref().and_then(|doc| doc.value["content"].as_str())
+                {
+                    for (id, checked) in checkbox_flips(existing, snapshot) {
+                        let Some(item) = current.get(&id) else {
+                            continue; // id 已失效（被删/重建），忽略
+                        };
+                        let needs_sync = match item.status {
+                            crate::domain::todo::TodoStatus::Completed => !checked,
+                            _ => checked,
+                        };
+                        if !needs_sync {
+                            continue; // 状态已一致（如对同一行重复翻转），不空刷
+                        }
                         let result = if checked {
                             service.complete(&id, now).map(|_| ())
                         } else {
@@ -95,10 +104,15 @@ impl ObsidianService {
                             eprintln!("[obsidian] todo checkbox sync {id}: {error:#}");
                         }
                     }
-                    if let Some(title) = edited_title(&middle, item, now, options)
-                        && let Err(error) = service.rename(&id, &title, now)
-                    {
-                        eprintln!("[obsidian] todo rename sync {id}: {error:#}");
+                    for (id, middle) in renamed_lines(existing, snapshot) {
+                        let Some(item) = current.get(&id) else {
+                            continue;
+                        };
+                        if let Some(title) = edited_title(&middle, item, now, options)
+                            && let Err(error) = service.rename(&id, &title, now)
+                        {
+                            eprintln!("[obsidian] todo rename sync {id}: {error:#}");
+                        }
                     }
                 }
                 // 2. 新增回写：无 `#id` 锚点的 `- [ ]` 行是 Obsidian 里手写的新待办。
@@ -148,7 +162,8 @@ impl ObsidianService {
                     vault.push()?;
                 }
             }
-            // 刷新闸门戳：本次完整 pass 后文件内容 == content。
+            // 刷新闸门戳：本次完整 pass 后文件内容 == content；正文一并存为
+            // 下轮回写的比对快照。
             // 失败只记日志，下轮多渲染一次兜底。
             let revision = store
                 .document(STAMP_KIND, STAMP_ID)?
@@ -161,6 +176,7 @@ impl ObsidianService {
                     "version": version,
                     "date": today,
                     "hash": content_hash(&content),
+                    "content": content,
                 }),
             ) {
                 eprintln!("[obsidian] todo view stamp write failed: {error:#}");
@@ -198,6 +214,42 @@ fn parse_anchored_lines(content: &str) -> Vec<(String, bool, String)> {
         }
     }
     lines
+}
+
+/// 勾选翻转检测：只认「相对上次渲染快照」的翻转，返回 (id, 现在是否勾选)。
+/// 没动过的行不出现在结果里——数据库侧的变更（QQ /完成等）因此不会被旧文件顶回。
+/// 快照里没有的带锚点行（用户自己贴了带锚点的行）按用户意图处理。
+fn checkbox_flips(existing: &str, snapshot: &str) -> Vec<(String, bool)> {
+    let snap: std::collections::HashMap<String, bool> = parse_anchored_lines(snapshot)
+        .into_iter()
+        .map(|(id, checked, _)| (id, checked))
+        .collect();
+    parse_anchored_lines(existing)
+        .into_iter()
+        .filter(|(id, checked, _)| {
+            snap.get(id)
+                .is_none_or(|snap_checked| snap_checked != checked)
+        })
+        .map(|(id, checked, _)| (id, checked))
+        .collect()
+}
+
+/// 改名检测：正文（勾选框与锚点之间）相对快照不一致才算用户改名，
+/// 返回 (id, 现有正文)。数据库侧状态变化导致的后缀翻滚（未排期 → 完成于…）
+/// 在渲染层发生、不进文件比对，不会误判。
+fn renamed_lines(existing: &str, snapshot: &str) -> Vec<(String, String)> {
+    let snap: std::collections::HashMap<String, String> = parse_anchored_lines(snapshot)
+        .into_iter()
+        .map(|(id, _, middle)| (id, middle))
+        .collect();
+    parse_anchored_lines(existing)
+        .into_iter()
+        .filter(|(id, _, middle)| {
+            snap.get(id)
+                .is_some_and(|snap_middle| snap_middle != middle)
+        })
+        .map(|(id, _, middle)| (id, middle))
+        .collect()
 }
 
 /// 从锚点行正文反解用户改过的标题：剥掉渲染时追加的「（截止）」/「（完成于 日期）」
@@ -373,6 +425,39 @@ mod tests {
         // 文件缺失或戳缺失 → 重渲。
         assert!(!view_is_fresh(Some(&stamp), 7, "2026-11-08", None));
         assert!(!view_is_fresh(None, 7, "2026-11-08", Some(42)));
+    }
+
+    #[test]
+    fn checkbox_flips_only_counts_user_edits_against_snapshot() {
+        let snapshot = "- [ ] 甲（未排期）`#a`\n- [ ] 乙（未排期）`#b`\n";
+        // 用户勾了甲 → 只有甲出现在翻转列表。
+        let existing = "- [x] 甲（未排期）`#a`\n- [ ] 乙（未排期）`#b`\n";
+        assert_eq!(
+            checkbox_flips(existing, snapshot),
+            vec![("a".to_owned(), true)]
+        );
+        // 数据库侧完成了甲但文件没动 → 没有翻转，数据库为准不回写。
+        assert!(checkbox_flips(snapshot, snapshot).is_empty());
+        // 快照里没有的带锚点行按用户意图处理。
+        let pasted = "- [x] 丙（未排期）`#c`\n";
+        assert_eq!(
+            checkbox_flips(pasted, snapshot),
+            vec![("c".to_owned(), true)]
+        );
+    }
+
+    #[test]
+    fn renamed_lines_only_counts_text_edits_against_snapshot() {
+        let snapshot = "- [ ] 甲（未排期）`#a`\n- [ ] 乙（未排期）`#b`\n";
+        // 用户改了甲的标题 → 识别；乙没动 → 不参与。
+        let existing = "- [ ] 甲改（未排期）`#a`\n- [ ] 乙（未排期）`#b`\n";
+        assert_eq!(
+            renamed_lines(existing, snapshot),
+            vec![("a".to_owned(), "甲改（未排期）".to_owned())]
+        );
+        // 只翻勾选不改正文 → 不算改名。
+        let flipped = "- [x] 甲（未排期）`#a`\n- [ ] 乙（未排期）`#b`\n";
+        assert!(renamed_lines(flipped, snapshot).is_empty());
     }
 
     #[test]
