@@ -369,11 +369,11 @@ async fn quick_note_enters_todo_inbox_without_agent_or_schedule() {
 #[test]
 fn extension_commands_match_aliases_and_join_help() {
     let todo = TodoQqCommand::new(ru41::domain::todo::TodoOptions::default(), None);
-    for verb in ["待办", "完成", "推迟", "取消待办", "恢复待办"] {
+    for verb in ["完成", "推迟", "取消待办", "恢复待办"] {
         assert!(todo.matches(verb));
     }
-    // 录入类命令词已下线：记待办/记一下 等不再匹配，统一走 `#` 自然语言入口。
-    for verb in ["记待办", "记一下", "想法", "note"] {
+    // 清单与录入统一走 `#`：/待办 与录入类命令词都不再匹配。
+    for verb in ["待办", "todo", "记待办", "记一下", "想法", "note"] {
         assert!(!todo.matches(verb));
     }
 
@@ -382,7 +382,7 @@ fn extension_commands_match_aliases_and_join_help() {
     assert!(help.contains("# Ru41 · 个人 AI 助理"));
     assert!(help.contains("## 记录与日程"));
     assert!(!help.contains("## 其他能力"));
-    assert!(help.contains("`/待办`：全部未完成清单"));
+    assert!(help.contains("`#`：全部待办清单"));
     assert!(help.contains("当前对话会自动保留上下文"));
 }
 
