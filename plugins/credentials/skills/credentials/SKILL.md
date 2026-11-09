@@ -17,8 +17,10 @@ description: 凭据托管：任务需要账号密码/令牌时，用 ru41 secret
 - **要账号+密码两条**（FTP 之类）：`--id` 可重复，第一条进 `$RU41_SECRET`，
   第二条进 `$RU41_SECRET_2`：
   ```bash
-  ru41 secret exec --id cred_账号 --id cred_密码 -- curl -u "$RU41_SECRET:$RU41_SECRET_2" ftp://host/
+  ru41 secret exec --id cred_账号 --id cred_密码 -- sh -c 'curl -u "$RU41_SECRET:$RU41_SECRET_2" ftp://host/'
   ```
+  命令带 `sh -c '…'` 写（保留引号，变量在 shell 里展开）；直接写
+  `curl -u "$RU41_SECRET:…"` 也行（非 shell 调用会自动包一层 sh）。
 - **不要**用 `ru41 secret get` 读值再拼命令：明文进上下文即视为泄露（默认已拒绝，需 `--allow-plain`）。
 - 命令输出里若可能回显凭据，用 `exec` 的掩码兜底（stdout 中的真值会被替换成 ••••••）。
 

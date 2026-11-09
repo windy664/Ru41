@@ -494,8 +494,21 @@ async fn main() -> Result<()> {
                         };
                         docs.push(doc);
                     }
-                    let mut cmd = tokio::process::Command::new("sh");
-                    cmd.arg("-c").arg(command.join(" "));
+                    // 保留参数原样执行：命令本来就是 shell 调用（sh -c '...'）时，
+                    // 拼字符串会丢掉引号；不是 shell 调用时用 sh -c 走一遍拿回
+                    // 管道/重定向/变量展开。
+                    let mut cmd = match command.first().map(String::as_str) {
+                        Some("sh") | Some("bash") | Some("zsh") => {
+                            let mut cmd = tokio::process::Command::new(&command[0]);
+                            cmd.args(&command[1..]);
+                            cmd
+                        }
+                        _ => {
+                            let mut cmd = tokio::process::Command::new("sh");
+                            cmd.arg("-c").arg(command.join(" "));
+                            cmd
+                        }
+                    };
                     let mut ids = Vec::new();
                     for (index, doc) in docs.iter().enumerate() {
                         let value = doc.value["value"].as_str().unwrap_or_default().to_owned();
