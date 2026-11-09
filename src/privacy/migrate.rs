@@ -141,6 +141,10 @@ pub fn apply(
     let mut entries = Vec::new();
     let mut credentials = 0usize;
     let mut files = Vec::new();
+    // 按文件分组、组内从后往前替换：改写一处会移动后面的字节偏移，
+    // 倒序改写才能保证后面的区间仍然有效。
+    let mut by_file: std::collections::HashMap<String, Vec<PlannedSecret>> =
+        std::collections::HashMap::new();
     for secret in scan(root, excludes)? {
         let revision = store
             .document(CREDENTIAL_KIND, &secret.name)?
@@ -155,11 +159,13 @@ pub fn apply(
             bail!("凭据写入冲突：{}", secret.name);
         }
         credentials += 1;
-        rewrite_file(root, &secret)?;
-        if !files.contains(&secret.path) {
-            files.push(secret.path.clone());
-        }
-        entries.push(PlanEntry::from(secret));
+        files.push(secret.path.clone());
+        entries.push(PlanEntry::from(secret.clone()));
+        by_file.entry(secret.path.clone()).or_default().push(secret);
+    }
+    for (path, mut secrets) in by_file {
+        secrets.sort_by_key(|secret| std::cmp::Reverse(secret.span.0));
+        rewrite_file(root, &path, &secrets)?;
     }
     Ok(Applied {
         credentials,
@@ -265,26 +271,29 @@ fn is_placeholder(value: &str) -> bool {
     if WORDS.iter().any(|word| lower.contains(word)) {
         return true;
     }
-    // 同一字符连续出现 3 次以上（********、-------）。
+    // 整串同一个字符（********、-------）才是掩码；密码里出现三个连字符不算。
     let chars: Vec<char> = value.chars().collect();
-    chars.len() >= 3
-        && chars
-            .windows(3)
-            .any(|window| window.iter().all(|c| *c == window[0]))
+    chars.len() >= 3 && chars.iter().all(|c| *c == chars[0])
 }
 
-/// 把一行里的明文替换成 `凭据「名字」`。
-fn rewrite_file(root: &Path, secret: &PlannedSecret) -> Result<()> {
-    let path = root.join(&secret.path);
+/// 把一个文件里的明文按倒序替换成 `凭据「名字」`（一次读写）。
+fn rewrite_file(root: &Path, rel: &str, secrets: &[PlannedSecret]) -> Result<()> {
+    let path = root.join(rel);
     let mut text =
         std::fs::read_to_string(&path).with_context(|| format!("读 {}", path.display()))?;
-    if secret.span.1 > text.len() {
-        return Ok(()); // 文件已被其他写者改动，跳过这一条。
+    for secret in secrets {
+        if secret.span.1 > text.len() || !text.is_char_boundary(secret.span.0) {
+            continue; // 文件已被其他写者改动，跳过这一条。
+        }
+        // 二次确认区间确实是原值（防止错位改写别人的内容）。
+        if text.get(secret.span.0..secret.span.1) != Some(secret.value.as_str()) {
+            continue;
+        }
+        text.replace_range(
+            secret.span.0..secret.span.1,
+            &format!("凭据「{}」", secret.name),
+        );
     }
-    text.replace_range(
-        secret.span.0..secret.span.1,
-        &format!("凭据「{}」", secret.name),
-    );
     std::fs::write(&path, text).with_context(|| format!("写 {}", path.display()))?;
     Ok(())
 }
@@ -441,6 +450,27 @@ mod tests {
             derive_name("ftp 密码是 abc123", "abc123", None, "note", &used),
             "ftp-2"
         );
+    }
+
+    #[test]
+    fn apply_rewrites_multiple_secrets_in_one_file() {
+        use crate::adapters::database::sqlite::SqliteTaskStore;
+        let dir = tempfile::tempdir().unwrap();
+        let vault = dir.path().join("vault");
+        std::fs::create_dir_all(&vault).unwrap();
+        std::fs::write(
+            vault.join("a.md"),
+            "- **A**：密码是 aaa1111\n- **B**：密码是 bbb2222\n",
+        )
+        .unwrap();
+        let store = SqliteTaskStore::open(&dir.path().join("state.db")).unwrap();
+        let applied = apply(&vault, &store, 0, &[]).unwrap();
+        assert_eq!(applied.credentials, 2);
+        let text = std::fs::read_to_string(vault.join("a.md")).unwrap();
+        assert!(!text.contains("aaa1111"), "{text}");
+        assert!(!text.contains("bbb2222"), "{text}");
+        assert!(text.contains("凭据「A」"), "{text}");
+        assert!(text.contains("凭据「B」"), "{text}");
     }
 
     #[test]
