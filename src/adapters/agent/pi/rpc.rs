@@ -230,6 +230,29 @@ fn parse_agent_result(text: &str) -> Result<AgentResult> {
         result.validate().map_err(Ru41Error::InvalidOutput)?;
         return Ok(result);
     }
+    // 模型交了一份 JSON，但没有 summary 字段（2026-11-09 论文日报实测：
+    // 整篇筛选结果被包成 ```ru41-screen 代码块直接推给了用户）。
+    // 这类输出不是交付物：JSON 之外还有正经正文就取正文，否则判契约不符
+    // 让任务重试——宁可这一轮没内容，也不要把原始 JSON 推给用户。
+    if let Ok(value) = serde_json::from_str::<Value>(candidate)
+        && value.is_object()
+    {
+        let prose = trimmed.replace(candidate, "").trim().to_owned();
+        let prose = prose
+            .trim_start_matches("```")
+            .trim_end_matches("```")
+            .trim()
+            .to_owned();
+        if prose.chars().count() >= 20 {
+            let result = AgentResult {
+                summary: prose,
+                media: Vec::new(),
+            };
+            result.validate().map_err(Ru41Error::InvalidOutput)?;
+            return Ok(result);
+        }
+        return Err(Ru41Error::InvalidOutput("Pi result must be JSON with summary".into()).into());
+    }
     if trimmed.is_empty() {
         return Err(Ru41Error::InvalidOutput("Pi result must be JSON with summary".into()).into());
     }
@@ -1062,5 +1085,33 @@ mod tests {
     fn plain_text_becomes_summary() {
         let result = parse_agent_result("  直接一段话  ").unwrap();
         assert_eq!(result.summary, "直接一段话");
+    }
+
+    /// 模型交了一份没有 summary 的 JSON（论文日报实测：整篇筛选结果被包成
+    /// ```ru41-screen 代码块推给了用户）——判契约不符让任务重试，不能原样交付。
+    #[test]
+    fn rejects_json_without_summary() {
+        let raw = "```ru41-screen\n{\"relevant\":[{\"id\":\"2611.09734\",\"title\":\"x\"}]}\n```";
+        assert!(
+            parse_agent_result(raw).is_err(),
+            "无 summary 的 JSON 不该当交付物"
+        );
+    }
+
+    /// JSON 之外还有正经正文时取正文，JSON 丢掉。
+    #[test]
+    fn keeps_prose_next_to_json() {
+        let raw = "这是今天筛选的论文报告：\n\n# 论文筛选报告\n\n第一篇很好。\n\n```json\n{\"relevant\":[]}\n```";
+        let result = parse_agent_result(raw).unwrap();
+        assert!(
+            result.summary.contains("论文筛选报告"),
+            "{}",
+            result.summary
+        );
+        assert!(
+            !result.summary.contains("\"relevant\""),
+            "{}",
+            result.summary
+        );
     }
 }
