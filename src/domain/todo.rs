@@ -293,6 +293,14 @@ fn parse_num(text: &str) -> Option<u32> {
     }
 }
 
+/// 已完成且创建于窗口内的待办：视图里划横线保留。
+///
+/// 窗口按**创建日期**算（创建于 N 天内的待办，完成后仍留 N 天）；
+/// 只控制显示，不删除任何数据。规则放在域里，QQ 视图与提醒共用一份。
+pub fn is_recent_completed(item: &TodoItem, now: i64, window_days: i64) -> bool {
+    item.status == TodoStatus::Completed && item.created_at >= now - window_days * 86_400
+}
+
 /// 待办截止时间的展示标签（本地时区）；`overdue` 为 true 且已过期时附「已过期 N 小时/天」。
 /// 展示文案集中在这里，QQ 命令与主动提醒共用一份，避免各处漂移。
 pub fn due_label(due_at: Option<i64>, now: i64, options: TodoOptions, overdue: bool) -> String {

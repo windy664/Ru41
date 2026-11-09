@@ -96,7 +96,14 @@ impl CredentialQqCommand {
         } else {
             None
         };
-        let Some(doc) = by_id.or(by_label) else {
+        // 命中后走核心的共享寻址（标识优先，标签唯一匹配），避免两处逻辑漂移。
+        let selector = by_id
+            .map(|doc| doc.id.clone())
+            .or_else(|| by_label.map(|doc| doc.id.clone()));
+        let Some(selector) = selector else {
+            return Ok(None);
+        };
+        let Some(doc) = ru41::domain::credential::resolve(ctx.store.as_ref(), &selector)? else {
             return Ok(None);
         };
         let value = doc.value["value"].as_str().unwrap_or_default();
