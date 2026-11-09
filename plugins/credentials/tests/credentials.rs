@@ -72,7 +72,7 @@ async fn store_intent_consumed_before_agent_and_never_echoes_value() {
     assert_eq!(doc.value["value"].as_str().unwrap(), "upload_80894");
     assert_eq!(doc.value["label"].as_str().unwrap(), "ftp");
 
-    // 无意图词的陈述不拦截，继续走 agent 通道。
+    // 无意图词的陈述不拦截，继续走 agent 通道（标签相同也不算查询）。
     assert!(
         command
             .handle_message("ftp 的密码是 upload_80894", &context)
@@ -80,6 +80,22 @@ async fn store_intent_consumed_before_agent_and_never_echoes_value() {
             .unwrap()
             .is_none()
     );
+
+    // 查询：带标识 → 网关直接回明文（不进模型）。
+    let by_id = command
+        .handle_message(&format!("查一下 {}", doc.id), &context)
+        .await
+        .unwrap()
+        .unwrap();
+    assert!(by_id.text.contains("upload_80894"), "{}", by_id.text);
+    assert!(by_id.text.contains("ftp"), "{}", by_id.text);
+    // 查询：标签 + 查询意图 → 同样直接回。
+    let by_label = command
+        .handle_message("ftp 这个凭据是什么", &context)
+        .await
+        .unwrap()
+        .unwrap();
+    assert!(by_label.text.contains("upload_80894"), "{}", by_label.text);
 }
 
 #[tokio::test]
@@ -95,7 +111,13 @@ async fn group_chat_and_unbound_are_rejected() {
         .unwrap()
         .unwrap();
     assert!(reply.text.contains("单聊"));
-    assert!(fixture.store.documents("credential", 10).unwrap().is_empty());
+    assert!(
+        fixture
+            .store
+            .documents("credential", 10)
+            .unwrap()
+            .is_empty()
+    );
 
     // 未绑定：拒绝。
     let c2c = ctx(&fixture, "user:U2", "U2", true);
@@ -105,5 +127,11 @@ async fn group_chat_and_unbound_are_rejected() {
         .unwrap()
         .unwrap();
     assert!(reply.text.contains("身份绑定"));
-    assert!(fixture.store.documents("credential", 10).unwrap().is_empty());
+    assert!(
+        fixture
+            .store
+            .documents("credential", 10)
+            .unwrap()
+            .is_empty()
+    );
 }
