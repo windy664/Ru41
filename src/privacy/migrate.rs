@@ -101,6 +101,13 @@ fn extractors() -> &'static [Extract] {
                 1,
                 None,
             ),
+            // 表格行：`| 密码 | `xxx` |`（分隔符是竖线，不是冒号）
+            make(
+                "表格口令",
+                r#"(?i)\|\s*(?:用户名|账号|密码|口令|凭据|密钥|令牌|token|key|secret|user|username|password|passwd)\s*\|\s*[`'"]?([!-~]{4,64})[`'"]?\s*\|"#,
+                1,
+                None,
+            ),
             make("bearer_token", r"\b[Bb]earer\s+([A-Za-z0-9._~+/=-]{10,})", 1, None),
             make(
                 "jwt",
@@ -353,6 +360,21 @@ fn derive_name(line: &str, value: &str, key: Option<&str>, stem: &str, used: &[S
         label = key.to_owned();
     }
     if label.is_empty() {
+        // 表格行：`| 密码 | `xxx` |` → 取列名（密码）作标签。
+        if let Some(pos) = line.find(value)
+            && line.contains('|')
+        {
+            // 依次看值左侧的各个单元格，取第一个有内容的（跳过空单元格与引号）。
+            for cell in line[..pos].rsplit('|') {
+                let cleaned = cell.trim().trim_matches(['`', '"', '\'']).trim();
+                if !cleaned.is_empty() && cleaned.chars().count() <= 12 {
+                    label = cleaned.to_owned();
+                    break;
+                }
+            }
+        }
+    }
+    if label.is_empty() {
         // 退而求其次：值之前的最后一个词组（「我的 ftp 密码是」→ ftp）。
         if let Some(pos) = line.find(value) {
             let cleaned = line[..pos]
@@ -520,6 +542,29 @@ mod tests {
         // 引号一起吃掉，不留 `凭据「x」` 的嵌套。
         assert!(text.contains("凭据「上传作业」"), "{text}");
         assert!(!text.contains("`凭据"), "{text}");
+    }
+
+    #[test]
+    fn table_row_secret_is_found_and_named_after_column() {
+        use crate::adapters::database::sqlite::SqliteTaskStore;
+        let dir = tempfile::tempdir().unwrap();
+        let vault = dir.path().join("vault");
+        std::fs::create_dir_all(&vault).unwrap();
+        std::fs::write(
+            vault.join("a.md"),
+            "| 地址 | `ssh -p 34609 root@t1.sjcmc.cn` |\n| 密码 | `LZWQ2XFUiYBP` |\n",
+        )
+        .unwrap();
+        let plan = plan(&vault, &[]).unwrap();
+        assert_eq!(plan.entries.len(), 1, "{plan:?}");
+        assert_eq!(plan.entries[0].rule, "表格口令");
+        assert_eq!(plan.entries[0].name, "a-密码");
+        let store = SqliteTaskStore::open(&dir.path().join("state.db")).unwrap();
+        let applied = apply(&vault, &store, 0, &[]).unwrap();
+        assert_eq!(applied.credentials, 1);
+        let text = std::fs::read_to_string(vault.join("a.md")).unwrap();
+        assert!(!text.contains("LZWQ2XFUiYBP"), "{text}");
+        assert!(text.contains("凭据「a-密码」"), "{text}");
     }
 
     #[test]
