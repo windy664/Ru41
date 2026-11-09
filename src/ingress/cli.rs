@@ -106,6 +106,12 @@ pub enum Command {
         #[command(subcommand)]
         command: KnowledgeCommand,
     },
+    /// 凭据托管：agent 运行时经 `secret get` 自取真值（不进模型上下文）；
+    /// QQ 侧存/删走 planner 系命令，见「凭据」帮助。
+    Secret {
+        #[command(subcommand)]
+        command: SecretCommand,
+    },
     /// Vault 内容安全：扫描笔记中的明文密码/密钥/令牌。
     Vault {
         #[command(subcommand)]
@@ -315,6 +321,17 @@ pub enum TaskCommand {
         #[arg(long, value_name = "PATH")]
         out: Option<String>,
     },
+}
+
+/// 凭据托管子命令：get 输出原始真值（供 shell 内联展开），list 只列名称。
+#[derive(Subcommand)]
+pub enum SecretCommand {
+    /// 按名称取凭据真值，原样输出到 stdout（别直接读，内联进命令用）。
+    Get { name: String },
+    /// 列出全部凭据名称（不含值）。
+    List,
+    /// 删除凭据（墓碑标记，立即对 get 不可见）。
+    Delete { name: String },
 }
 
 #[derive(Subcommand)]
