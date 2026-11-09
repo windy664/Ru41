@@ -69,8 +69,15 @@ pub(super) fn format_items(
             .cmp(&a.completed_at.unwrap_or(a.created_at))
     });
     if !completed.is_empty() {
-        // 完成项紧接在未完成项下面，不留空行。
-        lines.extend(completed.iter().map(|item| format_completed(item)));
+        // 完成项紧接在未完成项下面，不留空行；最多显示 5 条（最近的优先），
+        // 更多的留在数据库里（问 agent 能查到），不往列表里堆。
+        const COMPLETED_SHOWN: usize = 5;
+        lines.extend(
+            completed
+                .iter()
+                .take(COMPLETED_SHOWN)
+                .map(|item| format_completed(item)),
+        );
     }
     lines.join("\n")
 }
