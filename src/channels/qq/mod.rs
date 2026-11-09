@@ -983,8 +983,8 @@ enum FlushOutcome {
     Steered(i64),
 }
 
-/// 把消息正文与附件渲染成 prompt：语音用平台 ASR 转写，文件/视频给下载地址
-/// 让 agent 自取。图片不走这里（image_url 有独立通道，由消费方处理）。
+/// 把消息正文与附件渲染成 prompt：语音用平台 ASR 转写，图片/文件/视频给下载地址
+/// 让 agent 自取（图片先经模块消费者认领，走到这里说明无人认领）。
 /// 合并排水与 ingest 共用同一份渲染，保证合并后的 prompt 形态一致。
 fn render_message_prompt(content: &str, attachments: &[gateway::MessageAttachment]) -> String {
     let mut prompt = String::new();
@@ -1018,7 +1018,15 @@ fn render_message_prompt(content: &str, attachments: &[gateway::MessageAttachmen
                     attachment.url
                 ));
             }
-            gateway::AttachmentKind::Image => {}
+            gateway::AttachmentKind::Image => {
+                // 无消费者认领的图片给下载地址进 prompt：QQ 不能图文混发，
+                // 用户「先发图再发指令」的两条消息靠会话续跑/插话汇聚到同一会话，
+                // agent 拿着地址自行下载处理（如存入知识库）。
+                prompt.push_str(&format!(
+                    "[图片] 下载地址（有时效，请尽快下载）：https://{}\n",
+                    attachment.url
+                ));
+            }
         }
     }
     if !content.is_empty() {
