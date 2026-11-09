@@ -227,8 +227,10 @@ async fn todo_commands_add_list_and_complete_in_private_chat() {
         .await
         .unwrap()
         .unwrap();
-    // `#` 入口：开头时间词自动识别为截止时间。
-    assert!(added.text.contains("已记入：写项目周报"));
+    // `#` 入口：开头时间词自动识别为截止时间；回执只给清单，不加提示行。
+    assert!(!added.text.contains("已记入"), "{}", added.text);
+    assert!(added.text.contains("写项目周报"), "{}", added.text);
+    assert!(added.text.contains("待办（1）"), "{}", added.text);
 
     let documents = fixture.store.documents("todo_item", 10).unwrap();
     assert_eq!(documents.len(), 1);
@@ -250,7 +252,13 @@ async fn todo_commands_add_list_and_complete_in_private_chat() {
         .await
         .unwrap()
         .unwrap();
-    assert!(completed.text.contains("✅ 已完成：写项目周报"));
+    // 完成回执只给清单：完成的条目落到划横线区，不带「已完成」提示行。
+    assert!(!completed.text.contains("已完成"), "{}", completed.text);
+    assert!(
+        completed.text.contains("☑ ~~写项目周报~~"),
+        "{}",
+        completed.text
+    );
     // 回执下方是剩余待办清单（此时已为空），不是已完成条目的详情。
     assert!(completed.text.contains("待办（0）"));
 
@@ -326,8 +334,8 @@ async fn quick_note_enters_todo_inbox_without_agent_or_schedule() {
         .await
         .unwrap()
         .unwrap();
-    assert!(reply.text.contains("✅ 已记入：有空整理一下英文播客订阅"));
-    // 回执下方直接是当前完整待办清单。
+    // 回执只给当前完整待办清单，不带「已记入」提示行。
+    assert!(!reply.text.contains("已记入"), "{}", reply.text);
     assert!(reply.text.contains("待办（1）"));
     // 行首大复选框：cmd-input 标签，点击把 /完成 <id> 填进输入框。
     assert!(
