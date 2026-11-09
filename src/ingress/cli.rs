@@ -129,6 +129,9 @@ pub enum VaultCommand {
         /// 报告写入该 JSON 文件；缺省打印到 stdout。
         #[arg(long)]
         out: Option<PathBuf>,
+        /// 跳过含该子串的路径（可重复）：博客示例、归档项目文档等不算残留。
+        #[arg(long = "exclude", value_name = "SUBSTR")]
+        exclude: Vec<String>,
     },
     /// 把 vault 笔记里的明文密码搬进凭据托管库，原地换成「凭据「名字」」引用。
     /// 缺省只出计划（位置+名字，不含真值）；加 --apply 才真正写入。
@@ -336,15 +339,49 @@ pub enum TaskCommand {
     },
 }
 
-/// 凭据托管子命令：get 输出原始真值（供 shell 内联展开），list 只列名称。
+/// 凭据托管子命令：凭据只有唯一标识（cred_xxxxxxxxxxxx）。
+///
+/// 按调研结论（Auth0「Separate Decide from Do」、passwd 的 `exec --inject`、
+/// OpenClaw SecretRef）：**模型不能有直接读值的路径**——真值只经环境变量注入
+/// 子进程执行，stdout 里的真值被掩码，审计留痕。
 #[derive(Subcommand)]
 pub enum SecretCommand {
-    /// 按名称取凭据真值，原样输出到 stdout（别直接读，内联进命令用）。
-    Get { name: String },
-    /// 列出全部凭据名称（不含值）。
+    /// 用凭据执行命令：真值注入到子进程环境变量 `RU41_SECRET`，
+    /// stdout/stderr 中的真值替换为掩码。命令里用 `$RU41_SECRET` 引用。
+    /// 例：`ru41 secret exec --id cred_xxx -- curl -u "u:$RU41_SECRET" ftp://host/`
+    Exec {
+        /// 凭据唯一标识（也接受唯一的标签）。
+        id: String,
+        /// 要执行的命令及其参数（`--` 之后的部分）。
+        #[arg(trailing_var_arg = true, allow_hyphen_values = true)]
+        command: Vec<String>,
+    },
+    /// 按唯一标识取凭据真值。默认拒绝（明文会进模型上下文），
+    /// 必须显式加 --allow-plain；agent 应该用 `secret exec`。
+    Get {
+        /// 凭据唯一标识（也接受唯一的标签）。
+        id: String,
+        /// 允许把明文打到 stdout（人用；模型用 exec）。
+        #[arg(long, default_value_t = false)]
+        allow_plain: bool,
+    },
+    /// 列出全部凭据的「标识 + 标签」（不含值）。
     List,
-    /// 删除凭据（墓碑标记，立即对 get 不可见）。
-    Delete { name: String },
+    /// 新增凭据：给标签与值，生成唯一标识并打印。
+    Set {
+        /// 描述性标签（给人看，不参与寻址）。
+        label: String,
+        /// 真值。
+        value: String,
+    },
+    /// 删除凭据（墓碑标记，立即对 get 不可见）。按标识或唯一标签。
+    Delete { id: String },
+    /// 凭据使用审计：谁在什么时候用了哪条凭据（不含真值）。
+    Audit {
+        /// 最多显示多少条。
+        #[arg(long, default_value_t = 20)]
+        limit: u32,
+    },
 }
 
 #[derive(Subcommand)]

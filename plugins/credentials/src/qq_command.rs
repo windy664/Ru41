@@ -25,26 +25,29 @@ impl SimpleCommand for CredentialQqCommand {
     }
 
     async fn run_message(&self, content: &str, ctx: &CommandContext<'_>) -> Result<Option<Reply>> {
-        let Some((name, value)) = parse_store_intent(content) else {
+        let Some((label, value)) = parse_store_intent(content) else {
             return Ok(None);
         };
         if let Some(reply) = ctx.require_private("存凭据", "凭据属于个人信息")? {
             return Ok(Some(Reply::text(reply)));
         }
         let now = ru41::util::now();
-        let revision = ctx.store.document(KIND, &name)?.map(|doc| doc.revision);
+        // 凭据只有唯一标识；用户说的词只是标签（给人认，不参与寻址）。
+        let id = ru41::domain::credential::new_id();
+        let revision = ctx.store.document(KIND, &id)?.map(|doc| doc.revision);
         let written = ctx.store.put_document(
             KIND,
-            &name,
+            &id,
             revision,
             &serde_json::json!({
                 "value": value,
+                "label": label,
                 "updated_at": now,
             }),
         )?;
         ensure!(written, "凭据写入冲突，请重试");
         Ok(Some(Reply::text(format!(
-            "## ✅ 已存凭据「{name}」\n\n这条消息没进 AI 会话，建议长按撤回。用时 agent 自取，真值不进模型上下文。"
+            "## ✅ 已存凭据 `{id}`\n\n标签：{label}\n这条消息没进 AI 会话，建议长按撤回。agent 用时经 `secret exec` 注入，真值不进模型上下文。"
         ))))
     }
 }
@@ -77,25 +80,27 @@ fn parse_store_intent(content: &str) -> Option<(String, String)> {
     let body = body?;
 
     // 凭据关键词：取最靠前的命中，前面是名称、后面是值。
-    const KEYWORDS: &[&str] = &["密码", "口令", "凭据", "密钥", "令牌", "token", "Token", "TOKEN"];
+    const KEYWORDS: &[&str] = &[
+        "密码", "口令", "凭据", "密钥", "令牌", "token", "Token", "TOKEN",
+    ];
     let (kw_pos, kw) = KEYWORDS
         .iter()
         .filter_map(|kw| body.find(kw).map(|pos| (pos, *kw)))
         .min_by_key(|(pos, _)| *pos)?;
 
-    let name = body[..kw_pos]
+    let label = body[..kw_pos]
         .trim()
         .trim_start_matches(['把', '将'])
         .trim_end_matches(['的', '我'])
         .trim_start_matches("我的")
         .trim()
         .replace(' ', "");
-    let name = if name.is_empty() {
+    let label = if label.is_empty() {
         "默认".to_owned()
     } else {
-        name
+        label
     };
-    ensure_name(&name).ok()?;
+    ensure_name(&label).ok()?;
 
     let value = body[kw_pos + kw.len()..]
         .trim_start_matches(['是', ':', '：', '为', ' '])
@@ -106,7 +111,7 @@ fn parse_store_intent(content: &str) -> Option<(String, String)> {
     if !(4..=64).contains(&value.len()) || !value.bytes().all(|b| (0x21..=0x7e).contains(&b)) {
         return None;
     }
-    Some((name, value))
+    Some((label, value))
 }
 
 fn ensure_name(name: &str) -> Result<()> {

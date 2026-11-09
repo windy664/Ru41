@@ -456,45 +456,161 @@ async fn main() -> Result<()> {
         // 内联展开用，真值不进模型上下文），list 只列名称。记录墓碑
         //（deleted=true）当作不存在。
         Command::Secret { command } => {
+            use ru41::domain::credential as cred;
             let store = open_store(&store_config)?;
+            let live = |doc: &ru41::domain::records::Document| {
+                doc.value["deleted"].as_bool() != Some(true)
+            };
+            // 寻址：先按唯一标识，再按唯一标签（标签重复宁可报错也不猜）。
+            let resolve = |selector: &str| -> Result<Option<ru41::domain::records::Document>> {
+                if let Some(doc) = store.document(cred::KIND, selector)? {
+                    if live(&doc) {
+                        return Ok(Some(doc));
+                    }
+                    return Ok(None);
+                }
+                let hits: Vec<_> = store
+                    .documents(cred::KIND, 500)?
+                    .into_iter()
+                    .filter(live)
+                    .filter(|doc| doc.value["label"].as_str() == Some(selector))
+                    .collect();
+                match hits.len() {
+                    0 => Ok(None),
+                    1 => Ok(hits.into_iter().next()),
+                    _ => anyhow::bail!("标签「{selector}」对应多条凭据，请用唯一标识"),
+                }
+            };
             match command {
-                SecretCommand::Get { name } => {
-                    let doc = store.document("credential", &name)?;
-                    let value = doc
-                        .as_ref()
-                        .filter(|doc| doc.value["deleted"].as_bool() != Some(true))
-                        .and_then(|doc| doc.value["value"].as_str().map(str::to_owned));
-                    let Some(value) = value else {
-                        anyhow::bail!("凭据不存在或已删除：{name}");
+                SecretCommand::Exec { id, command } => {
+                    if command.is_empty() {
+                        anyhow::bail!("用法：ru41 secret exec --id <标识> -- <命令>");
+                    }
+                    let Some(doc) = resolve(&id)? else {
+                        anyhow::bail!("凭据不存在或已删除：{id}");
                     };
+                    let value = doc.value["value"].as_str().unwrap_or_default().to_owned();
+                    if value.is_empty() {
+                        anyhow::bail!("凭据为空：{id}");
+                    }
+                    // 真值注入子进程环境变量；命令里用 $RU41_SECRET 引用。
+                    let line = command.join(" ");
+                    let output = tokio::process::Command::new("sh")
+                        .arg("-c")
+                        .arg(&line)
+                        .env("RU41_SECRET", &value)
+                        .env("RU41_SECRET_ID", &doc.id)
+                        .output()
+                        .await
+                        .context("执行命令失败")?;
+                    // stdout/stderr 里的真值一律掩码——模型看到的不是凭据本身。
+                    let mask = "••••••••";
+                    let stdout = String::from_utf8_lossy(&output.stdout).replace(&value, mask);
+                    let stderr = String::from_utf8_lossy(&output.stderr).replace(&value, mask);
+                    // 审计：只记标识、标签、命令（命令里的真值同样掩码）。
+                    let audit_id = format!("{}-{}", ru41::util::now(), doc.id);
+                    let _ = store.put_document(
+                        "credential_audit",
+                        &audit_id,
+                        None,
+                        &serde_json::json!({
+                            "credential_id": doc.id,
+                            "label": doc.value["label"].clone(),
+                            "command": line.replace(&value, mask).chars().take(200).collect::<String>(),
+                            "at": ru41::util::now(),
+                            "exit_code": output.status.code(),
+                        }),
+                    );
+                    print!("{stdout}");
+                    eprint!("{stderr}");
+                    let code = output.status.code().unwrap_or(1);
+                    std::process::exit(code);
+                }
+                SecretCommand::Get { id, allow_plain } => {
+                    // 明文会进模型上下文：默认拒绝，agent 应该用 secret exec。
+                    if !allow_plain {
+                        anyhow::bail!(
+                            "拒绝直接输出明文：明文进上下文即视为泄露。请用 \
+                             `ru41 secret exec --id {id} -- <命令>`（真值注入环境变量、输出掩码），\
+                             人工确需读取再加 --allow-plain"
+                        );
+                    }
+                    let Some(doc) = resolve(&id)? else {
+                        anyhow::bail!("凭据不存在或已删除：{id}");
+                    };
+                    let value = doc.value["value"].as_str().unwrap_or_default().to_owned();
                     println!("{value}");
                 }
                 SecretCommand::List => {
-                    let mut names: Vec<String> = store
-                        .documents("credential", 500)?
+                    let mut rows: Vec<(String, String)> = store
+                        .documents(cred::KIND, 500)?
                         .into_iter()
-                        .filter(|doc| doc.value["deleted"].as_bool() != Some(true))
-                        .map(|doc| doc.id)
+                        .filter(live)
+                        .map(|doc| {
+                            (
+                                doc.id,
+                                doc.value["label"].as_str().unwrap_or_default().to_owned(),
+                            )
+                        })
                         .collect();
-                    names.sort();
-                    for name in names {
-                        println!("{name}");
+                    rows.sort();
+                    for (id, label) in rows {
+                        println!("{id}\t{label}");
                     }
                 }
-                SecretCommand::Delete { name } => {
-                    let doc = store
-                        .document("credential", &name)?
-                        .filter(|doc| doc.value["deleted"].as_bool() != Some(true));
-                    let Some(doc) = doc else {
-                        anyhow::bail!("凭据不存在或已删除：{name}");
+                SecretCommand::Set { label, value } => {
+                    let id = cred::new_id();
+                    store.put_document(
+                        cred::KIND,
+                        &id,
+                        None,
+                        &serde_json::json!({
+                            "value": value,
+                            "label": label,
+                            "updated_at": ru41::util::now(),
+                        }),
+                    )?;
+                    println!("{id}");
+                }
+                SecretCommand::Delete { id } => {
+                    let Some(doc) = resolve(&id)? else {
+                        anyhow::bail!("凭据不存在或已删除：{id}");
                     };
                     store.put_document(
-                        "credential",
-                        &name,
+                        cred::KIND,
+                        &doc.id,
                         Some(doc.revision),
-                        &serde_json::json!({"deleted": true, "updated_at": ru41::util::now()}),
+                        &serde_json::json!({
+                            "deleted": true,
+                            "label": doc.value["label"].clone(),
+                            "updated_at": ru41::util::now(),
+                        }),
                     )?;
-                    println!("deleted: {name}");
+                    println!("deleted: {}", doc.id);
+                }
+                SecretCommand::Audit { limit } => {
+                    let mut rows: Vec<(String, String, String)> = store
+                        .documents("credential_audit", 500)?
+                        .into_iter()
+                        .map(|doc| {
+                            (
+                                doc.value["at"]
+                                    .as_i64()
+                                    .map(|at| at.to_string())
+                                    .unwrap_or_default(),
+                                doc.value["credential_id"]
+                                    .as_str()
+                                    .unwrap_or_default()
+                                    .to_owned(),
+                                doc.value["command"].as_str().unwrap_or_default().to_owned(),
+                            )
+                        })
+                        .collect();
+                    rows.sort();
+                    for (at, credential_id, command) in rows.into_iter().rev().take(limit as usize)
+                    {
+                        println!("{at}\t{credential_id}\t{command}");
+                    }
                 }
             }
             return Ok(());

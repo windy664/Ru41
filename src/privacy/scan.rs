@@ -94,10 +94,19 @@ pub fn scan_text(text: &str) -> Vec<SecretHit> {
 
 /// 递归扫描 vault 目录下的 md/txt/canvas 文件；跳过 `.git`、`.obsidian`、`.trash`
 /// 等点开头的目录与明显的二进制附件。路径为相对 root 的正斜杠形式。
-pub fn scan_vault(root: &Path) -> std::io::Result<ScanReport> {
+/// `excludes` 为路径子串排除名单（博客示例、归档项目文档等不算残留）。
+pub fn scan_vault(root: &Path, excludes: &[String]) -> std::io::Result<ScanReport> {
     let mut files = Vec::new();
     collect_text_files(root, &mut files)?;
     files.sort();
+    files.retain(|path| {
+        let rel = path
+            .strip_prefix(root)
+            .unwrap_or(path)
+            .to_string_lossy()
+            .replace('\\', "/");
+        !excludes.iter().any(|needle| rel.contains(needle.as_str()))
+    });
     let mut report = ScanReport {
         scanned_files: files.len(),
         flagged_files: 0,
@@ -223,7 +232,7 @@ mod tests {
         std::fs::write(vault.join("notes/a.md"), "数据库 password=hunter2secret\n").unwrap();
         std::fs::write(vault.join(".git/leak.md"), "password=shouldskip123\n").unwrap();
         std::fs::write(vault.join("image.png"), b"\x89PNG").unwrap();
-        let report = scan_vault(&vault).unwrap();
+        let report = scan_vault(&vault, &[]).unwrap();
         assert_eq!(report.scanned_files, 1);
         assert_eq!(report.flagged_files, 1);
         assert_eq!(report.files[0].path, "notes/a.md");
