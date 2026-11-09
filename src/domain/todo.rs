@@ -252,19 +252,45 @@ fn parse_relative_datetime(text: &str, today: NaiveDate) -> Option<NaiveDateTime
     date.and_hms_opt(hour, minute, 0)
 }
 
-pub(crate) fn parse_clock(text: &str) -> Option<(u32, u32)> {
+pub fn parse_clock(text: &str) -> Option<(u32, u32)> {
     let text = text.trim_end_matches('点').trim_end_matches('时');
     let (hour, minute) = if let Some((hour, minute)) = text.split_once(':') {
-        (hour.parse().ok()?, minute.parse().ok()?)
+        (parse_num(hour)?, parse_num(minute)?)
     } else if let Some((hour, minute)) = text.split_once('点') {
-        (
-            hour.parse().ok()?,
-            minute.trim_end_matches('分').parse().ok()?,
-        )
+        let minute = minute.trim_end_matches('分');
+        let minute = if minute == "半" {
+            30
+        } else {
+            parse_num(minute)?
+        };
+        (parse_num(hour)?, minute)
     } else {
-        (text.parse().ok()?, 0)
+        (parse_num(text)?, 0)
     };
     ((0..24).contains(&hour) && minute < 60).then_some((hour, minute))
+}
+
+/// 数字解析：阿拉伯数字优先，其次中文小写数字（零一二三四五六七八九、两、十的复合）。
+fn parse_num(text: &str) -> Option<u32> {
+    if let Ok(n) = text.parse() {
+        return Some(n);
+    }
+    let value = |c: char| {
+        "零一二三四五六七八九"
+            .chars()
+            .position(|d| d == c)
+            .map(|i| i as u32)
+            .or_else(|| (c == '两').then_some(2))
+    };
+    let chars: Vec<char> = text.chars().collect();
+    match chars.as_slice() {
+        ['十'] => Some(10),
+        [c] => value(*c),
+        ['十', c] => Some(10 + value(*c)?),
+        [c, '十'] => Some(value(*c)? * 10),
+        [c, '十', c2] => Some(value(*c)? * 10 + value(*c2)?),
+        _ => None,
+    }
 }
 
 /// 待办截止时间的展示标签（本地时区）；`overdue` 为 true 且已过期时附「已过期 N 小时/天」。

@@ -223,12 +223,12 @@ async fn todo_commands_add_list_and_complete_in_private_chat() {
     .unwrap();
 
     let added = command
-        .handle_command("记待办", "明天下午3点 写项目周报", &context)
+        .handle_message("#明天下午3点 写项目周报", &context)
         .await
         .unwrap()
         .unwrap();
-    assert!(added.text.contains("已添加待办"));
-    assert!(added.text.contains("写项目周报"));
+    // `#` 入口：开头时间词自动识别为截止时间。
+    assert!(added.text.contains("已记入：写项目周报"));
 
     let documents = fixture.store.documents("todo_item", 10).unwrap();
     assert_eq!(documents.len(), 1);
@@ -275,7 +275,7 @@ async fn todo_commands_reject_group_chat_and_parse_views() {
     )
     .unwrap();
     command
-        .handle_command("记待办", "未排期事项", &private)
+        .handle_message("#未排期事项", &private)
         .await
         .unwrap();
 
@@ -355,6 +355,11 @@ async fn quick_note_enters_todo_inbox_without_agent_or_schedule() {
             .unwrap()
             .is_none()
     );
+
+    // 单独一个 `#`：列出全部待办（等同 /待办）。
+    let list = command.handle_message("#", &context).await.unwrap().unwrap();
+    assert!(list.text.contains("## 待办（1）"));
+    assert!(list.text.contains("有空整理一下英文播客订阅"));
 }
 
 #[test]
@@ -362,16 +367,16 @@ fn extension_commands_match_aliases_and_join_help() {
     let todo = TodoQqCommand::new(ru41::domain::todo::TodoOptions::default(), None);
     for verb in [
         "待办",
-        "记待办",
-        "记一下",
-        "想法",
-        "note",
         "完成",
         "推迟",
         "取消待办",
         "恢复待办",
     ] {
         assert!(todo.matches(verb));
+    }
+    // 录入类命令词已下线：记待办/记一下 等不再匹配，统一走 `#` 自然语言入口。
+    for verb in ["记待办", "记一下", "想法", "note"] {
+        assert!(!todo.matches(verb));
     }
 
     let handlers: Vec<Arc<dyn CommandHandler>> = vec![Arc::new(todo)];

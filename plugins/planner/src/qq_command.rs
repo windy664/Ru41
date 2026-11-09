@@ -22,36 +22,12 @@ pub struct TodoQqCommand {
     jwxt_semester_start: Option<chrono::NaiveDate>,
 }
 
-/// 自然语言快速捕获的触发前缀；长的在前，避免「记录一下」被「记一下」截断。
-/// 只做整句前缀匹配——闲聊句中路过这几个字不算记录意图。
-const TRIGGER_PREFIXES: &[&str] = &[
-    "帮我记一下",
-    "记录一下",
-    "记一下",
-    "记住",
-    "别忘了",
-    "别忘记",
-    "提醒我",
-    "记着",
-    "note:",
-    "remember:",
-];
-
-/// 剥掉 `#` 或触发前缀与紧随的分隔符，取出正文；不是捕获语则返回 None。
+/// 待办的唯一录入入口是 `#`：剥掉 `#` 与紧随的分隔符取出正文；
+/// 不是捕获语则返回 None。
 fn extract_note(content: &str) -> Option<String> {
     let trimmed = content.trim();
-    if let Some(rest) = trimmed.strip_prefix('#') {
-        return Some(rest.trim().to_owned());
-    }
-    let lower = trimmed.to_lowercase();
-    let prefix = TRIGGER_PREFIXES
-        .iter()
-        .find(|prefix| lower.starts_with(**prefix))?;
-    // 触发词不含大小写敏感字符，lower 与原文前缀等长，按字节切安全。
-    let rest = trimmed[prefix.len()..]
-        .trim_start_matches(['：', ':', '，', ',', '、', ' '])
-        .trim();
-    Some(rest.to_owned())
+    let rest = trimmed.strip_prefix('#')?;
+    Some(rest.trim().to_owned())
 }
 
 impl TodoQqCommand {
@@ -76,13 +52,6 @@ impl SimpleCommand for TodoQqCommand {
         &[
             "待办",
             "todo",
-            "记待办",
-            "新增待办",
-            "todo-add",
-            "记一下",
-            "想法",
-            "note",
-            "idea",
             "完成待办",
             "完成",
             "done",
@@ -102,7 +71,7 @@ impl SimpleCommand for TodoQqCommand {
     }
 
     fn help(&self) -> &'static str {
-        "`#临时想法` 或 `/记一下 <内容>`：直接记入待办（未排期）；`/待办`：全部未完成清单；`/记待办 [时间] <内容>` 新增；`/日程`：今日与未来行程"
+        "`#内容`：记入待办（开头带时间词自动排期）；单独 `#` 或 `/待办`：全部未完成清单；`/日程`：今日与未来行程"
     }
 
     fn help_section(&self) -> &'static str {
@@ -142,12 +111,6 @@ impl SimpleCommand for TodoQqCommand {
                         item.title,
                         item.short_id()
                     ))
-                }
-                "记一下" | "想法" | "note" | "idea" => {
-                    self.quick_capture_reply(&service, arg, ctx, now)?
-                }
-                "记待办" | "新增待办" | "todo-add" => {
-                    self.add_reply(&service, arg, ctx, now)?
                 }
                 "完成待办" | "完成" | "done" => {
                     ensure!(!arg.is_empty(), "用法：`/完成 <待办ID>`");
@@ -201,33 +164,29 @@ impl SimpleCommand for TodoQqCommand {
     }
 
     /// 自然语言捕获：整句以 `#` 或触发前缀开头即视为记录意图。
+    /// 单独一个 `#` 相当于 `/待办`：列出全部未完成。
     async fn run_message(&self, content: &str, ctx: &CommandContext<'_>) -> Result<Option<Reply>> {
         let Some(note) = extract_note(content) else {
             return Ok(None);
         };
-        if note.is_empty() {
-            return Ok(Some(Reply::text(
-                "## 记一下\n\n在 `#` 后跟上内容即可，例如：\n`#周六下午三点社团开会`",
-            )));
-        }
         if let Some(reply) = ctx.require_private("记录想法", "临时想法属于个人信息")?
         {
             return Ok(Some(Reply::text(reply)));
         }
         let service = self.service(ctx.store);
-        Ok(Some(self.quick_capture_reply(
-            &service,
-            &note,
-            ctx,
-            ru41::util::now(),
-        )?))
+        let now = ru41::util::now();
+        if note.is_empty() {
+            return self.list_reply(&service, "", now).map(Some);
+        }
+        Ok(Some(self.quick_capture_reply(&service, &note, ctx, now)?))
     }
 }
 
 /// 私人待办必须保持与水电一致的单聊和身份边界（由 CommandContext::require_private 统一执行）。
 impl TodoQqCommand {
-    /// 快速捕获：`#临时想法` / `/记一下` 只写待办（无截止时间，入未排期桶），
-    /// 不做时间解析、不写 Obsidian 文件、也不交给 Agent 二次判断。
+    /// 快速捕获：`#内容` 写待办；开头的相对时间词自动识别为截止时间
+    ///（`#明天下午三点交报告` → 截止明天 15:00），识别不出时间就进未排期桶。
+    /// 不写 Obsidian 文件、也不交给 Agent 二次判断。
     fn quick_capture_reply(
         &self,
         service: &TodoService,
@@ -236,14 +195,18 @@ impl TodoQqCommand {
         now: i64,
     ) -> Result<Reply> {
         let title = title.trim();
-        ensure!(!title.is_empty(), "用法：`#临时想法` 或 `/记一下 <内容>`");
+        ensure!(!title.is_empty(), "用法：`#内容`（开头可带时间词，如 `#明天下午三点交报告`）");
+        let (title, due_at) = match split_leading_time(title, now, &self.options) {
+            Some((rest, due)) => (rest, Some(due)),
+            None => (title.to_owned(), None),
+        };
         let item = service.add(
             TodoInput {
-                title: title.to_owned(),
+                title,
                 priority: TodoPriority::Normal,
                 labels: vec!["临时想法".to_owned()],
-                due_at: None,
-                remind_at: None,
+                due_at,
+                remind_at: due_at,
                 source: Some(TodoSource {
                     channel: ctx.reply_channel.into(),
                     source_id: Some(ctx.msg_id.to_owned()),
@@ -290,37 +253,6 @@ impl TodoQqCommand {
             TodoView::All => "全部待办",
         };
         Ok(Reply::text(format_items(title, &items, now, self.options)))
-    }
-
-    fn add_reply(
-        &self,
-        service: &TodoService,
-        arg: &str,
-        ctx: &CommandContext<'_>,
-        now: i64,
-    ) -> Result<Reply> {
-        let (title, due_at) = split_title_and_due(arg, now, self.options)?;
-        ensure!(!title.is_empty(), "用法：`/记待办 [时间] <内容>`");
-        let item = service.add(
-            TodoInput {
-                title,
-                priority: TodoPriority::Normal,
-                labels: Vec::new(),
-                due_at,
-                remind_at: due_at,
-                source: Some(TodoSource {
-                    channel: ctx.reply_channel.into(),
-                    source_id: Some(ctx.msg_id.to_owned()),
-                }),
-            },
-            now,
-        )?;
-        Ok(Reply::text(format!(
-            "## 已添加待办\n\n- **{}**\n- **截止**：{}\n- **ID**：`{}`\n- 查看：`/待办`",
-            item.title,
-            due_label(item.due_at, now, self.options, true),
-            item.short_id()
-        )))
     }
 
     /// `/记日程 <时间> <标题>`：时间在先，支持「明天14:00-16:00」「每周二14:00-15:40」。
@@ -500,30 +432,99 @@ fn parse_view(text: &str) -> Option<TodoView> {
     }
 }
 
-fn split_title_and_due(arg: &str, now: i64, options: TodoOptions) -> Result<(String, Option<i64>)> {
-    let parts: Vec<&str> = arg.split_whitespace().collect();
-    if parts.is_empty() {
-        bail!("todo title is required");
+/// 从快速捕获文本里提取开头的相对时间词：「明天下午三点交报告」→ ("交报告", due)。
+/// 只认 parse_due 支持的形态（今天/明天/明晚/后天/今晚/N天后 + 上午/下午/晚上/晚 +
+/// 钟点），且时间词后面必须还有标题内容，否则整句按标题处理、不排期。
+fn split_leading_time(text: &str, now: i64, options: &TodoOptions) -> Option<(String, i64)> {
+    let end = leading_time_len(text)?;
+    let (when, rest) = text.split_at(end);
+    let rest = rest.trim_start();
+    if rest.is_empty() {
+        return None;
     }
-    for end in 1..parts.len() {
-        let candidate = parts[..end].join(" ");
-        if let Ok(due_at) = parse_due(&candidate, now, &options) {
-            let title = parts[end..].join(" ");
-            if !title.trim().is_empty() {
-                return Ok((title, Some(due_at)));
-            }
+    let due = parse_due(when, now, options).ok()?;
+    Some((rest.to_owned(), due))
+}
+
+/// 扫描开头时间词的字节边界：日期词 + 时段词 + 钟点。
+/// 有日期词时，时段/钟点可有可无；没有日期词则时段+钟点必须同时出现
+///（避免「#下午交作业」被安一个默认 22:00 的今晚截止）。
+/// 裸数字不算钟点（要带 点/时/: 后缀），防止「明天3号」被吃成凌晨 3 点。
+fn leading_time_len(text: &str) -> Option<usize> {
+    let mut rest = text;
+    let mut matched_day = false;
+    for word in ["今天", "今日", "明天", "明晚", "后天", "今晚"] {
+        if let Some(r) = rest.strip_prefix(word) {
+            rest = r;
+            matched_day = true;
+            break;
         }
     }
-    for start in 1..parts.len() {
-        let candidate = parts[start..].join(" ");
-        if let Ok(due_at) = parse_due(&candidate, now, &options) {
-            let title = parts[..start].join(" ");
-            if !title.trim().is_empty() {
-                return Ok((title, Some(due_at)));
-            }
+    if !matched_day {
+        let digits: usize = rest.bytes().take_while(|b| b.is_ascii_digit()).count();
+        if digits > 0
+            && let Some(r) = rest[digits..].strip_prefix("天后")
+        {
+            rest = r;
+            matched_day = true;
         }
     }
-    Ok((parts.join(" "), None))
+    let mut matched_period = false;
+    for word in ["上午", "下午", "晚上", "晚"] {
+        if let Some(r) = rest.strip_prefix(word) {
+            rest = r;
+            matched_period = true;
+            break;
+        }
+    }
+    let mut matched_clock = false;
+    // 钟点字符类：阿拉伯数字与中文数字字 + 分隔符。标题以数字字开头时
+    // 会被多吃，所以从长到短回退到 parse_clock 能接受的最长前缀。
+    let clock_len: usize = rest
+        .chars()
+        .take_while(|c| {
+            c.is_ascii_digit()
+                || matches!(
+                    c,
+                    '零' | '一'
+                        | '二'
+                        | '两'
+                        | '三'
+                        | '四'
+                        | '五'
+                        | '六'
+                        | '七'
+                        | '八'
+                        | '九'
+                        | '十'
+                        | '点'
+                        | '时'
+                        | '分'
+                        | '半'
+                        | ':'
+                )
+        })
+        .map(char::len_utf8)
+        .sum();
+    if clock_len > 0 {
+        let mut end = clock_len;
+        while end > 0 {
+            let candidate = &rest[..end];
+            // 必须带点/时/: 后缀结构：裸数字（明天3号）不算钟点。
+            let structured = candidate.contains(['点', '时', ':']);
+            if structured && ru41::domain::todo::parse_clock(candidate).is_some() {
+                rest = &rest[end..];
+                matched_clock = true;
+                break;
+            }
+            end -= candidate.chars().last().map(char::len_utf8).unwrap_or(1);
+        }
+    }
+    if matched_day || (matched_period && matched_clock) {
+        Some(text.len() - rest.len())
+    } else {
+        None
+    }
 }
 
 fn split_selector_and_time(arg: &str) -> Option<(&str, &str)> {
@@ -581,7 +582,7 @@ fn done_chip(item: &TodoItem) -> String {
 
 fn usage() -> String {
     format!(
-        "## 待办用法\n\n- `/待办`：全部未完成（复选框列表，点框后发送即完成）\n- `/待办 <{}>`\n- `/记待办 [时间] <内容>`\n- `/完成 <待办ID>`\n- `/推迟 <待办ID> 到 <时间>`\n- `/取消待办 <待办ID>`\n\n## 日程用法\n\n- `/日程 [今天|明天|N天]`：今日起行程\n- `/记日程 <时间> <标题>`：如 `明天14:00-16:00 班会`、`每周二14:00-15:40 体育课`\n- `/取消日程 <日程ID>`",
+        "## 待办用法\n\n- `#内容`：记入待办（开头带时间词自动排期，如 `#明天下午三点交报告`）\n- `#` 或 `/待办`：全部未完成（复选框列表，点框后发送即完成）\n- `/待办 <{}>`\n- `/完成 <待办ID>`\n- `/推迟 <待办ID> 到 <时间>`\n- `/取消待办 <待办ID>`\n\n## 日程用法\n\n- `/日程 [今天|明天|N天]`：今日起行程\n- `/记日程 <时间> <标题>`：如 `明天14:00-16:00 班会`、`每周二14:00-15:40 体育课`\n- `/取消日程 <日程ID>`",
         usage_views()
     )
 }
@@ -592,7 +593,44 @@ fn usage_views() -> String {
 
 #[cfg(test)]
 mod tests {
-    use super::{cmd_input_chip, truncate_title, url_encode};
+    use super::{cmd_input_chip, split_leading_time, truncate_title, url_encode};
+
+    #[test]
+    fn split_leading_time_extracts_compact_relative_time() {
+        let options = ru41::domain::todo::TodoOptions {
+            offset_seconds: 8 * 3600,
+            ..Default::default()
+        };
+        let now = 1_794_152_881; // 2026-11-08 傍晚（UTC+8）
+        // 紧凑写法：日期词 + 时段 + 钟点。
+        let (title, due) =
+            split_leading_time("明天下午三点交实验报告", now, &options).unwrap();
+        assert_eq!(title, "交实验报告");
+        let offset = chrono::FixedOffset::east_opt(8 * 3600).unwrap();
+        let local = chrono::DateTime::from_timestamp(due, 0)
+            .unwrap()
+            .with_timezone(&offset);
+        assert_eq!(local.format("%H:%M").to_string(), "15:00");
+        // 只有日期词也行（默认 22:00）。
+        let (title, _) = split_leading_time("明天交作业", now, &options).unwrap();
+        assert_eq!(title, "交作业");
+        // 时段+钟点（无日期词）= 今天。
+        assert!(split_leading_time("下午三点开会", now, &options).is_some());
+        // 只有时段没有钟点：不识别（不随便安默认时间）。
+        assert!(split_leading_time("下午交作业", now, &options).is_none());
+        // 裸数字不算钟点：「明天3号」不吃成凌晨三点。
+        assert!(split_leading_time("明天3号交报告", now, &options)
+            .is_none_or(|(_, due)| {
+                let local = chrono::DateTime::from_timestamp(due, 0)
+                    .unwrap()
+                    .with_timezone(&offset);
+                local.format("%H:%M").to_string() == "22:00"
+            }));
+        // 没有时间词：不识别。
+        assert!(split_leading_time("板子焊接", now, &options).is_none());
+        // 整句都是时间词：不识别（没有标题内容）。
+        assert!(split_leading_time("明天下午三点", now, &options).is_none());
+    }
 
     #[test]
     fn url_encode_escapes_non_unreserved() {
