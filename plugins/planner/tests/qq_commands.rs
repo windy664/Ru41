@@ -244,7 +244,7 @@ async fn todo_commands_add_list_and_complete_in_private_chat() {
         .await
         .unwrap()
         .unwrap();
-    assert!(summary.text.contains("## **待办（1）**"));
+    assert!(summary.text.contains("# **待办（1）**"));
     assert!(summary.text.contains("写项目周报"));
 
     let completed = command
@@ -260,14 +260,14 @@ async fn todo_commands_add_list_and_complete_in_private_chat() {
         completed.text
     );
     // 回执下方是剩余待办清单（此时已为空），不是已完成条目的详情。
-    assert!(completed.text.contains("## **待办（0）**"));
+    assert!(completed.text.contains("# **待办（0）**"));
 
     let empty = command
         .handle_command("待办", "", &context)
         .await
         .unwrap()
         .unwrap();
-    assert!(empty.text.contains("## **待办（0）**"));
+    assert!(empty.text.contains("# **待办（0）**"));
     assert!(empty.text.contains("暂无"));
 }
 
@@ -336,7 +336,7 @@ async fn quick_note_enters_todo_inbox_without_agent_or_schedule() {
         .unwrap();
     // 回执只给当前完整待办清单，不带「已记入」提示行。
     assert!(!reply.text.contains("已记入"), "{}", reply.text);
-    assert!(reply.text.contains("## **待办（1）**"));
+    assert!(reply.text.contains("# **待办（1）**"));
     // 行首大复选框：cmd-input 标签，点击把 /完成 <id> 填进输入框。
     assert!(
         reply
@@ -370,7 +370,7 @@ async fn quick_note_enters_todo_inbox_without_agent_or_schedule() {
         .await
         .unwrap()
         .unwrap();
-    assert!(list.text.contains("## **待办（1）**"));
+    assert!(list.text.contains("# **待办（1）**"));
     assert!(list.text.contains("有空整理一下英文播客订阅"));
 }
 
