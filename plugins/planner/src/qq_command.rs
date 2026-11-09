@@ -17,7 +17,7 @@ use crate::{
         extract_note, parse_event_view, parse_view, split_leading_time, split_selector_and_time,
         split_when_and_title,
     },
-    view::{cmd_input_chip, due_label, format_items, truncate_title, usage, usage_views},
+    view::{cmd_input_chip, format_items, usage, usage_views},
 };
 
 /// QQ 私人待办入口；持久化与日期视图由核心 TodoService 提供。
@@ -109,45 +109,25 @@ impl SimpleCommand for TodoQqCommand {
                 }
                 "完成待办" | "完成" | "done" => {
                     ensure!(!arg.is_empty(), "用法：`/完成 <待办ID>`");
-                    let item = service.complete(arg, now)?;
-                    // 回执 = 完成确认 + 剩余待办清单：立刻看到划掉一项后的全貌，
-                    // 不用再发一次 /待办 确认它还在不在。
-                    // 回执给完整清单：未完成 + 近 7 天已完成（划横线）。
-                    let remaining: Vec<TodoItem> = service.list(TodoView::All, now, 50)?;
-                    Reply::text(format!(
-                        "✅ 已完成：{}\n\n{}",
-                        truncate_title(&item.title, 14),
-                        format_items("待办", &remaining, now, self.options)
-                    ))
+                    service.complete(arg, now)?;
+                    // 只回清单：完成的那条已经在下面划横线区，不用再提示一遍。
+                    todo_list_reply(&service, now, self.options)?
                 }
                 "推迟待办" | "推迟" => {
                     let (selector, until) = split_selector_and_time(arg)
                         .ok_or_else(|| anyhow::anyhow!("用法：`/推迟 <待办ID> 到 <时间>`"))?;
-                    let item = service.postpone(selector, until, now)?;
-                    Reply::text(format!(
-                        "已推迟待办\n\n- **{}**\n- **新截止时间**：{}\n- **ID**：`{}`",
-                        item.title,
-                        due_label(item.due_at, now, self.options, true),
-                        item.short_id()
-                    ))
+                    service.postpone(selector, until, now)?;
+                    todo_list_reply(&service, now, self.options)?
                 }
                 "取消待办" => {
                     ensure!(!arg.is_empty(), "用法：`/取消待办 <待办ID>`");
-                    let item = service.cancel(arg, now)?;
-                    Reply::text(format!(
-                        "已取消待办\n\n- **{}**\n- **ID**：`{}`",
-                        item.title,
-                        item.short_id()
-                    ))
+                    service.cancel(arg, now)?;
+                    todo_list_reply(&service, now, self.options)?
                 }
                 "恢复待办" | "restore" => {
                     ensure!(!arg.is_empty(), "用法：`/恢复待办 <待办ID>`");
-                    let item = service.restore(arg, now)?;
-                    Reply::text(format!(
-                        "已恢复待办\n\n- **{}**\n- **ID**：`{}`",
-                        item.title,
-                        item.short_id()
-                    ))
+                    service.restore(arg, now)?;
+                    todo_list_reply(&service, now, self.options)?
                 }
                 _ => Reply::text(usage()),
             };
@@ -174,6 +154,13 @@ impl SimpleCommand for TodoQqCommand {
     }
 }
 
+/// 待办类操作的统一回执：只给完整清单（未完成 + 近 7 天已完成划横线）。
+/// 不加「已记入/已完成」这类提示行——清单本身已经反映了状态。
+fn todo_list_reply(service: &TodoService, now: i64, options: TodoOptions) -> Result<Reply> {
+    let items: Vec<TodoItem> = service.list(TodoView::All, now, 50)?;
+    Ok(Reply::text(format_items("待办", &items, now, options)))
+}
+
 /// 私人待办必须保持与水电一致的单聊和身份边界（由 CommandContext::require_private 统一执行）。
 impl TodoQqCommand {
     /// 快速捕获：`#内容` 写待办；开头的相对时间词自动识别为截止时间
@@ -195,7 +182,7 @@ impl TodoQqCommand {
             Some((rest, due)) => (rest, Some(due)),
             None => (title.to_owned(), None),
         };
-        let item = service.add(
+        service.add(
             TodoInput {
                 title,
                 priority: TodoPriority::Normal,
@@ -209,13 +196,8 @@ impl TodoQqCommand {
             },
             now,
         )?;
-        // 回执 = 记入确认 + 完整清单（未完成 + 近 7 天已完成划横线）；ID 不展示。
-        let items: Vec<TodoItem> = service.list(TodoView::All, now, 50)?;
-        Ok(Reply::text(format!(
-            "✅ 已记入：{}\n\n{}",
-            truncate_title(&item.title, 14),
-            format_items("待办", &items, now, self.options)
-        )))
+        // 只回清单：新条目就在清单里，不用再提示一遍。
+        Ok(todo_list_reply(&service, now, self.options)?)
     }
 
     fn list_reply(&self, service: &TodoService, arg: &str, now: i64) -> Result<Reply> {
