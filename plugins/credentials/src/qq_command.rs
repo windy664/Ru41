@@ -25,6 +25,11 @@ impl SimpleCommand for CredentialQqCommand {
     }
 
     async fn run_message(&self, content: &str, ctx: &CommandContext<'_>) -> Result<Option<Reply>> {
+        // 查询：消息里带凭据标识（或唯一匹配的标签）→ 网关直接回明文，
+        // 不经过模型（密码不进上下文、不进供应商日志）。
+        if let Some(reply) = self.lookup_reply(content, ctx)? {
+            return Ok(Some(reply));
+        }
         let Some((label, value)) = parse_store_intent(content) else {
             return Ok(None);
         };
@@ -48,6 +53,60 @@ impl SimpleCommand for CredentialQqCommand {
         ensure!(written, "凭据写入冲突，请重试");
         Ok(Some(Reply::text(format!(
             "## ✅ 已存凭据 `{id}`\n\n标签：{label}\n这条消息没进 AI 会话，建议长按撤回。agent 用时经 `secret exec` 注入，真值不进模型上下文。"
+        ))))
+    }
+}
+
+impl CredentialQqCommand {
+    /// 查询凭据：消息里出现 `cred_xxxxxxxxxxxx` 标识，或出现某条凭据的唯一标签，
+    /// 就把真值直接回给用户——全程不经过模型。
+    fn lookup_reply(&self, content: &str, ctx: &CommandContext<'_>) -> Result<Option<Reply>> {
+        let docs = ctx.store.documents(KIND, 500)?;
+        let live: Vec<_> = docs
+            .into_iter()
+            .filter(|doc| doc.value["deleted"].as_bool() != Some(true))
+            .collect();
+        if live.is_empty() {
+            return Ok(None);
+        }
+        // 1) 标识精确匹配。
+        let by_id = live.iter().find(|doc| content.contains(doc.id.as_str()));
+        // 2) 标签匹配：必须同时带查询意图（「查」「是什么」…），
+        //    否则「ftp 的密码是 xxx」这种陈述会被误当成查询。
+        const LOOKUP_WORDS: &[&str] = &[
+            "查",
+            "查询",
+            "看一下",
+            "看看",
+            "是什么",
+            "多少",
+            "取出来",
+            "取出",
+            "拿",
+            "显示",
+        ];
+        let asks = LOOKUP_WORDS.iter().any(|word| content.contains(word));
+        let by_label = if asks {
+            live.iter().find(|doc| {
+                doc.value["label"]
+                    .as_str()
+                    .filter(|label| !label.is_empty())
+                    .is_some_and(|label| content.contains(label))
+            })
+        } else {
+            None
+        };
+        let Some(doc) = by_id.or(by_label) else {
+            return Ok(None);
+        };
+        let value = doc.value["value"].as_str().unwrap_or_default();
+        if value.is_empty() {
+            return Ok(None);
+        }
+        let label = doc.value["label"].as_str().unwrap_or_default();
+        Ok(Some(Reply::text(format!(
+            "🔑 {label}（{}）\n\n{value}\n\n这条回复含明文，建议撤回。",
+            doc.id
         ))))
     }
 }
