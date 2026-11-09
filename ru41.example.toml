@@ -48,6 +48,7 @@ bin = "codex"
 # base_url = "https://api.minimax.io/anthropic"
 # api = "anthropic-messages"
 # api_key_env = "MINIMAX_API_KEY"     # 值只进子进程环境
+# fallback_models = ["deepseek/deepseek-chat"]  # Pi virtual model retry 时按序切换
 # tools = "read,write,edit,bash"      # 留空 = 禁用全部工具（只做文本分析）
 # 显式加载的 Pi 扩展：只加载这里写下的，扩展发现始终关闭。
 # 浏览器扩展（真浏览器 + 截图）见 docs/browser-automation.md。

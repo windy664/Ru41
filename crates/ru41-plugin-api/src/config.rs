@@ -539,7 +539,7 @@ pub struct PiSection {
     pub session: Option<bool>,
     /// 会话存储目录（对应 Pi 的 --session-dir）。
     pub session_dir: Option<PathBuf>,
-    /// 备用模型链：主模型失败时按顺序切换；每项写 `供应方/模型` 或裸 `模型`。
+    /// 备用模型链：主模型失败时由 Pi virtual model 按顺序切换；每项写 `供应方/模型` 或裸 `模型`。
     pub fallback_models: Vec<String>,
     /// 模型输入模态（写进 models.json 的 `input`）：text / image。
     /// Pi 默认只认文本，声明 image 后它的 read 工具才会把图片作为附件发给模型。
