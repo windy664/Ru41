@@ -350,8 +350,10 @@ pub enum SecretCommand {
     /// stdout/stderr 中的真值替换为掩码。命令里用 `$RU41_SECRET` 引用。
     /// 例：`ru41 secret exec --id cred_xxx -- curl -u "u:$RU41_SECRET" ftp://host/`
     Exec {
-        /// 凭据唯一标识（也接受唯一的标签）。
-        id: String,
+        /// 凭据唯一标识（也接受唯一的标签）；可重复给多条。
+        /// 多条时：第一条注入 RU41_SECRET，其余注入 RU41_SECRET_2、RU41_SECRET_3…
+        #[arg(long = "id", value_name = "ID", required = true)]
+        id: Vec<String>,
         /// 要执行的命令及其参数（`--` 之后的部分）。
         #[arg(trailing_var_arg = true, allow_hyphen_values = true)]
         command: Vec<String>,
