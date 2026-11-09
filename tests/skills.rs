@@ -1,4 +1,4 @@
-use ru41::skills::{load_roots, materialize, render_for_prompt};
+use ru41::skills::{load_roots, materialize, render_for_prompt, skills_index_prefix};
 use std::path::Path;
 
 fn write_skill(root: &Path, module: &str, skill: &str, name: &str, description: &str) {
@@ -40,6 +40,24 @@ fn loads_and_materializes_native_skills() {
     let prompt = render_for_prompt("Explain this paper", &packages);
     assert!(prompt.contains("Follow the test workflow"));
     assert!(prompt.ends_with("User request:\nExplain this paper"));
+}
+
+#[test]
+fn tool_enabled_agents_get_only_the_skill_index() {
+    let root = tempfile::tempdir().unwrap();
+    write_skill(
+        root.path(),
+        "papers",
+        "arxiv-research",
+        "arxiv-research",
+        "Research papers",
+    );
+    let packages = load_roots(&[root.path().to_path_buf()]).unwrap();
+    let prompt = skills_index_prefix(&packages);
+    assert!(prompt.contains("arxiv-research"));
+    assert!(prompt.contains("Research papers"));
+    assert!(prompt.contains(".agents/skills/arxiv-research/SKILL.md"));
+    assert!(!prompt.contains("Follow the test workflow"));
 }
 
 #[test]

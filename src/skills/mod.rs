@@ -224,9 +224,8 @@ pub fn materialize(run_dir: &Path, packages: &[SkillPackage]) -> Result<()> {
     Ok(())
 }
 
-/// codex 专用技能索引前缀：codex 不把 .agents/skills 自动挂进上下文
-/// （它原生只看 $CODEX_HOME/skills），所以在 prompt 开头列名称+简介+路径，
-/// 模型按需自行 Read 对应 SKILL.md。只列索引不内联全文，控制 prompt 体积。
+/// 有工具底座的技能索引前缀：只列名称+简介+路径，模型按需自行 Read 对应
+/// SKILL.md，不把全部技能正文塞进每个任务。codex 与 pi 共用这份索引。
 pub fn skills_index_prefix(skills: &[SkillPackage]) -> String {
     if skills.is_empty() {
         return String::new();
