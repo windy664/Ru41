@@ -50,8 +50,6 @@ impl TodoQqCommand {
 impl SimpleCommand for TodoQqCommand {
     fn verbs(&self) -> &'static [&'static str] {
         &[
-            "待办",
-            "todo",
             "完成待办",
             "完成",
             "done",
@@ -71,7 +69,7 @@ impl SimpleCommand for TodoQqCommand {
     }
 
     fn help(&self) -> &'static str {
-        "`#内容`：记入待办（开头带时间词自动排期）；单独 `#` 或 `/待办`：全部未完成清单；`/日程`：今日与未来行程"
+        "`#内容`：记入待办（开头带时间词自动排期）；单独 `#`：全部待办清单；`/日程`：今日与未来行程"
     }
 
     fn help_section(&self) -> &'static str {
@@ -559,7 +557,6 @@ fn format_items(title: &str, items: &[TodoItem], now: i64, options: TodoOptions)
     });
     if !completed.is_empty() {
         lines.push(String::new());
-        lines.push(format!("### 🏁 已完成（近 7 天，{}）", completed.len()));
         lines.extend(completed.iter().map(|item| format_completed(item)));
     }
     lines.join("\n")
@@ -607,10 +604,7 @@ fn done_chip(item: &TodoItem) -> String {
 }
 
 fn usage() -> String {
-    format!(
-        "## 待办用法\n\n- `#内容`：记入待办（开头带时间词自动排期，如 `#明天下午三点交报告`）\n- `#` 或 `/待办`：全部未完成（复选框列表，点框后发送即完成）\n- `/待办 <{}>`\n- `/完成 <待办ID>`\n- `/推迟 <待办ID> 到 <时间>`\n- `/取消待办 <待办ID>`\n\n## 日程用法\n\n- `/日程 [今天|明天|N天]`：今日起行程\n- `/记日程 <时间> <标题>`：如 `明天14:00-16:00 班会`、`每周二14:00-15:40 体育课`\n- `/取消日程 <日程ID>`",
-        usage_views()
-    )
+    "## 待办用法\n\n- `#内容`：记入待办（开头带时间词自动排期，如 `#明天下午三点交报告`）\n- `#`：全部待办清单（复选框列表，点框后发送即完成；完成的划横线排在下面）\n- `/完成 <待办ID>`\n- `/推迟 <待办ID> 到 <时间>`\n- `/取消待办 <待办ID>`\n\n## 日程用法\n\n- `/日程 [今天|明天|N天]`：今日起行程\n- `/记日程 <时间> <标题>`：如 `明天14:00-16:00 班会`、`每周二14:00-15:40 体育课`\n- `/取消日程 <日程ID>`".to_owned()
 }
 
 fn usage_views() -> String {
@@ -705,8 +699,8 @@ mod tests {
         // 复选框后没有空格。
         assert!(text.contains("**板子焊接**"), "{text}");
         assert!(!text.contains("　**板子焊接**"), "{text}");
-        // 底部已完成区：粗勾 + 划横线。
-        assert!(text.contains("### 🏁 已完成（近 7 天，1）"), "{text}");
+        // 底部完成项：粗勾 + 划横线，不带「已完成」标题。
+        assert!(!text.contains("已完成"), "{text}");
         assert!(text.contains("**🗹** ~~写周报~~"), "{text}");
         active.completed_at = None;
     }
