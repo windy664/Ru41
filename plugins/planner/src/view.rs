@@ -80,8 +80,13 @@ pub(super) fn format_items(
 /// 候选符号（想换回只改这一处）：`☑`（2026-11-09 用户选定）、`🗹`（前一版）、`✅`。
 /// 整个待办列表不用加粗（用户要求），已完成态也不再可点，所以不用 cmd-input 标签。
 pub(super) fn format_completed(item: &TodoItem) -> String {
-    // 完成态同样用三级标题 + 划横线。
-    format!("### ☑ ~~{}~~", item.title)
+    // 完成态：可点的恢复复选框 + 划横线标题（点一下把待办换回未完成）。
+    format!("### {} ~~{}~~", restore_chip(item), item.title)
+}
+
+/// 已完成条目的「恢复」复选框：点击 = 把待办换回未完成。
+fn restore_chip(item: &TodoItem) -> String {
+    cmd_input_chip("☑ ", &format!("/恢复待办 {}", item.short_id()))
 }
 
 /// 近 7 天的已完成：判定在核心里（domain::todo::is_recent_completed），
@@ -127,7 +132,7 @@ pub(super) fn done_chip(item: &TodoItem) -> String {
 }
 
 pub(super) fn usage() -> String {
-    "## 待办用法\n\n- `#内容`：记入待办（开头带时间词自动排期，如 `#明天下午三点交报告`）\n- `#`：全部待办清单（复选框列表，点框后发送即完成；完成的划横线排在下面）\n- `/完成 <待办ID>`\n- `/推迟 <待办ID> 到 <时间>`\n- `/取消待办 <待办ID>`\n\n## 日程用法\n\n- `/日程 [今天|明天|N天]`：今日起行程\n- `/记日程 <时间> <标题>`：如 `明天14:00-16:00 班会`、`每周二14:00-15:40 体育课`\n- `/取消日程 <日程ID>`".to_owned()
+    "## 待办用法\n\n- `#内容`：记入待办（开头带时间词自动排期，如 `#明天下午三点交报告`）\n- `#`：全部待办清单（复选框列表，点框后发送即完成；完成的划横线排在下面）\n- `/完成 <待办ID>`\n- `/恢复待办 <待办ID>`（或点已勾选条目上的复选框，换回未完成）\n- `/推迟 <待办ID> 到 <时间>`\n- `/取消待办 <待办ID>`\n\n## 日程用法\n\n- `/日程 [今天|明天|N天]`：今日起行程\n- `/记日程 <时间> <标题>`：如 `明天14:00-16:00 班会`、`每周二14:00-15:40 体育课`\n- `/取消日程 <日程ID>`".to_owned()
 }
 
 pub(super) fn usage_views() -> String {
@@ -190,7 +195,12 @@ mod tests {
         assert!(text.starts_with("# **待办（1）**"), "{text}");
         assert!(!text.contains("已完成"), "{text}");
         assert!(!text.contains("已完成"), "{text}");
-        assert!(text.contains("### ☑ ~~写周报~~"), "{text}");
+        assert!(text.contains("~~写周报~~"), "{text}");
+        // 完成项的复选框是可点的恢复按钮（指令藏在 chip 里）。
+        assert!(
+            text.contains("%2F%E6%81%A2%E5%A4%8D%E5%BE%85%E5%8A%9E"),
+            "{text}"
+        );
         assert!(!text.contains("\n\n### ☑"), "{text}");
     }
 
