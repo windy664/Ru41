@@ -252,6 +252,18 @@ fn scan(root: &Path, excludes: &[String]) -> Result<Vec<PlannedSecret>> {
                             break;
                         }
                     }
+                    // 表格行额外判「像密钥」：表头 `| Key | Description |` 里的
+                    // Description 不是密钥——要么被引号包着，要么够长且含数字。
+                    if extract.rule == "表格口令" {
+                        let before = line[..value_match.start()].chars().next_back();
+                        let after = line[value_match.end()..].chars().next();
+                        let quoted = matches!(before, Some('`') | Some('"') | Some('\''))
+                            && matches!(after, Some('`') | Some('"') | Some('\''));
+                        let strong = value.len() >= 8 && value.chars().any(|c| c.is_ascii_digit());
+                        if !(quoted || strong) {
+                            continue;
+                        }
+                    }
                     if value.is_empty() || is_placeholder(&value) {
                         continue;
                     }
@@ -631,6 +643,28 @@ mod tests {
             "服务器部署信息",
         );
         assert_eq!(redis, "Redis");
+    }
+
+    #[test]
+    fn table_header_words_are_not_secrets() {
+        let dir = tempfile::tempdir().unwrap();
+        let vault = dir.path().join("vault");
+        std::fs::create_dir_all(&vault).unwrap();
+        std::fs::write(
+            vault.join("a.md"),
+            "| Key | Description | Default |\n| `hideWhenIdle` | 隐藏时 | `true` |\n",
+        )
+        .unwrap();
+        // 表头里的 Description、布尔值 true 都不是密钥。
+        assert!(plan(&vault, &[]).unwrap().entries.is_empty());
+
+        std::fs::write(
+            vault.join("b.md"),
+            "| APIKey | 平台密钥 | `sk-abcdefghij1234567890abcdefgh` |\n",
+        )
+        .unwrap();
+        let plan = plan(&vault, &[]).unwrap();
+        assert_eq!(plan.entries.len(), 1, "{plan:?}");
     }
 
     #[test]
