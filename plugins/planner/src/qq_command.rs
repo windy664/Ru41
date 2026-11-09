@@ -9,7 +9,7 @@ use ru41::{
         },
     },
     ports::{
-        commands::{CommandContext, MarkupButton, Reply, ReplyMarkup, SimpleCommand},
+        commands::{CommandContext, Reply, SimpleCommand},
         storage::TaskStore,
     },
 };
@@ -159,14 +159,11 @@ impl SimpleCommand for TodoQqCommand {
                         .into_iter()
                         .filter(|todo| todo.status == TodoStatus::Active)
                         .collect();
-                    Reply::with_markup(
-                        format!(
-                            "## ✅ 已完成：{}\n\n{}",
-                            truncate_title(&item.title, 14),
-                            format_items("待办", &remaining, now, self.options)
-                        ),
-                        items_markup(&remaining),
-                    )
+                    Reply::text(format!(
+                        "## ✅ 已完成：{}\n\n{}",
+                        truncate_title(&item.title, 14),
+                        format_items("待办", &remaining, now, self.options)
+                    ))
                 }
                 "推迟待办" | "推迟" => {
                     let (selector, until) = split_selector_and_time(arg)
@@ -260,29 +257,22 @@ impl TodoQqCommand {
             .into_iter()
             .filter(|todo| todo.status == TodoStatus::Active)
             .collect();
-        Ok(Reply::with_markup(
-            format!(
-                "## ✅ 已记入：{}\n\n{}",
-                truncate_title(&item.title, 14),
-                format_items("待办", &items, now, self.options)
-            ),
-            items_markup(&items),
-        ))
+        Ok(Reply::text(format!(
+            "## ✅ 已记入：{}\n\n{}",
+            truncate_title(&item.title, 14),
+            format_items("待办", &items, now, self.options)
+        )))
     }
 
     fn list_reply(&self, service: &TodoService, arg: &str, now: i64) -> Result<Reply> {
         if arg.trim().is_empty() {
-            // 主视图：全部未完成按截止时间排序的纯文本清单 + 原生大按钮键盘
-            //（按钮在消息底部，点一下自动发出 /完成，一跳完成）。
+            // 主视图就是一排大复选框：全部未完成按截止时间排序，不再分节。
             let items: Vec<TodoItem> = service
                 .list(TodoView::All, now, 50)?
                 .into_iter()
                 .filter(|item| item.status == TodoStatus::Active)
                 .collect();
-            return Ok(Reply::with_markup(
-                format_items("待办", &items, now, self.options),
-                items_markup(&items),
-            ));
+            return Ok(Reply::text(format_items("待办", &items, now, self.options)));
         }
         let Some(view) = parse_view(arg) else {
             return Ok(Reply::text(format!(
@@ -299,10 +289,7 @@ impl TodoQqCommand {
             TodoView::Inbox => "未排期",
             TodoView::All => "全部待办",
         };
-        Ok(Reply::with_markup(
-            format_items(title, &items, now, self.options),
-            items_markup(&items),
-        ))
+        Ok(Reply::text(format_items(title, &items, now, self.options)))
     }
 
     fn add_reply(
@@ -436,8 +423,7 @@ impl TodoQqCommand {
 }
 
 /// 拼 `<qqbot-cmd-input>` 标签：show 是显示文本，text 是点击后填入输入框的指令；
-/// 两个参数按文档要求 urlencode。仍用于日程列表的行内「✕ 取消」，
-/// 待办完成已改用原生按钮键盘（items_markup）。
+/// 两个参数按文档要求 urlencode。用于待办复选框与日程列表的行内「✕ 取消」。
 fn cmd_input_chip(show: &str, command: &str) -> String {
     format!(
         "<qqbot-cmd-input text=\"{}\" show=\"{}\" reference=\"false\" />",
@@ -566,42 +552,27 @@ fn format_item(item: &TodoItem, now: i64, options: TodoOptions) -> String {
         TodoPriority::Low => "，低优先级",
         TodoPriority::Normal => "",
     };
-    // 纯文本行：完成/恢复操作由消息底部的原生按钮承担，正文不再嵌小复选框。
-    format!("**{}** — {}{}", item.title, label, priority)
+    // 行首大复选框：活跃条目是「完成」（⬜️），已结束条目是「恢复」（☑️）。
+    // 复选框本身就是行标记，不再加列表符号；id 嵌在框的指令里，不在正文展示。
+    let checkbox = match item.status {
+        TodoStatus::Active => done_chip(item),
+        _ => cmd_input_chip("☑\u{fe0f}", &format!("/恢复 {}", item.short_id())),
+    };
+    format!("{} **{}** — {}{}", checkbox, item.title, label, priority)
 }
 
-/// 待办原生按钮键盘：每个活跃待办一个大按钮，点一下自动发出 /完成（一跳）。
-/// 取代之前的 `<qqbot-cmd-input show="☐">` 小复选框（太小且要两跳）。
-/// QQ 键盘上限 5 行 × 4 列：≤5 条时每条一行（按钮最大），6~10 条每行两个，
-/// 再多的条目走 `/完成 <待办ID>` 手动指令。
-fn items_markup(items: &[TodoItem]) -> ReplyMarkup {
-    let active: Vec<&TodoItem> = items
-        .iter()
-        .filter(|item| item.status == TodoStatus::Active)
-        .collect();
-    let mut markup = ReplyMarkup::new();
-    if active.len() <= 5 {
-        for item in active {
-            markup.push_row(vec![done_button(item)]);
-        }
-    } else {
-        for pair in active.chunks(2).take(5) {
-            markup.push_row(pair.iter().map(|item| done_button(item)).collect());
-        }
-    }
-    markup
-}
-
-fn done_button(item: &TodoItem) -> MarkupButton {
-    MarkupButton::new(
-        format!("✅ {}", truncate_title(&item.title, 10)),
-        format!("/完成 {}", item.short_id()),
-    )
+/// 待办「完成」复选框：`<qqbot-cmd-input show="⬜️">`，点击后指令填入输入框、
+/// 再点发送即完成（两跳是官方能力的代价：cmd-enter 一跳但不支持自定义显示——
+/// 平台报错 40034108；mqqapi 链接能显示但新版客户端点击无响应）。
+/// 符号选 emoji 态的 ⬜️（U+2B1C+VS16）而不是文本态 ☐（U+2610）：QQ 按表情
+/// 尺寸渲染，视觉上大一圈（2026-11-09 用户反馈 ☐ 太小）。
+fn done_chip(item: &TodoItem) -> String {
+    cmd_input_chip("⬜\u{fe0f}", &format!("/完成 {}", item.short_id()))
 }
 
 fn usage() -> String {
     format!(
-        "## 待办用法\n\n- `/待办`：全部未完成（点底部大按钮一跳完成）\n- `/待办 <{}>`\n- `/记待办 [时间] <内容>`\n- `/完成 <待办ID>`\n- `/推迟 <待办ID> 到 <时间>`\n- `/取消待办 <待办ID>`\n\n## 日程用法\n\n- `/日程 [今天|明天|N天]`：今日起行程\n- `/记日程 <时间> <标题>`：如 `明天14:00-16:00 班会`、`每周二14:00-15:40 体育课`\n- `/取消日程 <日程ID>`",
+        "## 待办用法\n\n- `/待办`：全部未完成（复选框列表，点框后发送即完成）\n- `/待办 <{}>`\n- `/记待办 [时间] <内容>`\n- `/完成 <待办ID>`\n- `/推迟 <待办ID> 到 <时间>`\n- `/取消待办 <待办ID>`\n\n## 日程用法\n\n- `/日程 [今天|明天|N天]`：今日起行程\n- `/记日程 <时间> <标题>`：如 `明天14:00-16:00 班会`、`每周二14:00-15:40 体育课`\n- `/取消日程 <日程ID>`",
         usage_views()
     )
 }
