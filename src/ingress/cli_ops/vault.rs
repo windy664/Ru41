@@ -10,9 +10,11 @@ use std::path::Path;
 
 pub(crate) async fn run(cli: &Cli, command: &VaultCommand) -> OpsOutcome {
     match command {
-        VaultCommand::ScanSecrets { vault, out } => {
-            scan_secrets(cli, vault.as_deref(), out.as_deref())
-        }
+        VaultCommand::ScanSecrets {
+            vault,
+            out,
+            exclude,
+        } => scan_secrets(cli, vault.as_deref(), out.as_deref(), exclude),
         VaultCommand::MigrateSecrets {
             vault,
             apply,
@@ -70,7 +72,12 @@ fn migrate_secrets(cli: &Cli, vault: Option<&Path>, apply: bool, exclude: &[Stri
     }))
 }
 
-fn scan_secrets(cli: &Cli, vault: Option<&Path>, out: Option<&Path>) -> OpsOutcome {
+fn scan_secrets(
+    cli: &Cli,
+    vault: Option<&Path>,
+    out: Option<&Path>,
+    exclude: &[String],
+) -> OpsOutcome {
     let root = match vault {
         Some(path) => path.to_path_buf(),
         None => match default_vault_path(cli) {
@@ -78,7 +85,7 @@ fn scan_secrets(cli: &Cli, vault: Option<&Path>, out: Option<&Path>) -> OpsOutco
             Err(error) => return OpsOutcome::failure(error.to_string()),
         },
     };
-    let report = match scan::scan_vault(&root) {
+    let report = match scan::scan_vault(&root, exclude) {
         Ok(report) => report,
         Err(error) => return OpsOutcome::failure(format!("扫描 {}: {error}", root.display())),
     };

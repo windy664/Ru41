@@ -26,8 +26,10 @@ pub struct PlannedSecret {
     pub line: usize,
     /// 命中规则名。
     pub rule: &'static str,
-    /// 派生出的凭据名。
-    pub name: String,
+    /// 凭据唯一标识（`cred_xxxxxxxxxxxx`）——引用与寻址都用它。
+    pub id: String,
+    /// 描述性标签（给人看，不参与寻址）。
+    pub label: String,
     /// 明文原值：只用于写入凭据库。
     value: String,
     /// 原值在文件中的字节区间（start..end）；含包裹的引号。
@@ -47,7 +49,10 @@ pub struct PlanEntry {
     pub path: String,
     pub line: usize,
     pub rule: String,
-    pub name: String,
+    /// 凭据唯一标识。
+    pub id: String,
+    /// 描述性标签（给人认）。
+    pub label: String,
 }
 
 /// 迁移结果。
@@ -156,16 +161,20 @@ pub fn apply(
         std::collections::HashMap::new();
     for secret in scan(root, excludes)? {
         let revision = store
-            .document(CREDENTIAL_KIND, &secret.name)?
+            .document(CREDENTIAL_KIND, &secret.id)?
             .map(|doc| doc.revision);
         let written = store.put_document(
             CREDENTIAL_KIND,
-            &secret.name,
+            &secret.id,
             revision,
-            &serde_json::json!({"value": secret.value, "updated_at": now}),
+            &serde_json::json!({
+                "value": secret.value,
+                "label": secret.label,
+                "updated_at": now,
+            }),
         )?;
         if !written {
-            bail!("凭据写入冲突：{}", secret.name);
+            bail!("凭据写入冲突：{}", secret.id);
         }
         credentials += 1;
         files.push(secret.path.clone());
@@ -189,7 +198,8 @@ impl From<PlannedSecret> for PlanEntry {
             path: secret.path,
             line: secret.line,
             rule: secret.rule.to_owned(),
-            name: secret.name,
+            id: secret.id,
+            label: secret.label,
         }
     }
 }
@@ -200,7 +210,6 @@ fn scan(root: &Path, excludes: &[String]) -> Result<Vec<PlannedSecret>> {
     collect_text_files(root, &mut files)?;
     files.sort();
     let mut out = Vec::new();
-    let mut used_names: Vec<String> = Vec::new();
     for path in files {
         let Ok(text) = std::fs::read_to_string(&path) else {
             continue;
@@ -268,13 +277,19 @@ fn scan(root: &Path, excludes: &[String]) -> Result<Vec<PlannedSecret>> {
                         end += after.len_utf8();
                     }
                     let span = (start, end);
-                    let name = derive_name(line, &value, key.as_deref(), &stem, &used_names);
-                    used_names.push(name.clone());
+                    // 上下文取前一行（表格里的「用户 root」就在上一行）。
+                    let context = text
+                        .lines()
+                        .nth(idx.saturating_sub(1))
+                        .unwrap_or("")
+                        .to_owned();
+                    let label = derive_label(line, &value, key.as_deref(), &context, &stem);
                     out.push(PlannedSecret {
                         path: rel.clone(),
                         line: idx + 1,
                         rule: extract.rule,
-                        name,
+                        id: crate::domain::credential::new_id(),
+                        label,
                         value,
                         span,
                         value_span,
@@ -326,11 +341,55 @@ fn rewrite_file(root: &Path, rel: &str, secrets: &[PlannedSecret]) -> Result<()>
         }
         text.replace_range(
             secret.span.0..secret.span.1,
-            &format!("凭据「{}」", secret.name),
+            &format!("凭据「{}」", secret.id),
         );
     }
     std::fs::write(&path, text).with_context(|| format!("写 {}", path.display()))?;
     Ok(())
+}
+
+/// 从上下文行里找主体（这条凭据属于谁）：
+/// 表格行 `| 用户 | root |` → root；列表行 `- 用户名：`windy`` → windy。
+fn subject_from_context(context: &str) -> Option<String> {
+    for line in context.lines().rev().take(3) {
+        // 表格：| 用户 | root |
+        if line.contains('|') {
+            let cells: Vec<&str> = line.split('|').map(str::trim).collect();
+            let mut iter = cells.iter().filter(|cell| !cell.is_empty());
+            if let (Some(label), Some(value)) = (iter.next(), iter.next())
+                && is_subject_label(label)
+            {
+                let cleaned = value.trim_matches(['`', '"', '\'']).trim();
+                if !cleaned.is_empty() && cleaned.chars().count() <= 24 {
+                    return Some(cleaned.to_owned());
+                }
+            }
+        }
+        // 列表：- 用户名：`windy`
+        if (line.contains("用户名") || line.contains("账号") || line.contains("用户"))
+            && let Some((_, rest)) = line.split_once(['：', ':', '='])
+        {
+            let cleaned = rest.trim().trim_matches(['`', '"', '\'']).trim();
+            if !cleaned.is_empty() && cleaned.chars().count() <= 24 {
+                return Some(cleaned.to_owned());
+            }
+        }
+    }
+    None
+}
+
+/// 「用户/账号/用户名」这类主体标签。
+fn is_subject_label(label: &str) -> bool {
+    const SUBJECTS: &[&str] = &[
+        "用户",
+        "账号",
+        "帐号",
+        "用户名",
+        "user",
+        "username",
+        "account",
+    ];
+    SUBJECTS.iter().any(|s| label.eq_ignore_ascii_case(s))
 }
 
 /// 是否是「密码/口令/token」这类无信息量的关键词。
@@ -345,7 +404,7 @@ fn is_generic_label(label: &str) -> bool {
 
 /// 从上下文派生凭据名：行内 `**标签**` 优先，其次键名（mySQLPassword、
 /// server_token），再次关键词前文；泛化名（密码/token）加文件主名前缀。
-fn derive_name(line: &str, value: &str, key: Option<&str>, stem: &str, used: &[String]) -> String {
+fn derive_label(line: &str, value: &str, key: Option<&str>, context: &str, stem: &str) -> String {
     let mut label = String::new();
     // 行内第一个粗体标签：「- **上传作业**：…」→「上传作业」。
     if let Some(start) = line.find("**")
@@ -365,12 +424,22 @@ fn derive_name(line: &str, value: &str, key: Option<&str>, stem: &str, used: &[S
             && line.contains('|')
         {
             // 依次看值左侧的各个单元格，取第一个有内容的（跳过空单元格与引号）。
+            let mut column = String::new();
             for cell in line[..pos].rsplit('|') {
                 let cleaned = cell.trim().trim_matches(['`', '"', '\'']).trim();
                 if !cleaned.is_empty() && cleaned.chars().count() <= 12 {
-                    label = cleaned.to_owned();
+                    column = cleaned.to_owned();
                     break;
                 }
+            }
+            // 列名太泛（密码）时用上下文主体区分：root-密码。
+            if is_generic_label(&column) {
+                label = match subject_from_context(context) {
+                    Some(subject) => format!("{subject}-{column}"),
+                    None => column,
+                };
+            } else {
+                label = column;
             }
         }
     }
@@ -413,7 +482,9 @@ fn derive_name(line: &str, value: &str, key: Option<&str>, stem: &str, used: &[S
             .iter()
             .any(|generic| label.eq_ignore_ascii_case(generic))
     {
-        label = format!("{stem}-{label}");
+        // 泛用名（密码/token）优先用上下文主体区分，其次才退到文件主名。
+        let prefix = subject_from_context(context).unwrap_or_else(|| stem.to_owned());
+        label = format!("{prefix}-{label}");
     }
     let mut name: String = label
         .chars()
@@ -425,14 +496,7 @@ fn derive_name(line: &str, value: &str, key: Option<&str>, stem: &str, used: &[S
     if name.is_empty() {
         name = "凭据".to_owned();
     }
-    // 同名去重：加序号。
-    let mut candidate = name.clone();
-    let mut index = 2;
-    while used.iter().any(|other| other == &candidate) {
-        candidate = format!("{name}-{index}");
-        index += 1;
-    }
-    candidate
+    name
 }
 
 fn collect_text_files(dir: &Path, out: &mut Vec<PathBuf>) -> Result<()> {
@@ -463,42 +527,42 @@ mod tests {
     #[test]
     fn derives_label_from_bold_key_and_dedupes() {
         assert_eq!(
-            derive_name(
+            derive_label(
                 "- **上传作业**：`ftp://172.16.3.242`（用户名和密码都是 upload_80894）",
                 "upload_80894",
                 None,
-                "note",
-                &[]
+                "",
+                "note"
             ),
             "上传作业"
         );
         // 键值形态用键名。
         assert_eq!(
-            derive_name(
+            derive_label(
                 "mySQLPassword: hunter2secret",
                 "hunter2secret",
                 Some("mySQLPassword"),
-                "README",
-                &[]
+                "",
+                "README"
             ),
             "mySQLPassword"
         );
         // 泛化名补文件主名。
         assert_eq!(
-            derive_name(
+            derive_label(
                 "- 密码：`windy123`",
                 "windy123",
                 None,
-                "AI渗透测试Agent使用指南",
-                &[]
+                "- 用户名：`windy`",
+                "AI渗透测试Agent使用指南"
             ),
-            "AI渗透测试Agent使用指南-密码"
+            // 上下文主体优先：这条密码属于 windy。
+            "windy-密码"
         );
-        // 同名第二个加序号。
-        let used = vec!["ftp".to_owned()];
+        // 标签允许重复——寻址靠唯一标识，标签只是给人看。
         assert_eq!(
-            derive_name("ftp 密码是 abc123", "abc123", None, "note", &used),
-            "ftp-2"
+            derive_label("ftp 密码是 abc123", "abc123", None, "", "note"),
+            "ftp"
         );
     }
 
@@ -519,8 +583,8 @@ mod tests {
         let text = std::fs::read_to_string(vault.join("a.md")).unwrap();
         assert!(!text.contains("aaa1111"), "{text}");
         assert!(!text.contains("bbb2222"), "{text}");
-        assert!(text.contains("凭据「A」"), "{text}");
-        assert!(text.contains("凭据「B」"), "{text}");
+        assert!(text.contains("凭据「cred_"), "{text}");
+        assert_eq!(text.matches("凭据「cred_").count(), 2, "{text}");
     }
 
     #[test]
@@ -540,7 +604,7 @@ mod tests {
         let text = std::fs::read_to_string(vault.join("a.md")).unwrap();
         assert!(!text.contains("upload_80894"), "{text}");
         // 引号一起吃掉，不留 `凭据「x」` 的嵌套。
-        assert!(text.contains("凭据「上传作业」"), "{text}");
+        assert!(text.contains("凭据「cred_"), "{text}");
         assert!(!text.contains("`凭据"), "{text}");
     }
 
@@ -558,13 +622,35 @@ mod tests {
         let plan = plan(&vault, &[]).unwrap();
         assert_eq!(plan.entries.len(), 1, "{plan:?}");
         assert_eq!(plan.entries[0].rule, "表格口令");
-        assert_eq!(plan.entries[0].name, "a-密码");
+        assert_eq!(plan.entries[0].label, "a-密码");
         let store = SqliteTaskStore::open(&dir.path().join("state.db")).unwrap();
         let applied = apply(&vault, &store, 0, &[]).unwrap();
         assert_eq!(applied.credentials, 1);
         let text = std::fs::read_to_string(vault.join("a.md")).unwrap();
         assert!(!text.contains("LZWQ2XFUiYBP"), "{text}");
-        assert!(text.contains("凭据「a-密码」"), "{text}");
+        assert!(text.contains("凭据「cred_"), "{text}");
+    }
+
+    #[test]
+    fn table_secret_uses_subject_from_previous_row() {
+        // 运维笔记：| 用户 | root | 下面跟 | 密码 | `xxx` | → root-密码
+        let label = derive_label(
+            "| 密码 | `LZWQ2XFUiYBP` |",
+            "LZWQ2XFUiYBP",
+            None,
+            "| 用户 | root |",
+            "服务器部署信息",
+        );
+        assert_eq!(label, "root-密码");
+        // 列表行自带具体词：`- Redis 密码：`xxx`` → Redis
+        let redis = derive_label(
+            "- Redis 密码：`redis_xZR4FC`",
+            "redis_xZR4FC",
+            None,
+            "",
+            "服务器部署信息",
+        );
+        assert_eq!(redis, "Redis");
     }
 
     #[test]
@@ -588,7 +674,8 @@ mod tests {
         .unwrap();
         let plan = plan(&vault, &[]).unwrap();
         assert_eq!(plan.entries.len(), 1, "{plan:?}");
-        assert_eq!(plan.entries[0].name, "上传作业");
+        assert_eq!(plan.entries[0].label, "上传作业");
+        assert!(plan.entries[0].id.starts_with("cred_"), "{plan:?}");
     }
 
     #[test]
