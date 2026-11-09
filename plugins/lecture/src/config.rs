@@ -40,6 +40,8 @@ pub struct LectureSection {
     pub inbox_dir: Option<String>,
     /// 未匹配到当天课时，转写归入的课程名，默认 课堂录音。
     pub fallback_course: Option<String>,
+    /// 原始录音保留天数（转写完成后不立刻删，过期再清）。默认 7 天，0 = 立刻删。
+    pub retain_audio_days: Option<u64>,
 }
 
 impl LectureSection {
@@ -48,6 +50,8 @@ impl LectureSection {
     pub const DEFAULT_ASR_BASE_URL: &str = "https://open.bigmodel.cn/api/paas/v4";
     pub const DEFAULT_ASR_MODEL: &str = "glm-asr-2512";
     pub const DEFAULT_SLICE_SECS: u64 = 600;
+    /// 原始录音默认保留 7 天（转写产出后不立刻删，转写有疑问还能重跑 ASR）。
+    pub const DEFAULT_RETAIN_AUDIO_DAYS: u64 = 7;
     pub const DEFAULT_WORKSPACE: &str = "/data/lecture";
     pub const DEFAULT_VAULT_DIR: &str = "01-Courses-课程";
     pub const DEFAULT_VAULT_ROOT: &str = "/vault";
@@ -157,6 +161,9 @@ impl LectureSection {
                 .clone()
                 .filter(|v| !v.trim().is_empty())
                 .unwrap_or_else(|| Self::DEFAULT_INBOX_DIR.into()),
+            retain_audio_days: self
+                .retain_audio_days
+                .unwrap_or(Self::DEFAULT_RETAIN_AUDIO_DAYS),
             backend: self
                 .backend
                 .clone()
@@ -181,4 +188,7 @@ pub struct LectureConfig {
     pub fallback_course: String,
     /// 整理笔记用的 agent 底座（codex / pi）。
     pub backend: String,
+    /// 原始录音保留天数：切片立刻删（它是磁盘大头），原始音频留一段时间，
+    /// 这样转写有疑问还能重新跑 ASR。0 表示转写完立刻删原始音频。
+    pub retain_audio_days: u64,
 }

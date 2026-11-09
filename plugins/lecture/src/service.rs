@@ -52,6 +52,7 @@ impl LectureWorker {
 
     /// 单轮：取最旧一条未完成项处理。run_periodic 串行等待，天然不并发。
     pub async fn poll_once(&self) -> Result<serde_json::Value> {
+        let now = ru41::util::now();
         let docs = self.store.documents(PENDING_KIND, 50)?;
         let doc = docs
             .iter()
@@ -75,12 +76,16 @@ impl LectureWorker {
                     v.course = Some(course.clone());
                     v.error = None;
                 })?;
-                // 入队成功后立即清理：转写已在 prompt 里，音频素材已无用。
-                // 一节课的原始文件+切片几十 MB，不清理一学期吃十几个 GB。
+                // 转写持久化进记录：工作区会被清理，转写不能只活在磁盘上——
+                // 丢了就再也补不回来（2026-11-09 丢过一节网络空间安全导论的转写，
+                // 连原始录音一起没了，笔记只能写「待补」）。
+                self.update(&doc.revision, &item, |v| {
+                    v.transcript = Some(transcript.text.clone());
+                })?;
+                // 清理只删磁盘大头：切片立刻删（每片几十 MB），原始音频按保留期留，
+                // 转写文本留着。整目录删掉会让重跑变成不可能。
                 let work = self.config.workspace.join(&item.msg_id);
-                if let Err(error) = std::fs::remove_dir_all(&work) {
-                    eprintln!("[lecture] 清理工作目录失败（不影响流程）：{error:#}");
-                }
+                self.cleanup_workspace(&work, &item, now);
                 Ok(serde_json::json!({
                     "processed": item.msg_id,
                     "course": course,
@@ -153,6 +158,28 @@ impl LectureWorker {
             text: joined,
             path: transcript_path,
         })
+    }
+
+    /// 工作区清理：删切片（磁盘大头），原始音频过保留期再删；转写文本保留。
+    pub fn cleanup_workspace(&self, work: &std::path::Path, item: &PendingItem, now: i64) {
+        // 切片：每片一段 mp3，几十 MB 起步，立刻删。
+        let slices = work.join("slices");
+        if let Err(error) = std::fs::remove_dir_all(&slices)
+            && error.kind() != std::io::ErrorKind::NotFound
+        {
+            eprintln!("[lecture] 清理切片失败（不影响流程）：{error:#}");
+        }
+        // 原始音频：按保留期留，过期再删（转写有疑问还能重跑 ASR）。
+        let retain_days = self.config.retain_audio_days;
+        let age_days = (now - item.received_at).max(0) / 86_400;
+        if retain_days == 0 || age_days >= retain_days as i64 {
+            let raw = work.join("raw");
+            if let Err(error) = std::fs::remove_dir_all(&raw)
+                && error.kind() != std::io::ErrorKind::NotFound
+            {
+                eprintln!("[lecture] 清理原始录音失败（不影响流程）：{error:#}");
+            }
+        }
     }
 
     /// 原始文件切片；已有切片则跳过（中断续跑不重复转码）。

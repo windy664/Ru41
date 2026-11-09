@@ -60,6 +60,7 @@ impl LectureHandler {
             status: "pending".into(),
             error: None,
             course: None,
+            transcript: None,
         };
         // put_document(None) insert-or-ignore：同 msg_id 重复投递不覆盖（幂等）。
         store.put_document(PENDING_KIND, &msg_id, None, &serde_json::to_value(&item)?)?;
