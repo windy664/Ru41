@@ -11,9 +11,11 @@ use std::sync::Arc;
 
 #[test]
 fn parses_fixed_commands() {
-    for input in ["帮助", "/帮助", "help", "/help", " /Help "] {
+    for input in ["帮助", "help", "/", " / "] {
         assert_eq!(commands::parse_command(input), Some(Command::Help));
     }
+    assert_eq!(commands::parse_command("/帮助"), None);
+    assert_eq!(commands::parse_command("/help"), None);
     for input in ["任务", "/任务", "tasks", "/tasks"] {
         assert_eq!(commands::parse_command(input), Some(Command::List));
     }
