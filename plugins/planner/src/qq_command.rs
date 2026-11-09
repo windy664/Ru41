@@ -546,19 +546,28 @@ fn format_items(title: &str, items: &[TodoItem], now: i64, options: TodoOptions)
 }
 
 fn format_item(item: &TodoItem, now: i64, options: TodoOptions) -> String {
-    let label = due_label(item.due_at, now, options, item.status == TodoStatus::Active);
     let priority = match item.priority {
         TodoPriority::High => "，高优先级",
         TodoPriority::Low => "，低优先级",
         TodoPriority::Normal => "",
     };
-    // 行首大复选框：活跃条目是「完成」（⬜️），已结束条目是「恢复」（☑️）。
+    // 行首大复选框：活跃条目是「完成」（囗），已结束条目是「恢复」（☑️）。
     // 复选框本身就是行标记，不再加列表符号；id 嵌在框的指令里，不在正文展示。
     let checkbox = match item.status {
         TodoStatus::Active => done_chip(item),
         _ => cmd_input_chip("☑\u{fe0f}", &format!("/恢复 {}", item.short_id())),
     };
-    format!("{} **{}** — {}{}", checkbox, item.title, label, priority)
+    // 未排期（无截止时间）不显示时间尾巴——「未排期」三个字没有信息量。
+    let due = if item.due_at.is_some() {
+        format!(
+            " — {}",
+            due_label(item.due_at, now, options, item.status == TodoStatus::Active)
+        )
+    } else {
+        String::new()
+    };
+    // 复选框后空一个全角空格：半角空格在 QQ 渲染里几乎看不见。
+    format!("{checkbox}　**{}**{due}{priority}", item.title)
 }
 
 /// 待办「完成」复选框：`<qqbot-cmd-input show="囗">`，点击后指令填入输入框、
