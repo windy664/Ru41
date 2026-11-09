@@ -272,6 +272,36 @@ fn pick_full_report(candidates: &[String], summary: &str) -> Option<String> {
     looks_like_report.then(|| best.trim().to_owned())
 }
 
+/// 契约 JSON 只是信封：挖掉它以后，把包它的 Markdown 代码围栏与前置分隔线也去掉。
+/// 不能只 trim 末尾的 ```——那会把开头的 ```json 留成用户可见的尾巴。
+fn clean_contract_prose(text: &str) -> String {
+    fn is_fence(line: &str) -> bool {
+        line.trim().strip_prefix("```").is_some_and(|lang| {
+            lang.chars()
+                .all(|c| c.is_ascii_alphanumeric() || matches!(c, '-' | '_'))
+        })
+    }
+    let mut lines: Vec<&str> = text.trim().lines().collect();
+    while lines.first().is_some_and(|line| is_fence(line)) {
+        lines.remove(0);
+    }
+    // 围栏之间往往隔着空行，所以空行、围栏、分隔线要交替清理到稳定为止。
+    loop {
+        while lines.last().is_some_and(|line| line.trim().is_empty()) {
+            lines.pop();
+        }
+        if lines
+            .last()
+            .is_some_and(|line| is_fence(line) || line.trim() == "---")
+        {
+            lines.pop();
+            continue;
+        }
+        break;
+    }
+    lines.join("\n").trim().to_owned()
+}
+
 fn parse_agent_result(text: &str) -> Result<AgentResult> {
     let trimmed = text.trim();
     // 模型常在散文后面附一段契约 JSON（课堂笔记实测：先写要点，末尾再补
@@ -281,12 +311,7 @@ fn parse_agent_result(text: &str) -> Result<AgentResult> {
             .map(|value| parse_media_list(value.get("media")))
             .unwrap_or_default();
         // JSON 之外还有正经正文就交正文（那段才是给用户看的），JSON 只是信封。
-        let prose = trimmed.replace(contract, "").trim().to_owned();
-        let prose = prose
-            .trim_start_matches("```")
-            .trim_end_matches("```")
-            .trim()
-            .to_owned();
+        let prose = clean_contract_prose(&trimmed.replace(contract, ""));
         let summary = if prose.chars().count() >= 20 {
             prose
         } else {
@@ -316,12 +341,7 @@ fn parse_agent_result(text: &str) -> Result<AgentResult> {
     if let Ok(value) = serde_json::from_str::<Value>(candidate)
         && value.is_object()
     {
-        let prose = trimmed.replace(candidate, "").trim().to_owned();
-        let prose = prose
-            .trim_start_matches("```")
-            .trim_end_matches("```")
-            .trim()
-            .to_owned();
+        let prose = clean_contract_prose(&trimmed.replace(candidate, ""));
         if prose.chars().count() >= 20 {
             let result = AgentResult {
                 summary: prose,
@@ -1229,5 +1249,14 @@ mod tests {
             "{}",
             result.summary
         );
+        assert!(!result.summary.contains("```"), "{}", result.summary);
+    }
+
+    /// 带代码围栏的正文 + 契约 JSON：围栏与前置分隔线都只是信封，不能漏给用户。
+    #[test]
+    fn strips_contract_code_fences_from_prose() {
+        let raw = "今天 18:20 下课，最后一节是「五史」教育。\n\n---\n\n```json\n{\"summary\":\"18:20 下课\"}\n```";
+        let result = parse_agent_result(raw).unwrap();
+        assert_eq!(result.summary, "今天 18:20 下课，最后一节是「五史」教育。");
     }
 }
