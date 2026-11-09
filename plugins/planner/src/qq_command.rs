@@ -105,7 +105,7 @@ impl SimpleCommand for TodoQqCommand {
                     ensure!(!arg.is_empty(), "用法：`/取消日程 <日程ID>`");
                     let item = self.event_service(ctx.store).cancel(arg, now)?;
                     Reply::text(format!(
-                        "## 已取消日程\n\n- **{}**\n- **ID**：`{}`",
+                        "已取消日程\n\n- **{}**\n- **ID**：`{}`",
                         item.title,
                         item.short_id()
                     ))
@@ -121,7 +121,7 @@ impl SimpleCommand for TodoQqCommand {
                         .filter(|todo| todo.status == TodoStatus::Active)
                         .collect();
                     Reply::text(format!(
-                        "## ✅ 已完成：{}\n\n{}",
+                        "✅ 已完成：{}\n\n{}",
                         truncate_title(&item.title, 14),
                         format_items("待办", &remaining, now, self.options)
                     ))
@@ -131,7 +131,7 @@ impl SimpleCommand for TodoQqCommand {
                         .ok_or_else(|| anyhow::anyhow!("用法：`/推迟 <待办ID> 到 <时间>`"))?;
                     let item = service.postpone(selector, until, now)?;
                     Reply::text(format!(
-                        "## 已推迟待办\n\n- **{}**\n- **新截止时间**：{}\n- **ID**：`{}`",
+                        "已推迟待办\n\n- **{}**\n- **新截止时间**：{}\n- **ID**：`{}`",
                         item.title,
                         due_label(item.due_at, now, self.options, true),
                         item.short_id()
@@ -141,7 +141,7 @@ impl SimpleCommand for TodoQqCommand {
                     ensure!(!arg.is_empty(), "用法：`/取消待办 <待办ID>`");
                     let item = service.cancel(arg, now)?;
                     Reply::text(format!(
-                        "## 已取消待办\n\n- **{}**\n- **ID**：`{}`",
+                        "已取消待办\n\n- **{}**\n- **ID**：`{}`",
                         item.title,
                         item.short_id()
                     ))
@@ -150,7 +150,7 @@ impl SimpleCommand for TodoQqCommand {
                     ensure!(!arg.is_empty(), "用法：`/恢复待办 <待办ID>`");
                     let item = service.restore(arg, now)?;
                     Reply::text(format!(
-                        "## 已恢复待办\n\n- **{}**\n- **ID**：`{}`",
+                        "已恢复待办\n\n- **{}**\n- **ID**：`{}`",
                         item.title,
                         item.short_id()
                     ))
@@ -222,7 +222,7 @@ impl TodoQqCommand {
             .filter(|todo| todo.status == TodoStatus::Active)
             .collect();
         Ok(Reply::text(format!(
-            "## ✅ 已记入：{}\n\n{}",
+            "✅ 已记入：{}\n\n{}",
             truncate_title(&item.title, 14),
             format_items("待办", &items, now, self.options)
         )))
@@ -235,10 +235,7 @@ impl TodoQqCommand {
             return Ok(Reply::text(format_items("待办", &items, now, self.options)));
         }
         let Some(view) = parse_view(arg) else {
-            return Ok(Reply::text(format!(
-                "## 待办视图不存在\n\n{}",
-                usage_views()
-            )));
+            return Ok(Reply::text(format!("待办视图不存在\n\n{}", usage_views())));
         };
         let items = service.list(view, now, 50)?;
         let title = match view {
@@ -279,7 +276,7 @@ impl TodoQqCommand {
             now,
         )?;
         Ok(Reply::text(format!(
-            "## 已添加日程\n\n- **{}**\n- **时间**：{} — {}\n- **ID**：`{}`\n- 查看：`/日程`",
+            "已添加日程\n\n- **{}**\n- **时间**：{} — {}\n- **ID**：`{}`\n- 查看：`/日程`",
             item.title,
             event_time_label(
                 item.starts_at,
@@ -302,7 +299,7 @@ impl TodoQqCommand {
         let days = parse_event_view(arg).unwrap_or(7);
         let occurrences = service.upcoming(now, days, 50)?;
         let mut lines = vec![format!(
-            "## 日程（未来 {} 天，行程 {} 项）",
+            "日程（未来 {} 天，行程 {} 项）",
             days,
             occurrences.len()
         )];
@@ -538,7 +535,7 @@ fn format_items(title: &str, items: &[TodoItem], now: i64, options: TodoOptions)
         .iter()
         .filter(|item| item.status == TodoStatus::Active)
         .collect();
-    let mut lines = vec![format!("## {title}（{}）", active.len())];
+    let mut lines = vec![format!("{title}（{}）", active.len())];
     if active.is_empty() {
         lines.push("\n> 暂无".to_owned());
     } else {
@@ -564,10 +561,10 @@ fn format_items(title: &str, items: &[TodoItem], now: i64, options: TodoOptions)
 
 /// 已完成条目：粗勾 + 标题划横线。
 ///
-/// 候选符号（想换回只改这一处）：`☑`（2026-11-09 用户选定，粗勾更像复选框）、
-/// `🗹`（前一版）、`✅`。已完成态不再可点，所以不用 cmd-input 标签。
+/// 候选符号（想换回只改这一处）：`☑`（2026-11-09 用户选定）、`🗹`（前一版）、`✅`。
+/// 整个待办列表不用加粗（用户要求），已完成态也不再可点，所以不用 cmd-input 标签。
 fn format_completed(item: &TodoItem) -> String {
-    format!("**☑** ~~{}~~", item.title)
+    format!("☑ ~~{}~~", item.title)
 }
 
 /// 近 7 天的已完成：完成时间在窗口内，或创建时间在窗口内（近七天创建的待办也留着）。
@@ -698,14 +695,15 @@ mod tests {
         done.created_at = now - 7200;
         let text = format_items("待办", &[active.clone(), done], now, options);
         // 未完成在前，计数只算未完成。
-        assert!(text.contains("## 待办（1）"), "{text}");
-        // 复选框后没有空格。
+        assert!(text.contains("待办（1）"), "{text}");
+        // 复选框后没有空格；条目标题加粗，栏目标题不加粗。
         assert!(text.contains("**板子焊接**"), "{text}");
-        assert!(!text.contains("　**板子焊接**"), "{text}");
+        assert!(text.starts_with("待办（1）"), "{text}");
+        assert!(!text.contains("## "), "{text}");
         // 底部完成项：粗勾 + 划横线，不带「已完成」标题，也不留空行。
         assert!(!text.contains("已完成"), "{text}");
-        assert!(text.contains("**☑** ~~写周报~~"), "{text}");
-        assert!(!text.contains("\n\n**☑**"), "{text}");
+        assert!(text.contains("☑ ~~写周报~~"), "{text}");
+        assert!(!text.contains("\n\n☑"), "{text}");
         active.completed_at = None;
     }
 
