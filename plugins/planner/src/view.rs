@@ -116,10 +116,11 @@ pub(super) fn format_item(item: &TodoItem, now: i64, options: TodoOptions) -> St
 /// 待办「完成」复选框：`<qqbot-cmd-input show="囗">`，点击后指令填入输入框、
 /// 再点发送即完成（两跳是官方能力的代价：cmd-enter 一跳但不支持自定义显示——
 /// 平台报错 40034108；mqqapi 链接能显示但新版客户端点击无响应）。
-/// 符号选型（2026-11-09）：☐（U+2610）文本态太小、⬜️（U+2B1C）是无边框白块；
-/// 囗（U+56D7，CJK 表意文字）按汉字全角尺寸渲染——大、有边框、空心，像复选框。
+/// 符号选型（2026-11-09）：条目内容本身是三级标题（自带大字），复选框不必再撑大——
+/// 普通复选框 ☐ 反而是经典清单的样子（此前用囗 U+56D7 是因为整行都是普通文字时
+/// 复选框显得太小；⬜️ U+1B1C 是无边框白块，都不如 ☐ 干净）。
 pub(super) fn done_chip(item: &TodoItem) -> String {
-    cmd_input_chip("囗", &format!("/完成 {}", item.short_id()))
+    cmd_input_chip("☐", &format!("/完成 {}", item.short_id()))
 }
 
 pub(super) fn usage() -> String {
@@ -144,9 +145,9 @@ mod tests {
     #[test]
     fn cmd_input_chip_encodes_show_and_text() {
         assert_eq!(
-            cmd_input_chip("囗", "/完成 abc123"),
+            cmd_input_chip("☐", "/完成 abc123"),
             "<qqbot-cmd-input text=\"%2F%E5%AE%8C%E6%88%90%20abc123\" \
-             show=\"%E5%9B%97\" reference=\"false\" />"
+             show=\"%E2%98%90\" reference=\"false\" />"
         );
     }
 
