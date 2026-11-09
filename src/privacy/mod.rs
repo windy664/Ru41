@@ -6,6 +6,29 @@ use std::{collections::HashMap, sync::Arc};
 pub mod migrate;
 pub mod scan;
 
+/// 占位符/掩码值：`********`、`your_password`、`TODO`、整串同字符等。
+/// 这类不是真凭据——扫描不报警、迁移也不搬（真密码进了库等于白脱敏）。
+pub fn is_placeholder(value: &str) -> bool {
+    // 整值匹配：这些词本身就是占位符。
+    const EXACT: &[&str] = &[
+        "todo",
+        "changeme",
+        "example",
+        "placeholder",
+        "your_password",
+        "yourpassword",
+    ];
+    // 前缀匹配：your_xxx、xxxx…（不能是「包含」——AKIA…EXAMPLE 是示例密钥，不是占位符）。
+    const PREFIX: &[&str] = &["your_", "yourpassword", "xxxx", "***"];
+    let lower = value.to_lowercase();
+    if EXACT.contains(&lower.as_str()) || PREFIX.iter().any(|p| lower.starts_with(p)) {
+        return true;
+    }
+    // 整串同一个字符（********、-------）才是掩码；密码里出现三个连字符不算。
+    let chars: Vec<char> = value.chars().collect();
+    chars.len() >= 3 && chars.iter().all(|c| *c == chars[0])
+}
+
 /// 一条脱敏映射：假值 → 真值。只存本地，绝不发给 Agent。
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct MappingEntry {

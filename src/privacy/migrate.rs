@@ -6,6 +6,7 @@
 //! 迁移后笔记里留的是「凭据「名字」」引用：知识库照常可检索，agent 需要真值时
 //! 经 `ru41 secret get <名字>` 自取（真值不进模型上下文）。
 
+use crate::privacy::is_placeholder;
 use anyhow::{Context, Result, bail};
 use regex::Regex;
 use serde::Serialize;
@@ -299,27 +300,6 @@ fn scan(root: &Path, excludes: &[String]) -> Result<Vec<PlannedSecret>> {
         }
     }
     Ok(out)
-}
-
-/// 占位符/掩码值不迁移：`********`、`xxxxxx`、`your_password`、`TODO` 之类。
-fn is_placeholder(value: &str) -> bool {
-    const WORDS: &[&str] = &[
-        "your_password",
-        "yourpassword",
-        "changeme",
-        "todo",
-        "example",
-        "placeholder",
-        "xxxx",
-        "***",
-    ];
-    let lower = value.to_lowercase();
-    if WORDS.iter().any(|word| lower.contains(word)) {
-        return true;
-    }
-    // 整串同一个字符（********、-------）才是掩码；密码里出现三个连字符不算。
-    let chars: Vec<char> = value.chars().collect();
-    chars.len() >= 3 && chars.iter().all(|c| *c == chars[0])
 }
 
 /// 把一个文件里的明文按倒序替换成 `凭据「名字」`（一次读写）。
