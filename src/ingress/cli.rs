@@ -130,6 +130,16 @@ pub enum VaultCommand {
         #[arg(long)]
         out: Option<PathBuf>,
     },
+    /// 把 vault 笔记里的明文密码搬进凭据托管库，原地换成「凭据「名字」」引用。
+    /// 缺省只出计划（位置+名字，不含真值）；加 --apply 才真正写入。
+    MigrateSecrets {
+        /// vault 路径；缺省取 [obsidian].vault_path。
+        #[arg(long)]
+        vault: Option<PathBuf>,
+        /// 真执行：写凭据库并改写笔记；缺省只打印迁移计划。
+        #[arg(long, default_value_t = false)]
+        apply: bool,
+    },
 }
 
 #[derive(Subcommand)]
