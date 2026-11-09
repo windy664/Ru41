@@ -139,6 +139,9 @@ pub enum VaultCommand {
         /// 真执行：写凭据库并改写笔记；缺省只打印迁移计划。
         #[arg(long, default_value_t = false)]
         apply: bool,
+        /// 跳过含该子串的路径（可重复）；研究笔记里的泄露样本等用这个排除。
+        #[arg(long = "exclude", value_name = "SUBSTR")]
+        exclude: Vec<String>,
     },
 }
 
