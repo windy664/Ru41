@@ -336,8 +336,13 @@ fn render_todo_markdown(
         }
         out.push_str(&format!("\n## {title}\n"));
         for item in items {
-            let due = due_label(item.due_at, now, options, overdue);
-            out.push_str(&format!("- [ ] {}（{}）`#{}`\n", item.title, due, item.id));
+            // 未排期（无截止时间）不显示「（未排期）」尾巴——没有信息量。
+            if item.due_at.is_some() {
+                let due = due_label(item.due_at, now, options, overdue);
+                out.push_str(&format!("- [ ] {}（{}）`#{}`\n", item.title, due, item.id));
+            } else {
+                out.push_str(&format!("- [ ] {}`#{}`\n", item.title, item.id));
+            }
         }
     }
     if !completed_recent.is_empty() {
