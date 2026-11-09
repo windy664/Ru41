@@ -115,11 +115,8 @@ impl SimpleCommand for TodoQqCommand {
                     let item = service.complete(arg, now)?;
                     // 回执 = 完成确认 + 剩余待办清单：立刻看到划掉一项后的全貌，
                     // 不用再发一次 /待办 确认它还在不在。
-                    let remaining: Vec<TodoItem> = service
-                        .list(TodoView::All, now, 50)?
-                        .into_iter()
-                        .filter(|todo| todo.status == TodoStatus::Active)
-                        .collect();
+                    // 回执给完整清单：未完成 + 近 7 天已完成（划横线）。
+                    let remaining: Vec<TodoItem> = service.list(TodoView::All, now, 50)?;
                     Reply::text(format!(
                         "✅ 已完成：{}\n\n{}",
                         truncate_title(&item.title, 14),
@@ -215,12 +212,8 @@ impl TodoQqCommand {
             },
             now,
         )?;
-        // 回执 = 记入确认 + 当前完整待办清单；ID 与查看指令没有信息量，不展示。
-        let items: Vec<TodoItem> = service
-            .list(TodoView::All, now, 50)?
-            .into_iter()
-            .filter(|todo| todo.status == TodoStatus::Active)
-            .collect();
+        // 回执 = 记入确认 + 完整清单（未完成 + 近 7 天已完成划横线）；ID 不展示。
+        let items: Vec<TodoItem> = service.list(TodoView::All, now, 50)?;
         Ok(Reply::text(format!(
             "✅ 已记入：{}\n\n{}",
             truncate_title(&item.title, 14),
@@ -569,8 +562,10 @@ fn format_completed(item: &TodoItem) -> String {
 
 /// 近 7 天的已完成：完成时间在窗口内，或创建时间在窗口内（近七天创建的待办也留着）。
 fn is_recent_completed(item: &TodoItem, now: i64) -> bool {
+    // 近 7 天的已完成：**按创建日期算**（创建于 7 天内的待办，完成后还留 7 天）。
+    // 只控制显示，不删除任何数据；条目不显示日期。
     const WEEK: i64 = 7 * 86_400;
-    item.completed_at.is_some_and(|at| at >= now - WEEK) || item.created_at >= now - WEEK
+    item.created_at >= now - WEEK
 }
 
 fn format_item(item: &TodoItem, now: i64, options: TodoOptions) -> String {
