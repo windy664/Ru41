@@ -327,6 +327,20 @@ impl SourcesSection {
         }
     }
 
+    /// 合并插件目录配置：表递归合并，标量与数组由后加载的层覆盖。
+    /// 主配置 `[sources]` 先加载，plugins.d/<插件>/config.toml 其后，
+    /// config.local.toml 最后，因此设备本地值永远优先。
+    pub fn merge_module_table(&mut self, overlay: toml::Table) {
+        for (name, value) in overlay {
+            match self.modules.get_mut(&name) {
+                Some(existing) => merge_toml_value(existing, value),
+                None => {
+                    self.modules.insert(name, value);
+                }
+            }
+        }
+    }
+
     /// 非 Result 上下文（如 schedule 清单闭包）用：解析失败记日志并退回 Default
     /// （等价于"未配置"，模块静默缺席）。
     pub fn get_or_default<T: Default + serde::de::DeserializeOwned>(&self, name: &str) -> T {
@@ -344,6 +358,22 @@ impl SourcesSection {
     /// 已出现的配置段名（宿主做未知键告警用；注册表知识在宿主侧）。
     pub fn keys(&self) -> impl Iterator<Item = &str> {
         self.modules.keys().map(String::as_str)
+    }
+}
+
+fn merge_toml_value(base: &mut toml::Value, overlay: toml::Value) {
+    match (base, overlay) {
+        (toml::Value::Table(base), toml::Value::Table(overlay)) => {
+            for (key, value) in overlay {
+                match base.get_mut(&key) {
+                    Some(existing) => merge_toml_value(existing, value),
+                    None => {
+                        base.insert(key, value);
+                    }
+                }
+            }
+        }
+        (base, overlay) => *base = overlay,
     }
 }
 
@@ -377,6 +407,15 @@ impl Config {
         Self::load_from(explicit, &cwd, home.as_deref())
     }
 
+    /// 插件目录配置的默认根：主配置旁边的 plugins.d/。
+    /// 运行时布局是 plugins.d/<插件名>/config.toml（可选 config.local.toml 覆盖）。
+    pub fn default_plugin_config_root(config_path: Option<&Path>, cwd: &Path) -> PathBuf {
+        config_path
+            .and_then(Path::parent)
+            .unwrap_or(cwd)
+            .join("plugins.d")
+    }
+
     pub fn locate(explicit: Option<&Path>) -> Result<ConfigLocation> {
         let cwd = std::env::current_dir().context("cannot resolve current directory")?;
         let home = std::env::var_os("HOME").map(PathBuf::from);
@@ -403,19 +442,75 @@ impl Config {
         cwd: &Path,
         home: Option<&Path>,
     ) -> Result<(Self, Option<PathBuf>)> {
+        let plugin_root = std::env::var_os("RU41_PLUGIN_CONFIG_ROOT").map(PathBuf::from);
+        Self::load_from_with_plugin_root(explicit, cwd, home, plugin_root.as_deref())
+    }
+
+    /// 测试与部署可显式指定插件配置根；None 时取主配置旁边的 plugins.d/。
+    pub fn load_from_with_plugin_root(
+        explicit: Option<&Path>,
+        cwd: &Path,
+        home: Option<&Path>,
+        plugin_root: Option<&Path>,
+    ) -> Result<(Self, Option<PathBuf>)> {
+        let mut config_path = None;
+        let mut config = Self::default();
         for path in candidates(explicit, cwd, home) {
             if path.is_file() {
                 let text = std::fs::read_to_string(&path)
                     .with_context(|| format!("cannot read config file {}", path.display()))?;
-                let config: Config = toml::from_str(&text)
+                config = toml::from_str(&text)
                     .with_context(|| format!("invalid config file {}", path.display()))?;
-                return Ok((config, Some(path)));
+                config_path = Some(path);
+                break;
             }
         }
-        if let Some(path) = explicit {
+        if config_path.is_none()
+            && let Some(path) = explicit
+        {
             anyhow::bail!("config file not found: {}", path.display());
         }
-        Ok((Self::default(), None))
+        let root = plugin_root
+            .map(Path::to_path_buf)
+            .unwrap_or_else(|| Self::default_plugin_config_root(config_path.as_deref(), cwd));
+        config.load_plugin_config_root(&root)?;
+        Ok((config, config_path))
+    }
+
+    /// 合并 plugins.d/<插件名>/{config.toml,config.local.toml}。
+    /// 每个文件顶层直接写配置段名，例如 papers/config.toml 里的 `[arxiv]`。
+    pub fn load_plugin_config_root(&mut self, root: &Path) -> Result<()> {
+        if !root.is_dir() {
+            return Ok(());
+        }
+        let mut plugin_dirs = Vec::new();
+        for entry in std::fs::read_dir(root)
+            .with_context(|| format!("cannot read plugin config root {}", root.display()))?
+        {
+            let path = entry?.path();
+            let name = path.file_name().and_then(|s| s.to_str()).unwrap_or("");
+            if path.is_dir() && !name.starts_with('.') {
+                plugin_dirs.push(path);
+            }
+        }
+        plugin_dirs.sort();
+        for dir in plugin_dirs {
+            for file_name in ["config.toml", "config.local.toml"] {
+                let path = dir.join(file_name);
+                if !path.is_file() {
+                    continue;
+                }
+                let text = std::fs::read_to_string(&path)
+                    .with_context(|| format!("cannot read plugin config {}", path.display()))?;
+                let value: toml::Value = toml::from_str(&text)
+                    .with_context(|| format!("invalid plugin config {}", path.display()))?;
+                let table = value.as_table().cloned().with_context(|| {
+                    format!("plugin config {} must be a TOML table", path.display())
+                })?;
+                self.sources.merge_module_table(table);
+            }
+        }
+        Ok(())
     }
 }
 

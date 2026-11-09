@@ -1,0 +1,11 @@
+# 论文追踪插件配置模板；复制到主配置旁的 plugins.d/papers/config.toml 后修改。
+# 插件目录名是 papers，但历史配置段名是 arxiv，因此顶层必须写 [arxiv]。
+
+[arxiv]
+categories = ["cs.CR", "cs.AI", "cs.CL"]
+keywords = ["prompt injection", "jailbreak", "llm security", "agent"]
+interests = "AI 安全方向本科生，关注 LLM/Agent 安全"
+max_results = 100
+interval_secs = 21600
+backend = "pi"
+notify = true
