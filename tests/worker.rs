@@ -174,9 +174,10 @@ async fn invalid_agent_result_is_not_success() {
     let mut w = worker(dir.path(), Duration::ZERO, " ");
     w.store.enqueue("event", "hello").unwrap();
     let (_sender, receiver) = watch::channel(false);
+    // 输出不合契约是采样问题：判瞬态、退避重排，不在第一次就判死。
     assert_eq!(
         w.run_once(receiver).await.unwrap().unwrap().status,
-        TaskStatus::Failed
+        TaskStatus::RetryScheduled
     );
 }
 #[tokio::test]
@@ -227,53 +228,109 @@ async fn external_cancellation_is_observed_before_saving_result() {
     assert_eq!(report.unwrap().unwrap().status, TaskStatus::Cancelled);
 }
 
-#[tokio::test]
-async fn permanent_failure_skips_retry_budget() {
-    // 非法输出是永久失败：不进 retry_scheduled，直接终态 failed。
-    let dir = tempfile::tempdir().unwrap();
-    let store: Arc<dyn TaskStore> =
-        Arc::new(SqliteTaskStore::open(&dir.path().join("state.db")).unwrap());
-    struct BadOutput;
-    impl AgentBackend for BadOutput {
-        fn descriptor(&self) -> BackendDescriptor {
-            BackendDescriptor {
-                id: "codex".into(),
-                model: None,
-                contracts: vec![RunContract::AnalysisV1],
-                supports_resume: false,
-            }
-        }
-        fn run(
-            &self,
-            _request: AgentRequest,
-        ) -> Pin<Box<dyn Future<Output = anyhow::Result<AgentOutput>> + Send + '_>> {
-            Box::pin(async {
-                Err(ru41::domain::error::Ru41Error::InvalidOutput("not json".into()).into())
-            })
+/// 总是以固定错误失败的底座。
+struct FailingAgent {
+    error: fn() -> anyhow::Error,
+}
+impl AgentBackend for FailingAgent {
+    fn descriptor(&self) -> BackendDescriptor {
+        BackendDescriptor {
+            id: "codex".into(),
+            model: None,
+            contracts: vec![RunContract::AnalysisV1],
+            supports_resume: false,
         }
     }
+    fn run(
+        &self,
+        _request: AgentRequest,
+    ) -> Pin<Box<dyn Future<Output = anyhow::Result<AgentOutput>> + Send + '_>> {
+        Box::pin(async move { Err((self.error)()) })
+    }
+}
+
+/// 装一个总是失败的底座；retry_delay=0 让重排的任务立刻可被再次认领。
+fn failing_worker(
+    dir: &std::path::Path,
+    error: fn() -> anyhow::Error,
+    retry_delay_secs: i64,
+) -> Worker {
     let mut backends = BackendRegistry::default();
-    backends.register(BadOutput).unwrap();
-    let mut worker = Worker {
+    backends.register(FailingAgent { error }).unwrap();
+    Worker {
         silent_sources: Vec::new(),
-        store: store.clone(),
+        store: Arc::new(SqliteTaskStore::open(&dir.join("state.db")).unwrap()),
         backends: Arc::new(backends),
         sanitizer: Arc::new(NoopSanitizer),
         knowledge: None,
         config: WorkerConfig {
             worker_id: "test".into(),
-            runs_dir: dir.path().join("runs"),
+            runs_dir: dir.join("runs"),
             timeout: Duration::from_secs(2),
             lease_secs: 60,
-            retry_delay_secs: 10,
+            retry_delay_secs,
         },
-    };
-    store.enqueue("event", "hello").unwrap();
+    }
+}
+
+#[tokio::test]
+async fn permanent_failure_skips_retry_budget() {
+    // 配置错误重试也不会变：直接终态 failed，不进 retry_scheduled。
+    let dir = tempfile::tempdir().unwrap();
+    let mut worker = failing_worker(
+        dir.path(),
+        || ru41::domain::error::Ru41Error::Config("bad config".into()).into(),
+        10,
+    );
+    worker.store.enqueue("event", "hello").unwrap();
     let (_sender, receiver) = watch::channel(false);
     let report = worker.run_once(receiver).await.unwrap().unwrap();
     assert_eq!(report.status, TaskStatus::Failed);
-    let task = store.get(report.task_id).unwrap().unwrap();
+    let task = worker.store.get(report.task_id).unwrap().unwrap();
     assert_eq!(task.status, TaskStatus::Failed);
+    assert_eq!(task.attempt_count, 1);
+    assert!(
+        task.last_error
+            .as_deref()
+            .unwrap()
+            .contains("invalid configuration")
+    );
+}
+
+#[tokio::test]
+async fn invalid_output_retries_until_budget_exhausted() {
+    // 输出不合契约：先重排重试，预算耗尽才放弃——不是第一次就判死。
+    let dir = tempfile::tempdir().unwrap();
+    let mut worker = failing_worker(
+        dir.path(),
+        || ru41::domain::error::Ru41Error::InvalidOutput("not json".into()).into(),
+        0,
+    );
+    worker.store.enqueue("event", "hello").unwrap();
+    let (_sender, receiver) = watch::channel(false);
+    let mut statuses = Vec::new();
+    let mut task_id = 0;
+    for _ in 0..4 {
+        let Some(report) = worker.run_once(receiver.clone()).await.unwrap() else {
+            break;
+        };
+        task_id = report.task_id;
+        statuses.push(report.status);
+        if report.status == TaskStatus::Failed {
+            break;
+        }
+    }
+    assert_eq!(
+        statuses,
+        vec![
+            TaskStatus::RetryScheduled,
+            TaskStatus::RetryScheduled,
+            TaskStatus::Failed
+        ],
+        "连续不合契约应先重试，耗尽预算才放弃：{statuses:?}"
+    );
+    let task = worker.store.get(task_id).unwrap().unwrap();
+    assert_eq!(task.attempt_count, 3);
     assert!(
         task.last_error
             .as_deref()
