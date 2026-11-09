@@ -49,7 +49,9 @@ pub(super) fn format_items(
         .iter()
         .filter(|item| item.status == TodoStatus::Active)
         .collect();
-    let mut lines = vec![format!("{title}（{}）", active.len())];
+    // 主标题保留 markdown 标题格式（`## 待办（3）`）；下面的完成项不另起栏目。
+    // 栏目标题：标题层级 + 显式加粗（移动端对 ## 的加粗渲染不一定稳，双保险）。
+    let mut lines = vec![format!("## **{title}（{}）**", active.len())];
     if active.is_empty() {
         lines.push("\n> 暂无".to_owned());
     } else {
@@ -78,7 +80,8 @@ pub(super) fn format_items(
 /// 候选符号（想换回只改这一处）：`☑`（2026-11-09 用户选定）、`🗹`（前一版）、`✅`。
 /// 整个待办列表不用加粗（用户要求），已完成态也不再可点，所以不用 cmd-input 标签。
 pub(super) fn format_completed(item: &TodoItem) -> String {
-    format!("☑ ~~{}~~", item.title)
+    // 完成态同样用三级标题 + 划横线。
+    format!("### ☑ ~~{}~~", item.title)
 }
 
 /// 近 7 天的已完成：判定在核心里（domain::todo::is_recent_completed），
@@ -105,7 +108,9 @@ pub(super) fn format_item(item: &TodoItem, now: i64, options: TodoOptions) -> St
     } else {
         String::new()
     };
-    format!("{checkbox}**{}**{due}{priority}", item.title)
+    // 正文用三级标题：QQ markdown 没有字号语法，只有标题层级能放大。
+    // 层级：## 栏目标题 > ### 正文条目。
+    format!("### {checkbox}{}{due}{priority}", item.title)
 }
 
 /// 待办「完成」复选框：`<qqbot-cmd-input show="囗">`，点击后指令填入输入框、
@@ -171,12 +176,16 @@ mod tests {
         done.created_at = now - 7200;
         let text = format_items("待办", &[active, done], now, options);
         assert!(text.contains("待办（1）"), "{text}");
-        assert!(text.contains("**板子焊接**"), "{text}");
-        assert!(text.starts_with("待办（1）"), "{text}");
-        assert!(!text.contains("## "), "{text}");
+        // 正文是三级标题行（行首 ### 后面紧跟复选框标签，再是标题）。
+        let body_line = text.lines().nth(1).unwrap_or_default();
+        assert!(body_line.starts_with("### "), "{text}");
+        assert!(body_line.ends_with("板子焊接"), "{text}");
+        // 主标题是 markdown 标题；完成项不另起栏目。
+        assert!(text.starts_with("## **待办（1）**"), "{text}");
         assert!(!text.contains("已完成"), "{text}");
-        assert!(text.contains("☑ ~~写周报~~"), "{text}");
-        assert!(!text.contains("\n\n☑"), "{text}");
+        assert!(!text.contains("已完成"), "{text}");
+        assert!(text.contains("### ☑ ~~写周报~~"), "{text}");
+        assert!(!text.contains("\n\n### ☑"), "{text}");
     }
 
     #[test]
