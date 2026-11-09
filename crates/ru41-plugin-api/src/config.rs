@@ -419,6 +419,11 @@ impl Config {
     }
 }
 
+/// Pi 的默认输入模态：文本 + 图片。
+fn default_input_modalities() -> Vec<String> {
+    vec!["text".to_owned(), "image".to_owned()]
+}
+
 /// Pi RPC 分析配置；默认不注册，认证与自定义模型由 Pi 原生配置管理。
 #[derive(Debug, Default, Deserialize)]
 #[serde(default, deny_unknown_fields)]
@@ -441,6 +446,11 @@ pub struct PiSection {
     pub session_dir: Option<PathBuf>,
     /// 备用模型链：主模型失败时按顺序切换；每项写 `供应方/模型` 或裸 `模型`。
     pub fallback_models: Vec<String>,
+    /// 模型输入模态（写进 models.json 的 `input`）：text / image。
+    /// Pi 默认只认文本，声明 image 后它的 read 工具才会把图片作为附件发给模型。
+    /// 缺省 ["text","image"]——模型本身不支持图片时由 Pi 侧忽略附件。
+    #[serde(default = "default_input_modalities")]
+    pub input: Vec<String>,
     /// 工具白名单（Pi 的 --tools，逗号分隔，如 "read,write,edit,bash"）。
     /// 留空则禁用全部工具：只做文本分析。启用后 Pi 的工具没有操作系统级沙箱，
     /// 权限与 Codex 的 bypass 模式相当。

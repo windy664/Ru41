@@ -65,6 +65,9 @@ pub struct PiAgent {
     pub extensions: Vec<String>,
     /// 额外注入子进程的环境变量（扩展读配置用）。
     pub extra_env: std::collections::BTreeMap<String, String>,
+    /// 模型输入模态（text/image）：写进 models.json，声明 image 后 Pi 的
+    /// read 工具才会把图片作为附件发给模型。
+    pub input: Vec<String>,
     /// 备用模型链：主模型失败（限流/服务端错误/协议中断）时按顺序切换。
     /// 每项写 `供应方/模型` 或裸 `模型`（沿用主供应方）。
     pub fallback_models: Vec<String>,
@@ -86,6 +89,7 @@ impl Default for PiAgent {
             extensions: Vec::new(),
             extra_env: Default::default(),
             fallback_models: Vec::new(),
+            input: vec!["text".to_owned(), "image".to_owned()],
             id: "pi".into(),
         }
     }
@@ -332,7 +336,12 @@ impl PiAgent {
         if let Some(env_name) = self.api_key_env.as_deref() {
             provider.insert("apiKey".into(), Value::String(format!("${env_name}")));
         }
-        provider.insert("models".into(), json!([{ "id": model_id }]));
+        let mut entry = serde_json::Map::new();
+        entry.insert("id".into(), Value::String(model_id.to_owned()));
+        if !self.input.is_empty() {
+            entry.insert("input".into(), json!(self.input));
+        }
+        provider.insert("models".into(), Value::Array(vec![Value::Object(entry)]));
         let mut root = serde_json::Map::new();
         root.insert(
             "providers".into(),
