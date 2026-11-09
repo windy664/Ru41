@@ -101,7 +101,11 @@ pub fn load_all(dir: &Path) -> Result<usize> {
         }
         match load_one(&path) {
             Ok((lib, def)) => {
-                eprintln!("[plugins] 已加载 {}（{}）", def.name, path.display());
+                // 逐个插件的加载日志只在排障时开：agent 的 bash 工具每次调用
+                // ru41 都会带出 24 行噪音，白占上下文还把模型带偏（多绕几轮工具）。
+                if std::env::var("RU41_VERBOSE").is_ok() {
+                    eprintln!("[plugins] 已加载 {}（{}）", def.name, path.display());
+                }
                 libs.push(lib);
                 defs.push(def);
             }

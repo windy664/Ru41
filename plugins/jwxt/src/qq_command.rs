@@ -39,11 +39,24 @@ impl SimpleCommand for JwxtQqCommand {
     }
 
     /// 区分动词：/明日课表 即使不带参数也查明天。
-    async fn run_command(&self, verb: &str, arg: &str, ctx: &CommandContext<'_>) -> Result<Option<Reply>> {
+    async fn run_command(
+        &self,
+        verb: &str,
+        arg: &str,
+        ctx: &CommandContext<'_>,
+    ) -> Result<Option<Reply>> {
         self.respond(verb, arg, ctx).await
     }
 
     async fn run_message(&self, content: &str, ctx: &CommandContext<'_>) -> Result<Option<Reply>> {
+        // 「我什么时候下课」这类：确定性回答（读课表缓存算最后一节课），
+        // 不进模型——走模型要 6 轮工具往返、19 秒。
+        if looks_like_class_end_question(content) {
+            if let Some(reply) = ctx.require_private("查询课表", "课表属于个人信息")? {
+                return Ok(Some(reply.into()));
+            }
+            return Ok(Some(self.class_end_reply(ctx)?));
+        }
         let Some(date) = looks_like_timetable_question(content) else {
             return Ok(None);
         };
@@ -63,6 +76,55 @@ impl SimpleCommand for JwxtQqCommand {
 }
 
 impl JwxtQqCommand {
+    /// 「我什么时候下课」：今天最后一节课的结束时间，一行说完。
+    fn class_end_reply(&self, ctx: &CommandContext<'_>) -> Result<Reply> {
+        let today = chrono::Local::now().date_naive();
+        let snapshot = ru41::domain::timetable::timetable_snapshot(ctx.store)?;
+        let Some(snapshot) = snapshot else {
+            return Ok(Reply::text(
+                "课表缓存还没有内容，跑一次 `/课表` 或等教务同步后再问。",
+            ));
+        };
+        let meetings = ru41::domain::timetable::meetings_on(
+            &ru41::domain::timetable::snapshot_meetings(&snapshot),
+            self.semester_start.unwrap_or(today),
+            today,
+        );
+        if meetings.is_empty() {
+            return Ok(Reply::text("今天没有课。"));
+        }
+        // 按结束节次排，最后一节课即最晚下课的那节。
+        let mut sorted = meetings;
+        sorted.sort_by_key(|m| m.end_section.unwrap_or(0));
+        let last = sorted.last().expect("meetings 非空");
+        let range = self
+            .clock
+            .as_ref()
+            .and_then(|clock| clock.range_label(last.start_section, last.end_section));
+        let end_time = range
+            .as_deref()
+            .and_then(|label| label.split_once('-'))
+            .map(|(_, end)| end.to_owned());
+        let where_ = if last.classroom.is_empty() {
+            String::new()
+        } else {
+            format!(" @{}", last.classroom)
+        };
+        let answer = match end_time {
+            Some(end) => format!(
+                "今天最后一节课是「{}」，{} 下课{}。",
+                last.course, end, where_
+            ),
+            None => format!(
+                "今天最后一节课是「{}」（{}节）{}。",
+                last.course,
+                last.end_section.unwrap_or(0),
+                where_
+            ),
+        };
+        Ok(Reply::text(answer))
+    }
+
     async fn respond<'a>(
         &'a self,
         verb: &'a str,
@@ -132,6 +194,19 @@ fn day_body(describe_output: &str) -> &str {
 /// 返回 Some(目标日期) 表示拦截；保守匹配，只认「课」+ 明确时间词。
 /// 转发的通知/公告常带「课」（如“第二课堂学分”）和「今天/周X」（如“10月27日（今天）”）
 /// 字样，长文本或含通知特征词的一律不拦截，交给下游 notices 抽取或 agent。
+/// 「我什么时候下课」「今天几点放学」：含下课/放学/散课/结束 + 课/学。
+fn looks_like_class_end_question(content: &str) -> bool {
+    let text = content.trim();
+    if text.chars().count() > 40 {
+        return false;
+    }
+    let end_word = ["下课", "放学", "散课", "下课了"]
+        .iter()
+        .any(|w| text.contains(w));
+    let class_word = ["课", "学"].iter().any(|w| text.contains(w));
+    end_word && class_word
+}
+
 fn looks_like_timetable_question(content: &str) -> Option<NaiveDate> {
     let text = content.trim();
     if text.chars().count() > TIMETABLE_QUESTION_MAX_CHARS || looks_like_notice(text) {
