@@ -556,7 +556,7 @@ fn format_items(title: &str, items: &[TodoItem], now: i64, options: TodoOptions)
             .cmp(&a.completed_at.unwrap_or(a.created_at))
     });
     if !completed.is_empty() {
-        lines.push(String::new());
+        // 完成项紧接在未完成项下面，不留空行。
         lines.extend(completed.iter().map(|item| format_completed(item)));
     }
     lines.join("\n")
@@ -699,9 +699,10 @@ mod tests {
         // 复选框后没有空格。
         assert!(text.contains("**板子焊接**"), "{text}");
         assert!(!text.contains("　**板子焊接**"), "{text}");
-        // 底部完成项：粗勾 + 划横线，不带「已完成」标题。
+        // 底部完成项：粗勾 + 划横线，不带「已完成」标题，也不留空行。
         assert!(!text.contains("已完成"), "{text}");
         assert!(text.contains("**🗹** ~~写周报~~"), "{text}");
+        assert!(!text.contains("\n\n**🗹**"), "{text}");
         active.completed_at = None;
     }
 
