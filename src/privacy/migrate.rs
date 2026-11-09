@@ -30,8 +30,10 @@ pub struct PlannedSecret {
     pub name: String,
     /// 明文原值：只用于写入凭据库。
     value: String,
-    /// 原值在文件中的字节区间（start..end）。
+    /// 原值在文件中的字节区间（start..end）；含包裹的引号。
     span: (usize, usize),
+    /// 纯原值的字节区间（不含引号），用于替换前二次确认。
+    value_span: (usize, usize),
 }
 
 /// 迁移计划（对外只暴露位置与名称）。
@@ -221,7 +223,18 @@ fn scan(root: &Path, excludes: &[String]) -> Result<Vec<PlannedSecret>> {
                     let Some(value_match) = caps.get(extract.value_group) else {
                         continue;
                     };
-                    let value = value_match.as_str().to_owned();
+                    let mut value = value_match.as_str().to_owned();
+                    // 值的字符类把引号/反引号也算进去了（ASCII 可见字符范围），
+                    // 这里把尾部的引号剥掉，区间同步收窄。
+                    let mut value_end = value_match.end();
+                    while let Some(last) = value.chars().last() {
+                        if matches!(last, '`' | '"' | '\'') {
+                            value.pop();
+                            value_end -= last.len_utf8();
+                        } else {
+                            break;
+                        }
+                    }
                     if value.is_empty() || is_placeholder(&value) {
                         continue;
                     }
@@ -234,10 +247,20 @@ fn scan(root: &Path, excludes: &[String]) -> Result<Vec<PlannedSecret>> {
                         .key_group
                         .and_then(|group| caps.get(group))
                         .map(|m| m.as_str().to_owned());
-                    let span = (
-                        line_start + value_match.start(),
-                        line_start + value_match.end(),
-                    );
+                    let value_span = (line_start + value_match.start(), line_start + value_end);
+                    // 值常被反引号/引号包着（「密码是 `xxx`」）——连引号一起替换，
+                    // 免得留下 `凭据「x」` 这种嵌套。
+                    let (mut start, mut end) = value_span;
+                    let before = text[..start].chars().next_back();
+                    let after = text[end..].chars().next();
+                    if let (Some(before), Some(after)) = (before, after)
+                        && (before == '`' || before == '"' || before == '\'')
+                        && before == after
+                    {
+                        start -= before.len_utf8();
+                        end += after.len_utf8();
+                    }
+                    let span = (start, end);
                     let name = derive_name(line, &value, key.as_deref(), &stem, &used_names);
                     used_names.push(name.clone());
                     out.push(PlannedSecret {
@@ -247,6 +270,7 @@ fn scan(root: &Path, excludes: &[String]) -> Result<Vec<PlannedSecret>> {
                         name,
                         value,
                         span,
+                        value_span,
                     });
                 }
             }
@@ -282,11 +306,15 @@ fn rewrite_file(root: &Path, rel: &str, secrets: &[PlannedSecret]) -> Result<()>
     let mut text =
         std::fs::read_to_string(&path).with_context(|| format!("读 {}", path.display()))?;
     for secret in secrets {
-        if secret.span.1 > text.len() || !text.is_char_boundary(secret.span.0) {
+        if secret.span.1 > text.len()
+            || !text.is_char_boundary(secret.span.0)
+            || secret.value_span.1 > text.len()
+            || !text.is_char_boundary(secret.value_span.0)
+        {
             continue; // 文件已被其他写者改动，跳过这一条。
         }
         // 二次确认区间确实是原值（防止错位改写别人的内容）。
-        if text.get(secret.span.0..secret.span.1) != Some(secret.value.as_str()) {
+        if text.get(secret.value_span.0..secret.value_span.1) != Some(secret.value.as_str()) {
             continue;
         }
         text.replace_range(
@@ -471,6 +499,27 @@ mod tests {
         assert!(!text.contains("bbb2222"), "{text}");
         assert!(text.contains("凭据「A」"), "{text}");
         assert!(text.contains("凭据「B」"), "{text}");
+    }
+
+    #[test]
+    fn quoted_value_replacement_eats_the_quotes() {
+        use crate::adapters::database::sqlite::SqliteTaskStore;
+        let dir = tempfile::tempdir().unwrap();
+        let vault = dir.path().join("vault");
+        std::fs::create_dir_all(&vault).unwrap();
+        std::fs::write(
+            vault.join("a.md"),
+            "- **上传作业**：（用户名和密码都是 `upload_80894`），找到文件夹\n",
+        )
+        .unwrap();
+        let store = SqliteTaskStore::open(&dir.path().join("state.db")).unwrap();
+        let applied = apply(&vault, &store, 0, &[]).unwrap();
+        assert_eq!(applied.credentials, 1);
+        let text = std::fs::read_to_string(vault.join("a.md")).unwrap();
+        assert!(!text.contains("upload_80894"), "{text}");
+        // 引号一起吃掉，不留 `凭据「x」` 的嵌套。
+        assert!(text.contains("凭据「上传作业」"), "{text}");
+        assert!(!text.contains("`凭据"), "{text}");
     }
 
     #[test]
