@@ -467,7 +467,7 @@ impl QqBot {
         }
         if let Some(command) = commands::parse_command(content) {
             let reply = if command == commands::Command::Help {
-                // 帮助文本需汇总扩展命令，单独构造；按钮与 /帮助 execute 一致。
+                // 帮助文本需汇总扩展命令，单独构造；按钮与 / execute 一致。
                 let mut reply = commands::execute(&commands::Command::Help, &ctx, &self.pricing)?;
                 reply.text = commands::help_text(&self.command_handlers);
                 reply

@@ -36,7 +36,7 @@ const BUILTIN_HELP: &str = "# Ru41 · 个人 AI 助理
 
 | 命令 | 用途 |
 |---|---|
-| `/帮助` · `/help` | 查看这份说明 |
+| `/` | 查看这份说明 |
 | `/任务` · `/tasks` | 最近 10 条任务 |
 | `/任务 <id>` · `/task <id>` | 查看任务详情 |
 | `/取消 <id>` · `/cancel <id>` | 取消任务 |
@@ -81,7 +81,7 @@ pub fn help_text(handlers: &[Arc<dyn crate::ports::commands::CommandHandler>]) -
 pub fn parse_command(content: &str) -> Option<Command> {
     let text = content.trim();
     let lower = text.to_lowercase();
-    if matches!(lower.as_str(), "帮助" | "help" | "/帮助" | "/help") {
+    if matches!(lower.as_str(), "帮助" | "help" | "/") {
         return Some(Command::Help);
     }
     if matches!(lower.as_str(), "任务" | "tasks" | "/任务" | "/tasks") {
@@ -265,7 +265,7 @@ fn judge(store: &Arc<dyn TaskStore>, id_prefix: &str, option: usize) -> Result<R
     )))
 }
 
-/// /帮助 的快捷按钮：常用入口两行。
+/// 帮助的快捷按钮：常用入口两行。
 fn help_markup() -> ReplyMarkup {
     ReplyMarkup::new()
         .row(vec![
@@ -274,7 +274,7 @@ fn help_markup() -> ReplyMarkup {
             MarkupButton::new("任务", "/任务"),
         ])
         .row(vec![
-            MarkupButton::new("帮助", "/帮助"),
+            MarkupButton::new("帮助", "/"),
             MarkupButton::new("新建对话", "/新建"),
         ])
 }
