@@ -339,6 +339,24 @@ async fn invalid_output_retries_until_budget_exhausted() {
     );
 }
 
+#[test]
+fn classify_sees_through_trace_context() {
+    // 失败路径会给错误加一层「它做了什么：…」上下文（worker.rs 的 error.context）。
+    // 分类必须能穿透这层，否则瞬态/永久的判定会整体退化成默认瞬态。
+    let transient = anyhow::Error::new(ru41::domain::error::Ru41Error::InvalidOutput("bad".into()))
+        .context("它做了什么：\n- bash");
+    assert_eq!(
+        ru41::domain::error::classify(&transient),
+        ru41::domain::error::FailureKind::Transient
+    );
+    let permanent = anyhow::Error::new(ru41::domain::error::Ru41Error::Config("bad".into()))
+        .context("它做了什么：\n- bash");
+    assert_eq!(
+        ru41::domain::error::classify(&permanent),
+        ru41::domain::error::FailureKind::Permanent
+    );
+}
+
 #[tokio::test]
 async fn conversation_session_is_saved_and_resumed() {
     type Requests = Arc<std::sync::Mutex<Vec<(Option<String>, Option<String>)>>>;
