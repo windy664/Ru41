@@ -560,10 +560,9 @@ fn format_completed(item: &TodoItem) -> String {
     format!("☑ ~~{}~~", item.title)
 }
 
-/// 近 7 天的已完成：完成时间在窗口内，或创建时间在窗口内（近七天创建的待办也留着）。
+/// 近 7 天的已完成：**按创建日期算**（创建于 7 天内的待办，完成后还留 7 天）。
+/// 只控制显示，不删除任何数据；条目不显示日期。
 fn is_recent_completed(item: &TodoItem, now: i64) -> bool {
-    // 近 7 天的已完成：**按创建日期算**（创建于 7 天内的待办，完成后还留 7 天）。
-    // 只控制显示，不删除任何数据；条目不显示日期。
     const WEEK: i64 = 7 * 86_400;
     item.created_at >= now - WEEK
 }
