@@ -80,13 +80,14 @@ pub(super) fn format_items(
 /// 候选符号（想换回只改这一处）：`☑`（2026-11-09 用户选定）、`🗹`（前一版）、`✅`。
 /// 整个待办列表不用加粗（用户要求），已完成态也不再可点，所以不用 cmd-input 标签。
 pub(super) fn format_completed(item: &TodoItem) -> String {
-    // 完成态：可点的恢复复选框 + 划横线标题（点一下把待办换回未完成）。
+    // 完成态：可点的恢复复选框 + 英文空格 + 划横线标题（点一下换回未完成）。
+    // 结构与未完成项一致（标签 + 空格 + 文字），间距才相同。
     format!("### {} ~~{}~~", restore_chip(item), item.title)
 }
 
 /// 已完成条目的「恢复」复选框：点击 = 把待办换回未完成。
 fn restore_chip(item: &TodoItem) -> String {
-    cmd_input_chip("☑ ", &format!("/恢复待办 {}", item.short_id()))
+    cmd_input_chip("☑", &format!("/恢复待办 {}", item.short_id()))
 }
 
 /// 近 7 天的已完成：判定在核心里（domain::todo::is_recent_completed），
@@ -115,9 +116,8 @@ pub(super) fn format_item(item: &TodoItem, now: i64, options: TodoOptions) -> St
     };
     // 正文用三级标题：QQ markdown 没有字号语法，只有标题层级能放大。
     // 层级：## 栏目标题 > ### 正文条目。
-    // 复选框与它后面的空格一起放进 chip 的 show 里：点的时候连空格一起点，
-    // 命中区域更大；外面不再单独补空格（否则会出现两个间隙）。
-    format!("### {checkbox}{}{due}{priority}", item.title)
+    // 标签外补一个英文空格：可见间隙，和完成项结构完全一致。
+    format!("### {checkbox} {}{due}{priority}", item.title)
 }
 
 /// 待办「完成」复选框：`<qqbot-cmd-input show="囗">`，点击后指令填入输入框、
@@ -127,8 +127,9 @@ pub(super) fn format_item(item: &TodoItem, now: i64, options: TodoOptions) -> St
 /// 普通复选框 ☐ 反而是经典清单的样子（此前用囗 U+56D7 是因为整行都是普通文字时
 /// 复选框显得太小；⬜️ U+1B1C 是无边框白块，都不如 ☐ 干净）。
 pub(super) fn done_chip(item: &TodoItem) -> String {
-    // show = 复选框 + 一个英文空格（点击区域含空格，显示与「☑ 标题」对齐）。
-    cmd_input_chip("☐ ", &format!("/完成 {}", item.short_id()))
+    // show 只有复选框：QQ 会在行内标签后自动插零宽空格，再往里塞英文空格会叠出两段间隙。
+    // 可见的英文空格统一放在标签外面（见 format_item / format_completed），两态格式一致。
+    cmd_input_chip("☐", &format!("/完成 {}", item.short_id()))
 }
 
 pub(super) fn usage() -> String {
@@ -153,9 +154,9 @@ mod tests {
     #[test]
     fn cmd_input_chip_encodes_show_and_text() {
         assert_eq!(
-            cmd_input_chip("☐ ", "/完成 abc123"),
+            cmd_input_chip("☐", "/完成 abc123"),
             "<qqbot-cmd-input text=\"%2F%E5%AE%8C%E6%88%90%20abc123\" \
-             show=\"%E2%98%90%20\" reference=\"false\" />"
+             show=\"%E2%98%90\" reference=\"false\" />"
         );
     }
 

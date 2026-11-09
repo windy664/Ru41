@@ -255,11 +255,7 @@ async fn todo_commands_add_list_and_complete_in_private_chat() {
     // 完成回执只给清单：完成的条目落到划横线区，不带「已完成」提示行。
     assert!(!completed.text.contains("已完成"), "{}", completed.text);
     // 完成项：可点的恢复复选框（show=「☑ 空格」，指令藏在 chip 里）+ 划横线标题。
-    assert!(
-        completed.text.contains("%E2%98%91%20"),
-        "{}",
-        completed.text
-    );
+    assert!(completed.text.contains("%E2%98%91"), "{}", completed.text);
     assert!(
         completed
             .text
@@ -357,7 +353,7 @@ async fn quick_note_enters_todo_inbox_without_agent_or_schedule() {
             .contains("<qqbot-cmd-input text=\"%2F%E5%AE%8C%E6%88%90%20")
     );
     // 复选框符号是 囗（U+56D7，CJK 全角字），按汉字尺寸渲染，大且有边框。
-    assert!(reply.text.contains("show=\"%E2%98%90%20\""));
+    assert!(reply.text.contains("show=\"%E2%98%90\""));
 
     let documents = fixture.store.documents("todo_item", 10).unwrap();
     assert_eq!(documents.len(), 1);
