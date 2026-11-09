@@ -110,7 +110,9 @@ pub(super) fn format_item(item: &TodoItem, now: i64, options: TodoOptions) -> St
     };
     // 正文用三级标题：QQ markdown 没有字号语法，只有标题层级能放大。
     // 层级：## 栏目标题 > ### 正文条目。
-    format!("### {checkbox}{}{due}{priority}", item.title)
+    // 复选框后面补一个英文空格：QQ 在行内标签后会自动插零宽空格（不可见），
+    // 不补空格的话未完成项会紧贴标题，和完成项「☑ 标题」对不齐。
+    format!("### {checkbox} {}{due}{priority}", item.title)
 }
 
 /// 待办「完成」复选框：`<qqbot-cmd-input show="囗">`，点击后指令填入输入框、
@@ -180,6 +182,8 @@ mod tests {
         // 正文是三级标题行（行首 ### 后面紧跟复选框标签，再是标题）。
         let body_line = text.lines().nth(1).unwrap_or_default();
         assert!(body_line.starts_with("### "), "{text}");
+        // 复选框后有英文空格（QQ 会在标签后插零宽空格，这里补的是可见空格）。
+        assert!(body_line.contains("板子焊接"), "{text}");
         assert!(body_line.ends_with("板子焊接"), "{text}");
         // 主标题是 markdown 标题；完成项不另起栏目。
         assert!(text.starts_with("# **待办（1）**"), "{text}");
