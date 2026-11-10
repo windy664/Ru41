@@ -1,6 +1,6 @@
 # Docker 部署
 
-Ru41 使用一个镜像运行多个进程。镜像包含 Ru41、Codex CLI 和 sqlite3；**不包含 Pi 或无头浏览器**。这些重依赖以后按独立边车或专用镜像增加，不影响主镜像。
+Ru41 使用一个镜像运行多个进程。镜像包含 Ru41、Codex CLI、Pi、全部插件、技能包和 sqlite3/git/ffmpeg 等基础工具；**不包含你的配置、密钥、业务数据、vault、博客仓库或 ASR 模型**。这些重依赖按独立边车或专用镜像增加，不影响主镜像。
 
 ## 1. 准备配置与数据目录
 
@@ -8,17 +8,18 @@ Ru41 使用一个镜像运行多个进程。镜像包含 Ru41、Codex CLI 和 sq
 
 ```bash
 cp -n ru41.example.toml ru41.toml
-mkdir -p .ru41/codex .ru41/backups
+mkdir -p .ru41/codex .ru41/backups plugins.d
 docker build -t ru41:local .
 ```
 
-按需要编辑 `ru41.toml`：Codex、QQ/飞书、通知出口和各 sources 配置仍与非 Docker 部署相同。真实配置、数据库和认证目录都被 `.gitignore` 与 `.dockerignore` 排除，不会进入镜像。
+按需要编辑 `ru41.toml`：Codex/Pi、QQ/飞书、通知出口和各 sources 配置仍与非 Docker 部署相同。插件配置也可以拆到 `plugins.d/<插件>/config.toml`（附属容器只读挂载；worker 不挂载，防止绕过裁剪配置）。真实配置、数据库、插件本地配置和认证目录都被 `.gitignore` 与 `.dockerignore` 排除，不会进入镜像。
 
 容器内统一使用：
 
 | 宿主机路径 | 容器路径 | 内容 |
 |---|---|---|
-| `ru41.toml` | `/etc/ru41/ru41.toml`（只读） | 本地配置 |
+| `ru41.toml` | `/etc/ru41/ru41.toml`（只读） | 本地主配置 |
+| `plugins.d/` | `/etc/ru41/plugins.d`（只读，worker 不挂载） | 插件自有配置与设备本地覆盖 |
 | `.ru41/state.db` | `/data/state.db` | SQLite 任务与 records 数据 |
 | `.ru41/runs/` | `/data/runs/` | Agent 运行目录 |
 | `.ru41/codex/` | `/home/node/.codex/` | 默认的容器专用 Codex 认证目录 |

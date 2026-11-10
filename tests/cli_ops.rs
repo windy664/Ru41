@@ -164,6 +164,42 @@ token = "private-api-token"
     }
 }
 
+#[test]
+fn plugin_config_is_shown_effectively_but_excluded_from_worker_redaction() {
+    let root = tempfile::tempdir().unwrap();
+    std::fs::write(
+        root.path().join("ru41.toml"),
+        "[sources.rss]\ninterval_secs = 300\n",
+    )
+    .unwrap();
+    let plugin_dir = root.path().join("plugins.d/rss");
+    std::fs::create_dir_all(&plugin_dir).unwrap();
+    std::fs::write(
+        plugin_dir.join("config.toml"),
+        "[rss]\ninterval_secs = 61\ntoken = \"plugin-secret\"\n",
+    )
+    .unwrap();
+
+    let config = config_arg(root.path());
+    let show = json(&run(root.path(), &["--config", &config, "config", "show"]));
+    assert_eq!(show["config"]["sources"]["rss"]["interval_secs"], 61);
+    assert_eq!(show["config"]["sources"]["rss"]["token"], "<redacted>");
+    let text = serde_json::to_string(&show).unwrap();
+    assert!(!text.contains("plugin-secret"));
+
+    let worker = root.path().join("worker.toml");
+    let out = worker.display().to_string();
+    let redacted = json(&run(
+        root.path(),
+        &["--config", &config, "config", "redact", "--out", &out],
+    ));
+    assert_eq!(redacted["removed_sources"], true);
+    let worker_text = std::fs::read_to_string(worker).unwrap();
+    assert!(!worker_text.contains("sources"));
+    assert!(!worker_text.contains("plugin-secret"));
+    assert!(!worker_text.contains("interval_secs = 61"));
+}
+
 fn fake_codex(root: &Path) -> PathBuf {
     let path = root.join("fake-codex");
     let marker = root.join("invocations.log");

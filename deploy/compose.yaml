@@ -16,6 +16,8 @@ x-ru41-volumes: &ru41-volumes
   - ../.ru41:/data
   # 动态插件目录（plugins-build-all.sh 的产物或自建 .so 放这里；空目录=无插件）
   - ../.ru41/plugins:/etc/ru41/plugins:ro
+  # 插件自有配置（plugins.d/<插件>/config.toml；worker 不挂载，避免绕过裁剪配置）
+  - ../plugins.d:/etc/ru41/plugins.d:ro
 
 services:
   worker:
@@ -152,6 +154,7 @@ services:
       - ../.ru41:/data
       - ${RU41_VAULT_PATH:?set RU41_VAULT_PATH to the vault clone dir}:/vault
       - ../.ru41/plugins:/etc/ru41/plugins:ro
+      - ../plugins.d:/etc/ru41/plugins.d:ro
     command: ["--config", "/etc/ru41/ru41.toml", "--db", "/data/state.db", "obsidian", "run"]
 
   # 博客发布管线：Vault 待发布目录 → 校验 → 博客仓库 _posts → 推送。
@@ -164,6 +167,7 @@ services:
       - ../.ru41:/data
       - ${RU41_VAULT_PATH:?set RU41_VAULT_PATH to the vault clone dir}:/vault
       - ../.ru41/plugins:/etc/ru41/plugins:ro
+      - ../plugins.d:/etc/ru41/plugins.d:ro
       - ${RU41_BLOG_PATH:?set RU41_BLOG_PATH to the blog repo clone dir}:/blog
     command: ["--config", "/etc/ru41/ru41.toml", "--db", "/data/state.db", "blog", "run"]
 
@@ -193,6 +197,7 @@ services:
       - ../.ru41:/data
       - ${RU41_VAULT_PATH:?set RU41_VAULT_PATH to the vault clone dir}:/vault
       - ../.ru41/plugins:/etc/ru41/plugins:ro
+      - ../plugins.d:/etc/ru41/plugins.d:ro
     command: ["--config", "/etc/ru41/ru41.toml", "--db", "/data/state.db", "jobs", "run"]
 
   # 项目计划总览：GSoC 时间线 / LFX 开放项目 / OSPP 节奏卡 → vault 项目总览.md，
@@ -205,6 +210,7 @@ services:
       - ../.ru41:/data
       - ${RU41_VAULT_PATH:?set RU41_VAULT_PATH to the vault clone dir}:/vault
       - ../.ru41/plugins:/etc/ru41/plugins:ro
+      - ../plugins.d:/etc/ru41/plugins.d:ro
     command: ["--config", "/etc/ru41/ru41.toml", "--db", "/data/state.db", "programs", "run"]
 
   # 科研机会总览：Mitacs/港校暑研/中科院科创等窗口倒计时 → vault 科研总览.md。
@@ -216,6 +222,7 @@ services:
       - ../ru41.toml:/etc/ru41/ru41.toml:ro
       - ../.ru41:/data
       - ../.ru41/plugins:/etc/ru41/plugins:ro
+      - ../plugins.d:/etc/ru41/plugins.d:ro
       - ${RU41_VAULT_PATH:?set RU41_VAULT_PATH to the vault clone dir}:/vault
     command: ["--config", "/etc/ru41/ru41.toml", "--db", "/data/state.db", "research", "run"]
 
@@ -228,6 +235,7 @@ services:
       - ../ru41.toml:/etc/ru41/ru41.toml:ro
       - ../.ru41:/data
       - ../.ru41/plugins:/etc/ru41/plugins:ro
+      - ../plugins.d:/etc/ru41/plugins.d:ro
       - ${RU41_VAULT_PATH:?set RU41_VAULT_PATH to the vault clone dir}:/vault
     command: ["--config", "/etc/ru41/ru41.toml", "--db", "/data/state.db", "events", "run"]
 
@@ -240,6 +248,7 @@ services:
       - ../ru41.toml:/etc/ru41/ru41.toml:ro
       - ../.ru41:/data
       - ../.ru41/plugins:/etc/ru41/plugins:ro
+      - ../plugins.d:/etc/ru41/plugins.d:ro
       - ${RU41_VAULT_PATH:?set RU41_VAULT_PATH to the vault clone dir}:/vault
     command: ["--config", "/etc/ru41/ru41.toml", "--db", "/data/state.db", "competitions", "run"]
 
@@ -255,6 +264,7 @@ services:
       - ../ru41.toml:/etc/ru41/ru41.toml:ro
       - ../.ru41:/data
       - ../.ru41/plugins:/etc/ru41/plugins:ro
+      - ../plugins.d:/etc/ru41/plugins.d:ro
       - ${RU41_VAULT_PATH:?set RU41_VAULT_PATH to the vault clone dir}:/vault
     command: ["--config", "/etc/ru41/ru41.toml", "--db", "/data/state.db", "projects", "run"]
 
