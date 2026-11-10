@@ -16,8 +16,10 @@ pub struct ArxivSection {
     pub interests: Option<String>,
     /// 单次拉取条数上限，默认 100。
     pub max_results: Option<u32>,
-    /// papers run 的轮询间隔（秒），默认 21600（6 小时）。
+    /// papers run 的轮询间隔（秒），默认 86400（每天一次）。
     pub interval_secs: Option<u64>,
+    /// 每次 digest 最多推荐的论文数，默认 3。
+    pub max_recommendations: Option<usize>,
     /// digest 任务的执行底座，默认 pi。
     pub backend: Option<String>,
     /// 终态后是否经默认通知出口推送（[notify] channel）；默认 true。
@@ -26,7 +28,7 @@ pub struct ArxivSection {
 
 impl ArxivSection {
     /// run 的轮询间隔（秒）默认值；tracker 装配与 schedule list 共用这一份。
-    pub const DEFAULT_INTERVAL_SECS: u64 = 21_600;
+    pub const DEFAULT_INTERVAL_SECS: u64 = 86_400;
 
     /// 由 [sources.arxiv] 解析出运行时配置；默认值只定义在这里。
     /// 通知路由由装配层按 [notify] 渠道注入，模块内不感知渠道知识。
@@ -41,6 +43,7 @@ impl ArxivSection {
             interests: self.interests.clone().unwrap_or_default(),
             max_results: self.max_results.unwrap_or(100),
             interval_secs: self.interval_secs.unwrap_or(Self::DEFAULT_INTERVAL_SECS),
+            max_recommendations: self.max_recommendations.unwrap_or(3),
             backend: self.backend.clone().unwrap_or_else(|| "pi".into()),
             notify,
         })

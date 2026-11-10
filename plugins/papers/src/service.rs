@@ -15,6 +15,7 @@ pub struct PapersConfig {
     pub interests: String,
     pub max_results: u32,
     pub interval_secs: u64,
+    pub max_recommendations: usize,
     pub backend: String,
     /// 终态通知路由；None 时只入队不推送。
     pub notify: Option<NotifyRoute>,
@@ -28,7 +29,8 @@ impl Default for PapersConfig {
             keywords: Vec::new(),
             interests: String::new(),
             max_results: 100,
-            interval_secs: 21_600,
+            interval_secs: 86_400,
+            max_recommendations: 3,
             backend: "pi".into(),
             notify: None,
         }
@@ -72,6 +74,7 @@ impl PaperTracker {
             .await?;
         let keywords = self.config.keywords.clone();
         let interests = self.config.interests.clone();
+        let max_recommendations = self.config.max_recommendations;
         let outcome = ru41::app::digest::register_digest(
             ru41::app::digest::DigestSink {
                 store: &self.store,
@@ -103,7 +106,9 @@ impl PaperTracker {
                         candidates.len()
                     )
                 },
-                prompt: &|candidates: &[ArxivEntry]| digest_prompt(&interests, candidates),
+                prompt: &|candidates: &[ArxivEntry]| {
+                    digest_prompt(&interests, candidates, max_recommendations)
+                },
             },
         )?;
         Ok(PollReport {
@@ -126,20 +131,21 @@ const DIGEST_MAX_CANDIDATES: usize = 40;
 /// 单篇摘要截断（字符）：摘要级判断不需要全文，控制 prompt 体积。
 const DIGEST_SUMMARY_CHARS: usize = 800;
 
-/// 每日精选 prompt：要求 Codex 按个人方向筛选并输出结构化摘要。
-fn digest_prompt(interests: &str, candidates: &[ArxivEntry]) -> String {
+/// 每日精选 prompt：候选可以较多，但最终推送必须少而短。
+fn digest_prompt(interests: &str, candidates: &[ArxivEntry], max_recommendations: usize) -> String {
     let omitted = candidates.len().saturating_sub(DIGEST_MAX_CANDIDATES);
     let mut prompt = format!(
         "你是论文筛选助手。以下是 arXiv 最新提交的候选论文（均为摘要级信息）。\n\
          个人关注方向：{interests}\n\n\
          工具禁令（最高优先级）：所有判断只依据下面的摘要材料，**全程不要调用任何工具**\n\
          ——不要访问链接、不要用 bash/浏览器核实内容。材料即全部事实来源。\n\
-         请筛选出与关注方向真正相关的论文（无关的直接舍弃，宁缺毋滥），对每篇输出：\n\
-         标题 / arXiv 链接 / 研究问题 / 方法 / 主要结果 / 局限 / 与我的相关性（1-5 分及理由）/ 建议的下一步。\n\
-         标题写成 markdown 超链接，方便直接点开：**[论文标题](https://arxiv.org/abs/XXXX.XXXXX)**\n\
-         （链接单独列一行也可以，但标题必须是可点的超链接，不要只写裸标题。）\n\
-         所有判断仅基于摘要，明确标注「基于摘要」，不要补写摘要中没有的实验结论。\n\
-         如果全部不相关，直接说明「本批次无相关论文」。\n\
+         本次最多推荐 {max_recommendations} 篇，只保留相关性 4-5 分的论文；不足就少推，禁止凑数。\n\
+         每篇固定输出四行，不再拆研究问题、方法、结果、局限等长章节：\n\
+         **[论文标题](https://arxiv.org/abs/XXXX.XXXXX)**\n\
+         核心贡献：基于摘要，不超过 80 个汉字；不要补写摘要没有的实验结论。\n\
+         相关性：1-5 分及一句理由。\n\
+         下一步：只给一个可执行动作。\n\
+         不写筛选过程、舍弃清单或额外总结。如果全部不相关，只回复「本批次无相关论文」。\n\
          交付口径：最终 JSON 的 summary 字段放**完整报告正文**（Markdown 结构原样搬进去），\n\
          不要把报告本身写成 JSON、不要用代码块包住整篇——那会被原样推给用户。\n\n\
          == 候选论文（{} 篇{}）==\n",
