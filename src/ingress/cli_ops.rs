@@ -5,6 +5,7 @@ use serde_json::{Value, json};
 mod config;
 mod doctor;
 mod init;
+mod migration;
 mod qq;
 mod status;
 mod vault;

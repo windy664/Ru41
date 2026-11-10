@@ -73,6 +73,11 @@ cargo run --locked -- doctor --deep
 cargo run --locked -- status
 cargo run --locked -- dump
 
+# 换机迁移：导出后先 dry-run，确认无误再恢复到全新目录
+cargo run --locked -- config export --out /path/to/ru41-migration
+cargo run --locked -- config restore --from /path/to/ru41-migration --target /path/to/new-ru41-home
+cargo run --locked -- config restore --from /path/to/ru41-migration --target /path/to/new-ru41-home --apply
+
 # QQ 官方扫码创建/绑定机器人，再检查凭证与 gateway
 cargo run --locked -- qq onboard
 cargo run --locked -- qq doctor  # 不连接 WebSocket、不发送消息
@@ -278,6 +283,8 @@ $RU41_HOME/
 ```
 
 插件配置可拆到主配置旁的 `plugins.d/<插件名>/config.toml`，文件顶层直接写该插件的配置段名；例如 RSS 写在 `plugins.d/rss/config.toml` 的 `[rss]` 段。`config.local.toml` 用于设备本地覆盖，真实配置文件不进 git。每个配置型插件在 `plugins/<插件>/config.example.toml` 提供模板（papers 的历史段名是 `[arxiv]`）。Docker 部署时附属容器只读挂载 `plugins.d`，worker 不挂载——worker 仍只看 `config redact` 生成的裁剪配置，避免插件密钥绕过隐私边界。
+
+`config export --out <新目录>` 生成换机迁移包：包含剔除密钥的主配置和插件配置、插件清单、版本信息及 SQLite 在线快照；密码管理器的凭据记录也会排除。`config restore --from <迁移包> --target <新 RU41_HOME>` 默认只预检并列出缺失环境变量，追加 `--apply` 才恢复。目标目录必须尚不存在，避免覆盖现有数据。完整目录、保密要求和不包含的外部依赖见 [Docker 部署指南的迁移章节](../deploy/README.md#4-备份换机迁移与恢复)。
 
 <details>
 <summary><strong>配置分区速查</strong></summary>
