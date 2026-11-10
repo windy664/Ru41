@@ -1,0 +1,16 @@
+# 智慧树作业插件配置模板；复制到 plugins.d/zhihuishu/config.toml 后修改。
+
+[zhihuishu]
+report_path = ".ru41/zhihuishu/report.json"
+deadline_days = 3
+interval_secs = 21600
+notify = true
+todo_sync = true
+vault_sync = true
+vault_course_dir = "01-Courses-课程/2026-Fall-大一上"
+vault_task_dirs = "substantive"
+ignore_tasks = []
+
+[zhihuishu.vault_courses]
+"26-27-1思想道德与法治" = "思想道德与法治"
+"大学英语" = "大学英语I（综合基础）"

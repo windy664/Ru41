@@ -1,0 +1,4 @@
+# 竞赛总览插件配置模板；复制到 plugins.d/competitions/config.toml 后修改。
+
+[competitions]
+interval_secs = 21600

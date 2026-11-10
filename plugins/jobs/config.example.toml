@@ -1,0 +1,6 @@
+# 岗位总览插件配置模板；复制到 plugins.d/jobs/config.toml 后修改。
+# 还依赖核心 [obsidian].vault_path；BOSS sidecar 可选。
+
+[jobs]
+interval_secs = 21600
+# boss_path = "/data/boss_jobs.json"

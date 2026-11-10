@@ -1,0 +1,18 @@
+# 课堂录音转写插件配置模板；复制到 plugins.d/lecture/config.toml 后修改。
+# 推荐用 api_key_env 指向环境变量，不写明文 key。
+
+[lecture]
+enabled = true
+api_key_env = "MINIMAX_API_KEY"
+asr_api = "whispercpp"
+asr_base_url = "http://paraformer-asr:8080"
+# 云端 OpenAI 兼容示例：asr_api = "openai"；asr_base_url = "https://open.bigmodel.cn/api/paas/v4"
+backend = "pi"
+asr_model = "glm-asr-2512"
+slice_secs = 600
+workspace = "/data/lecture"
+vault_dir = "01-Courses-课程"
+vault_root = "/vault"
+inbox_dir = "00-Inbox-收件箱"
+fallback_course = "课堂录音"
+retain_audio_days = 7

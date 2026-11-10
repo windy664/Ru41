@@ -1,0 +1,14 @@
+# 校园卡水电监控配置模板；复制到 plugins.d/ecard/config.toml 后修改。
+# Token 不写进文件，用环境变量 RU41_ECARD_TOKEN 注入。
+
+[ecard]
+base_url = "https://ecarduser.<school>.edu.cn"
+impl_type = ""
+school_area_no = ""
+building_no = ""
+room_num = ""
+power_threshold = 10.0
+water_threshold = 1.0
+interval_secs = 86400
+notify = true
+daily_report = false

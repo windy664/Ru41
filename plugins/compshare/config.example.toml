@@ -1,0 +1,13 @@
+# 恒源云 GPU 库存监控配置模板；复制到 plugins.d/compshare/config.toml 后修改。
+# Cookie 不写进文件，用环境变量 RU41_COMPSHARE_COOKIE 注入。
+
+[compshare]
+# base_url = "https://api.compshare.cn/"
+project_id = "org-..."
+image_id = "compshareImage-..."
+region = "cn-wlcb"
+zone = "cn-wlcb-01"
+gpu_type = "P40"
+disk_size_gb = 100
+interval_secs = 60
+notify = true

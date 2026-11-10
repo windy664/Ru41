@@ -187,3 +187,65 @@ fn invalid_plugin_config_is_reported() {
 
     assert!(Config::load_from_with_plugin_root(None, cwd.path(), None, None).is_err());
 }
+
+#[test]
+fn bundled_plugin_config_examples_parse_and_load() {
+    let repo = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
+    let mut examples: Vec<_> = std::fs::read_dir(repo.join("plugins"))
+        .unwrap()
+        .filter_map(|entry| {
+            let path = entry.ok()?.path();
+            path.is_dir().then(|| path.join("config.example.toml"))
+        })
+        .filter(|path| path.is_file())
+        .collect();
+    examples.sort();
+    assert_eq!(examples.len(), 19);
+
+    let staging = tempfile::tempdir().unwrap();
+    let mut expected_keys = Vec::new();
+    for example in examples {
+        let plugin = example
+            .parent()
+            .and_then(|path| path.file_name())
+            .and_then(|name| name.to_str())
+            .unwrap()
+            .to_owned();
+        let config_key = if plugin == "papers" {
+            "arxiv".to_owned()
+        } else {
+            plugin.clone()
+        };
+        let text = std::fs::read_to_string(&example).unwrap();
+        let value: toml::Value =
+            toml::from_str(&text).unwrap_or_else(|error| panic!("{}: {error}", example.display()));
+        let table = value.as_table().unwrap();
+        assert_eq!(
+            table.len(),
+            1,
+            "{} must contain one config section",
+            example.display()
+        );
+        assert!(
+            table.contains_key(&config_key),
+            "wrong section in {}",
+            example.display()
+        );
+
+        let target_dir = staging.path().join("plugins.d").join(&plugin);
+        std::fs::create_dir_all(&target_dir).unwrap();
+        std::fs::write(target_dir.join("config.toml"), text).unwrap();
+        expected_keys.push(config_key);
+    }
+
+    let mut config = Config::default();
+    config
+        .load_plugin_config_root(&staging.path().join("plugins.d"))
+        .unwrap();
+    for key in expected_keys {
+        assert!(
+            config.sources.keys().any(|source| source == key),
+            "missing {key}"
+        );
+    }
+}
