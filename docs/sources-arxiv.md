@@ -37,7 +37,8 @@ categories = ["cs.CR", "cs.AI", "cs.CL"]      # 必填，追踪的分类
 keywords = ["prompt injection", "jailbreak"]  # 可选，标题/摘要粗筛；缺省不过滤
 interests = "AI 安全方向本科生，关注 LLM/Agent 安全"  # 注入 digest prompt 供相关性判断
 max_results = 100          # 单次拉取上限，默认 100
-interval_secs = 21600      # papers run 的轮询间隔，默认 6 小时
+interval_secs = 86400      # papers run 的轮询间隔，默认每天一次
+max_recommendations = 3    # 每次最多推荐 3 篇，只保留相关性 4-5 分的短摘要
 backend = "codex"          # digest 任务底座
 notify = true              # 终态后经默认出口推送，默认 true
 ```

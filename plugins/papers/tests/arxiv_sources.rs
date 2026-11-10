@@ -137,6 +137,8 @@ async fn poll_enqueues_one_digest_and_dedups_seen_entries() {
     );
     assert!(task.prompt.contains("Elliptic Curve Pairings Revisited"));
     assert!(task.prompt.contains("基于摘要"));
+    assert!(task.prompt.contains("本次最多推荐 3 篇"));
+    assert!(task.prompt.contains("不超过 80 个汉字"));
     let notify = task.notify.unwrap();
     assert_eq!(notify.channel, "feishu");
     assert_eq!(notify.target, "default");
