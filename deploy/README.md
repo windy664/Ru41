@@ -155,7 +155,9 @@ docker compose -f deploy/compose.yaml down
 
 镜像内置 `TZ=Asia/Shanghai`（见 Dockerfile）：课表日程、每日提醒、日期边界都按本地时区计算。容器若跑在 UTC，所有时刻会差 8 小时，且宿主与容器会互相覆盖对方的日程数据。改时区只需改 Dockerfile 里的 `TZ` 与 `/etc/localtime`。
 
-## 4. 备份与恢复
+## 4. 备份、换机迁移与恢复
+
+### 日常数据库备份
 
 保持 worker 运行，执行在线备份：
 
@@ -163,7 +165,7 @@ docker compose -f deploy/compose.yaml down
 ./deploy/backup.sh
 ```
 
-脚本使用 SQLite `.backup`，而不是直接复制写入中的数据库文件，输出 `.ru41/backups/state-<UTC>.db`。`ru41.toml`、`.ru41/runs/` 和 `.ru41/codex/` 需要另行归档；**本机备份不能防止整机或磁盘损坏，应再同步到其他机器**。
+脚本使用 SQLite `.backup`，而不是直接复制写入中的数据库文件，输出 `.ru41/backups/state-<UTC>.db`。**本机备份不能防止整机或磁盘损坏，应再同步到其他机器**。
 
 恢复前必须停止全部写入服务：
 
@@ -177,6 +179,52 @@ docker compose -f deploy/compose.yaml up -d worker
 ```
 
 不要在任何 Ru41 服务仍写数据库时替换文件。Docker 的 restart 与 Worker 的租约恢复只能恢复进程和任务执行，不能替代 UPS、文件系统落盘、在线备份和异地副本。
+
+### 换机迁移包
+
+裸机或需要同时迁移配置时，使用 `config export`：
+
+```bash
+ru41 config export --out /path/to/ru41-migration
+```
+
+目标目录必须尚不存在。导出结构为：
+
+```text
+ru41-migration/
+├── manifest.toml
+├── config/
+│   ├── ru41.toml
+│   └── plugins.d/<插件>/{config.toml,config.local.toml}
+├── data/state.db
+├── secrets.required.toml
+└── versions/{ru41.txt,plugin-api.txt,plugins.txt}
+```
+
+- SQLite 通过在线一致性快照导出，不需要停止 worker；配置密钥与密码管理器中的凭据真值会被剔除，`secrets.required.toml` 只记录需要重新注入的环境变量名。
+- **state.db 仍包含任务、行程、身份绑定等私密数据，整个迁移包都必须按私密文件保护**，不要上传到 GitHub、Issue 或公共网盘。
+- PostgreSQL 的数据在外部服务中，不进入迁移包；Vault 与博客仓库继续走各自 Git；插件 `.so`、runs、知识向量库、模型缓存、登录态、浏览器/ASR sidecar 和 Compose 启停清单不打包。
+
+把迁移包安全复制到新机器后，先预检：
+
+```bash
+ru41 config restore \
+  --from /path/to/ru41-migration \
+  --target /home/<user>/ru41
+```
+
+默认 dry-run 不写文件，会检查迁移格式、`config_version`、plugin-api/ABI、SQLite 完整性和 schema 版本，并列出当前缺少的环境变量。确认后执行：
+
+```bash
+ru41 config restore \
+  --from /path/to/ru41-migration \
+  --target /home/<user>/ru41 \
+  --apply
+export RU41_HOME=/home/<user>/ru41
+ru41 doctor
+```
+
+`--apply` 只接受尚不存在的目标目录，绝不覆盖现有配置或数据库；恢复时会把 SQLite 与 runs 路径重写为 `$RU41_HOME/data/`。随后按报告重新注入环境变量、按需重建凭据管理器记录，并单独克隆 Vault/博客仓库、安装匹配版本的插件和 sidecar。
 
 ## 5. 重依赖与 sidecar
 

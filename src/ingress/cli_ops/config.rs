@@ -24,6 +24,12 @@ pub(crate) async fn run(cli: &Cli, command: &ConfigCommand) -> OpsOutcome {
         ConfigCommand::Show => show(cli),
         ConfigCommand::Check => check_config(cli),
         ConfigCommand::Redact { out } => redact_to_file(cli, out),
+        ConfigCommand::Export { out } => super::migration::export(cli, out),
+        ConfigCommand::Restore {
+            from,
+            target,
+            apply,
+        } => super::migration::restore(from, target, *apply),
     }
 }
 

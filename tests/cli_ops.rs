@@ -228,6 +228,163 @@ fn plugin_config_is_shown_effectively_but_excluded_from_worker_redaction() {
     assert!(!worker_text.contains("interval_secs = 61"));
 }
 
+#[test]
+fn migration_export_dry_run_and_restore_round_trip_without_secrets() {
+    let root = tempfile::tempdir().unwrap();
+    json(&run(root.path(), &["init", "--non-interactive"]));
+    for args in [
+        &["todo", "add", "--title", "migration-round-trip"][..],
+        &["secret", "set", "smoke", "dummy-credential-value"][..],
+    ] {
+        let output = run(root.path(), args);
+        assert!(
+            output.status.success(),
+            "{}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+    }
+    let plugin_dir = root.path().join("plugins.d/rss");
+    std::fs::create_dir_all(&plugin_dir).unwrap();
+    std::fs::write(
+        plugin_dir.join("config.toml"),
+        "[rss]\ninterval_secs = 61\ntoken = \"dummy-plugin-token\"\n",
+    )
+    .unwrap();
+
+    let bundle = root.path().join("bundle");
+    let export = json(&run(
+        root.path(),
+        &["config", "export", "--out", bundle.to_str().unwrap()],
+    ));
+    assert_eq!(export["credentials_excluded"], 1);
+    assert_eq!(export["includes_database"], true);
+    assert!(
+        export["required_environment"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|name| name == "MINIMAX_API_KEY")
+    );
+    let main = std::fs::read_to_string(bundle.join("config/ru41.toml")).unwrap();
+    let plugin = std::fs::read_to_string(bundle.join("config/plugins.d/rss/config.toml")).unwrap();
+    assert!(main.contains("MINIMAX_API_KEY"));
+    assert!(plugin.contains("interval_secs = 61"));
+    assert!(!plugin.contains("dummy-plugin-token"));
+    let database = std::fs::read(bundle.join("data/state.db")).unwrap();
+    let secret = b"dummy-credential-value";
+    assert!(
+        !database
+            .windows(secret.len())
+            .any(|window| window == secret)
+    );
+
+    let restored = root.path().join("restored");
+    let dry_run = json(&run(
+        root.path(),
+        &[
+            "config",
+            "restore",
+            "--from",
+            bundle.to_str().unwrap(),
+            "--target",
+            restored.to_str().unwrap(),
+        ],
+    ));
+    assert_eq!(dry_run["dry_run"], true);
+    assert_eq!(dry_run["would_restore"], true);
+    assert!(!restored.exists());
+    assert!(
+        dry_run["missing_environment"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|name| name == "MINIMAX_API_KEY")
+    );
+
+    let applied = json(&run(
+        root.path(),
+        &[
+            "config",
+            "restore",
+            "--from",
+            bundle.to_str().unwrap(),
+            "--target",
+            restored.to_str().unwrap(),
+            "--apply",
+        ],
+    ));
+    assert_eq!(applied["restored"], true);
+    let restored_config = restored.join("ru41.toml").display().to_string();
+    let todos = json(&run(
+        root.path(),
+        &["--config", &restored_config, "todo", "list", "all"],
+    ));
+    assert!(
+        serde_json::to_string(&todos)
+            .unwrap()
+            .contains("migration-round-trip")
+    );
+    let credentials = run(
+        root.path(),
+        &["--config", &restored_config, "secret", "list"],
+    );
+    assert!(credentials.status.success());
+    let credentials = String::from_utf8(credentials.stdout).unwrap();
+    assert!(!credentials.contains("smoke"));
+    assert!(!credentials.contains("cred_"));
+
+    let conflict = run(
+        root.path(),
+        &[
+            "config",
+            "restore",
+            "--from",
+            bundle.to_str().unwrap(),
+            "--target",
+            restored.to_str().unwrap(),
+            "--apply",
+        ],
+    );
+    assert!(!conflict.status.success());
+}
+
+#[test]
+fn migration_restore_rejects_newer_config_without_writing() {
+    let root = tempfile::tempdir().unwrap();
+    json(&run(root.path(), &["init", "--non-interactive"]));
+    let bundle = root.path().join("bundle");
+    json(&run(
+        root.path(),
+        &["config", "export", "--out", bundle.to_str().unwrap()],
+    ));
+    let manifest = bundle.join("manifest.toml");
+    let text = std::fs::read_to_string(&manifest)
+        .unwrap()
+        .replace("config_version = 1", "config_version = 2");
+    std::fs::write(manifest, text).unwrap();
+    let target = root.path().join("must-not-exist");
+    let output = run(
+        root.path(),
+        &[
+            "config",
+            "restore",
+            "--from",
+            bundle.to_str().unwrap(),
+            "--target",
+            target.to_str().unwrap(),
+        ],
+    );
+    assert!(!output.status.success());
+    let value: Value = serde_json::from_slice(&output.stdout).unwrap();
+    assert!(
+        value["error"]
+            .as_str()
+            .unwrap()
+            .contains("config_version 2")
+    );
+    assert!(!target.exists());
+}
+
 fn fake_codex(root: &Path) -> PathBuf {
     let path = root.join("fake-codex");
     let marker = root.join("invocations.log");

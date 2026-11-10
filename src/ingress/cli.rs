@@ -200,6 +200,24 @@ pub enum ConfigCommand {
         #[arg(long)]
         out: PathBuf,
     },
+    /// 导出换机迁移包：可移植配置、插件清单与 SQLite 一致性快照；不导出密钥真值。
+    Export {
+        /// 新目录；必须尚不存在，避免覆盖旧迁移包。
+        #[arg(long)]
+        out: PathBuf,
+    },
+    /// 预检或恢复迁移包；默认 dry-run，只有 --apply 才写入新 RU41_HOME。
+    Restore {
+        /// 迁移包目录。
+        #[arg(long)]
+        from: PathBuf,
+        /// 目标 RU41_HOME；必须尚不存在，避免覆盖现有配置和数据库。
+        #[arg(long)]
+        target: PathBuf,
+        /// 真正恢复；缺省只校验并列出缺失环境变量，不写文件。
+        #[arg(long, default_value_t = false)]
+        apply: bool,
+    },
 }
 
 #[derive(Subcommand, Clone, Copy)]
