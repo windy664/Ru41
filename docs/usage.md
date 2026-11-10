@@ -265,7 +265,7 @@ cargo run --locked -- notify          # 未运行 QQ 网关时的独立通知进
 | 文件选择 | `--config <路径>` → `./ru41.toml` → `~/.config/ru41/config.toml` |
 | 字段取值 | CLI 参数 → 环境变量 → `plugins.d/<插件>/config.local.toml` → `plugins.d/<插件>/config.toml` → `ru41.toml [sources.*]` → 默认值 |
 
-没有配置文件时使用内置默认值。插件配置可拆到主配置旁的 `plugins.d/<插件名>/config.toml`，文件顶层直接写该插件的配置段名；例如 RSS 写在 `plugins.d/rss/config.toml` 的 `[rss]` 段。`config.local.toml` 用于设备本地覆盖，真实配置文件不进 git。
+没有配置文件时使用内置默认值。插件配置可拆到主配置旁的 `plugins.d/<插件名>/config.toml`，文件顶层直接写该插件的配置段名；例如 RSS 写在 `plugins.d/rss/config.toml` 的 `[rss]` 段。`config.local.toml` 用于设备本地覆盖，真实配置文件不进 git。Docker 部署时附属容器只读挂载 `plugins.d`，worker 不挂载——worker 仍只看 `config redact` 生成的裁剪配置，避免插件密钥绕过隐私边界。
 
 <details>
 <summary><strong>配置分区速查</strong></summary>

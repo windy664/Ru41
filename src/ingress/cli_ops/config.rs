@@ -62,17 +62,25 @@ fn show(cli: &Cli) -> OpsOutcome {
 pub(crate) fn redacted_config(
     explicit: Option<&Path>,
 ) -> Result<(Option<std::path::PathBuf>, Value)> {
-    let (config_path, _) = match Config::load(explicit) {
-        Ok((_, path)) => (path, ()),
-        Err(error) => return Err(error),
+    let (effective, config_path) = Config::load(explicit)?;
+    let mut value = match &config_path {
+        Some(path) => {
+            let text = std::fs::read_to_string(path)?;
+            toml::from_str::<toml::Value>(&text)?
+        }
+        None => toml::Value::Table(toml::Table::new()),
     };
-    let Some(path) = config_path else {
-        return Ok((None, json!({})));
-    };
-    let text = std::fs::read_to_string(&path)?;
-    let mut value: toml::Value = toml::from_str(&text)?;
+    let sources = effective.sources.to_toml();
+    let table = value
+        .as_table_mut()
+        .ok_or_else(|| anyhow::anyhow!("configuration root is not a TOML table"))?;
+    if sources.is_empty() {
+        table.remove("sources");
+    } else {
+        table.insert("sources".into(), toml::Value::Table(sources));
+    }
     redact(&mut value);
-    Ok((Some(path), serde_json::to_value(value)?))
+    Ok((config_path, serde_json::to_value(value)?))
 }
 
 fn check_config(cli: &Cli) -> OpsOutcome {

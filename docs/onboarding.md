@@ -104,7 +104,7 @@ bridge 纪律、技能包）见[动态插件开发指南](plugin-development.md)
 | 插件静默消失，日志只有「跳过 .so」 | 缺 plugin-entry feature / glibc 不匹配 / 握手三硬门任一失败 |
 | CI 只红 fmt/clippy | 本地 `cargo fmt --all` + `cargo clippy --locked --all-targets -- -D warnings`，本地绿=CI 过 |
 | 某源轮询报「openid/登录态失效」 | 见[凭证总览](credentials.md)的会话文件清单与更换操作 |
-| 改了插件但行为没变 | 改的是技能包？技能包走镜像部署，热更 .so 不带技能 |
+| 改了插件但行为没变 | .so 没刷新；技能包未同步（`deploy/hot-patch.sh` 会一并同步 skills，完整链由 `roll.sh` 同步） |
 | schedule run 说 unknown job | 该插件没加载成功，回上一行 |
 
 ## 7. 继续深入的文档地图

@@ -359,6 +359,14 @@ impl SourcesSection {
     pub fn keys(&self) -> impl Iterator<Item = &str> {
         self.modules.keys().map(String::as_str)
     }
+
+    /// 合并后的有效 sources 配置，供 config show 展示插件目录覆盖后的真实值。
+    pub fn to_toml(&self) -> toml::Table {
+        self.modules
+            .iter()
+            .map(|(key, value)| (key.clone(), value.clone()))
+            .collect()
+    }
 }
 
 fn merge_toml_value(base: &mut toml::Value, overlay: toml::Value) {
