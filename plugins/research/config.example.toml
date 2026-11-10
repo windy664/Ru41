@@ -1,0 +1,5 @@
+# 科研机会总览配置模板；复制到 plugins.d/research/config.toml 后修改。
+# 依赖核心 [obsidian].vault_path。
+
+[research]
+interval_secs = 21600

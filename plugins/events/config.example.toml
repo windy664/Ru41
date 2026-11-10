@@ -1,0 +1,4 @@
+# 活动总览插件配置模板；复制到 plugins.d/events/config.toml 后修改。
+
+[events]
+interval_secs = 21600

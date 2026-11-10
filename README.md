@@ -150,7 +150,7 @@ Worker 会真实调用 Agent 并消耗对应额度。`--once` 最多领取一个
 
 ## 按自己的方式部署
 
-从 [ru41.example.toml](ru41.example.toml) 创建本地配置。字段优先级为 **CLI 参数 → 环境变量 → 配置文件 → 默认值**。
+从 [ru41.example.toml](ru41.example.toml) 创建核心配置；插件配置从各 `plugins/<插件>/config.example.toml` 复制到 `plugins.d/<插件>/config.toml`。字段优先级为 **CLI 参数 → 环境变量 → 插件本地配置 → 插件配置 → 主配置 → 默认值**。
 
 | 可选项 | 默认方式 | 扩展方式 |
 | :--- | :--- | :--- |
@@ -172,7 +172,7 @@ Worker 会真实调用 Agent 并消耗对应额度。`--once` 最多领取一个
 | [`src/domain/`](src/domain/) · [`src/app/`](src/app/) | 领域规则与公共用例 |
 | [`src/ports/`](src/ports/) · [`src/adapters/`](src/adapters/) | 能力接口与 Agent、数据库、来源适配 |
 | [`src/runtime/`](src/runtime/) · [`src/privacy/`](src/privacy/) | 执行机制、通知派发、脱敏与回填 |
-| [`plugins/`](plugins/) | 23 个业务附属（论文/RSS/水电/课表/作业/图书馆/课堂录音等），独立 crate 编译热插拔 |
+| [`plugins/`](plugins/) | 24 个业务附属（论文/RSS/水电/课表/作业/图书馆/课堂录音等），独立 crate 编译热插拔 |
 | [`src/channels/`](src/channels/) | 消息渠道（QQ 网关与飞书 webhook） |
 | [`src/ingress/`](src/ingress/) · [`src/bootstrap/`](src/bootstrap/) | 入口、配置与装配 |
 | [`src/modules/`](src/modules/) | 插件注册表空壳（2026-11-03 全量插件化后仅剩 linkme 定义与共享工具） |

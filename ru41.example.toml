@@ -1,44 +1,43 @@
-# Ru41 配置样例；复制为 ru41.toml 并填入真实值（ru41.toml 已在 .gitignore 中）。
+# Ru41 核心配置样例；复制为 ru41.toml 并填入真实值（ru41.toml 已在 .gitignore 中）。
+#
+# 这是「核心配置」：agent、存储、worker、渠道、通知、vault、API。
+# 附属插件配置不再推荐堆在这里，请看 plugins/<插件>/config.example.toml，
+# 复制到 plugins.d/<插件>/config.toml；设备本地覆盖放 config.local.toml。
+#
 # 优先级：CLI 参数 > 环境变量 > plugins.d/<插件>/config.local.toml
 #         > plugins.d/<插件>/config.toml > 本文件 [sources.*] > 内置默认值。
-# 插件自有配置放在主配置旁的 plugins.d/<插件名>/config.toml；文件顶层直接写
-# 该插件的配置段名（例如 papers/config.toml 里写 [arxiv]）。插件目录里的
-# config.example.toml 只作模板，真实 config.toml / config.local.toml 不进 git。
 
 [store]
-kind = "sqlite"                 # sqlite 或 postgres
-path = ".ru41/state.db"         # sqlite 数据库文件
-# url = "postgres://user:pass@localhost:5432/ru41"  # postgres 连接串，也可用 RU41_PG_URL
+kind = "sqlite"
+path = ".ru41/state.db"
+# url = "postgres://user:pass@localhost:5432/ru41"  # 也可用 RU41_PG_URL
 
 [worker]
-timeout_secs = 300            # 日报/精读等重任务建议 900；超时任务自动重试
+timeout_secs = 300
 runs_dir = ".ru41/runs"
-sanitize = true                 # Agent 调用前的信息脱敏
+sanitize = true
 
 [todo]
-utc_offset_minutes = 480        # 本地时区固定偏移；默认 +08:00
-recent_days = 7                 # 今日之后归入“近期”的窗口
-long_term_days = 14             # 超过该窗口的已排期事项归入“长期”
+utc_offset_minutes = 480
+recent_days = 7
+long_term_days = 14
 
 [agent.codex]
-# bin = "codex"
+bin = "codex"
 # model = "gpt-5.2-codex"
-# output_schema = false             # 供应商不接受 json_schema 时，改用 prompt 约束 + Ru41 校验
-# config_overrides = [              # 附加 codex -c 配置；路径需用绝对路径
+# output_schema = false
+# config_overrides = [
 #   'model_catalog_json="/absolute/path/model-catalogs.json"',
 #   'web_search="disabled"',
 # ]
 
 # 自定义模型提供方（可选）：让 codex 走 OpenAI Responses 兼容端点。
-# 密钥从 api_key_env 指定的环境变量读取（由 codex 子进程自读），不写进本文件。
 # [agent.codex.provider]
-# id = "openrouter"                 # provider 标识
-# name = "OpenRouter"               # 展示名（缺省同 id）
+# id = "openrouter"
+# name = "OpenRouter"
 # base_url = "https://openrouter.ai/api/v1"
 # api_key_env = "OPENROUTER_API_KEY"
-# wire_api = "responses"            # Codex 0.163+ 仅支持 responses；chat 仅用于旧版
-bin = "codex"
-# model = "gpt-5-codex"
+# wire_api = "responses"
 
 # Pi 底座（Anthropic 协议端点，如 minimax/MiniMax-M3）。
 # [agent.pi]
@@ -47,159 +46,34 @@ bin = "codex"
 # provider = "minimax"
 # base_url = "https://api.minimax.io/anthropic"
 # api = "anthropic-messages"
-# api_key_env = "MINIMAX_API_KEY"     # 值只进子进程环境
-# fallback_models = ["deepseek/deepseek-chat"]  # Pi virtual model retry 时按序切换
-# tools = "read,write,edit,bash"      # 留空 = 禁用全部工具（只做文本分析）
-# 显式加载的 Pi 扩展：只加载这里写下的，扩展发现始终关闭。
-# 浏览器扩展（真浏览器 + 截图）见 docs/browser-automation.md。
+# api_key_env = "MINIMAX_API_KEY"
+# fallback_models = ["deepseek/deepseek-chat"]
+# tools = "read,write,edit,bash"
 # extensions = ["/home/node/.pi/agent/npm/node_modules/pi-chrome-use/extensions/browser-execute.ts"]
 #
 # [agent.pi.extra_env]
-# 扩展读环境变量用这个（只进子进程环境，不写日志）。
 # BU_CDP_WS = "ws://ru41-browser:3000/chromium"
 
 [agent.skills]
-# 按 root/<module>/skills/<skill>/SKILL.md 发现技能；缺省同时尝试以下两个目录。
-roots = ["src/modules", "/etc/ru41/modules"]
+# 按 root/<插件>/skills/<技能>/SKILL.md 发现技能；生产通常用镜像/挂载默认值。
+roots = ["plugins", "/usr/share/ru41/plugins"]
 
 [channel.qq]
-# 密钥建议用环境变量 RU41_QQ_APP_ID / RU41_QQ_APP_SECRET，避免写进文件。
+# 密钥建议用环境变量 RU41_QQ_APP_ID / RU41_QQ_APP_SECRET。
 app_id = ""
 app_secret = ""
-# 「绑定」命令的口令；也可用环境变量 RU41_QQ_BIND_SECRET。留空则绑定功能关闭。
 # bind_secret = ""
-# 主动通知的默认目标（[notify] channel = "qq" 时必填）。
 # default_notify_target = "user:你的openid"
 
 [channel.feishu]
-# 自定义群机器人 webhook（含 token，建议用环境变量 RU41_FEISHU_WEBHOOK_URL）。
-# webhook_url = ""
+# webhook_url = ""  # 建议用 RU41_FEISHU_WEBHOOK_URL
 
-# 默认通知出口：简报类任务（如论文精选）终态推送走哪个渠道，只有这里需要知道渠道。
+# 默认通知出口：简报类任务终态推送走哪个渠道。
 # [notify]
-# channel = "feishu"
+# channel = "qq"   # 或 "feishu"
+# silent_sources = ["obsidian"]
 
-# arXiv 论文追踪（ru41 papers poll/run）。
-# [sources.arxiv]
-# categories = ["cs.CR", "cs.AI", "cs.CL"]
-# keywords = ["prompt injection", "jailbreak", "llm security", "agent"]
-# interests = "AI 安全方向本科生，关注 LLM/Agent 安全"
-# notify = true
-
-# RSS 信息流追踪（ru41 rss poll/run），模式与论文追踪一致。
-# [sources.rss]
-# feeds = ["https://www.jiqizhixin.com/rss"]
-# keywords = ["agent", "llm", "安全"]
-# interests = "AI 安全方向本科生"
-
-# YouTube 英语预习（ru41 youtube poll/run），见 docs/sources-youtube.md。
-# 需要本机安装 yt-dlp；proxy_url 传给 yt-dlp 子进程（RSS 端点对本网络不可用，采集全走 yt-dlp）。
-# [sources.youtube]
-# channels = ["@Fireship"]           # @handle 或频道 URL
-# interests = "计算机 / AI / 安全"
-# level = "CET-6 / B2"               # 注入预习单 prompt
-# max_per_poll = 2                   # 单轮最多入队几个预习任务（控制 Agent 额度）
-# max_age_days = 14                  # 只追窗口内的新视频；频道首见只登记基线不预习
-# proxy_url = "http://127.0.0.1:7890"
-# QQ 点播：/预习 <YouTube链接>；CLI 点播：ru41 youtube prep <url>
-
-# 项目库管理（ru41 projects poll/run）：扫 02-Projects 项目笔记，
-# frontmatter 带 repo: https://github.com/... 的项目每日同步 README+元数据到 Repo-GitHub.md。
-# 项目立场与进度以人写的笔记为准；需要 [obsidian] vault 已配置。
-# [sources.projects]
-# projects_dir = "02-Projects-项目"
-# interval_secs = 86400
-# github_user = "yourname"      # 配置后每日全量同步该账号公开仓库（各建目录+README.md）
-# archive_after_days = 180      # 最后更新超过该天数的仓库自动归 Archived-已归档
-
-# 校园卡水电监控（ru41 ecard poll/run），协议见 docs/ecard-waterfee.md。
-# base_url 与 token 只存本地；token 建议用环境变量 RU41_ECARD_TOKEN。
-# [sources.ecard]
-# base_url = "https://ecarduser.<school>.edu.cn"
-# impl_type = ""
-# school_area_no = ""
-# building_no = ""
-# room_num = ""
-# power_threshold = 10.0   # 度
-# water_threshold = 1.0    # 吨
-# interval_secs = 86400
-
-# 恒源云 light-gpu 库存监控（ru41 compshare poll/run），协议见 docs/sources-compshare.md。
-# Cookie 是登录态，建议用环境变量 RU41_COMPSHARE_COOKIE 注入，勿写进文件。
-# [sources.compshare]
-# project_id = "org-..."
-# image_id = "compshareImage-..."
-# region = "cn-wlcb"
-# zone = "cn-wlcb-01"
-# gpu_type = "P40"
-# disk_size_gb = 100
-# interval_secs = 60
-# notify = true
-
-# 智慧树作业提醒：消费 sidecar 采集器写出的报告文件（见 docs/sources-zhihuishu.md）。
-# [sources.zhihuishu]
-# report_path = ".ru41/zhihuishu/report.json"
-# deadline_days = 3        # 截止前 N 天进入每日提醒
-# interval_secs = 21600
-# notify = true
-
-# 学习通签到监控：协议端直连，检测待签活动并提醒（见 docs/sources-chaoxing.md）。
-# 凭证建议用环境变量 RU41_XXT_PHONE / RU41_XXT_PASSWORD 注入。
-# [sources.chaoxing]
-# phone = "10000000000"
-# password = ""
-# interval_secs = 60       # 签到窗口常为 1-2 分钟，默认 60s
-# notify = true
-# auto_sign = false        # true = agent 模式：发现待签当场自动签（二维码除外）
-# 手势签到：平台只在签到窗口内下发轨迹（getPPTActiveInfo 的 data.signCode），
-# 机器人窗口内取到就自动签（轨迹形如 "123654789"）。取不到时用这里配的固定轨迹兜底：
-# [sources.chaoxing.gesture_sign_codes]
-# "268129408" = "123654789"   # 课程 id → 手势轨迹（老师长期用同一图案时）
-# work_poll_secs = 1800    # 作业轮询间隔（作业列表请求重，务必低频）
-# work_due_days = 3        # 截止前 N 天临期提醒
-# work_todo_sync = true    # 未交作业自动进待办、已交自动回勾
-# work_vault_sync = true   # 作业清单进 Obsidian（需 [obsidian]）；与智慧树同窗目录即聚合
-# vault_course_dir = "01-Courses-课程/2026-Fall-大一上"   # 缺省与 zhihuishu 一致
-# vault_courses = { "大学英语新视野" = "大学英语" }         # 跨平台同名课程映射到同一目录
-# default_lat = 30.000000  # 宿舍纬度：位置/二维码签到的坐标缺省
-# default_lon = 114.000000 # 宿舍经度
-# default_addr = "宿舍"    # 地址文本（位置签到的 address 参数，教师端可见）
-# photo_path = "~/sign.jpg" # 拍照签到默认照片；缺省用内置兜底照片
-
-# 微助教签到+作业监控（ru41 teachermate poll/run/work/bind/sign，见 docs/sources-teachermate.md）。
-# 凭证是微信服务号网页 openid（人工投喂）：微信里点服务号任意菜单，复制链接后
-# `ru41 teachermate bind <链接>` 提取落盘并验证；失效告警每日一次。
-# [sources.teachermate]
-# openid = ""                # 或环境变量 RU41_WZJ_OPENID；建议直接用 bind 命令落盘
-# openid_path = ".ru41/teachermate/openid"
-# interval_secs = 60         # 签到窗口常为 1-2 分钟，太疏会漏
-# notify = true              # 待签活动/作业经 [notify] 默认出口推送
-# auto_sign = false          # true = 发现待签当场自动签（普通/GPS；二维码无法代签）
-# default_lat = 30.000000    # GPS 签到缺省纬度（宿舍/教学楼）
-# default_lon = 114.000000   # GPS 签到缺省经度
-# work_poll_secs = 1800      # 作业轮询间隔（独立低频）
-# work_due_days = 3          # 截止前 N 天开始临期提醒
-# work_todo_sync = false     # 未交作业自动进待办、平台已交自动回勾
-# work_vault_sync = false    # 作业清单同步进 Obsidian 课程目录
-# vault_course_dir = "学期/2026秋"   # work_vault_sync 开启时必配
-# vault_courses = { "大学英语" = "大学英语" }  # 课程名 → Vault 目录名映射
-
-# 教务课表监控（ru41 jwxt poll/run/login，见 docs/sources-jwxt.md）。
-# 统一认证账号经 CAS 单点登录拉课表；首次登录需人工输一次图形验证码。
-# 凭证建议用环境变量 RU41_JWXT_USERNAME / RU41_JWXT_PASSWORD 注入。
-# [sources.jwxt]
-# semester_start = "2026-09-07" # 学期第一周周一：周次推算与明日课表依赖它（教务接口不暴露当前周，必须配置准确）
-# interval_secs = 3600          # jwxt run 轮询间隔
-# remind_hour = 21              # 每日到点后推明日课表（同日去重）
-# daily_remind = true
-# sync_schedule = true          # 课表同步到日程（课前20分钟提醒、/日程 可见）；需配 section_times
-# class_duration_mins = 40      # 单节时长（该校 80 分钟一大节 = 2 小节）
-# section_times = ["09:00","09:40","10:40","11:20","12:30","13:10","14:00","14:40","15:30","16:10","17:00","17:40","19:00","19:40","20:30","21:10"]  # 第1..=16节上课时刻
-# notify = true
-
-# Obsidian Vault 闭环（ru41 obsidian poll/run，核心能力）：Git 轮询发现 Inbox 新提交，
-# 入队 Agent 整理任务（obsidian-organize skill），成功后自动提交推送。
-# vault_path 是服务器本地克隆路径（容器内需挂载）；git 凭据用 credential.helper，不写这里。
+# Obsidian Vault 闭环。vault_path 是服务器本地克隆路径（容器内需挂载）。
 # [obsidian]
 # vault_path = "/vault"
 # branch = "master"
@@ -207,37 +81,25 @@ app_secret = ""
 # interval_secs = 300
 # notify = true
 
-# HTTP API（ru41 serve）。令牌经环境变量 RU41_API_TOKEN 注入，不写入配置文件。
-# listen 地址通过 CLI 参数指定：ru41 serve --listen 127.0.0.1:4141
+# 知识库向量索引（衍生数据，可重建）。
+# [knowledge]
+# db_path = ".ru41/knowledge.db"
+# cache_dir = ".ru41/fastembed"
 
+# 用量价格（人民币 / 百万 token）；缺省用内置 MiniMax-M3 参考价。
+# [pricing]
+# input_cny_per_million = 2.16
+# output_cny_per_million = 8.64
+# cache_read_cny_per_million = 0.432
+
+# HTTP API（ru41 serve）。令牌优先用 RU41_API_TOKEN。
 [api]
 # listen = "127.0.0.1:4141"
-# token 也可写在这里；环境变量 RU41_API_TOKEN 优先级更高（推荐）
 
-# 博客发布管线（ru41 blog poll/run）：Vault 的 Published-已发布/ 目录即发布入口。
-# 定稿从 Drafts-草稿/ 移入该目录并 git 同步后，服务器自动校验 frontmatter、
-# 写入博客仓库 _posts 并推送；文件原地留在已发布目录归档，程序不回写 Vault。
-# repo_path 是服务器上的博客仓库克隆（容器内挂载）；推 GitHub 需凭据（git credential helper）。
-# [sources.blog]
-# repo_path = "/blog"
-# branch = "master"
-# site_url = "https://windy664.github.io"
-# interval_secs = 300
-# notify = true
+# 插件 .so 目录与总开关。
+# [plugins]
+# dir = "/etc/ru41/plugins"
+# enabled = true
 
-# 岗位总览：面灵 AI 职位表（实习+校招，只留技术岗）→ vault
-# 05-Opportunities-机会/Internships-实习/岗位总览.md，跨轮合并扩窗口。需 [obsidian]。
-# 第二数据源：BOSS 直聘 sidecar（deploy/compose.yaml 的 boss-crawler service，
-# 每天由 cron 触发爬取，结果写 boss_jobs.json）。boss_path 指向该文件在
-# ru41-jobs 容器内的挂载路径；缺省不启用。
-# [sources.jobs]
-# interval_secs = 21600
-# boss_path = "/data/boss_jobs.json"
-
-# 课程目录同步（ru41 jwxt courses）：以教务课表为准，在 vault 里为每门课建目录
-# 并写「课程索引.md」，学期根写「课程总览.md」。课程清单以课表为权威来源。
-# [sources.jwxt.course_aliases]
-# "程序设计基础" = "C语言程序设计"
-# vault_course_dir = "01-Courses-课程/2026-Fall-大一上"
-# courses_vault_sync = true
-# courses_interval_secs = 3600
+# 兼容说明：旧的 [sources.<插件>] 仍会生效，但新配置优先放
+# plugins.d/<插件>/config.toml；两边同时存在时插件目录配置覆盖这里。

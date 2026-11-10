@@ -1,0 +1,18 @@
+# 教务课表插件配置模板；复制到 plugins.d/jwxt/config.toml 后修改。
+# 账号密码不写进文件，用 RU41_JWXT_USERNAME / RU41_JWXT_PASSWORD 注入。
+
+[jwxt]
+semester_start = "2026-09-07"
+interval_secs = 3600
+daily_remind = true
+remind_hour = 21
+sync_schedule = true
+class_duration_mins = 40
+section_times = ["09:00","09:40","10:40","11:20","12:30","13:10","14:00","14:40","15:30","16:10","17:00","17:40","19:00","19:40","20:30","21:10"]
+notify = true
+vault_course_dir = "01-Courses-课程/2026-Fall-大一上"
+courses_vault_sync = true
+courses_interval_secs = 3600
+
+[jwxt.course_aliases]
+"程序设计基础" = "C语言程序设计"

@@ -1,0 +1,7 @@
+# 图书馆插件配置模板；复制到 plugins.d/library/config.toml 后修改。
+# 默认复用 RU41_JWXT_USERNAME / RU41_JWXT_PASSWORD；也可用 RU41_LIBRARY_* 单独注入。
+
+[library]
+interval_secs = 21600
+remind_days = 3
+notify = true

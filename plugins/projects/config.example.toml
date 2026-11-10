@@ -1,0 +1,9 @@
+# 项目库同步配置模板；复制到 plugins.d/projects/config.toml 后修改。
+
+[projects]
+projects_dir = "02-Projects-项目"
+interval_secs = 86400
+# github_user = "yourname"
+archive_after_days = 14
+notify = false
+docs = true

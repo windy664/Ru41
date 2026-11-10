@@ -1,0 +1,10 @@
+# 页面监控插件配置模板；复制到 plugins.d/pagewatch/config.toml 后修改。
+
+[pagewatch]
+interval_secs = 1800
+notify = true
+# status_path 默认不写 vault；机器状态表只留在任务数据库。
+
+[[pagewatch.pages]]
+name = "示例赛事官网"
+url = "https://example.com/contest"

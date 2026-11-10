@@ -1,0 +1,11 @@
+# 博客发布插件配置模板；复制到 plugins.d/blog/config.toml 后修改。
+
+[blog]
+# 服务器上的博客仓库克隆路径（容器内路径）。
+repo_path = "/blog"
+remote = "origin"
+branch = "master"
+published_dir = "06-Blog-博客/Published-已发布"
+site_url = "https://example.github.io"
+interval_secs = 300
+notify = true

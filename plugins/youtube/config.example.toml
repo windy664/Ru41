@@ -1,0 +1,23 @@
+# YouTube 英语预习配置模板；复制到 plugins.d/youtube/config.toml 后修改。
+
+[youtube]
+channels = ["@Fireship"]
+keywords = []
+interests = "计算机 / AI / 安全"
+level = "CET-6 / B2"
+min_duration_secs = 60
+max_per_channel = 15
+backfill_on_first_sight = false
+blocked_channels = []
+tabs = ["videos", "streams"]
+max_per_poll = 6
+max_age_days = 14
+max_transcript_chars = 24000
+interval_secs = 3600
+backend = "pi"
+notify = true
+digest_at = "12:10"
+digest_evening_at = "20:30"
+ytdlp_bin = "yt-dlp"
+# proxy_url = "http://127.0.0.1:7890"
+# ytdlp_cookies = "/data/youtube-cookies.txt"

@@ -1,0 +1,19 @@
+# 微助教签到与作业插件配置模板；复制到 plugins.d/teachermate/config.toml 后修改。
+# openid 不写进文件，推荐 `ru41 teachermate bind <链接>` 落盘或 RU41_WZJ_OPENID 注入。
+
+[teachermate]
+openid_path = ".ru41/teachermate/openid"
+interval_secs = 60
+notify = true
+auto_sign = false
+# default_lat = 30.000000
+# default_lon = 114.000000
+work_poll_secs = 1800
+work_due_days = 3
+work_todo_sync = false
+work_vault_sync = false
+# vault_course_dir = "01-Courses-课程/2026-Fall-大一上"
+work_vault_task_dirs = "substantive"
+
+[teachermate.vault_courses]
+# "大学英语" = "大学英语I（综合基础）"
