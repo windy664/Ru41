@@ -19,7 +19,7 @@ pub fn resolve(
         .unwrap_or_else(|| "sqlite".into());
     let db = cli_db
         .or_else(|| config.store.path.clone())
-        .unwrap_or_else(|| PathBuf::from(".ru41/state.db"));
+        .unwrap_or_else(|| Config::default_data_dir().join("state.db"));
     let pg_url = cli_pg_url.or_else(|| config.store.url.clone());
     (kind, db, pg_url)
 }

@@ -169,7 +169,7 @@ async fn main() -> Result<()> {
                     worker_id: format!("worker-{}", std::process::id()),
                     runs_dir: runs_dir
                         .or_else(|| config.worker.runs_dir.clone())
-                        .unwrap_or_else(|| PathBuf::from(".ru41/runs")),
+                        .unwrap_or_else(|| Config::default_data_dir().join("runs")),
                     timeout: Duration::from_secs(
                         timeout_secs.or(config.worker.timeout_secs).unwrap_or(300),
                     ),

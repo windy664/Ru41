@@ -130,6 +130,54 @@ fn unknown_fields_and_invalid_toml_are_rejected() {
 }
 
 #[test]
+fn config_version_is_validated() {
+    let dir = tempfile::tempdir().unwrap();
+    let file = dir.path().join("ru41.toml");
+    std::fs::write(&file, "config_version = 1\n").unwrap();
+    assert!(Config::load_from(Some(&file), dir.path(), None).is_ok());
+    std::fs::write(&file, "config_version = 0\n").unwrap();
+    assert!(Config::load_from(Some(&file), dir.path(), None).is_err());
+    std::fs::write(&file, "config_version = 2\n").unwrap();
+    assert!(Config::load_from(Some(&file), dir.path(), None).is_err());
+}
+
+#[test]
+fn ru41_home_supplies_config_plugin_root_and_data_dir() {
+    #[derive(Debug, Default, serde::Deserialize)]
+    #[serde(default)]
+    struct Rss {
+        interval_secs: Option<u64>,
+    }
+
+    let cwd = tempfile::tempdir().unwrap();
+    let home_root = tempfile::tempdir().unwrap();
+    std::fs::write(
+        home_root.path().join("ru41.toml"),
+        "[sources.rss]\ninterval_secs = 300\n",
+    )
+    .unwrap();
+    let rss_dir = home_root.path().join("plugins.d/rss");
+    std::fs::create_dir_all(&rss_dir).unwrap();
+    std::fs::write(rss_dir.join("config.toml"), "[rss]\ninterval_secs = 61\n").unwrap();
+
+    let (config, path) =
+        Config::load_from_with_roots(None, cwd.path(), None, Some(home_root.path()), None).unwrap();
+    assert_eq!(
+        path.as_deref(),
+        Some(home_root.path().join("ru41.toml").as_path())
+    );
+    assert_eq!(
+        config.sources.get::<Rss>("rss").unwrap().interval_secs,
+        Some(61)
+    );
+    assert_eq!(
+        Config::default_data_dir_for(Some(home_root.path())),
+        home_root.path().join("data")
+    );
+    assert_eq!(Config::default_data_dir_for(None), PathBuf::from(".ru41"));
+}
+
+#[test]
 fn parses_agent_skills_roots() {
     let dir = tempfile::tempdir().unwrap();
     let file = dir.path().join("skills.toml");

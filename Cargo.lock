@@ -3060,7 +3060,7 @@ dependencies = [
 
 [[package]]
 name = "ru41-plugin-api"
-version = "0.5.0"
+version = "0.6.0"
 dependencies = [
  "anyhow",
  "chrono",

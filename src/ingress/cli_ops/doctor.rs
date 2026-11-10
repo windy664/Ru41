@@ -54,7 +54,7 @@ pub(crate) async fn run(cli: &Cli, deep: bool) -> OpsOutcome {
         .worker
         .runs_dir
         .clone()
-        .unwrap_or_else(|| ".ru41/runs".into());
+        .unwrap_or_else(|| crate::bootstrap::config::Config::default_data_dir().join("runs"));
     checks.push(if runs_dir.is_dir() {
         check("runs_dir", "ok", runs_dir.display().to_string())
     } else {

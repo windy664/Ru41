@@ -105,6 +105,9 @@ fn choose_provider(non_interactive: bool, requested: Option<&str>) -> Result<Str
 }
 
 fn minimal_config(provider: &str, catalog_path: Option<&Path>) -> Result<Value> {
+    let data_dir = Config::default_data_dir();
+    let state_db = data_dir.join("state.db").to_string_lossy().to_string();
+    let runs_dir = data_dir.join("runs").to_string_lossy().to_string();
     let mut codex = json!({"bin": "codex"});
     if provider == "mimo" {
         let catalog = catalog_path.context("MiMo catalog path missing")?;
@@ -131,8 +134,8 @@ fn minimal_config(provider: &str, catalog_path: Option<&Path>) -> Result<Value> 
     // 默认底座统一为 pi：脚手架也只给一套（除非显式选了 mimo）。
     if provider != "mimo" {
         return Ok(json!({
-            "store": {"kind": "sqlite", "path": ".ru41/state.db"},
-            "worker": {"timeout_secs": 300, "runs_dir": ".ru41/runs", "sanitize": true},
+            "store": {"kind": "sqlite", "path": state_db},
+            "worker": {"timeout_secs": 300, "runs_dir": runs_dir, "sanitize": true},
             "agent": {
                 "default_backend": "pi",
                 "pi": {
@@ -145,8 +148,8 @@ fn minimal_config(provider: &str, catalog_path: Option<&Path>) -> Result<Value> 
         }));
     }
     Ok(json!({
-        "store": {"kind": "sqlite", "path": ".ru41/state.db"},
-        "worker": {"timeout_secs": 300, "runs_dir": ".ru41/runs", "sanitize": true},
+        "store": {"kind": "sqlite", "path": state_db},
+        "worker": {"timeout_secs": 300, "runs_dir": runs_dir, "sanitize": true},
         "agent": {"codex": codex},
     }))
 }
@@ -188,7 +191,7 @@ fn initialize_storage(config: &Config, options: &StoreOptions) -> Result<()> {
         .worker
         .runs_dir
         .clone()
-        .unwrap_or_else(|| PathBuf::from(".ru41/runs"));
+        .unwrap_or_else(|| Config::default_data_dir().join("runs"));
     std::fs::create_dir_all(&runs_dir)?;
     if let Some(parent) = runs_dir.parent() {
         std::fs::create_dir_all(parent.join("backups"))?;

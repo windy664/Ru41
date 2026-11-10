@@ -8,16 +8,23 @@ use std::{
 };
 
 fn run(root: &Path, args: &[&str]) -> Output {
+    run_with_ru41_home(root, args, None)
+}
+
+fn run_with_ru41_home(root: &Path, args: &[&str], ru41_home: Option<&Path>) -> Output {
     let home = root.join("home");
     std::fs::create_dir_all(&home).unwrap();
-    Command::new(env!("CARGO_BIN_EXE_ru41"))
+    let mut command = Command::new(env!("CARGO_BIN_EXE_ru41"));
+    command
         .current_dir(root)
         .args(args)
         .env_clear()
         .env("PATH", std::env::var("PATH").unwrap())
-        .env("HOME", home)
-        .output()
-        .unwrap()
+        .env("HOME", home);
+    if let Some(ru41_home) = ru41_home {
+        command.env("RU41_HOME", ru41_home);
+    }
+    command.output().unwrap()
 }
 
 fn json(output: &Output) -> Value {
@@ -75,6 +82,27 @@ fn init_is_idempotent_and_operation_commands_share_state() {
     assert_eq!(status["backends"].as_array().unwrap().len(), 2);
     let dump = json(&run(root.path(), &["--config", &config, "dump"]));
     assert_eq!(dump["environment"]["os"], std::env::consts::OS);
+}
+
+#[test]
+fn init_uses_ru41_home_layout() {
+    let root = tempfile::tempdir().unwrap();
+    let ru41_home = tempfile::tempdir().unwrap();
+    let output = json(&run_with_ru41_home(
+        root.path(),
+        &["init", "--non-interactive"],
+        Some(ru41_home.path()),
+    ));
+    let config_path = ru41_home.path().join("ru41.toml");
+    assert_eq!(output["created"], true);
+    assert_eq!(output["config_path"], config_path.display().to_string());
+    assert!(config_path.is_file());
+    let text = std::fs::read_to_string(config_path).unwrap();
+    let data_dir = ru41_home.path().join("data");
+    assert!(text.contains(&data_dir.join("state.db").display().to_string()));
+    assert!(text.contains(&data_dir.join("runs").display().to_string()));
+    assert!(ru41_home.path().join("data/state.db").is_file());
+    assert!(ru41_home.path().join("data/runs").is_dir());
 }
 
 #[test]
