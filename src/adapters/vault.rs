@@ -376,8 +376,27 @@ impl Vault for GitVault {
 
     fn delete_remote_branch(&self, branch: &str) -> Result<()> {
         self.locked(|vault| {
+            let output = Command::new("git")
+                .args(["push", &vault.remote, "--delete", branch])
+                .current_dir(&vault.path)
+                .env("GIT_TERMINAL_PROMPT", "0")
+                .env("LC_ALL", "C")
+                .output()
+                .context("cannot run git")?;
+            if !output.status.success() {
+                let error = String::from_utf8_lossy(&output.stderr);
+                if !error.contains("remote ref does not exist") {
+                    bail!("git push failed: {}", error.trim());
+                }
+            }
+            // SSH 降级会把待合并提交直接写进这个 remote-tracking ref；
+            // Gitee 上没有对应分支时也要把它清掉，避免下一轮重复合并。
             vault
-                .git(&["push", &vault.remote, "--delete", branch])
+                .git(&[
+                    "update-ref",
+                    "-d",
+                    &format!("refs/remotes/{}/{branch}", vault.remote),
+                ])
                 .map(|_| ())
         })
     }

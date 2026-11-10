@@ -634,6 +634,9 @@ fn pending_branch_merges_into_master_and_keeps_local_commit() {
             .unwrap()
             .is_none()
     );
+
+    // SSH 降级只写 remote-tracking ref，Gitee 上可能没有分支；清理仍需幂等。
+    fx.vault().delete_remote_branch("ru41/local").unwrap();
 }
 
 /// 待合并分支与 master 改同一行 → merge 冲突 → 调用方合并后完成。
