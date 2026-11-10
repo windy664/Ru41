@@ -14,6 +14,8 @@ docker build -t ru41:local .
 
 按需要编辑 `ru41.toml`：Codex/Pi、QQ/飞书、通知出口和各 sources 配置仍与非 Docker 部署相同。插件配置也可以拆到 `plugins.d/<插件>/config.toml`（附属容器只读挂载；worker 不挂载，防止绕过裁剪配置）。真实配置、数据库、插件本地配置和认证目录都被 `.gitignore` 与 `.dockerignore` 排除，不会进入镜像。
 
+裸机部署可以设置 `RU41_HOME` 统一布局：`$RU41_HOME/ru41.toml`、`$RU41_HOME/plugins.d/`、`$RU41_HOME/data/`。Docker 容器内仍以 `/etc/ru41` 与 `/data` 为准，`RU41_HOME` 不是必需项。
+
 容器内统一使用：
 
 | 宿主机路径 | 容器路径 | 内容 |

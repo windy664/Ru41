@@ -7,6 +7,8 @@
 # 优先级：CLI 参数 > 环境变量 > plugins.d/<插件>/config.local.toml
 #         > plugins.d/<插件>/config.toml > 本文件 [sources.*] > 内置默认值。
 
+config_version = 1
+
 [store]
 kind = "sqlite"
 path = ".ru41/state.db"

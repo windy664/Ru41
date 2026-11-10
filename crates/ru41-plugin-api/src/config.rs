@@ -1,11 +1,16 @@
-use anyhow::{Context, Result};
+use anyhow::{Context, Result, ensure};
 use serde::Deserialize;
 use std::path::{Path, PathBuf};
+
+/// 当前配置 schema 版本。未写 config_version 的旧配置按 1 处理。
+pub const CURRENT_CONFIG_VERSION: u32 = 1;
 
 /// 顶层配置；全部字段可选，缺省走内置默认值。
 #[derive(Debug, Default, Deserialize)]
 #[serde(default, deny_unknown_fields)]
 pub struct Config {
+    /// 配置 schema 版本；只允许 <= 当前二进制支持的版本。
+    pub config_version: Option<u32>,
     pub store: StoreConfig,
     pub worker: WorkerSection,
     pub todo: TodoSection,
@@ -391,11 +396,19 @@ pub struct ConfigLocation {
     pub exists: bool,
 }
 
-fn candidates(explicit: Option<&Path>, cwd: &Path, home: Option<&Path>) -> Vec<PathBuf> {
+fn candidates(
+    explicit: Option<&Path>,
+    cwd: &Path,
+    home: Option<&Path>,
+    ru41_home: Option<&Path>,
+) -> Vec<PathBuf> {
     match explicit {
         Some(path) => vec![path.to_owned()],
         None => {
             let mut candidates = vec![cwd.join("ru41.toml")];
+            if let Some(root) = ru41_home {
+                candidates.push(root.join("ru41.toml"));
+            }
             if let Some(home) = home {
                 candidates.push(home.join(".config/ru41/config.toml"));
             }
@@ -407,6 +420,25 @@ fn candidates(explicit: Option<&Path>, cwd: &Path, home: Option<&Path>) -> Vec<P
 }
 
 impl Config {
+    /// RU41_HOME：统一配置、插件配置与运行数据的默认根；空值按未设置处理。
+    pub fn ru41_home() -> Option<PathBuf> {
+        std::env::var_os("RU41_HOME")
+            .map(PathBuf::from)
+            .filter(|path| !path.as_os_str().is_empty())
+    }
+
+    /// 默认数据目录：有 RU41_HOME 时收敛到 `$RU41_HOME/data`，否则沿用 `.ru41`。
+    pub fn default_data_dir() -> PathBuf {
+        Self::default_data_dir_for(Self::ru41_home().as_deref())
+    }
+
+    /// 可注入的默认数据目录解析，便于测试与不依赖环境变量的调用方。
+    pub fn default_data_dir_for(ru41_home: Option<&Path>) -> PathBuf {
+        ru41_home
+            .map(|root| root.join("data"))
+            .unwrap_or_else(|| PathBuf::from(".ru41"))
+    }
+
     /// 加载配置：显式路径 > ./ru41.toml > ~/.config/ru41/config.toml > 全默认。
     /// 返回配置与实际使用的文件路径（未使用配置文件时为 None）。
     pub fn load(explicit: Option<&Path>) -> Result<(Self, Option<PathBuf>)> {
@@ -415,12 +447,23 @@ impl Config {
         Self::load_from(explicit, &cwd, home.as_deref())
     }
 
-    /// 插件目录配置的默认根：主配置旁边的 plugins.d/。
+    /// 插件目录配置的默认根：优先主配置旁边的 plugins.d/；没有主配置时回退到 RU41_HOME/plugins.d。
     /// 运行时布局是 plugins.d/<插件名>/config.toml（可选 config.local.toml 覆盖）。
     pub fn default_plugin_config_root(config_path: Option<&Path>, cwd: &Path) -> PathBuf {
-        config_path
-            .and_then(Path::parent)
-            .unwrap_or(cwd)
+        Self::default_plugin_config_root_with_home(config_path, cwd, Self::ru41_home().as_deref())
+    }
+
+    fn default_plugin_config_root_with_home(
+        config_path: Option<&Path>,
+        cwd: &Path,
+        ru41_home: Option<&Path>,
+    ) -> PathBuf {
+        if let Some(parent) = config_path.and_then(Path::parent) {
+            return parent.join("plugins.d");
+        }
+        ru41_home
+            .map(Path::to_path_buf)
+            .unwrap_or_else(|| cwd.to_path_buf())
             .join("plugins.d")
     }
 
@@ -431,15 +474,18 @@ impl Config {
     }
 
     pub fn locate_from(explicit: Option<&Path>, cwd: &Path, home: Option<&Path>) -> ConfigLocation {
-        for path in candidates(explicit, cwd, home) {
+        let ru41_home = Self::ru41_home();
+        for path in candidates(explicit, cwd, home, ru41_home.as_deref()) {
             if path.is_file() {
                 return ConfigLocation { path, exists: true };
             }
         }
         ConfigLocation {
-            path: explicit
-                .map(Path::to_owned)
-                .unwrap_or_else(|| cwd.join("ru41.toml")),
+            path: explicit.map(Path::to_owned).unwrap_or_else(|| {
+                ru41_home
+                    .map(|root| root.join("ru41.toml"))
+                    .unwrap_or_else(|| cwd.join("ru41.toml"))
+            }),
             exists: false,
         }
     }
@@ -461,9 +507,26 @@ impl Config {
         home: Option<&Path>,
         plugin_root: Option<&Path>,
     ) -> Result<(Self, Option<PathBuf>)> {
+        Self::load_from_with_roots(
+            explicit,
+            cwd,
+            home,
+            Self::ru41_home().as_deref(),
+            plugin_root,
+        )
+    }
+
+    /// 测试可显式注入 RU41_HOME，避免依赖进程环境。
+    pub fn load_from_with_roots(
+        explicit: Option<&Path>,
+        cwd: &Path,
+        home: Option<&Path>,
+        ru41_home: Option<&Path>,
+        plugin_root: Option<&Path>,
+    ) -> Result<(Self, Option<PathBuf>)> {
         let mut config_path = None;
         let mut config = Self::default();
-        for path in candidates(explicit, cwd, home) {
+        for path in candidates(explicit, cwd, home, ru41_home) {
             if path.is_file() {
                 let text = std::fs::read_to_string(&path)
                     .with_context(|| format!("cannot read config file {}", path.display()))?;
@@ -478,11 +541,25 @@ impl Config {
         {
             anyhow::bail!("config file not found: {}", path.display());
         }
-        let root = plugin_root
-            .map(Path::to_path_buf)
-            .unwrap_or_else(|| Self::default_plugin_config_root(config_path.as_deref(), cwd));
+        config.validate()?;
+        let root = plugin_root.map(Path::to_path_buf).unwrap_or_else(|| {
+            Self::default_plugin_config_root_with_home(config_path.as_deref(), cwd, ru41_home)
+        });
         config.load_plugin_config_root(&root)?;
         Ok((config, config_path))
+    }
+
+    fn validate(&self) -> Result<()> {
+        let version = self.config_version.unwrap_or(CURRENT_CONFIG_VERSION);
+        ensure!(
+            version >= 1,
+            "config_version must be at least 1 (got {version})"
+        );
+        ensure!(
+            version <= CURRENT_CONFIG_VERSION,
+            "config_version {version} is newer than supported version {CURRENT_CONFIG_VERSION}"
+        );
+        Ok(())
     }
 
     /// 合并 plugins.d/<插件名>/{config.toml,config.local.toml}。
