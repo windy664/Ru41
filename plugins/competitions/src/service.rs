@@ -166,6 +166,21 @@ impl CompetitionsService {
             Err(error) => eprintln!("[competitions] ctftime fetch failed: {error:#}"),
         }
 
+        // 黑客松.com：全球 AI 黑客松赛事库（字段级核验后才发布，含国内与大湾区线下场次）。
+        // 接口不支持查询参数，筛选全在本地做。
+        let hc = ru41::adapters::sources::competition::hackathon_com::HackathonComClient::new();
+        match hc
+            .fetch_events(ru41::adapters::sources::competition::hackathon_com::SEARCH_URL)
+            .await
+        {
+            Ok(events) => all.extend(
+                events
+                    .iter()
+                    .filter_map(crate::filter::collect_hackathon_com),
+            ),
+            Err(error) => eprintln!("[competitions] hackathon.com fetch failed: {error:#}"),
+        }
+
         let today = chrono::Local::now().date_naive();
         build_rows(all, today)
     }
