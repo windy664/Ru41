@@ -136,6 +136,7 @@ cargo run --locked -- qq send --qq-app-id <APP_ID> --qq-app-secret <SECRET> --gr
 ```
 
 - 群里 @机器人 或单聊发送的文本会以 `qq:msg:{msg_id}` 为键幂等入队（`analysis_v1` 契约，默认 `codex` 底座，可 `qq run --backend` 改）；重复投递不会产生重复任务。
+- **同一会话会续接上下文**：聊天消息按 `qq:{目标}` 保存底座会话 ID，下一条消息走底座原生会话恢复（pi 用 `--session`）。开启条件是 `[agent.pi] session = true` 且 `session_dir` 指向跨容器持久化的目录（如 `/data/pi-sessions`）；聊天入口会自动改用带会话的 `pi-session` 底座，`/新建`（`/clear`）可清掉当前会话的续接状态。只有聊天任务参与续接——论文日报、RSS 日报等后台推送不占用聊天会话。
 - 任务进入 `succeeded`/`failed` 后，网关把结果摘要或错误作为**被动回复**发回原群/原单聊，并记录 `notified_at` 避免正常工作与并发派发时重复发送；发送成功但登记前崩溃的极端窗口仍可能重发，见核心状态说明。
 - QQ 被动回复要求带原消息的 `msg_id` 且约 5 分钟内有效；超过窗口或重启较晚的任务可能回复失败（日志可见，任务结果不受影响）。QQ 对主动推送有配额与频控限制，本网关以被动回复为主。协议细节与限制见 [QQ 渠道说明](channels-qq.md)。
 

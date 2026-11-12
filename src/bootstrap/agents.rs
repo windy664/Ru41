@@ -133,3 +133,37 @@ pub fn registry(
     }
     Ok(backends)
 }
+
+/// 聊天入口用的底座 id。
+///
+/// 配置写 `pi` 且开了会话持久化（`[agent.pi] session = true`）时改用
+/// `pi-session`——同一底座的「带会话」变体，让同一会话的多轮消息能续接上下文
+/// （走 pi 原生 `--session` 恢复，不是宿主侧拼历史）。
+/// 后台任务继续用无会话的 `pi`，免得每次轮询都落一个会话文件。
+pub fn chat_backend(agents: &super::config::AgentSection, requested: Option<String>) -> String {
+    let backend = requested.unwrap_or_else(|| agents.default_backend().to_owned());
+    if backend == "pi" && agents.pi.session.unwrap_or(false) {
+        "pi-session".into()
+    } else {
+        backend
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::chat_backend;
+    use crate::bootstrap::config::AgentSection;
+
+    #[test]
+    fn chat_uses_session_variant_only_when_session_is_enabled() {
+        let mut agents = AgentSection::default();
+        assert_eq!(chat_backend(&agents, None), "pi");
+        agents.pi.session = Some(true);
+        assert_eq!(chat_backend(&agents, None), "pi-session");
+        assert_eq!(chat_backend(&agents, Some("codex".into())), "codex");
+        assert_eq!(
+            chat_backend(&agents, Some("pi-session".into())),
+            "pi-session"
+        );
+    }
+}
