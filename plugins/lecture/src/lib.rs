@@ -47,10 +47,11 @@ pub static DEF: ModuleDef = ModuleDef {
         if !lecture.is_ready() {
             return Ok(Vec::new());
         }
-        Ok(vec![
-            std::sync::Arc::new(LectureHandler::new(lecture.resolved()?))
-                as std::sync::Arc<dyn ru41::ports::commands::CommandHandler>,
-        ])
+        let handler = LectureHandler::new(lecture.resolved()?, config.todo.options()?);
+        Ok(vec![std::sync::Arc::new(handler)
+            as std::sync::Arc<
+                dyn ru41::ports::commands::CommandHandler,
+            >])
     },
     image_consumers: no_image_consumers,
     cli: no_cli,

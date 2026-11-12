@@ -25,6 +25,31 @@ struct Transcript {
 /// 转写短于这个长度就内联进 prompt，超过则只给文件路径。
 const TRANSCRIPT_INLINE_LIMIT: usize = 4000;
 
+/// 按上课时间匹配课表上的课程。
+///
+/// handler（即时回执）与 worker（最终归档）共用这一份实现：
+/// 回执里说的课程名和最后写进 Vault 的课程必然一致。
+pub fn match_course(
+    store: &Arc<dyn TaskStore>,
+    options: TodoOptions,
+    config: &LectureConfig,
+    recorded_at: i64,
+) -> String {
+    let lead = 10 * 60;
+    let service = ScheduleService::new(store.clone(), options);
+    let Ok(occurrences) = service.occurrences_between(recorded_at - lead, recorded_at + lead, 20)
+    else {
+        return config.fallback_course.clone();
+    };
+    let containing = occurrences
+        .iter()
+        .find(|o| o.starts_at - lead <= recorded_at && recorded_at < o.ends_at);
+    containing
+        .map(|o| sanitize_name(&o.title))
+        .filter(|s| !s.is_empty())
+        .unwrap_or_else(|| config.fallback_course.clone())
+}
+
 pub struct LectureWorker {
     store: Arc<dyn TaskStore>,
     options: TodoOptions,
@@ -238,20 +263,7 @@ impl LectureWorker {
     /// 不再就近猜课：猜错课比留兜底更伤笔记归档（2026-11-04 形势与政策误归教训）。
     /// 公开供集成测试。
     pub fn course_at(&self, recorded_at: i64) -> String {
-        let lead = 10 * 60;
-        let service = ScheduleService::new(self.store.clone(), self.options);
-        let Ok(occurrences) =
-            service.occurrences_between(recorded_at - lead, recorded_at + lead, 20)
-        else {
-            return self.config.fallback_course.clone();
-        };
-        let containing = occurrences
-            .iter()
-            .find(|o| o.starts_at - lead <= recorded_at && recorded_at < o.ends_at);
-        containing
-            .map(|o| sanitize_name(&o.title))
-            .filter(|s| !s.is_empty())
-            .unwrap_or_else(|| self.config.fallback_course.clone())
+        match_course(&self.store, self.options, &self.config, recorded_at)
     }
 
     /// 笔记落点（Vault 绝对路径）。课程认不出来时落收件箱，不硬造课程目录。
