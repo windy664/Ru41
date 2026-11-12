@@ -47,17 +47,7 @@ impl PendingItem {
     /// 课程匹配与归档日期用的时间：优先文件名里解析出的开录时刻
     /// （录音 app 命名通常带，比收到时刻更贴近实际上课时间），解析不出回退收到时间。
     pub fn recorded_time(&self) -> i64 {
-        if let Some(ts) = parse_recorded_at(&self.filename) {
-            return ts;
-        }
-        // 文件名只有星期与时刻（如「周四 上午09点01分」）：按收到时刻往前回推最近一次。
-        // 录音往往下课后才发出去，用收到时刻会落在课区间外，课表匹配就会失手。
-        if let Some((weekday, hour, minute)) = parse_weekday_time(&self.filename)
-            && let Some(ts) = resolve_weekday_time(weekday, hour, minute, self.received_at)
-        {
-            return ts;
-        }
-        self.received_at
+        recorded_time_of(&self.filename, self.received_at)
     }
 
     /// 录音时间来源说明（提示词里向 agent 交代依据）。
@@ -70,6 +60,24 @@ impl PendingItem {
             "文件名无时间，按收到时刻回退"
         }
     }
+}
+
+/// 上课时间：优先取文件名里解析出的时刻，回退收到时刻。
+///
+/// handler（即时回执）与 worker（最终归档）共用这一份，
+/// 保证回执里说的课程名和最后写进 Vault 的课程一致。
+pub fn recorded_time_of(filename: &str, received_at: i64) -> i64 {
+    if let Some(ts) = parse_recorded_at(filename) {
+        return ts;
+    }
+    // 文件名只有星期与时刻（如「周四 上午09点01分」）：按收到时刻往前回推最近一次。
+    // 录音往往下课后才发出去，用收到时刻会落在课区间外，课表匹配就会失手。
+    if let Some((weekday, hour, minute)) = parse_weekday_time(filename)
+        && let Some(ts) = resolve_weekday_time(weekday, hour, minute, received_at)
+    {
+        return ts;
+    }
+    received_at
 }
 
 /// 文件名里只有星期与时刻时的解析（如「周四 上午09点01分」「周三 下午05点04分」）。

@@ -3,8 +3,12 @@
 
 use crate::config::LectureConfig;
 use crate::dns;
-use crate::pending::{PENDING_KIND, PendingItem, is_audio_filename, sanitize_name};
+use crate::pending::{
+    PENDING_KIND, PendingItem, is_audio_filename, recorded_time_of, sanitize_name,
+};
+use crate::service::match_course;
 use anyhow::{Context, Result};
+use ru41::domain::todo::TodoOptions;
 use ru41::ports::channel::MediaKind;
 use ru41::ports::commands::{CommandContext, CommandHandler, Reply};
 use std::{future::Future, net::SocketAddr, pin::Pin, time::Duration};
@@ -12,6 +16,8 @@ use std::{future::Future, net::SocketAddr, pin::Pin, time::Duration};
 #[derive(Clone)]
 pub struct LectureHandler {
     config: LectureConfig,
+    /// 时区口径：与 worker 共用，回执里匹配出的课程名才和最终归档一致。
+    options: TodoOptions,
     http: reqwest::Client,
 }
 
@@ -23,15 +29,17 @@ fn http_builder() -> reqwest::ClientBuilder {
 }
 
 impl LectureHandler {
-    pub fn new(config: LectureConfig) -> Self {
+    pub fn new(config: LectureConfig, options: TodoOptions) -> Self {
         Self {
             config,
+            options,
             http: http_builder().build().expect("lecture http client"),
         }
     }
 
     /// 下载 + 入库（插件自己的 runtime 里跑，见 handle_message 的 bridge 说明）。
-    /// 返回（文件大小 MB 前的字节数, 前面排队节数）：排队数让回执告诉用户还要等几节。
+    /// 返回（文件大小字节数, 前面排队节数, 收到时刻）：
+    /// 排队数让回执告诉用户还要等几节；收到时刻用于回执侧匹配课程名。
     #[allow(clippy::too_many_arguments)]
     async fn run_job(
         &self,
@@ -42,13 +50,14 @@ impl LectureHandler {
         channel: String,
         target: String,
         msg_id: String,
-    ) -> Result<(u64, usize)> {
+    ) -> Result<(u64, usize, i64)> {
         let filename = sanitize_name(&display_name);
         let raw_dir = self.config.workspace.join(&msg_id).join("raw");
         std::fs::create_dir_all(&raw_dir)?;
         let dest = raw_dir.join(&filename);
         // QQ CDN 链接有时效，必须当场下载完。
         let size = self.download(&source, auth.as_deref(), &dest).await?;
+        let received_at = ru41::util::now();
         let item = PendingItem {
             file: dest.display().to_string(),
             filename: display_name,
@@ -56,7 +65,7 @@ impl LectureHandler {
             channel,
             target,
             msg_id: msg_id.clone(),
-            received_at: ru41::util::now(),
+            received_at,
             status: "pending".into(),
             error: None,
             course: None,
@@ -73,7 +82,7 @@ impl LectureHandler {
                 other.msg_id != msg_id && other.status != "done" && other.status != "failed"
             })
             .count();
-        Ok((size, ahead))
+        Ok((size, ahead, received_at))
     }
 
     /// 流式落盘，避免大文件整读进内存。
@@ -204,7 +213,7 @@ impl CommandHandler for LectureHandler {
     }
 
     fn help(&self) -> &'static str {
-        "（自动）单聊发课堂录音文件，自动转写并整理成课堂笔记"
+        "（自动）单聊发来一节课的音频文件，自动转写并整理成课堂笔记"
     }
 
     fn help_section(&self) -> &'static str {
@@ -233,7 +242,7 @@ impl CommandHandler for LectureHandler {
             let Some(audio) = audio else {
                 return Ok(None);
             };
-            if let Some(note) = ctx.require_private("转写课堂录音", "课堂录音属于个人学习资料")?
+            if let Some(note) = ctx.require_private("转写课堂内容", "课堂内容属于个人学习资料")?
             {
                 return Ok(Some(Reply::text(note)));
             }
@@ -247,7 +256,7 @@ impl CommandHandler for LectureHandler {
             let channel = ctx.reply_channel.to_owned();
             let target = ctx.target.to_owned();
             let msg_id = ctx.msg_id.to_owned();
-            let (size, ahead) = match ru41::plugins::bridge(async move {
+            let (size, ahead, received_at) = match ru41::plugins::bridge(async move {
                 worker
                     .run_job(store, source, auth, display_name, channel, target, msg_id)
                     .await
@@ -259,7 +268,7 @@ impl CommandHandler for LectureHandler {
                 // 不能只在服务端日志里留个 handle failed。
                 Err(error) => {
                     return Ok(Some(Reply::text(format!(
-                        "## 录音接收失败\n\n《{}》下载没成功：{error:#}\n\n\
+                        "## 这份文件没收到\n\n《{}》下载没成功：{error:#}\n\n\
                          QQ 文件链接有时效，也可能是网络临时故障，请重新发一次。",
                         audio.display_name(),
                     ))));
@@ -270,17 +279,29 @@ impl CommandHandler for LectureHandler {
             } else {
                 Default::default()
             };
-            let queue = if ahead > 0 {
-                format!(
-                    "\n- 队列：前面还有 {} 节在排队，转写按收到顺序一节一节来",
-                    ahead
-                )
+            // 回执的主语是「这节课」，不是「一段音频」：课表能对上就直接点名课程，
+            // 对不上才说课程未知、笔记先放收件箱。匹配逻辑与 worker 共用，
+            // 所以这里说的课程就是最后写进 Vault 的那门课。
+            let recorded_at = recorded_time_of(&audio.display_name(), received_at);
+            let course = match_course(&ctx.store, self.options, &self.config, recorded_at);
+            let matched = course != self.config.fallback_course;
+            let headline = if matched {
+                format!("## {} 这节课已结束", course)
             } else {
-                "\n- 队列：就这一节，马上开始".to_owned()
+                "## 这节课已结束".to_owned()
+            };
+            let action = if matched {
+                "开始分析这节课并整理成课堂笔记，完成后写进 Vault 并通知你。"
+            } else {
+                "开始整理课堂笔记；课表里没对上这节课的时间，笔记先放收件箱，等你确认归到哪门课。"
+            };
+            let queue = if ahead > 0 {
+                format!("\n- 队列：前面还有 {} 节，按收到的顺序来", ahead)
+            } else {
+                "\n- 队列：就这一节，不用等".to_owned()
             };
             Ok(Some(Reply::text(format!(
-                "## 课堂录音已接收\n\n《{}》（{:.1} MB）\n已下载并排队转写，每 {} 分钟一片逐段识别；\
-                 完成后会按当天课表归入对应课程，自动整理成课堂笔记存进 vault 并通知你。{}{}",
+                "{headline}\n\n{action}\n《{}》（{:.1} MB），分段识别中（每段约 {} 分钟）{}{}",
                 audio.display_name(),
                 size as f64 / 1024.0 / 1024.0,
                 self.config.slice_secs / 60,

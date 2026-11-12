@@ -1,5 +1,6 @@
 //! lecture 插件集成测试：handler 拦截判定、下载入队、课程匹配。
 
+use chrono::TimeZone;
 use ru41::{
     adapters::database::sqlite::SqliteTaskStore,
     app::schedule::ScheduleService,
@@ -146,7 +147,7 @@ fn non_audio_attachments_are_not_intercepted() {
     let tmp = tempfile::tempdir().unwrap();
     let store: Arc<dyn TaskStore> =
         Arc::new(SqliteTaskStore::open(&tmp.path().join("state.db")).unwrap());
-    let handler = LectureHandler::new(config(tmp.path().to_path_buf()));
+    let handler = LectureHandler::new(config(tmp.path().to_path_buf()), TodoOptions::default());
     let atts = vec![MediaRef::new(MediaKind::File, "https://x/doc.pdf")];
     let cx = ctx(&store, &atts, "user:U1", "U1", "m1", true);
     let reply = tokio_bridge_block(async { handler.handle_message("", &cx).await.unwrap() });
@@ -168,7 +169,7 @@ fn unbound_or_group_is_deflected() {
     let tmp = tempfile::tempdir().unwrap();
     let store: Arc<dyn TaskStore> =
         Arc::new(SqliteTaskStore::open(&tmp.path().join("state.db")).unwrap());
-    let handler = LectureHandler::new(config(tmp.path().to_path_buf()));
+    let handler = LectureHandler::new(config(tmp.path().to_path_buf()), TodoOptions::default());
     let atts = audio_attachment("https://x/lec.m4a");
     // 未绑定单聊：提示绑定。
     let cx = ctx(&store, &atts, "user:U1", "U1", "m1", true);
@@ -186,14 +187,17 @@ fn audio_file_is_downloaded_and_queued() {
     let tmp = tempfile::tempdir().unwrap();
     let store: Arc<dyn TaskStore> =
         Arc::new(SqliteTaskStore::open(&tmp.path().join("state.db")).unwrap());
-    let handler = LectureHandler::new(config(tmp.path().to_path_buf()));
+    let handler = LectureHandler::new(config(tmp.path().to_path_buf()), TodoOptions::default());
     let url = mock_file_server(AUDIO);
     let atts = audio_attachment(&url);
     bind(&store);
     let cx = ctx(&store, &atts, "user:U1", "U1", "m-audio", true);
     let reply = tokio_bridge_block(async { handler.handle_message("", &cx).await.unwrap() });
     let text = reply.unwrap().text;
-    assert!(text.contains("课堂录音已接收"), "{text}");
+    // 回执的主语是「这节课」，不是「一段录音」；课表对不上时说清楚先放收件箱。
+    assert!(text.contains("这节课已结束"), "{text}");
+    assert!(text.contains("课表里没对上"), "{text}");
+    assert!(!text.contains("录音"), "{text}");
     assert!(text.contains("m4a"));
     // 文件已落盘，pending 文档已登记。
     let docs = store.documents("lecture.pending", 10).unwrap();
@@ -209,6 +213,53 @@ fn audio_file_is_downloaded_and_queued() {
     let cx = ctx(&store, &atts, "user:U1", "U1", "m-audio", true);
     tokio_bridge_block(async { handler.handle_message("", &cx).await.unwrap() });
     assert_eq!(store.documents("lecture.pending", 10).unwrap().len(), 1);
+}
+
+/// 回执要直接点名课程：课表能对上就写「XX 这节课已结束」，
+/// 让用户看到「我们认出这是哪节课」，而不是只说收到了一个文件。
+#[test]
+fn receipt_names_the_matched_course() {
+    let tmp = tempfile::tempdir().unwrap();
+    let store: Arc<dyn TaskStore> =
+        Arc::new(SqliteTaskStore::open(&tmp.path().join("state.db")).unwrap());
+    let t0 = 1761891600; // 2026-10-31 10:00 +08:00
+    ScheduleService::new(store.clone(), TodoOptions::default())
+        .add(
+            EventInput {
+                title: "高等数学".into(),
+                starts_at: t0,
+                ends_at: t0 + 5400,
+                location: Some("C301".into()),
+                recurrence: EventRecurrence::None,
+                source: None,
+            },
+            t0 - 3600,
+        )
+        .unwrap();
+    let url = mock_file_server(AUDIO);
+    // 文件名带上课时刻（与课表区间重合）→ 回执直接点名课程。
+    let local = chrono::Local.timestamp_opt(t0 + 600, 0).single().unwrap();
+    let filename = format!(
+        "{}年{}月{}日 {}点{}分.m4a",
+        local.format("%Y"),
+        local.format("%m"),
+        local.format("%d"),
+        local.format("%H"),
+        local.format("%M")
+    );
+    let atts = vec![MediaRef {
+        kind: MediaKind::File,
+        source: url,
+        filename: Some(filename),
+        auth: None,
+    }];
+    bind(&store);
+    let handler = LectureHandler::new(config(tmp.path().to_path_buf()), TodoOptions::default());
+    let cx = ctx(&store, &atts, "user:U1", "U1", "m-course", true);
+    let reply = tokio_bridge_block(async { handler.handle_message("", &cx).await.unwrap() });
+    let text = reply.unwrap().text;
+    assert!(text.contains("高等数学 这节课已结束"), "{text}");
+    assert!(text.contains("开始分析这节课"), "{text}");
 }
 
 #[test]
