@@ -149,6 +149,17 @@ pub(super) fn pick_full_report(candidates: &[String], summary: &str) -> Option<S
     Some(body)
 }
 
+/// 散文是否像一份交付物：有 Markdown 结构（标题、列表、表格）才算。
+/// 一句「我已拿到所需信息」不是交付物，只是模型的过场话。
+fn looks_like_deliverable(text: &str) -> bool {
+    text.contains("\n#")
+        || text.contains("\n- ")
+        || text.contains("\n* ")
+        || text.contains("\n1. ")
+        || text.contains("|---")
+        || text.contains("\n**")
+}
+
 /// 契约 JSON 只是信封：挖掉它以后，把包它的 Markdown 代码围栏与前置分隔线也去掉。
 /// 不能只 trim 末尾的 ```——那会把开头的 ```json 留成用户可见的尾巴。
 fn clean_contract_prose(text: &str) -> String {
@@ -187,13 +198,20 @@ pub(super) fn parse_agent_result(text: &str) -> Result<AgentResult> {
         let media = serde_json::from_str::<Value>(contract)
             .map(|value| parse_media_list(value.get("media")))
             .unwrap_or_default();
-        // JSON 之外还有正经正文就交正文（那段才是给用户看的），JSON 只是信封。
+        // JSON 之外可能还有正文，但那不一定是交付物：模型常先写一句
+        // 「我已拿到所需信息」再把完整答案放进契约 JSON（2026-11-12 港澳出行问答
+        // 实测：散文 150 字符的过场话覆盖了 4296 字符的真答案）。
+        // 只有散文本身像交付物（或比 summary 还长），才让散文优先；
+        // 否则一律交付契约里的 summary。
         let prose = clean_contract_prose(&trimmed.replace(contract, ""));
-        let summary = if prose.chars().count() >= 20 {
-            prose
-        } else {
-            summary
-        };
+        let prose_len = prose.chars().count();
+        let summary_len = summary.chars().count();
+        let summary =
+            if prose_len >= 20 && (looks_like_deliverable(&prose) || prose_len >= summary_len) {
+                prose
+            } else {
+                summary
+            };
         let result = AgentResult { summary, media };
         result.validate().map_err(Ru41Error::InvalidOutput)?;
         return Ok(result);
@@ -411,6 +429,31 @@ mod tests {
         );
         assert!(
             !result.summary.contains("课堂笔记全文"),
+            "{}",
+            result.summary
+        );
+    }
+
+    /// 模型的过场话 + 契约 JSON（2026-11-12 港澳出行问答实测）：散文只是
+    /// 「我已拿到所需信息」这种过场话，真答案在契约 JSON 的 summary 里——
+    /// 交过场话等于把答案扔了。
+    #[test]
+    fn preamble_prose_does_not_hide_contract_summary() {
+        let preamble = "I have everything needed. Both answers are grounded in the vault travel note \
+             (SoSIM procedure) and official SoSIM pages (real-name registration steps), plus \
+             Hong Kong's official plug/voltage standards.";
+        let answer = format!(
+            "# 三角插头能在港直插吗？\n\n{}",
+            "不能直插，必须带英标 Type G 转换头。".repeat(40)
+        );
+        let raw = format!(
+            "{preamble}\n\n{{\"summary\":{}}}",
+            serde_json::to_string(&answer).unwrap()
+        );
+        let result = parse_agent_result(&raw).unwrap();
+        assert!(result.summary.contains("三角插头"), "{}", result.summary);
+        assert!(
+            !result.summary.contains("I have everything needed"),
             "{}",
             result.summary
         );
