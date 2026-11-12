@@ -55,18 +55,31 @@ impl Eligibility {
     }
 }
 
+/// null → 空串：接口偶尔给 null（如某场的 `register_url`），
+/// 不能让整份数据解析失败、把这个源整个丢掉。
+fn null_to_empty<'de, D>(deserializer: D) -> Result<String, D::Error>
+where
+    D: serde::Deserializer<'de>,
+{
+    Ok(Option::<String>::deserialize(deserializer)?.unwrap_or_default())
+}
+
 /// 类型化赛事条目：雷达映射成 FeedItem，竞赛日程总览直接用字段。
 #[derive(Debug, Clone, Default, Deserialize)]
 #[serde(default)]
 pub struct HackathonComEvent {
+    #[serde(deserialize_with = "null_to_empty")]
     pub id: String,
+    #[serde(deserialize_with = "null_to_empty")]
     pub name: String,
     /// 主办方（可能很长，含支持方名单）。
+    #[serde(deserialize_with = "null_to_empty")]
     pub organizer: String,
     /// 赛事详情页。
+    #[serde(deserialize_with = "null_to_empty")]
     pub url: String,
-    /// 报名入口（比详情页更直接）。
-    pub register_url: String,
+    /// 报名入口（比详情页更直接）；接口可能给 null。
+    pub register_url: Option<String>,
     /// 截止时间（ISO 8601，带时区）。
     pub deadline: Option<String>,
     /// 截止口径：registration（报名截止）/ submission（投稿截止）/ rolling 等。
@@ -113,11 +126,12 @@ impl HackathonComEvent {
 
     /// 报名/投稿入口优先，其次详情页。
     pub fn link(&self) -> String {
-        if self.register_url.trim().is_empty() {
-            self.url.clone()
-        } else {
-            self.register_url.clone()
-        }
+        self.register_url
+            .as_deref()
+            .map(str::trim)
+            .filter(|value| !value.is_empty())
+            .map(str::to_owned)
+            .unwrap_or_else(|| self.url.clone())
     }
 
     /// 城市 + 形态的中文标注。
@@ -292,7 +306,7 @@ mod tests {
           "name": "Injective Hacker House 曼谷（首届）",
           "organizer": "Injective（HackQuest 联合组织）",
           "url": "https://injectivehackerhouse.com/",
-          "register_url": "",
+          "register_url": null,
           "deadline": "2026-11-10T23:59:00+08:00",
           "deadline_kind": "registration",
           "start": "2026-12-01T00:00:00+08:00",
@@ -317,6 +331,7 @@ mod tests {
           "organizer": "昇腾社区",
           "url": "https://example.com/triton",
           "register_url": "https://example.com/triton/register",
+
           "deadline": "2026-11-14T23:59:00+08:00",
           "deadline_kind": "submission",
           "start": "2026-11-20T09:00:00+08:00",
