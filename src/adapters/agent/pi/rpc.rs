@@ -12,7 +12,12 @@ use crate::{
 };
 use anyhow::{Context, Result, ensure};
 use serde_json::{Value, json};
-use std::{future::Future, path::PathBuf, pin::Pin, process::Stdio};
+use std::{
+    future::Future,
+    path::{Path, PathBuf},
+    pin::Pin,
+    process::Stdio,
+};
 use tokio::io::{AsyncBufReadExt, AsyncReadExt, AsyncWriteExt, BufReader};
 
 /// 分析底座；`session` 开启时持久化会话并支持按 session_id 恢复。
@@ -147,6 +152,18 @@ impl PiAgent {
             .context
             .as_ref()
             .map_or(&[][..], |context| context.skills.as_slice());
+        // 会话目录按会话隔离：不同聊天各自一个子目录。
+        let session_dir = if self.session {
+            session_dir_for(
+                self.session_dir.as_deref(),
+                request
+                    .context
+                    .as_ref()
+                    .and_then(|context| context.conversation_id.as_deref()),
+            )
+        } else {
+            None
+        };
         // 与 codex 同一套技能落盘：有工具时只给索引，模型按需 Read SKILL.md；
         // 无工具的纯文本任务读不了文件，仍内联全文。
         crate::skills::materialize(&request.run_dir, skills)?;
@@ -223,9 +240,17 @@ impl PiAgent {
                 ]);
             }
         }
-        // 会话持久化：--no-session 是内存会话；恢复已有会话时用 --session。
+        // 会话持久化：--no-session 是内存会话；续接上一轮时用 --fork。
+        //
+        // 为什么是 fork 而不是 --session：pi 的会话按**项目目录**归属，而每次运行
+        // 的工作目录是独立的 run_dir（/data/runs/task-N-attempt-M-xxxx）。用
+        // `--session <id>` 恢复时 pi 会发现会话属于另一个项目，转成交互式询问
+        // 「Fork this session into current directory?」；RPC 模式无人应答，pi
+        // 直接退出，整次运行失败（2026-11-12 实测：第二条消息续接失败、
+        // 重试后另起新会话，上下文就丢了）。--fork 非交互，且正好把上一轮历史
+        // 带进本轮工作目录：既保住上下文，又保住每次运行的目录隔离。
         if self.session {
-            if let Some(dir) = &self.session_dir {
+            if let Some(dir) = &session_dir {
                 // 会话目录要跨容器滚动存活（挂 /data 之类），这里先建好，
                 // 免得 pi 因为目录不存在起不来。
                 std::fs::create_dir_all(dir)
@@ -237,7 +262,7 @@ impl PiAgent {
                 .as_ref()
                 .and_then(|c| c.resume_session_id.clone())
             {
-                command.args(["--session", &session_id]);
+                command.args(["--fork", &session_id]);
             }
         } else {
             command.arg("--no-session");
@@ -514,6 +539,99 @@ impl PiAgent {
         // 无会话续跑；完成和取消均清理子进程，避免宿主留下常驻 Pi。
         let _ = child.kill().await;
         let _ = child.wait().await;
+        // 每一轮续接都会 fork 出一个新会话文件（历史逐轮复制），
+        // 只留当前会话与最近一个旧文件，别让磁盘和 inode 无限涨。
+        if let Ok(output) = &outcome
+            && let (Some(dir), Some(session)) = (&session_dir, output.session_id.as_deref())
+        {
+            prune_session_forks(dir, session);
+        }
         outcome
+    }
+}
+
+/// 每个会话一个子目录：不同聊天互不干扰，清理旧 fork 时也不会误删别人的会话。
+fn session_dir_for(base: Option<&Path>, conversation_id: Option<&str>) -> Option<PathBuf> {
+    let base = base?;
+    let Some(conversation) = conversation_id else {
+        return Some(base.to_path_buf());
+    };
+    use sha1::Digest;
+    let digest = sha1::Sha1::digest(conversation.as_bytes());
+    let hex: String = digest.iter().map(|byte| format!("{byte:02x}")).collect();
+    Some(base.join(&hex[..16]))
+}
+
+/// 清理本会话的旧 fork 文件：保留当前会话文件与最近一个旧文件（兜底），其余删除。
+fn prune_session_forks(dir: &Path, keep_session_id: &str) {
+    let Ok(entries) = std::fs::read_dir(dir) else {
+        return;
+    };
+    let mut files: Vec<PathBuf> = entries
+        .flatten()
+        .map(|entry| entry.path())
+        .filter(|path| path.is_file())
+        .collect();
+    files.sort();
+    let mut spare = false;
+    for path in files.iter().rev() {
+        let is_current = path
+            .file_name()
+            .and_then(|name| name.to_str())
+            .is_some_and(|name| name.contains(keep_session_id));
+        if is_current {
+            continue;
+        }
+        if !spare {
+            spare = true;
+            continue;
+        }
+        let _ = std::fs::remove_file(path);
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{prune_session_forks, session_dir_for};
+    use std::path::Path;
+
+    /// 不同会话要落在不同子目录：否则清理旧 fork 会误删别人的会话。
+    #[test]
+    fn session_dirs_are_isolated_per_conversation() {
+        let base = Path::new("/data/pi-sessions");
+        let first = session_dir_for(Some(base), Some("qq:user:U1")).unwrap();
+        let second = session_dir_for(Some(base), Some("qq:user:U2")).unwrap();
+        assert_ne!(first, second);
+        assert!(first.starts_with(base));
+        // 同一会话永远落在同一目录。
+        assert_eq!(
+            first,
+            session_dir_for(Some(base), Some("qq:user:U1")).unwrap()
+        );
+        // 没配目录就没有会话目录。
+        assert!(session_dir_for(None, Some("qq:user:U1")).is_none());
+    }
+
+    /// 清理旧 fork：保留当前会话文件与最近一个旧文件，其余删除。
+    #[test]
+    fn prune_keeps_current_and_one_spare() {
+        let dir = tempfile::tempdir().unwrap();
+        for name in [
+            "2026-11-12T01-00-00Z_aaa.jsonl",
+            "2026-11-12T02-00-00Z_bbb.jsonl",
+            "2026-11-12T03-00-00Z_ccc.jsonl",
+            "2026-11-12T04-00-00Z_cur.jsonl",
+        ] {
+            std::fs::write(dir.path().join(name), b"{}").unwrap();
+        }
+        prune_session_forks(dir.path(), "cur");
+        let mut left: Vec<String> = std::fs::read_dir(dir.path())
+            .unwrap()
+            .flatten()
+            .map(|entry| entry.file_name().to_string_lossy().into_owned())
+            .collect();
+        left.sort();
+        assert_eq!(left.len(), 2, "{left:?}");
+        assert!(left.iter().any(|name| name.contains("cur")));
     }
 }
