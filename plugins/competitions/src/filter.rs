@@ -5,6 +5,7 @@
 use chrono::{Datelike, NaiveDate};
 use ru41::adapters::sources::competition::devpost::{DevpostHackathon, parse_submission_end};
 use ru41::adapters::sources::competition::hack123::Hack123Event;
+use ru41::adapters::sources::competition::hackathon_com::HackathonComEvent;
 use ru41::adapters::sources::competition::hackertrip::HackertripEvent;
 use ru41::adapters::sources::competition::wqai::WqaiRace;
 
@@ -44,8 +45,9 @@ fn has_prize(text: &str) -> bool {
     if text.is_empty() {
         return false;
     }
-    let money = regex::Regex::new(r"奖金|奖池|现金|万元|￥|¥|\$|奖品|权益|投资|兑换券|实物|里数|机票")
-        .expect("prize money regex");
+    let money =
+        regex::Regex::new(r"奖金|奖池|现金|万元|￥|¥|\$|奖品|权益|投资|兑换券|实物|里数|机票")
+            .expect("prize money regex");
     if money.is_match(text) {
         return true;
     }
@@ -290,6 +292,55 @@ pub fn collect_wqai(race: WqaiRace, today: NaiveDate) -> Option<CompetitionRow> 
     keep(row, geo, k12)
 }
 
+/// ISO 时间取日期部分（接口给的是带时区的完整时间戳）。
+fn iso_date(value: Option<&str>) -> Option<NaiveDate> {
+    value
+        .and_then(|text| text.get(0..10))
+        .and_then(|date| NaiveDate::parse_from_str(date, "%Y-%m-%d").ok())
+}
+
+/// 奖金文本规范化：只给「金额型」奖金补一个「奖金 」前缀。
+///
+/// 站点给的奖金常是裸金额（「40000 元」「$2,000」），而我们的有奖闸门
+/// 认的是「奖金/奖池/现金/万元/$…」这类词——不加前缀会被当成无奖丢掉。
+/// 非金额描述（Goodies + Certificate + Tokens）不加前缀，也过不了闸门。
+fn normalize_prize(raw: &str) -> String {
+    let text = raw.trim();
+    if text.is_empty() {
+        return String::new();
+    }
+    let amount_re =
+        regex::Regex::new(r"(?i)\d[\d,.]*\s*(元|美元|美金|欧元|卢比|usd|eur|inr|rmb|cny|\$)")
+            .expect("prize amount regex");
+    if amount_re.is_match(text) && !has_prize(text) {
+        return format!("奖金 {text}");
+    }
+    text.to_owned()
+}
+
+/// 黑客松.com（全球 AI 黑客松赛事库，字段级核验后才发布）：
+/// 只收未结束场次；线下非大湾区按口径丢弃；线上/混合保留；
+/// 参赛资格（eligibility）参与中小学赛判定。
+pub fn collect_hackathon_com(ev: &HackathonComEvent) -> Option<CompetitionRow> {
+    if !ev.is_open() {
+        return None;
+    }
+    let k12 = is_k12(&ev.name, &ev.eligibility.audience());
+    let row = CompetitionRow {
+        deadline: iso_date(ev.deadline.as_deref()),
+        name: ev.name.clone(),
+        place: ev.place_label(),
+        prize: normalize_prize(&ev.prize_text()).chars().take(40).collect(),
+        start: iso_date(ev.start.as_deref()),
+        link: ev.link(),
+        source: "黑客松.com",
+        themes: ev.theme_labels(),
+        gba: false,
+    };
+    let geo = geo_class(&row.place, ev.is_online());
+    keep(row, geo, k12)
+}
+
 impl From<&Hack123Event> for CompetitionRow {
     fn from(ev: &Hack123Event) -> Self {
         CompetitionRow {
@@ -381,13 +432,42 @@ pub fn collect_datafountain(
 /// CTFtime 的 prize 字段常是多行英文段落（含换行/pipe），进表格前压成单行。
 const TOP_TIER_CTF: &[&str] = &[
     // 国内 S/A 级（中英文写法都收）
-    "强网", "qiangwang", "网鼎", "wangding", "长城杯", "tctf", "xctf", "bytectf",
-    "ciscn", "n1ctf", "0ctf", "alictf", "陇剑杯", "羊城杯", "湾区杯", "粤安杯",
-    "iscc", "祥云杯", "华秦杯",
+    "强网",
+    "qiangwang",
+    "网鼎",
+    "wangding",
+    "长城杯",
+    "tctf",
+    "xctf",
+    "bytectf",
+    "ciscn",
+    "n1ctf",
+    "0ctf",
+    "alictf",
+    "陇剑杯",
+    "羊城杯",
+    "湾区杯",
+    "粤安杯",
+    "iscc",
+    "祥云杯",
+    "华秦杯",
     // 国际公认大赛
-    "defcon", "def con", "hitcon", "realworld", "corctf", "google ctf",
-    "plaidctf", "picoctf", "asis ctf", "balsn", "hack.lu", "codegate",
-    "sekai", "idek", "bi0s", "33c3",
+    "defcon",
+    "def con",
+    "hitcon",
+    "realworld",
+    "corctf",
+    "google ctf",
+    "plaidctf",
+    "picoctf",
+    "asis ctf",
+    "balsn",
+    "hack.lu",
+    "codegate",
+    "sekai",
+    "idek",
+    "bi0s",
+    "33c3",
 ];
 
 /// 顶级赛事按名放行（大小写不敏感的包含匹配）。
@@ -619,7 +699,9 @@ mod tests {
         let out = build_rows(vec![r], today);
         assert_eq!(out.len(), 1, "顶级赛事豁免行必须过 prize 闸门");
         // 中文名同样命中
-        assert!(collect_ctftime(&ev("第九届强网杯全国网络安全挑战赛", "TBD", 0.0, false, "")).is_some());
+        assert!(
+            collect_ctftime(&ev("第九届强网杯全国网络安全挑战赛", "TBD", 0.0, false, "")).is_some()
+        );
         // 非白名单小赛照旧丢
         assert!(collect_ctftime(&ev("Random Small CTF", "TBD", 0.0, false, "")).is_none());
     }
@@ -639,6 +721,54 @@ mod tests {
         let out = build_rows(rows, today);
         assert_eq!(out.len(), 1, "同名跨源去重");
         assert!(out[0].deadline.is_some(), "保留有截止日期的版本");
+    }
+
+    #[test]
+    fn hackathon_com_collector_applies_money_geo_and_lifecycle_rules() {
+        use ru41::adapters::sources::competition::hackathon_com::{Eligibility, HackathonComEvent};
+        let mut ev = HackathonComEvent {
+            id: "hk-1".into(),
+            name: "昇腾 Triton 算子开发挑战赛".into(),
+            mode: Some("online".into()),
+            country: Some("cn".into()),
+            prize: Some("40000 元".into()),
+            deadline: Some("2026-11-14T23:59:00+08:00".into()),
+            start: Some("2026-11-20T09:00:00+08:00".into()),
+            domains: vec!["AI/大模型".into()],
+            eligibility: Eligibility {
+                who: Some("开发者".into()),
+                team: None,
+            },
+            ..Default::default()
+        };
+        // 线上 + 金额奖金：保留，裸金额补「奖金 」前缀过有奖闸门。
+        let row = collect_hackathon_com(&ev).expect("线上有奖场次应保留");
+        assert_eq!(row.prize, "奖金 40000 元");
+        assert_eq!(row.deadline, NaiveDate::from_ymd_opt(2026, 11, 14));
+        assert_eq!(row.start, NaiveDate::from_ymd_opt(2026, 11, 20));
+        assert_eq!(row.source, "黑客松.com");
+        assert_eq!(row.themes, vec!["AI/大模型".to_string()]);
+        assert!(!row.gba);
+
+        // 线下非大湾区：按口径丢弃。
+        ev.mode = Some("offline".into());
+        ev.city = Some("杭州".into());
+        assert!(collect_hackathon_com(&ev).is_none());
+
+        // 线下大湾区：保留并标记。
+        ev.city = Some("广州".into());
+        assert!(collect_hackathon_com(&ev).expect("大湾区线下应保留").gba);
+
+        // 已结束：丢弃。
+        ev.mode = Some("online".into());
+        ev.city = None;
+        ev.lifecycle = Some("ended".into());
+        assert!(collect_hackathon_com(&ev).is_none());
+
+        // 非金额奖品：过不了有奖闸门。
+        ev.lifecycle = Some("recruiting".into());
+        ev.prize = Some("Goodies + Certificate + Tokens".into());
+        assert!(collect_hackathon_com(&ev).is_none());
     }
 
     #[test]

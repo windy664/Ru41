@@ -7,7 +7,9 @@ pub mod feed;
 pub mod github;
 pub mod jobs;
 
-pub use competition::{datafountain, devpost, gsoc, hack123, hackertrip, lablab, lfx, wqai, xfyun};
+pub use competition::{
+    datafountain, devpost, gsoc, hack123, hackathon_com, hackertrip, lablab, lfx, wqai, xfyun,
+};
 pub use jobs::mianling;
 
 use anyhow::Result;
@@ -34,6 +36,7 @@ pub const SOURCES: &[SourceDef] = &[
     xfyun::DEF,
     hackertrip::DEF,
     hack123::DEF,
+    hackathon_com::DEF,
     mianling::DEF,
     gsoc::DEF,
     lfx::DEF,
@@ -62,6 +65,10 @@ mod tests {
             ("xfyun+https://challenge.xfyun.cn/competition", true),
             ("hackertrip+https://hackertrip.space/api/hackathons", true),
             ("hack123+https://hack123.henryht.sh/llms.txt", true),
+            (
+                "hackathoncom+https://xn--ubtw9y6z8b.com/api/closing.json",
+                true,
+            ),
             ("mianling+https://www.mianlingai.com/jobs/", true),
             ("gsoc+https://summerofcode.withgoogle.com/", true),
             (
