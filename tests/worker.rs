@@ -435,7 +435,7 @@ async fn conversation_session_is_saved_and_resumed() {
         msg_id: None,
     };
     let (_sender, receiver) = watch::channel(false);
-    for key in ["first", "second"] {
+    for key in ["qq:msg:first", "qq:msg:second"] {
         store
             .enqueue_with_notify(key, "hello", "codex", RunContract::AnalysisV1, &route)
             .unwrap();
@@ -455,6 +455,22 @@ async fn conversation_session_is_saved_and_resumed() {
             (Some("qq:user:U1".into()), Some("thread-1".into())),
         ]
     );
+
+    // 后台推送任务（论文日报等）不占用聊天会话：没有会话键，也不该续接。
+    store
+        .enqueue_with_notify(
+            "arxiv:digest:2026-11-12:1-40",
+            "digest",
+            "codex",
+            RunContract::AnalysisV1,
+            &route,
+        )
+        .unwrap();
+    let report = worker.run_once(receiver).await.unwrap().unwrap();
+    assert_eq!(report.status, TaskStatus::Succeeded);
+    let last = requests.lock().unwrap().last().cloned().unwrap();
+    assert_eq!(last.0, None, "后台任务不该拿到会话键");
+    assert_eq!(last.1, None, "后台任务不该续接聊天会话");
 }
 
 /// 会话续接按底座+模型匹配：换了模型（如 mimo → glm）后不得续接旧会话。
@@ -535,7 +551,13 @@ async fn conversation_resume_requires_matching_model() {
         .unwrap();
     let (_sender, receiver) = watch::channel(false);
     store
-        .enqueue_with_notify("m1", "hello", "codex", RunContract::AnalysisV1, &route)
+        .enqueue_with_notify(
+            "qq:msg:m1",
+            "hello",
+            "codex",
+            RunContract::AnalysisV1,
+            &route,
+        )
         .unwrap();
     let report = worker.run_once(receiver.clone()).await.unwrap().unwrap();
     assert_eq!(report.status, TaskStatus::Succeeded);
@@ -549,7 +571,13 @@ async fn conversation_resume_requires_matching_model() {
     assert_eq!(document.value["model"], "glm-4.6");
     // 同模型第二次任务正常续接。
     store
-        .enqueue_with_notify("m2", "hello", "codex", RunContract::AnalysisV1, &route)
+        .enqueue_with_notify(
+            "qq:msg:m2",
+            "hello",
+            "codex",
+            RunContract::AnalysisV1,
+            &route,
+        )
         .unwrap();
     let report = worker.run_once(receiver).await.unwrap().unwrap();
     assert_eq!(report.status, TaskStatus::Succeeded);

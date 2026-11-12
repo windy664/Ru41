@@ -50,6 +50,21 @@ pub struct WorkReport {
     pub status: TaskStatus,
 }
 
+/// 会话键：只有「用户在聊天里说的话」才有。
+///
+/// 后台任务（论文日报、RSS 日报、YouTube 预习单……）也带通知路由，若和聊天
+/// 共用一个键，它们会续接用户的对话上下文，把日报正文混进聊天，还会把
+/// session_id 覆盖成后台那一轮——2026-11-12 定位上下文丢失时发现的坑。
+/// 聊天任务的 request_key 形如 `qq:msg:{msg_id}`，后台任务不是这个形状。
+fn conversation_key(task: &crate::domain::Task) -> Option<String> {
+    let route = task.notify.as_ref()?;
+    let is_chat = task
+        .request_key
+        .split_once(":msg:")
+        .is_some_and(|(channel, _)| !channel.is_empty());
+    is_chat.then(|| format!("{}:{}", route.channel, route.target))
+}
+
 /// Worker 持有底座注册表，按任务绑定的 backend_id 路由执行。
 pub struct Worker {
     pub store: Arc<dyn TaskStore>,
@@ -271,11 +286,7 @@ impl Worker {
         // 输出规范（Markdown + 公式用 LaTeX）在这里统一注入：底座无关，
         // Codex 与 Pi 拿到同一份规范，避免各适配器各写一份。
         let prompt = crate::markdown::with_output_style(&prompt);
-        let conversation_id = claim
-            .task
-            .notify
-            .as_ref()
-            .map(|route| format!("{}:{}", route.channel, route.target));
+        let conversation_id = conversation_key(&claim.task);
         let conversation = match &conversation_id {
             Some(id) => self.store.document("conversation", id)?,
             None => None,
@@ -529,8 +540,53 @@ fn collect_media(media: &[MediaRef], run_dir: &Path) -> Vec<MediaRef> {
 
 #[cfg(test)]
 mod tests {
-    use super::collect_media;
-    use crate::ports::channel::{MediaKind, MediaRef};
+    use super::{collect_media, conversation_key};
+    use crate::{
+        domain::{NotifyRoute, Task, TaskStatus},
+        ports::channel::{MediaKind, MediaRef},
+    };
+
+    fn task_with(request_key: &str, notify: bool) -> Task {
+        Task {
+            id: 1,
+            request_key: request_key.into(),
+            backend_id: "pi".into(),
+            contract: crate::domain::RunContract::AnalysisV1,
+            prompt: "p".into(),
+            status: TaskStatus::Queued,
+            created_at: String::new(),
+            updated_at: String::new(),
+            attempt_count: 0,
+            max_attempts: 3,
+            active_attempt_id: None,
+            lease_until: None,
+            available_at: 0,
+            result: None,
+            last_error: None,
+            notify: notify.then(|| NotifyRoute {
+                channel: "qq".into(),
+                target: "user:U1".into(),
+                msg_id: None,
+            }),
+            notified_at: None,
+        }
+    }
+
+    /// 聊天消息才有会话键：同一会话的多轮消息才能续接上下文。
+    #[test]
+    fn chat_messages_share_one_conversation_key() {
+        let key = conversation_key(&task_with("qq:msg:abc", true));
+        assert_eq!(key.as_deref(), Some("qq:user:U1"));
+    }
+
+    /// 后台推送任务（论文日报、RSS 日报…）不能占用用户的聊天会话：
+    /// 否则会把日报正文混进对话上下文，还覆盖掉 session_id。
+    #[test]
+    fn background_tasks_have_no_conversation_key() {
+        assert!(conversation_key(&task_with("arxiv:digest:2026-11-12:1-40", true)).is_none());
+        assert!(conversation_key(&task_with("rss:digest:2026-11-12", true)).is_none());
+        assert!(conversation_key(&task_with("qq:msg:abc", false)).is_none());
+    }
 
     /// agent 只能把「这次运行自己产出的文件」发出去：越界路径直接丢。
     #[test]

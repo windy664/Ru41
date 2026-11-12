@@ -226,6 +226,10 @@ impl PiAgent {
         // 会话持久化：--no-session 是内存会话；恢复已有会话时用 --session。
         if self.session {
             if let Some(dir) = &self.session_dir {
+                // 会话目录要跨容器滚动存活（挂 /data 之类），这里先建好，
+                // 免得 pi 因为目录不存在起不来。
+                std::fs::create_dir_all(dir)
+                    .with_context(|| format!("cannot create Pi session dir {}", dir.display()))?;
                 command.args(["--session-dir", &dir.to_string_lossy()]);
             }
             if let Some(session_id) = request

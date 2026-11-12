@@ -64,7 +64,7 @@ cargo run --locked -- qq doctor
 | `/取消 <id>` / `/cancel <id>` | 取消任务 |
 | `/精读 <arxiv-id>` / `/deep <arxiv-id>` | 精读指定论文：取回元数据后入队精读任务（幂等键 `arxiv:deep:{id}`），立即回复任务编号 |
 | `/绑定 <口令>` / `/bind <口令>` | 把 openid 绑定为个人身份 |
-| `/新建` / `/clear` | 清除当前 QQ 会话的 Codex 续接状态，开始新对话 |
+| `/新建` / `/clear` | 清除当前 QQ 会话的续接状态（session_id），开始新对话 |
 | `/水电` / `/电费` / `/水费` | 查询宿舍水电余额（records 中最近一次读数，附数据时间） |
 | `#内容` | 记入待办；开头带时间词自动排期 |
 | `#` | 查看完整待办清单；点 `☐` 完成、点 `☑` 恢复 |
@@ -73,7 +73,7 @@ cargo run --locked -- qq doctor
 
 系统指令以 `/` 开头；临时想法与待办统一用 `#`，不再提供 `/待办`、`/记待办` 等手输命令。
 
-自然语言任务按 `qq:{target}` 保存 Codex `session_id`，同一会话通过 `codex exec resume` 续接上下文；Docker 部署把会话文件保存在 `/data/codex`。`/新建` 或 `/clear` 只重置当前会话。
+自然语言任务按 `qq:{target}` 保存底座 `session_id`，同一会话通过底座原生会话恢复续接上下文（pi 用 `--session` + `--session-dir`）；Docker 部署把会话文件放在 `/data/pi-sessions`（需跨容器持久化）。开启条件：`[agent.pi] session = true`，聊天入口自动改用 `pi-session` 底座，后台任务仍用无会话的 `pi`。**只有聊天任务参与续接**：后台推送任务（论文日报、RSS 日报等）虽有通知路由，但不占用聊天会话键，避免日报正文混进对话上下文、也不会把会话 ID 覆盖成后台那一轮。`/新建` 或 `/clear` 只重置当前会话。
 
 水电余额与私人待办属个人信息：仅绑定用户在单聊中可查和修改，群聊拒绝展示（设计文档 3.10「群聊中请求时不能直接暴露私人内容」）。待办入口由 `plugins/planner` 注册，持久化、日期视图和并发更新由核心 `app/todo.rs` 的 `TodoService` 提供。
 

@@ -203,11 +203,18 @@ async fn main() -> Result<()> {
                 backend,
                 bind_secret,
             } => {
-                let backend = backend.unwrap_or_else(|| config.agent.default_backend().to_owned());
+                // 聊天走带会话的底座变体（pi-session）：同一会话的多轮消息才能续接上下文；
+                // 命令处理器仍用无会话的底座，插件的一次性任务不必落会话文件。
+                let base_backend =
+                    backend.unwrap_or_else(|| config.agent.default_backend().to_owned());
+                let backend = ru41::bootstrap::agents::chat_backend(
+                    &config.agent,
+                    Some(base_backend.clone()),
+                );
                 let bind_secret = bind_secret.or_else(|| config.channel.qq.bind_secret.clone());
                 let api = Arc::new(qq_api(&credentials, &config)?);
                 let store = open_store(&store_config)?;
-                let command_handlers = qq_command_handlers(&config, &backend)?;
+                let command_handlers = qq_command_handlers(&config, &base_backend)?;
                 let image_consumers = qq_image_consumers(&config)?;
                 // 回执与终态/进度通知共享序号器，同 msg_id 被动回复 seq 不撞车。
                 let sequencer = Arc::new(ReplySequencer::default());
