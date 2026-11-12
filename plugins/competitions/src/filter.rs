@@ -318,6 +318,15 @@ fn normalize_prize(raw: &str) -> String {
     text.to_owned()
 }
 
+/// 奖金未公布的场次：原文常是长句（「页面未公布奖金；为 Monad 开发者入门型一日线下」），
+/// 表格里写成「奖金未公布」更清楚。这类条目保留——它仍是真实赛事，
+/// 只是奖金待定，读者一眼能看出来。
+fn unannounced_prize(text: &str) -> bool {
+    regex::Regex::new(r"未公布|未公示|未标注|未标明|待定|暂无")
+        .expect("prize pending regex")
+        .is_match(text)
+}
+
 /// 黑客松.com（全球 AI 黑客松赛事库，字段级核验后才发布）：
 /// 只收未结束场次；线下非大湾区按口径丢弃；线上/混合保留；
 /// 参赛资格（eligibility）参与中小学赛判定。
@@ -326,11 +335,17 @@ pub fn collect_hackathon_com(ev: &HackathonComEvent) -> Option<CompetitionRow> {
         return None;
     }
     let k12 = is_k12(&ev.name, &ev.eligibility.audience());
+    let raw_prize = ev.prize_text();
+    let prize = if unannounced_prize(&raw_prize) {
+        "奖金未公布".to_owned()
+    } else {
+        normalize_prize(&raw_prize)
+    };
     let row = CompetitionRow {
         deadline: iso_date(ev.deadline.as_deref()),
         name: ev.name.clone(),
         place: ev.place_label(),
-        prize: normalize_prize(&ev.prize_text()).chars().take(40).collect(),
+        prize: prize.chars().take(40).collect(),
         start: iso_date(ev.start.as_deref()),
         link: ev.link(),
         source: "黑客松.com",
@@ -769,6 +784,12 @@ mod tests {
         ev.lifecycle = Some("recruiting".into());
         ev.prize = Some("Goodies + Certificate + Tokens".into());
         assert!(collect_hackathon_com(&ev).is_none());
+
+        // 奖金未公布：条目保留（真实赛事），奖金列写清楚「未公布」。
+        ev.prize = None;
+        ev.prizes_note = Some("页面未公布奖金；为开发者入门型一日线下活动".into());
+        let row = collect_hackathon_com(&ev).expect("奖金待定的场次仍应保留");
+        assert_eq!(row.prize, "奖金未公布");
     }
 
     #[test]
