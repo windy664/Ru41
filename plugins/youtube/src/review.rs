@@ -210,7 +210,7 @@ impl YoutubeReviewJob {
             return Ok(0);
         };
         let mmdd = &today[5..];
-        let mut text = format!("📚 英语日报 {mmdd}\n");
+        let mut text = String::new();
         let mut has_content = false;
 
         // 新预习单（自动轮询发现的视频；手动 /预习 早已即时推送，不重复）。
@@ -219,21 +219,36 @@ impl YoutubeReviewJob {
             .iter()
             .filter_map(|id| self.store.get(*id).ok().flatten())
             .collect();
+        let mut video_blocks: Vec<String> = Vec::new();
         for task in sheets.iter() {
-            if let Some(result) = &task.result {
-                // 答案不出现在日报正文——先答再看，回复 /答案 获取。
-                let body = result
-                    .summary
-                    .lines()
-                    .filter(|line| !line.trim().starts_with("答案："))
-                    .collect::<Vec<_>>()
-                    .join("\n");
-                text.push_str(&format!("\n───\n{}\n", body.trim()));
-                has_content = true;
+            let Some(result) = &task.result else {
+                continue;
+            };
+            // 答案不出现在日报正文——先答再看，回复 /答案 获取。
+            let body = result
+                .summary
+                .lines()
+                .filter(|line| !line.trim().starts_with("答案："))
+                .collect::<Vec<_>>()
+                .join("\n");
+            let body = body.trim();
+            if body.is_empty() {
+                continue;
             }
+            let index = video_blocks.len() + 1;
+            let title = preview_title(&task.prompt).unwrap_or_else(|| format!("Video {index}"));
+            video_blocks.push(format!("## 🎬 Video {index}｜{title}\n\n{body}"));
         }
-        if !sheet_ids.is_empty() {
-            text.push_str("\n（看后检测答案：回复 /答案；漏收/重看完整单子：回复 /学习）\n");
+        if !video_blocks.is_empty() {
+            text.push_str(&format!("## 📚 英语日报｜{mmdd}\n"));
+            text.push_str(&format!(
+                "> {} 个视频 · 精听 + 词块迁移 + 雅思输出\n",
+                video_blocks.len()
+            ));
+            for block in &video_blocks {
+                text.push_str(&format!("\n{block}\n"));
+            }
+            has_content = true;
         }
 
         // 到期词块复习。
@@ -268,6 +283,9 @@ impl YoutubeReviewJob {
         if !has_content {
             return Ok(0);
         }
+        text.push_str(
+            "\n> 📎 回复 /答案 获取检测答案 · 回复 /学习 查看完整素材 · 回复 /复习 <编号> 复习词块\n",
+        );
         notifier.send(&route.target, None, &text).await?;
 
         // 副作用：日报标记、批次登记与宽限、专题标记。
@@ -394,14 +412,14 @@ impl YoutubeReviewJob {
             return Ok(None);
         }
         let mut section = format!(
-            "\n🔁 词块复习 {} 条（先回忆再往下滑；回复 /复习 <不会的编号>，如 /复习 2 4；全部都会回 /复习 all）\n",
+            "\n## 🔁 词块复习（{} 条）\n> 先回忆再往下滑 · 回复 `/复习 <不会的编号>`（如 /复习 2 4）· 全都会回 `/复习 all`\n",
             picked.len()
         );
         for (index, doc) in picked.iter().enumerate() {
             let cue = doc.value["cue"].as_str().unwrap_or("").trim();
             let kind = doc.value["kind"].as_str().unwrap_or("装备");
             let tag = if kind == "carry" { "说" } else { "懂" };
-            section.push_str(&format!("{}.（{tag}）{cue}\n", index + 1));
+            section.push_str(&format!("{}. （{tag}）{cue}\n", index + 1));
         }
         let ids = picked.iter().map(|doc| doc.id.clone()).collect();
         Ok(Some((section, ids)))
@@ -467,7 +485,7 @@ impl YoutubeReviewJob {
         docs.sort_by_key(|doc| doc.value["created_at"].as_i64().unwrap_or(0));
         let examples: Vec<_> = docs.iter().rev().take(TOPIC_MAX_EXAMPLES).collect();
         let mut section = format!(
-            "\n🔊 发音专题｜{category}（{} 例，均来自你看过的视频；先回看对应时刻，再跟读一遍）\n",
+            "\n## 🔊 发音专题｜{category}（{} 例）\n> 均来自你看过的视频 · 先回看对应时刻，再跟读一遍\n",
             examples.len()
         );
         for (index, doc) in examples.iter().enumerate() {
@@ -813,13 +831,36 @@ fn parse_numbers(arg: &str, max: usize) -> Result<Vec<usize>, String> {
     Ok(numbers)
 }
 
+/// 小节标题行剥掉 markdown 标题井号（`## 👂 精听挑战` → `👂 精听挑战`）。
+/// 模板改版后小节统一升级为 `## ` 标题，解析器不能再假设行首就是 emoji。
+fn section_head(line: &str) -> &str {
+    line.trim().trim_start_matches('#').trim()
+}
+
+/// 列表项前缀（`- ` / `1. ` / `2) `）剥到正文起点。
+fn strip_item_prefix(line: &str) -> &str {
+    line.trim_start_matches(|c: char| {
+        c.is_ascii_digit() || c == '.' || c == '-' || c == ')' || c == ' '
+    })
+}
+
+/// 从预习任务 prompt 里取视频标题（prompt 里是「视频标题：{title}」一行）。
+/// 日报要给每个视频起 `## 🎬 Video N｜标题` 的小标题，标题取不到时退回编号。
+fn preview_title(prompt: &str) -> Option<String> {
+    prompt
+        .lines()
+        .find_map(|line| line.trim().strip_prefix("视频标题："))
+        .map(|title| title.trim().to_owned())
+        .filter(|title| !title.is_empty())
+}
+
 /// 从预习单 summary 提取词块：📖 现场装备 与 🔁 带走就用 两节。
 /// 线索（cue）必须剥掉英文原句——那是复习的答案，不能出现在提示里。
 pub fn extract_vocab(summary: &str) -> Vec<VocabItem> {
     let mut items = Vec::new();
     let mut section = "";
     for line in summary.lines() {
-        let line = line.trim();
+        let line = section_head(line);
         if line.contains("现场装备") {
             section = "equip";
             continue;
@@ -832,11 +873,10 @@ pub fn extract_vocab(summary: &str) -> Vec<VocabItem> {
             section = "carry";
             continue;
         }
-        if line.starts_with("👂")
-            || line.starts_with("❓")
-            || line.starts_with("📺")
-            || line.starts_with("🗣")
-            || line.starts_with("✍️")
+        // 段落起点：迁移任务与检测段落不是词块，到此结束当前小节。
+        if ["🗺", "👂", "❓", "📺", "🎤", "🗣", "✍️", "✅"]
+            .iter()
+            .any(|mark| line.starts_with(mark))
         {
             section = "";
             continue;
@@ -847,8 +887,7 @@ pub fn extract_vocab(summary: &str) -> Vec<VocabItem> {
         let body = match section {
             // 学习负载控制：装备只有 ⭐ 必学条目进复习，场景词只出现在日报里。
             "equip" => {
-                let stripped =
-                    line.trim_start_matches(|c: char| c.is_ascii_digit() || c == '.' || c == ' ');
+                let stripped = strip_item_prefix(line);
                 if !stripped.starts_with('⭐') {
                     None
                 } else {
@@ -858,10 +897,8 @@ pub fn extract_vocab(summary: &str) -> Vec<VocabItem> {
                         .strip_prefix("**")
                 }
             }
-            "word" => line
-                .trim_start_matches(|c: char| c.is_ascii_digit() || c == '.' || c == ' ')
-                .strip_prefix("**"),
-            "carry" => line.trim_start_matches("- ").strip_prefix("**\""),
+            "word" => strip_item_prefix(line).strip_prefix("**"),
+            "carry" => strip_item_prefix(line).strip_prefix("**\""),
             _ => None,
         };
         let Some(after_open) = body else { continue };
@@ -875,11 +912,17 @@ pub fn extract_vocab(summary: &str) -> Vec<VocabItem> {
             if let Some(index) = cue.find("→ 你可以说") {
                 cue = cue[..index]
                     .trim_end_matches(['；', ';', '—', '-'])
+                    .trim_start_matches(['—', '–', '-', ' '])
                     .to_owned();
             }
         }
-        // 剥掉行尾英文原句：`；"..." [m:ss]`——提示里出现英文就泄题了。
-        if let Some(index) = cue.rfind("；\"").or_else(|| cue.rfind("; \"")) {
+        // 剥掉行尾英文原句——复习的答案就是这句，出现在提示里就泄题了。
+        // 新格式 `· 原句 "..." [m:ss]`；旧格式 `；"..." [m:ss]`。
+        if let Some(index) = cue.rfind("原句 \"") {
+            cue = cue[..index]
+                .trim_end_matches(['；', ';', '·', ' '])
+                .to_owned();
+        } else if let Some(index) = cue.rfind("；\"").or_else(|| cue.rfind("; \"")) {
             let tail = &cue[index..];
             if tail.contains("] ") || tail.ends_with(']') || tail.contains("\"]") {
                 cue = cue[..index].trim_end_matches(['；', ';']).to_owned();
@@ -903,7 +946,7 @@ pub fn extract_anchors(summary: &str) -> Vec<AnchorItem> {
     let mut items = Vec::new();
     let mut in_section = false;
     for line in summary.lines() {
-        let line = line.trim();
+        let line = section_head(line);
         if line.starts_with("👂") {
             in_section = true;
             continue;
@@ -1217,5 +1260,99 @@ mod tests {
         assert!(parse_numbers("abc", 5).is_err());
         assert!(parse_numbers("9", 5).is_err());
         assert!(parse_numbers("", 5).is_err());
+    }
+
+    /// 美版模板（2026-11-13）：小节标题升级为 `## `、条目统一 `- `、字段用 `·` 连接。
+    const SAMPLE_V2: &str = "> 工程师让 dot 助手收集反馈、排查故障。\n\
+\n\
+🔗 https://www.youtube.com/watch?v=6f7ojkd4_Wc\n\
+⏱ 5:11 · ⏳ 预习 10min + 观看 + 检测复习 12min\n\
+\n\
+## 🗺 听什么\n\
+- [0:18] 建反馈页面 → 抓住：tracker 指反馈跟踪表\n\
+\n\
+## 📖 现场装备\n\
+- ⭐ **silent stalls** /ˈsaɪlənt stɔːlz/ — 助手说在工作，却卡住不再回应；别误解为：正常安静运行 · 原句 \"Okay. Silent stalls sounds like\" [2:44]\n\
+- **fall back** — 首选模型不可用时改用可用模型 · 原句 \"Instead, it could just fall back\" [3:32]\n\
+\n\
+## 🔗 重点单词\n\
+- **verbose** /vɜːˈboʊs/ 动词 冗长的 · 搭配 verbose output · 词形 verbosity · 原句 \"it was way too verbose\" [1:12]\n\
+\n\
+## 🔁 带走就用\n\
+- **\"walk through … with you\"** — 带人逐步看懂 → 你可以说：\"I'll walk through the code with you.\" · 原句 \"I'm going to walk through that with you.\" [2:02]\n\
+\n\
+## 🧩 重点句式\n\
+- **\"Verb + sb + into + doing\"** — 说服某人做某事；陷阱：into 后接动名词 → 你可以说：\"He talked me into trying Rust.\" · 原句 \"they gaslit himself into thinking\" [2:03]\n\
+\n\
+## 🎤 输出任务\n\
+- 口语 10s：用 try + V-ing 说一句你自己的真实情况\n\
+- 雅思口语 45–60s：AI 会取代专业工作吗（观点 → 原因 → 例子 → 结论，脱稿）\n\
+- 雅思写作 1–2 句：把「AI 让律师更高效地审查协议」译成英文\n\
+- **\"decoy phrase\"** — 诱饵 · 原句 \"should not extract\" [9:99]\n\
+\n\
+## 👂 精听挑战\n\
+- [2:02] \"I'm going to walk through that with you.\" → 留意 going to 缩成 gonna （现象：缩读）\n\
+\n\
+## ❓ 听前自测\n\
+> 为什么优先查 silent stalls？\n";
+
+    #[test]
+    fn extracts_chunks_from_v2_template() {
+        let items = extract_vocab(SAMPLE_V2);
+        let chunks: Vec<&str> = items.iter().map(|item| item.chunk.as_str()).collect();
+        assert_eq!(
+            chunks,
+            vec![
+                "silent stalls",
+                "verbose",
+                "walk through … with you",
+                "Verb + sb + into + doing",
+            ],
+            "新模板应解析出 4 条词块"
+        );
+        // 非 ⭐ 场景词不进复习；输出任务段的诱饵不得被当成词块。
+        assert!(!chunks.contains(&"fall back"), "非 ⭐ 场景词不得进复习");
+        assert!(!chunks.contains(&"decoy phrase"), "输出任务段必须重置解析");
+        // 原句是复习的答案，不能漏进提示。
+        assert!(
+            !items[0].cue.contains("Silent stalls sounds like"),
+            "装备条目原句泄漏: {}",
+            items[0].cue
+        );
+        assert!(
+            !items[1].cue.contains("way too verbose"),
+            "单词条目原句泄漏: {}",
+            items[1].cue
+        );
+        assert!(
+            !items[2].cue.contains("walk through the code"),
+            "你可以说 例句泄漏: {}",
+            items[2].cue
+        );
+        assert!(items[0].cue.contains("卡住"));
+        assert!(items[2].cue.contains("带人逐步看懂"));
+        // 提示里只剩中文线索 + 音标，别把结构公式也带进去。
+        assert!(!items[2].cue.contains("→ 你可以说"));
+    }
+
+    #[test]
+    fn extracts_anchors_from_v2_template() {
+        let anchors = extract_anchors(SAMPLE_V2);
+        assert_eq!(anchors.len(), 1);
+        assert_eq!(anchors[0].ts, "2:02");
+        assert_eq!(anchors[0].quote, "I'm going to walk through that with you.");
+        assert!(anchors[0].note.contains("gonna"));
+        assert_eq!(anchors[0].category, "缩读");
+    }
+
+    #[test]
+    fn preview_title_reads_title_from_prompt() {
+        let prompt = "你在生成预习单。\n视频标题：Nvidia CEO 辞职内幕\n视频链接：https://x\n";
+        assert_eq!(
+            preview_title(prompt).as_deref(),
+            Some("Nvidia CEO 辞职内幕")
+        );
+        assert_eq!(preview_title("没有标题的行"), None);
+        assert_eq!(preview_title("视频标题：\n"), None);
     }
 }
