@@ -300,14 +300,20 @@ impl CommandHandler for LectureHandler {
             } else {
                 "\n- 队列：就这一节，不用等".to_owned()
             };
-            Ok(Some(Reply::text(format!(
+            // 2026-11-13：这条「分段识别中」的回执不再发到 QQ（用户要求）。
+            // 正文照样拼出来（下划线前缀 = 故意不用），要恢复推送把下面注释那行换回来即可：
+            //   Ok(Some(Reply::text(_receipt)))
+            let _receipt = format!(
                 "{headline}\n\n{action}\n《{}》（{:.1} MB），分段识别中（每段约 {} 分钟）{}{}",
                 audio.display_name(),
                 size as f64 / 1024.0 / 1024.0,
                 self.config.slice_secs / 60,
                 queue,
                 hint,
-            ))))
+            );
+            // 空回复 = 已处理但不回话。这里必须回 Some(空串) 而不是 None：
+            // None 会让这条消息掉进 Agent 通道，音频被当成聊天内容再下载处理一遍。
+            Ok(Some(Reply::text("")))
         })
     }
 }
