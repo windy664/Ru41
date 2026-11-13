@@ -217,6 +217,81 @@ fn audio_file_is_downloaded_and_queued() {
     assert_eq!(store.documents("lecture.pending", 10).unwrap().len(), 1);
 }
 
+/// 回执全文快照：整条消息逐字断言，不只看 contains。
+///
+/// 模板改版时（如 2026-11-13 去掉「分段识别中」那句）靠这个用例锁住
+/// 「用户到底会看到什么」——含标题行、空行、队列行，一字不差。
+#[test]
+fn receipt_text_is_exact() {
+    // ① 课表对得上：点名课程
+    let tmp = tempfile::tempdir().unwrap();
+    let store: Arc<dyn TaskStore> =
+        Arc::new(SqliteTaskStore::open(&tmp.path().join("state.db")).unwrap());
+    let t0 = 1761891600; // 2026-10-31 10:00 +08:00
+    ScheduleService::new(store.clone(), TodoOptions::default())
+        .add(
+            EventInput {
+                title: "高等数学".into(),
+                starts_at: t0,
+                ends_at: t0 + 5400,
+                location: Some("C301".into()),
+                recurrence: EventRecurrence::None,
+                source: None,
+            },
+            t0 - 3600,
+        )
+        .unwrap();
+    let url = mock_file_server(AUDIO);
+    let local = chrono::Local.timestamp_opt(t0 + 600, 0).single().unwrap();
+    let filename = format!(
+        "{}年{}月{}日 {}点{}分.m4a",
+        local.format("%Y"),
+        local.format("%m"),
+        local.format("%d"),
+        local.format("%H"),
+        local.format("%M")
+    );
+    let atts = vec![MediaRef {
+        kind: MediaKind::File,
+        source: url,
+        filename: Some(filename),
+        auth: None,
+    }];
+    bind(&store);
+    let handler = LectureHandler::new(config(tmp.path().to_path_buf()), TodoOptions::default());
+    let cx = ctx(&store, &atts, "user:U1", "U1", "m-exact", true);
+    let reply = tokio_bridge_block(async { handler.handle_message("", &cx).await.unwrap() });
+    let matched = reply.unwrap().text;
+    assert_eq!(
+        matched,
+        "## 高等数学 这节课已结束\n\n\
+         开始分析这节课并整理成课堂笔记，完成后写进 Vault 并通知你。\n\
+         - 队列：就这一节，不用等"
+    );
+
+    // ② 课表对不上：说清楚先放收件箱
+    let tmp2 = tempfile::tempdir().unwrap();
+    let store2: Arc<dyn TaskStore> =
+        Arc::new(SqliteTaskStore::open(&tmp2.path().join("state.db")).unwrap());
+    let url2 = mock_file_server(AUDIO);
+    let atts2 = audio_attachment(&url2);
+    bind(&store2);
+    let handler2 = LectureHandler::new(config(tmp2.path().to_path_buf()), TodoOptions::default());
+    let cx2 = ctx(&store2, &atts2, "user:U1", "U1", "m-exact2", true);
+    let reply2 = tokio_bridge_block(async { handler2.handle_message("", &cx2).await.unwrap() });
+    let unmatched = reply2.unwrap().text;
+    assert_eq!(
+        unmatched,
+        "## 这节课已结束\n\n\
+         开始整理课堂笔记；课表里没对上这节课的时间，笔记先放收件箱，等你确认归到哪门课。\n\
+         - 队列：就这一节，不用等"
+    );
+
+    // 供人眼核对：这两条就是 QQ 里实际收到的样子
+    println!("\n===== 回执全文（课表对得上）=====\n{matched}\n");
+    println!("===== 回执全文（课表对不上）=====\n{unmatched}\n");
+}
+
 /// 回执点名课程（2026-11-13 起只去掉「分段识别中」那句，点名课程照旧）。
 /// 课程匹配本身由 worker 侧负责并有直接测试（course_matching_by_interval_only）。
 #[test]
