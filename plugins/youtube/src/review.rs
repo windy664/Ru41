@@ -231,7 +231,7 @@ impl YoutubeReviewJob {
                 .filter(|line| !line.trim().starts_with("答案："))
                 .collect::<Vec<_>>()
                 .join("\n");
-            let body = strip_slot_brackets(body.trim());
+            let body = strip_slot_marks(body.trim());
             if body.is_empty() {
                 continue;
             }
@@ -419,7 +419,11 @@ impl YoutubeReviewJob {
             let cue = doc.value["cue"].as_str().unwrap_or("").trim();
             let kind = doc.value["kind"].as_str().unwrap_or("装备");
             let tag = if kind == "carry" { "说" } else { "懂" };
-            section.push_str(&format!("{}. （{tag}）{cue}\n", index + 1));
+            section.push_str(&format!(
+                "{}. （{tag}）{}\n",
+                index + 1,
+                strip_slot_marks(cue)
+            ));
         }
         let ids = picked.iter().map(|doc| doc.id.clone()).collect();
         Ok(Some((section, ids)))
@@ -673,7 +677,7 @@ impl YoutubeReviewJob {
 /// /学习：最近一期完整预习单（精简日报不含听前自测与看后检测）。
 pub fn latest_sheet(store: &Arc<dyn TaskStore>) -> Result<String> {
     Ok(match latest_prep_summary(store)? {
-        Some(sheet) => format!("## 📖 最近一期完整预习单\n{}", strip_slot_brackets(&sheet)),
+        Some(sheet) => format!("## 📖 最近一期完整预习单\n{}", strip_slot_marks(&sheet)),
         None => "最近没有预习单；先 /预习 一个视频。".into(),
     })
 }
@@ -837,24 +841,35 @@ fn section_head(line: &str) -> &str {
     line.trim().trim_start_matches('#').trim()
 }
 
-/// 成稿里残留的模板占位括号（【…】）脱掉，内容保留。
+/// 成稿里残留的模板占位括号（【…】 / {…}）脱掉，内容保留。
 ///
 /// prompt 用【…】当占位符，模型经常把内容填对了却把括号原样留着——生产实测出现过
-/// `动词 【剖开；仔细剖析】 · 搭配 …`，括号对读者是噪音。成对出现才脱，
-/// 免得吃掉正文里孤立的「【」。
-pub fn strip_slot_brackets(text: &str) -> String {
+/// `动词 【剖开；仔细剖析】 · 搭配 …`；旧版 prompt 的 `{…}` 也一样会漏。
+/// 括号对读者是噪音，成对出现才脱，免得吃掉正文里孤立的「【」。
+pub fn strip_slot_marks(text: &str) -> String {
+    let mut out = text.to_owned();
+    for (open, close) in [('【', '】'), ('{', '}')] {
+        if out.contains(open) {
+            out = strip_pair(&out, open, close);
+        }
+    }
+    out
+}
+
+/// 去掉成对括号（保留括号里的内容）；孤立的开括号原样留着。
+fn strip_pair(text: &str, open: char, close: char) -> String {
     let mut out = String::with_capacity(text.len());
     let mut rest = text;
-    while let Some(start) = rest.find('【') {
+    while let Some(start) = rest.find(open) {
         out.push_str(&rest[..start]);
-        let after = &rest[start + '【'.len_utf8()..];
-        match after.find('】') {
+        let after = &rest[start + open.len_utf8()..];
+        match after.find(close) {
             Some(end) => {
                 out.push_str(&after[..end]);
-                rest = &after[end + '】'.len_utf8()..];
+                rest = &after[end + close.len_utf8()..];
             }
             None => {
-                out.push('【');
+                out.push(open);
                 rest = after;
             }
         }
@@ -1444,14 +1459,20 @@ mod tests {
     fn strips_leftover_slot_brackets() {
         let raw = "- **eviscerate** /ɪˈvɪsəreɪt/ 动词 【剖开；仔细剖析】 · 搭配 eviscerate an argument\n\
 - **pin down** — 【精确锁定某个量】 · 原句 \"try to pin down\" [0:36]\n";
-        let clean = strip_slot_brackets(raw);
+        let clean = strip_slot_marks(raw);
         assert!(!clean.contains('【'), "{clean}");
         assert!(!clean.contains('】'), "{clean}");
         assert!(clean.contains("动词 剖开；仔细剖析"), "{clean}");
         assert!(clean.contains("— 精确锁定某个量"), "{clean}");
+        // 旧版 prompt 留下的 {…} 同样要脱（存量 cue 里有一批）。
+        assert_eq!(
+            strip_slot_marks("/ˈfoʊthoʊld/ {名词，初始立足点}；搭配 foothold"),
+            "/ˈfoʊthoʊld/ 名词，初始立足点；搭配 foothold"
+        );
         // 孤立的开括号不动（正文里可能有半个符号）。
-        assert_eq!(strip_slot_brackets("有个孤立的【符号"), "有个孤立的【符号");
+        assert_eq!(strip_slot_marks("有个孤立的【符号"), "有个孤立的【符号");
+        assert_eq!(strip_slot_marks("有个孤立的{符号"), "有个孤立的{符号");
         // 没有括号时原样返回。
-        assert_eq!(strip_slot_brackets("干净的一行"), "干净的一行");
+        assert_eq!(strip_slot_marks("干净的一行"), "干净的一行");
     }
 }
