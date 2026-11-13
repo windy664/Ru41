@@ -194,11 +194,10 @@ fn audio_file_is_downloaded_and_queued() {
     let cx = ctx(&store, &atts, "user:U1", "U1", "m-audio", true);
     let reply = tokio_bridge_block(async { handler.handle_message("", &cx).await.unwrap() });
     let text = reply.unwrap().text;
-    // 回执的主语是「这节课」，不是「一段录音」；课表对不上时说清楚先放收件箱。
-    assert!(text.contains("这节课已结束"), "{text}");
-    assert!(text.contains("课表里没对上"), "{text}");
-    assert!(!text.contains("录音"), "{text}");
-    assert!(text.contains("m4a"));
+    // 2026-11-13 起「分段识别中」这条回执不再发到 QQ：回复是空的。
+    // 回执内容（点名课程/队列/附言）的断言随之下线——课程匹配由 worker 侧
+    // course_matching_by_interval_only 覆盖，管道本身仍要照常跑。
+    assert!(text.is_empty(), "{text}");
     // 文件已落盘，pending 文档已登记。
     let docs = store.documents("lecture.pending", 10).unwrap();
     assert_eq!(docs.len(), 1);
@@ -215,10 +214,10 @@ fn audio_file_is_downloaded_and_queued() {
     assert_eq!(store.documents("lecture.pending", 10).unwrap().len(), 1);
 }
 
-/// 回执要直接点名课程：课表能对上就写「XX 这节课已结束」，
-/// 让用户看到「我们认出这是哪节课」，而不是只说收到了一个文件。
+/// 回执已停发（2026-11-13）：即使文件名带上课时刻、能对上课程，回复也是空的。
+/// 课程匹配本身仍由 worker 侧负责并有直接测试（course_matching_by_interval_only）。
 #[test]
-fn receipt_names_the_matched_course() {
+fn receipt_stays_silent_even_when_the_course_is_matched() {
     let tmp = tempfile::tempdir().unwrap();
     let store: Arc<dyn TaskStore> =
         Arc::new(SqliteTaskStore::open(&tmp.path().join("state.db")).unwrap());
@@ -258,8 +257,10 @@ fn receipt_names_the_matched_course() {
     let cx = ctx(&store, &atts, "user:U1", "U1", "m-course", true);
     let reply = tokio_bridge_block(async { handler.handle_message("", &cx).await.unwrap() });
     let text = reply.unwrap().text;
-    assert!(text.contains("高等数学 这节课已结束"), "{text}");
-    assert!(text.contains("开始分析这节课"), "{text}");
+    assert!(text.is_empty(), "{text}");
+    // 管道不受影响：音频照样下载入队，等 worker 转写归档。
+    let docs = store.documents("lecture.pending", 10).unwrap();
+    assert_eq!(docs.len(), 1);
 }
 
 #[test]
