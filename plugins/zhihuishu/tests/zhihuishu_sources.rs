@@ -847,4 +847,117 @@ fn config_section_rejects_unknown_fields() {
 #[allow(dead_code)]
 fn _route_type_check(_r: NotifyRoute) {}
 
-use ru41_plugin_zhihuishu::{ZhihuishuConfig, ZhihuishuSection, ZhihuishuTracker, load_report};
+use ru41_plugin_zhihuishu::{
+    ZhihuishuConfig, ZhihuishuSection, ZhihuishuTracker, load_report, normalize_platform_time,
+    parse_platform_time,
+};
+
+/// 毫秒 epoch 与 ISO 串必须收敛到同一个值：
+/// 同一时刻的两种写法若被当成两个值, 就会误报「截止变更」。
+#[test]
+fn platform_time_normalization_unifies_epoch_and_iso() {
+    // 1794628800000 ms == 1794628800 s（2026-11-14 12:00:00 +08:00）
+    let expected = chrono::DateTime::from_timestamp(1794628800, 0)
+        .unwrap()
+        .with_timezone(&chrono::Local);
+    let canonical = expected.format("%Y-%m-%d %H:%M:%S").to_string();
+
+    assert_eq!(normalize_platform_time("1794628800000").unwrap(), canonical);
+    assert_eq!(normalize_platform_time("1794628800").unwrap(), canonical);
+    // 归一化后必须能被 parse_platform_time 解析回同一个 Unix 秒
+    assert_eq!(
+        parse_platform_time("1794628800000"),
+        Some(expected.timestamp())
+    );
+    assert_eq!(
+        parse_platform_time("1794628800"),
+        Some(expected.timestamp())
+    );
+}
+
+#[test]
+fn platform_time_normalization_keeps_iso_and_rejects_garbage() {
+    assert_eq!(
+        normalize_platform_time("2026-11-14 12:00:00").unwrap(),
+        "2026-11-14 12:00:00"
+    );
+    assert_eq!(
+        normalize_platform_time("2026-11-14 12:00").unwrap(),
+        "2026-11-14 12:00:00"
+    );
+    assert_eq!(
+        normalize_platform_time("2026-11-14").unwrap(),
+        "2026-11-14 00:00:00"
+    );
+    // 认不出来的一律 None，调用方保留原值而不是丢弃
+    assert!(normalize_platform_time("未知").is_none());
+    assert!(normalize_platform_time("").is_none());
+    // 紧凑日期串不是 epoch，不能被误解析成 1970 年的时间
+    assert!(normalize_platform_time("20261114").is_none());
+}
+
+/// 报告里的毫秒 epoch 串在读取时就被归一化（sidecar 漏归一化时的兜底）。
+#[test]
+fn load_report_normalizes_millisecond_end_at() {
+    let dir = tempfile::tempdir().unwrap();
+    let mut value = sample_report_json();
+    value["courses"][0]["tasks"][2]["end_at"] = json!("1794628800000");
+    let path = write_report(dir.path(), &value);
+
+    let report = load_report(&path).unwrap();
+    let canonical = chrono::DateTime::from_timestamp(1794628800, 0)
+        .unwrap()
+        .with_timezone(&chrono::Local)
+        .format("%Y-%m-%d %H:%M:%S")
+        .to_string();
+    assert_eq!(
+        report.courses[0].tasks[2].end_at.as_deref(),
+        Some(canonical.as_str())
+    );
+}
+
+/// 回归：快照里残留的毫秒串（sidecar 归一化前的老库）与本轮报告是同一时刻，
+/// 不该报「截止变更」；同时快照要被自愈成归一化格式。
+#[tokio::test]
+async fn legacy_millisecond_snapshot_does_not_fake_deadline_change() {
+    let dir = tempfile::tempdir().unwrap();
+    let store = make_store(dir.path());
+    let channel = mock_channel();
+
+    // 报告里的 end_at 是毫秒 epoch 串（sidecar 归一化前的形态）
+    let mut value = sample_report_json();
+    value["courses"][0]["tasks"][2]["end_at"] = json!("1794628800000");
+    let path = write_report(dir.path(), &value);
+    let tracker = make_tracker(&store, path, Some(channel.clone()));
+
+    tracker.poll_once().await.unwrap();
+
+    // 人为把快照改回历史遗留的毫秒串，模拟归一化前的老库
+    let key = "职业生涯规划#T3";
+    let snap = store.document("zhihuishu_task", key).unwrap().unwrap();
+    let mut dirty = snap.value.clone();
+    dirty["end_at"] = json!("1794628800000");
+    store
+        .put_document("zhihuishu_task", key, Some(snap.revision), &dirty)
+        .unwrap();
+
+    let before = channel.sent.lock().unwrap().len();
+    tracker.poll_once().await.unwrap();
+
+    let sent = channel.sent.lock().unwrap().clone();
+    let fresh: Vec<&String> = sent[before..].iter().collect();
+    assert!(
+        !fresh.iter().any(|m| m.contains("截止变更")),
+        "毫秒串与 ISO 串是同一时刻，不该报截止变更：{fresh:?}"
+    );
+
+    // 快照被自愈成归一化格式，不再是裸毫秒
+    let snap = store.document("zhihuishu_task", key).unwrap().unwrap();
+    let end_at = snap.value["end_at"].as_str().unwrap();
+    let canonical = chrono::DateTime::from_timestamp(1794628800, 0)
+        .unwrap()
+        .with_timezone(&chrono::Local)
+        .format("%Y-%m-%d %H:%M:%S")
+        .to_string();
+    assert_eq!(end_at, canonical, "快照仍存着裸毫秒: {end_at}");
+}

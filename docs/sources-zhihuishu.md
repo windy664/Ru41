@@ -129,6 +129,13 @@ QQ 侧另有查询命令（装配层自动注册）：单聊发送 `/作业` 或
 
 - 报告文件缺失或 JSON 损坏：当轮 `poll` 报错退出（cron 场景下次日自愈），不影响 records 中已有状态。
 - `end_at` 按本机时区解析（服务器应为 Asia/Shanghai）；平台只提供分钟级时间。
+- **时间格式归一化（2026-11-13 起）**：平台的「全局待办」接口（`findNoFinishTaskTotal`）的
+  `startTime`/`endTime` 返回毫秒 epoch（如 `"1794628800000"`），而逐课采集接口返回平台已格式化好的
+  ISO 串（如 `"2026-11-14 12:00:00"`）——两者是同一时刻却写法不同。sidecar 侧统一归一化到契约格式
+  （`normalize_time()`，显式按 UTC+8 换算，**不依赖容器本地时区**：sidecar 容器没设 TZ，是 UTC）；
+  Rust 侧 `load_report()` 再兜一层（`normalize_platform_time()`）。未归一化时，同一时刻的两种写法会被
+  当成「截止变更」误报并推送卡片，同时 `parse_platform_time` 解析失败会让该作业的截止/临期判定与
+  待办 `due_at` 一起失效。
 - 任务完成状态来自 sidecar 抓取时刻；交作业后到下次采集之间仍会收到当日提醒，属预期。
 - 老平台（wenda）课程任务已于 2026-10-26 补齐结构化解析（sidecar 点「作业考试」读 `examStu/NowExamList` + `homeworkUser/List`；字段名防御式映射，首个真实条目原文留档 `wenda_raw.jsonl` 校准）。
 - `late_submit`（是否允许迟交）来自详情页 `isDelay` 字段（文本兜底）；**未完成且非考试式任务**才访问详情页，考试式任务红线跳过、绝不进入答题页（只读文本与网络响应，不点任何提交入口）。

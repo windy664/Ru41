@@ -10,7 +10,8 @@ use serde::Serialize;
 use std::{collections::BTreeMap, path::PathBuf, sync::Arc};
 
 use crate::source::{
-    ZhihuishuCourse, ZhihuishuReport, ZhihuishuTask, load_report, parse_platform_time,
+    ZhihuishuCourse, ZhihuishuReport, ZhihuishuTask, load_report, normalize_platform_time,
+    parse_platform_time,
 };
 
 /// 智慧树作业提醒配置（对应配置文件的 [sources.zhihuishu]）。
@@ -216,11 +217,17 @@ impl ZhihuishuTracker {
                         .get("completed")
                         .and_then(serde_json::Value::as_bool)
                         .unwrap_or(false);
-                    let old_end = doc
+                    // 快照里的 end_at 可能是历史遗留的毫秒 epoch 串（sidecar 归一化前留下的），
+                    // 读出来先归一化再比较——否则「同一时刻的两种写法」会被误判成截止变更。
+                    let old_end_raw = doc
                         .value
                         .get("end_at")
                         .and_then(serde_json::Value::as_str)
                         .map(str::to_owned);
+                    let old_end = old_end_raw
+                        .as_deref()
+                        .map(|s| normalize_platform_time(s).unwrap_or_else(|| s.to_owned()))
+                        .filter(|s| !s.is_empty());
                     let new_end = task.end_at.clone();
                     let reopened = old_completed && !completed;
                     let drifted = old_end.as_deref() != new_end.as_deref();
@@ -276,6 +283,18 @@ impl ZhihuishuTracker {
                             old_end.as_deref().map(fmt_due).unwrap_or("未知"),
                             new_end.as_deref().map(fmt_due).unwrap_or("未知")
                         ));
+                    } else if old_end_raw.as_deref() != old_end.as_deref() {
+                        // 快照里存的是历史遗留的毫秒 epoch 串（如 "1794628800000"），与本轮报告
+                        // 是同一时刻，不算变更——这里只把快照改写成归一化格式，自愈脏数据。
+                        let revision = doc.revision;
+                        let mut snapshot = doc.value.clone();
+                        snapshot["end_at"] = serde_json::json!(new_end.clone());
+                        self.store.put_document(
+                            "zhihuishu_task",
+                            &key,
+                            Some(revision),
+                            &snapshot,
+                        )?;
                     }
 
                     if completed {
@@ -321,7 +340,8 @@ impl ZhihuishuTracker {
                 }
                 if completed {
                     // 临期确认卡片同步收口，不再追发。
-                    let _ = homework_work::close_reminder(&self.store, "zhihuishu", "zs", &key, now);
+                    let _ =
+                        homework_work::close_reminder(&self.store, "zhihuishu", "zs", &key, now);
                     continue;
                 }
 
