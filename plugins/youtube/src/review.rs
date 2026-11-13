@@ -231,7 +231,7 @@ impl YoutubeReviewJob {
                 .filter(|line| !line.trim().starts_with("答案："))
                 .collect::<Vec<_>>()
                 .join("\n");
-            let body = body.trim();
+            let body = strip_slot_brackets(body.trim());
             if body.is_empty() {
                 continue;
             }
@@ -673,7 +673,7 @@ impl YoutubeReviewJob {
 /// /学习：最近一期完整预习单（精简日报不含听前自测与看后检测）。
 pub fn latest_sheet(store: &Arc<dyn TaskStore>) -> Result<String> {
     Ok(match latest_prep_summary(store)? {
-        Some(sheet) => format!("📖 最近一期完整预习单\n{sheet}"),
+        Some(sheet) => format!("## 📖 最近一期完整预习单\n{}", strip_slot_brackets(&sheet)),
         None => "最近没有预习单；先 /预习 一个视频。".into(),
     })
 }
@@ -835,6 +835,32 @@ fn parse_numbers(arg: &str, max: usize) -> Result<Vec<usize>, String> {
 /// 模板改版后小节统一升级为 `## ` 标题，解析器不能再假设行首就是 emoji。
 fn section_head(line: &str) -> &str {
     line.trim().trim_start_matches('#').trim()
+}
+
+/// 成稿里残留的模板占位括号（【…】）脱掉，内容保留。
+///
+/// prompt 用【…】当占位符，模型经常把内容填对了却把括号原样留着——生产实测出现过
+/// `动词 【剖开；仔细剖析】 · 搭配 …`，括号对读者是噪音。成对出现才脱，
+/// 免得吃掉正文里孤立的「【」。
+pub fn strip_slot_brackets(text: &str) -> String {
+    let mut out = String::with_capacity(text.len());
+    let mut rest = text;
+    while let Some(start) = rest.find('【') {
+        out.push_str(&rest[..start]);
+        let after = &rest[start + '【'.len_utf8()..];
+        match after.find('】') {
+            Some(end) => {
+                out.push_str(&after[..end]);
+                rest = &after[end + '】'.len_utf8()..];
+            }
+            None => {
+                out.push('【');
+                rest = after;
+            }
+        }
+    }
+    out.push_str(rest);
+    out
 }
 
 /// 列表项前缀（`- ` / `1. ` / `2) `）剥到正文起点。
@@ -1354,5 +1380,78 @@ mod tests {
         );
         assert_eq!(preview_title("没有标题的行"), None);
         assert_eq!(preview_title("视频标题：\n"), None);
+    }
+
+    /// 真实生产产出（2026-11-13 集装箱那期，美版模板）——解析器必须原样吃下。
+    /// 这份 fixture 直接取自 Agent 实际输出，格式漂移会立刻在这里暴露。
+    const REAL_SHEET: &str = r#"## 📖 现场装备
+- ⭐ **pitch an idea** /pɪtʃ ən aɪˈdiə/ — 向会议或负责人提出创意；这里是“pitch meetings”里讨论那些不适合放在 Veritasium 常规频道的选题 · 原句 "There have been video ideas that I've pitched that don't fully belong on 'Veritasium.'" [L2 0:02]
+- ⭐ **come up with** /kʌm ʌp wɪð/ — 想出；后面可接主意、方案或答案 · 原句 "He figures, what if you took the entire back of the truck and just put it directly on the ship?" [L56 1:56]
+- ⭐ **gamble on** /ˈɡæmbəl ɑn/ — 把某事押在不确定的结果上；强调风险极高，而非轻松下注 · 原句 "He sells his 20-year-old trucking empire and gambles everything on an ocean shipping company, despite the fact that he has zero experience in the field." [L108 3:44]
+- **the upshot is** — 总之；结果是；引出前述问题带来的商业后果 · 原句 "The upshot is, the process is so expensive that in most cases selling internationally just isn't worth it." [L97 3:18]
+- **stand by** — 袖手旁观；此处指麦金莱只能等待货运问题恶化，却无法直接控制装船流程 · 原句 "While McLean builds a highly successful trucking empire over the next 20 years, he can only stand by and watch as the cargo issue gets worse." [L67 2:15]
+- **turn something into reality** — 把设想变成现实；此处指把“可拆卸卡车拖车”的设想落实为集装箱 · 原句 "But to turn his idea into reality, he needs someone who can actually build the container of his dreams." [L113 3:54]
+
+## 🔗 重点单词
+- **rigour** /ˈrɪɡər/ 名词 严谨；严格的标准 · 搭配 the same rigour、academic rigour · 词形 rigorous（形容词）、rigorously（副词） · 原句 "Same Veritasium rigour, but this time it's about social science." [L15 0:23]
+- **painstakingly** /ˈpeɪnsteɪkɪŋli/ 副词 极其费心地；费力地 · 搭配 painstakingly slow、painstakingly detailed · 词形 painstaking（形容词）、painstakingly（副词） · 原句 "It's painstakingly slow, almost a whole day, and that's just his one truck." [L53 1:51]
+- **endemic** /ɛnˈdɛmɪk/ 形容词 普遍存在的；地方性流行的 · 搭配 endemic corruption、endemic in an industry · 词形 endemically（副词） · 原句 "Corruption, racketeering and theft are endemic." [L89 3:04]
+- **drastic** /ˈdræstɪk/ 形容词 激烈的；极端的 · 搭配 drastic measures、a drastic change、drastic step · 词形 drastically（副词） · 原句 "So McLean does something drastic." [L107 3:40]
+
+## 🔁 带走就用
+- **"come up with an idea"** — 讨论方案时自然提出自己想到的主意；句式为「come up with + 名词／动名词」，不能用 come up 的不及物义替换 · 你可以说："I came up with a simple idea for our project." · 原句 "He figures, what if you took the entire back of the truck and just put it directly on the ship?" [L56 1:56]
+- **"gamble on something"** — 形容在结果不确定时押上重要资源；注意 gamble 的直接宾语通常接 on · 你可以说："I wouldn't gamble on that project without a backup plan." · 原句 "He sells his 20-year-old trucking empire and gambles everything on an ocean shipping company, despite the fact that he has zero experience in the field." [L108 3:44]
+- **"turn an idea into reality"** — 从提出方案到做出成品；结构是「turn + A + into + B」 · 你可以说："We need to turn our idea into reality before the deadline." · 原句 "But to turn his idea into reality, he needs someone who can actually build the container of his dreams." [L113 3:54]
+
+## 👂 精听挑战
+- [1:04] "But that doesn't mean that the videos shouldn't exist and that they aren't saying something very interesting." → doesn’t 在快速口语中常弱读，重音会落在 mean；not mean 与 should not 共同否定的是“这些视频不该存在”的误解，而不是说视频没有意思 （现象：弱读）
+- [2:28] "This is the log from a 1954 cargo ship, the SS Warrior." → log from 连读为近似“log-from”，from 的尾音与 the 的起音相接；数字 1954 常读作 nineteen fifty-four （现象：连读）
+- [3:44] "He sells his 20-year-old trucking empire and gambles everything on an ocean shipping company, despite the fact that he has zero experience in the field." → sells his 与 empire and 中前一项尾音相接，everything 中的 -thing 常弱化；despite 后 the fact of 整体弱读，zero experience 承载反差重点 （现象：弱读）"#;
+
+    #[test]
+    fn parses_real_production_sheet() {
+        let items = extract_vocab(REAL_SHEET);
+        let chunks: Vec<&str> = items.iter().map(|item| item.chunk.as_str()).collect();
+        // ⭐ 必学 3 个 + 重点单词 4 个 + 带走就用 3 个；非 ⭐ 场景词不进复习。
+        assert_eq!(chunks.len(), 10, "{chunks:?}");
+        assert!(chunks.contains(&"pitch an idea"), "{chunks:?}");
+        assert!(chunks.contains(&"rigour"), "{chunks:?}");
+        assert!(chunks.contains(&"gamble on"), "{chunks:?}");
+        assert!(chunks.contains(&"come up with an idea"), "{chunks:?}");
+        assert!(!chunks.contains(&"stand by"), "非 ⭐ 场景词不得进复习");
+        // 原句是复习的答案，不能漏进提示。
+        for item in &items {
+            assert!(
+                !item.cue.contains("Veritasium.") && !item.cue.contains("SS Warrior"),
+                "原句泄漏: {}",
+                item.cue
+            );
+        }
+        // 锚点：时间戳、现象标签都要落库。
+        let anchors = extract_anchors(REAL_SHEET);
+        assert!(anchors.len() >= 3, "{anchors:?}");
+        assert!(anchors.iter().all(|a| a.ts.contains(':')), "{anchors:?}");
+        assert!(
+            anchors
+                .iter()
+                .any(|a| a.category == "连读" || a.category == "弱读" || a.category == "重音"),
+            "{anchors:?}"
+        );
+    }
+
+    /// 模型把占位内容填对了却留着括号，成稿里是噪音——成对脱掉、内容保留。
+    #[test]
+    fn strips_leftover_slot_brackets() {
+        let raw = "- **eviscerate** /ɪˈvɪsəreɪt/ 动词 【剖开；仔细剖析】 · 搭配 eviscerate an argument\n\
+- **pin down** — 【精确锁定某个量】 · 原句 \"try to pin down\" [0:36]\n";
+        let clean = strip_slot_brackets(raw);
+        assert!(!clean.contains('【'), "{clean}");
+        assert!(!clean.contains('】'), "{clean}");
+        assert!(clean.contains("动词 剖开；仔细剖析"), "{clean}");
+        assert!(clean.contains("— 精确锁定某个量"), "{clean}");
+        // 孤立的开括号不动（正文里可能有半个符号）。
+        assert_eq!(strip_slot_brackets("有个孤立的【符号"), "有个孤立的【符号");
+        // 没有括号时原样返回。
+        assert_eq!(strip_slot_brackets("干净的一行"), "干净的一行");
     }
 }
