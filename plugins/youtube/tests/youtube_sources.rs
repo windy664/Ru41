@@ -635,6 +635,40 @@ mod review_loop {
             .unwrap();
     }
 
+    /// 美版模板（2026-11-13）产出的预习单：prompt 带视频标题，summary 是新格式正文。
+    fn seed_v2_sheet(store: &Arc<dyn TaskStore>, video: &str, title: &str, body: &str) {
+        let mut service = TaskService::new(store.clone());
+        let prompt = format!(
+            "你在生成预习单。\n视频标题：{title}\n视频链接：https://www.youtube.com/watch?v={video}\n"
+        );
+        let enqueue = service
+            .enqueue_for(&format!("youtube:prep:{video}"), &prompt, "codex")
+            .unwrap();
+        let claim = store
+            .claim_for(
+                "test-worker",
+                "codex",
+                None,
+                RunContract::AnalysisV1,
+                ru41::util::now(),
+                600,
+            )
+            .unwrap()
+            .expect("task claimable");
+        assert_eq!(claim.task.id, enqueue.task.id);
+        store
+            .succeed(
+                &claim,
+                &AgentResult {
+                    summary: body.to_owned(),
+                    ..Default::default()
+                },
+                None,
+                ru41::util::now(),
+            )
+            .unwrap();
+    }
+
     fn seed_succeeded_sheet(store: &Arc<dyn TaskStore>, video: &str) {
         let mut service = TaskService::new(store.clone());
         let enqueue = service
@@ -657,8 +691,8 @@ mod review_loop {
                 &claim,
                 &AgentResult {
                     summary: SHEET.replace("vidq", video),
-        ..Default::default()
-    },
+                    ..Default::default()
+                },
                 None,
                 ru41::util::now(),
             )
@@ -688,8 +722,8 @@ mod review_loop {
                 &claim,
                 &AgentResult {
                     summary: SHEET.replace("vidq", video) + "\n（作废旧单子标记）\n",
-        ..Default::default()
-    },
+                    ..Default::default()
+                },
                 None,
                 ru41::util::now(),
             )
@@ -1061,7 +1095,7 @@ mod review_loop {
         {
             let sent = fake.0.lock().unwrap();
             assert_eq!(sent.len(), 1);
-            assert!(sent[0].contains("词块复习 4 条"), "{}", sent[0]);
+            assert!(sent[0].contains("词块复习（4 条）"), "{}", sent[0]);
             assert!(sent[0].contains("（懂）"), "{}", sent[0]);
         }
         let day2 = clock_at(1).format("%Y-%m-%d").to_string();
@@ -1163,5 +1197,54 @@ mod review_loop {
             .await
             .unwrap();
         assert!(reply.contains("/定级"), "{reply}");
+    }
+
+    /// 美版日报骨架：双视频各起 `## 🎬 Video N｜标题` 小节，复习段与专题段各占一节，
+    /// 底部统一一条指令指引。标题取自 prompt 的「视频标题：」行。
+    #[tokio::test]
+    async fn digest_uses_beautified_section_frame() {
+        let dir = tempfile::tempdir().unwrap();
+        let store: Arc<dyn TaskStore> =
+            Arc::new(SqliteTaskStore::open(&dir.path().join("state.db")).unwrap());
+        let body_a = "## 📖 现场装备\n- ⭐ **silent stalls** /ˈsaɪlənt stɔːlz/ — 助手卡住不回应 · 原句 \"Okay. Silent stalls sounds like\" [2:44]\n\n## 👂 精听挑战\n- [2:02] \"walk through that\" → going to 缩成 gonna （现象：缩读）\n\n答案：1B 2 silent stalls";
+        let body_b = "## 📖 现场装备\n- ⭐ **core loop** /kɔːr luːp/ — 游戏设计的核心循环 · 原句 \"the core loop of the game\" [1:10]\n\n## 👂 精听挑战\n- [3:20] \"cut stuff out\" → cut 的 t 失去爆破音（现象：失爆）\n";
+        seed_v2_sheet(&store, "vid-a", "工程师的 dot 助手", body_a);
+        seed_v2_sheet(&store, "vid-b", "Godot 实战课", body_b);
+
+        let (job, fake) = review_job_at(store.clone(), clock_at(0));
+        ru41::ingress::schedule::PollJob::poll_json(&job)
+            .await
+            .unwrap();
+
+        let sent = fake.0.lock().unwrap();
+        assert_eq!(sent.len(), 1);
+        let text = sent[0].clone();
+        println!("\n===== 美版日报预览 =====\n{text}\n=========================\n");
+
+        assert!(text.contains("## 📚 英语日报｜"), "{text}");
+        assert!(
+            text.contains("> 2 个视频 · 精听 + 词块迁移 + 雅思输出"),
+            "{text}"
+        );
+        // 视频按任务 id 倒序（新的在前）：vid-b 后建 → Video 1。
+        assert!(text.contains("## 🎬 Video 1｜Godot 实战课"), "{text}");
+        assert!(text.contains("## 🎬 Video 2｜工程师的 dot 助手"), "{text}");
+        // 小标题必须紧跟自己的正文，别串台。
+        let v1 = text.find("## 🎬 Video 1｜").unwrap();
+        let v2 = text.find("## 🎬 Video 2｜").unwrap();
+        assert!(v1 < v2, "{text}");
+        assert!(
+            text[v1..v2].contains("core loop"),
+            "Video 1 应是 vid-b 的正文: {text}"
+        );
+        assert!(
+            text[v2..].contains("silent stalls"),
+            "Video 2 应是 vid-a 的正文: {text}"
+        );
+        // 答案不进日报正文。
+        assert!(!text.contains("答案：1B"), "{text}");
+        assert!(text.contains("回复 /答案"), "{text}");
+        // 旧的横线分隔符不该再出现。
+        assert!(!text.contains("───"), "{text}");
     }
 }
