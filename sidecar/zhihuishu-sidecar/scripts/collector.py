@@ -15,7 +15,7 @@ import os
 import re
 import sys
 import time
-from datetime import datetime
+from datetime import datetime, timedelta, timezone
 from urllib.parse import urlparse
 
 sys.path.insert(0, "/app")
@@ -87,6 +87,51 @@ CLICK_LEAF_JS = """(label) => {
 
 def now_ts() -> str:
     return datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+
+
+# 平台时间是北京时间(UTC+8)。sidecar 容器没设 TZ(playwright 基础镜像是 UTC),
+# datetime.now() 拿到的是 UTC——epoch 换算绝不能用容器本地时区, 会差 8 小时。
+# 中国自 1991 年起不再使用夏令时, 固定 +8 与 Asia/Shanghai 完全等价。
+CST = timezone(timedelta(hours=8))
+
+# epoch 合理区间: 2001-09-09 ~ 2100-01-01。区间外的纯数字(如 "20261114" 这种
+# 紧凑日期)不当 epoch 处理, 原样透传, 避免把日期串误解析成 1970 年的时间。
+_EPOCH_MIN = 1_000_000_000
+_EPOCH_MAX = 4_102_444_800_000
+
+
+def normalize_time(value) -> str | None:
+    """平台时间 → 契约格式 "YYYY-MM-DD HH:MM:SS"（北京时间）。
+
+    为什么需要：智慧树的「全局待办」接口(findNoFinishTaskTotal)的
+    startTime/endTime 返回的是毫秒 epoch（如 "1794628800000"），而课程流返回的是
+    平台已格式化好的 ISO 串("2026-11-14 12:00:00")——两种形态不同源。
+    不归一化就混在一起比字符串, 会误报「截止变更」，并且下游 parse_platform_time
+    只认 ISO 串, 解析失败会让截止/临期判定与待办 due_at 整体失效。
+
+    支持: 毫秒 epoch(int/str)、秒 epoch(int/str)、ISO 串(原样透传)。
+    无法识别时原样返回字符串(不丢数据); None/空串 → None。
+    """
+    if value is None:
+        return None
+    if isinstance(value, bool):
+        return str(value)
+    if isinstance(value, (int, float)):
+        raw = int(value)
+    else:
+        text = str(value).strip()
+        if not text:
+            return None
+        if not text.isdigit():
+            return text  # 已是 ISO 串等, 透传
+        raw = int(text)
+    if not (_EPOCH_MIN <= raw <= _EPOCH_MAX):
+        return str(value)
+    seconds = raw // 1000 if raw >= 100_000_000_000 else raw
+    try:
+        return datetime.fromtimestamp(seconds, tz=CST).strftime("%Y-%m-%d %H:%M:%S")
+    except (OverflowError, OSError, ValueError):
+        return str(value)
 
 
 def platform_of(url: str) -> str:
@@ -222,8 +267,8 @@ def to_contract(raw: dict) -> dict:
         "kind": kind,
         "course_id": raw.get("courseId"),
         "group_id": raw.get("groupId"),
-        "start_at": start,
-        "end_at": raw.get("endTime"),
+        "start_at": normalize_time(start),
+        "end_at": normalize_time(raw.get("endTime")),
         "completed": bool(raw.get("isCompleted")),
         "total_score": raw.get("totalScore"),
         "exam_duration_minutes": exam_duration if exam_duration else None,
@@ -525,15 +570,14 @@ def wenda_item_to_contract(item: dict, kind: str) -> dict | None:
         "kind": kind,
         "course_id": None,
         "group_id": None,
-        "start_at": str(start) if start else None,
-        "end_at": str(end) if end else None,
+        "start_at": normalize_time(start),
+        "end_at": normalize_time(end),
         "completed": bool(completed) if completed is not None else None,
         "late_submit": None,
         "score": wenda_pick(item, "score", "totalScore"),
         "content": wenda_pick(item, "content", "description", "requirement"),
         "content_published": None,
     }
-
 
 async def scan_wenda_tasks(page) -> tuple[list, int]:
     """老平台: 点作业考试 tab, 解析考试/作业列表 API.
@@ -718,8 +762,10 @@ def normalize_todo_item(item: dict) -> dict | None:
         "course_id": course_id,
         "title": title,
         "kind": "exam" if item.get("homeworkType") == 2 else "assignment",
-        "start_at": item.get("startTime") or nested.get("startTime"),
-        "end_at": item.get("endTime") or nested.get("endTime"),
+        # 该接口的时间是毫秒 epoch, 必须归一化成契约格式, 否则与课程流的 ISO 串
+        # 同字段混用会误报「截止变更」并让下游截止/临期判定整体失效。
+        "start_at": normalize_time(item.get("startTime") or nested.get("startTime")),
+        "end_at": normalize_time(item.get("endTime") or nested.get("endTime")),
         "content": (nested.get("content") if nested else content) or None,
         "platform": "wenda" if item.get("courseType") == 1 else "polymas",
         "group_id": item.get("groupId"),

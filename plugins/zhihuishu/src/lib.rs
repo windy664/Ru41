@@ -6,7 +6,7 @@ pub use config::ZhihuishuSection;
 pub use service::{ZhihuishuConfig, ZhihuishuPollReport, ZhihuishuTracker};
 pub use source::{
     ZhihuishuAttachment, ZhihuishuCourse, ZhihuishuReport, ZhihuishuTask, load_report,
-    parse_platform_time,
+    normalize_platform_time, parse_platform_time,
 };
 
 /// 注册表定义：zhihuishu 的调度清单、tracker、QQ 命令闭环。
