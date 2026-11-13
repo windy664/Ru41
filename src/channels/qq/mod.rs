@@ -777,6 +777,9 @@ impl QqBot {
     /// 文本里的 `ru41-media://N` 占位符指向 reply.media[N]，这里上传为 markdown
     /// 素材（qqbot-media:// 引用）后内嵌；上传失败降级为独立媒体消息。
     async fn reply(&self, target: &str, msg_id: &str, reply: &Reply) -> Result<()> {
+        if is_silent_reply(reply) {
+            return Ok(());
+        }
         let mut text = reply.text.clone();
         let mut inlined = vec![false; reply.media.len()];
         for (index, media) in reply.media.iter().enumerate() {
@@ -1081,6 +1084,16 @@ impl IngestReceipt {
     }
 }
 
+/// 空回复 = 「已处理但不回话」。
+///
+/// 插件用它关掉某条提示（如课堂录音的「分段识别中」回执）：handler 必须回
+/// `Some(空串)` 而不是 `None`——`None` 表示「我没处理」，消息会掉进 Agent 通道，
+/// 附件被当成聊天内容再处理一遍。但空串也不该真发出去：平台会拒收空内容，
+/// 只在日志里留一条无意义的 400。媒体不空时照发（媒体可以单独成条）。
+fn is_silent_reply(reply: &Reply) -> bool {
+    reply.text.is_empty() && reply.media.is_empty()
+}
+
 #[cfg(test)]
 mod tests {
     use super::{
@@ -1210,6 +1223,26 @@ mod tests {
         assert_eq!(reconnect_delay(2), Duration::from_secs(4));
         assert_eq!(reconnect_delay(5), Duration::from_secs(30));
         assert_eq!(reconnect_delay(50), Duration::from_secs(30));
+    }
+
+    /// 空回复 = 已处理但不回话：一个字节都不发（平台拒收空内容，只留无意义的 400）。
+    #[test]
+    fn empty_reply_is_silent() {
+        use super::is_silent_reply;
+        assert!(is_silent_reply(&crate::ports::commands::Reply::text("")));
+        assert!(!is_silent_reply(&crate::ports::commands::Reply::text(
+            "有内容"
+        )));
+        // 有媒体的回复不能被当成静默——媒体要照发。
+        let with_media = crate::ports::commands::Reply::text("").with_media(vec![
+            crate::ports::channel::MediaRef {
+                kind: crate::ports::channel::MediaKind::File,
+                source: "https://x/y".into(),
+                filename: Some("y.mp3".into()),
+                auth: None,
+            },
+        ]);
+        assert!(!is_silent_reply(&with_media));
     }
 
     #[test]
