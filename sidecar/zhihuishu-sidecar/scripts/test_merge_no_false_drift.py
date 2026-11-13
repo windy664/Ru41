@@ -92,12 +92,30 @@ def main() -> None:
     assert end_at == "2026-11-14 12:00:00", end_at
     print(f"  ok  同一时刻不同写法 → 无变更日志, end_at={end_at!r}")
 
-    # 真的改了截止时间(ISO → ISO)仍要报出来, 别把真变更一起吞掉
+    # 真的改了截止时间(ISO → ISO): 记日志提示不一致, 但不覆盖逐课 ddl
+    # (全局待办给的是课程级日期, 覆盖会把逐任务 ddl 改坏 —— 2026-11-13 实况:
+    #  职业生涯规划 3 个课前测的 ddl 被从 10-31 改写成 11-30)
     changed = dict(RAW_TODO_ITEM, endTime="2026-11-20 23:59:00")
     log, end_at = run_merge(make_report(), changed)
-    assert "截止变更" in log, f"真变更被漏报了: {log}"
-    assert end_at == "2026-11-20 23:59:00", end_at
-    print(f"  ok  真变更仍被报出: {log}")
+    assert "截止不一致" in log, f"真差异没被报出来: {log}"
+    assert end_at == "2026-11-14 12:00:00", f"逐课 ddl 被全局流覆盖了: {end_at}"
+    print(f"  ok  真差异只记日志不改写, end_at={end_at!r}")
+
+    # 已完成的任务不得被全局待办流翻回未完成
+    done_report = make_report()
+    done_report["courses"][0]["tasks"][0]["completed"] = True
+    log, _ = run_merge(done_report, RAW_TODO_ITEM)
+    assert done_report["courses"][0]["tasks"][0]["completed"] is True, \
+        "全局待办把已完成任务翻回了未完成"
+    print(f"  ok  completed=True 不被全局流覆盖")
+
+    # 逐课流没给完成态(未知)时, 全局待办兜底成未完成
+    unknown_report = make_report()
+    unknown_report["courses"][0]["tasks"][0]["completed"] = None
+    run_merge(unknown_report, RAW_TODO_ITEM)
+    assert unknown_report["courses"][0]["tasks"][0]["completed"] is False, \
+        "未知完成态没被全局待办兜底"
+    print("  ok  completed=None → 全局待办兜底为 False")
 
     print("全部通过")
 

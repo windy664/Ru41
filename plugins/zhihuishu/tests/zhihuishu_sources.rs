@@ -961,3 +961,384 @@ async fn legacy_millisecond_snapshot_does_not_fake_deadline_change() {
         .to_string();
     assert_eq!(end_at, canonical, "快照仍存着裸毫秒: {end_at}");
 }
+
+// ── 2026-11-13 生产实况回归 ─────────────────────────────────────────────
+// 用户反馈「智慧树上已完成的作业，/作业 里还在」。根因有三类，
+// 这几个用例分别钉住：完成态被猜成 false、平台换 id 后的僵尸快照、
+// 以及重开时旧待办不关导致的重复条目。
+
+/// 报告里完成态为 null（平台没给）时，不得把「已完成」翻转成「未完成」，
+/// 也不得重建待办——未知不是「老师打回」。
+#[tokio::test]
+async fn unknown_completion_never_reopens_a_done_task() {
+    let dir = tempfile::tempdir().unwrap();
+    let store = make_store(dir.path());
+    let channel = mock_channel();
+
+    // 预置：快照已完成 + 待办已回勾。
+    store
+        .put_document(
+            "zhihuishu_task",
+            "职业生涯规划#T1",
+            None,
+            &json!({
+                "course": "职业生涯规划",
+                "title": "第五节课 课前测",
+                "kind": "assignment",
+                "end_at": platform_time(1),
+                "completed": true,
+                "exam_style": false,
+                "todo_id": "todo-seed",
+                "todo_synced": true,
+                "first_seen": 1,
+            }),
+        )
+        .unwrap();
+
+    // 本轮报告：完成态未知（null）。
+    let mut report = sample_report_json();
+    report["courses"][0]["tasks"][0]["completed"] = json!(null);
+    let path = write_report(dir.path(), &report);
+    let tracker = make_tracker(&store, path, Some(channel.clone()));
+    tracker.poll_once().await.unwrap();
+
+    let snap = store
+        .document("zhihuishu_task", "职业生涯规划#T1")
+        .unwrap()
+        .unwrap();
+    assert_eq!(
+        snap.value["completed"],
+        json!(true),
+        "完成态未知不得把已完成翻回未完成: {snap:?}"
+    );
+    // 不得为 T1 重建待办（报告里其它未完成作业的待办不算）。
+    let t1_todos = store
+        .documents("todo_item", 100)
+        .unwrap()
+        .iter()
+        .filter(|d| {
+            d.value["title"]
+                .as_str()
+                .unwrap()
+                .contains("第五节课 课前测")
+        })
+        .count();
+    assert_eq!(t1_todos, 0, "未知完成态不该重建待办");
+    let sent = channel.sent.lock().unwrap();
+    assert!(
+        !sent.iter().any(|m| m.contains("作业重新开放")),
+        "未知完成态不该推送重开提醒: {sent:?}"
+    );
+}
+
+/// 平台把作业重发一遍会换 activityTaskId：旧 key 的快照必须归档，
+/// 否则 /作业 会永远挂一条其实早就交完的作业（德法第一次线上作业）。
+#[tokio::test]
+async fn replaced_task_id_archives_stale_snapshot() {
+    let dir = tempfile::tempdir().unwrap();
+    let store = make_store(dir.path());
+
+    // 旧 id 的快照：未完成 + 带待办。
+    store
+        .put_document(
+            "zhihuishu_task",
+            "26-27-1思想道德与法治#OLD-ID",
+            None,
+            &json!({
+                "course": "26-27-1思想道德与法治",
+                "title": "德法第一次线上作业",
+                "kind": "assignment",
+                "end_at": platform_time(-2),
+                "completed": false,
+                "exam_style": false,
+                "todo_id": "todo-old",
+                "first_seen": 1,
+            }),
+        )
+        .unwrap();
+
+    // 本轮报告：同课程同标题，但换了新 id，且已完成。
+    let report = json!({
+        "generated_at": "2026-11-13 10:00:00",
+        "login_ok": true,
+        "courses": [{
+            "title": "26-27-1思想道德与法治",
+            "platform": "polymas",
+            "course_home_url": null,
+            "content_published": null,
+            "tasks": [{
+                "activity_task_id": "NEW-ID",
+                "title": "德法第一次线上作业",
+                "kind": "assignment",
+                "end_at": platform_time(1),
+                "completed": true
+            }]
+        }]
+    });
+    let path = write_report(dir.path(), &report);
+    let tracker = make_tracker(&store, path, None);
+    let poll = tracker.poll_once().await.unwrap();
+
+    let stale = store
+        .document("zhihuishu_task", "26-27-1思想道德与法治#OLD-ID")
+        .unwrap()
+        .unwrap();
+    assert_eq!(
+        stale.value["archived"],
+        json!(true),
+        "旧 id 的快照没被归档: {stale:?}"
+    );
+    assert_eq!(
+        stale.value["superseded_by"],
+        json!("26-27-1思想道德与法治#NEW-ID")
+    );
+    assert_eq!(poll.archived, 1);
+
+    // 新 id 的快照正常入库且为已完成。
+    let fresh = store
+        .document("zhihuishu_task", "26-27-1思想道德与法治#NEW-ID")
+        .unwrap()
+        .unwrap();
+    assert_eq!(fresh.value["completed"], json!(true));
+    assert!(fresh.value.get("archived").is_none());
+}
+
+/// 真的重开（老师打回）时：旧待办要么被作废、要么保留为已完成，
+/// 但同一条作业只允许留一条 active 待办（生产实况里出现过两条 active 重复条目）。
+#[tokio::test]
+async fn reopen_leaves_exactly_one_active_todo() {
+    let dir = tempfile::tempdir().unwrap();
+    let store = make_store(dir.path());
+
+    let mut report = sample_report_json();
+    // 首轮：未完成 → 建待办。
+    let path = write_report(dir.path(), &report);
+    let tracker = make_tracker(&store, path, None);
+    tracker.poll_once().await.unwrap();
+
+    let t1_todo = store
+        .documents("todo_item", 100)
+        .unwrap()
+        .iter()
+        .find(|d| {
+            d.value["title"]
+                .as_str()
+                .unwrap()
+                .contains("第五节课 课前测")
+        })
+        .expect("首轮应建待办")
+        .id
+        .clone();
+
+    // 次轮：平台报已完成 → 回勾。
+    report["courses"][0]["tasks"][0]["completed"] = json!(true);
+    write_report(dir.path(), &report);
+    tracker.poll_once().await.unwrap();
+    let done_item: TodoItem = serde_json::from_value(
+        store
+            .document("todo_item", &t1_todo)
+            .unwrap()
+            .unwrap()
+            .value,
+    )
+    .unwrap();
+    assert_eq!(done_item.status, TodoStatus::Completed);
+
+    // 三轮：老师打回 → 重开。旧的已完成待办保留为历史，redo 走新的 active 待办。
+    report["courses"][0]["tasks"][0]["completed"] = json!(false);
+    write_report(dir.path(), &report);
+    tracker.poll_once().await.unwrap();
+
+    let active_t1: Vec<String> = store
+        .documents("todo_item", 100)
+        .unwrap()
+        .iter()
+        .filter(|d| d.value["status"] == json!("active"))
+        .filter(|d| {
+            d.value["title"]
+                .as_str()
+                .unwrap()
+                .contains("第五节课 课前测")
+        })
+        .map(|d| d.id.clone())
+        .collect();
+    assert_eq!(
+        active_t1.len(),
+        1,
+        "同一条作业应只剩一条 active 待办: {active_t1:?}"
+    );
+}
+
+/// 重开时旧的待办还处于 active（平台把完成态吞了/回勾失败）→ 必须作废，
+/// 否则待办列表出现两条同作业的 active 条目。
+#[tokio::test]
+async fn reopen_cancels_old_active_todo() {
+    let dir = tempfile::tempdir().unwrap();
+    let store = make_store(dir.path());
+
+    // 预置：快照说已完成，但待办还挂在 active（回勾没成功过）。
+    store
+        .put_document(
+            "todo_item",
+            "todo-old",
+            None,
+            &serde_json::to_value(TodoItem {
+                id: "todo-old".into(),
+                title: "智慧树｜职业生涯规划｜第五节课 课前测".into(),
+                status: TodoStatus::Active,
+                priority: TodoPriority::Normal,
+                labels: vec!["智慧树".into()],
+                due_at: Some(ru41::util::now() + 86_400),
+                remind_at: None,
+                last_reminded_at: None,
+                completed_at: None,
+                created_at: 1,
+                updated_at: 1,
+                source: None,
+            })
+            .unwrap(),
+        )
+        .unwrap();
+    store
+        .put_document(
+            "zhihuishu_task",
+            "职业生涯规划#T1",
+            None,
+            &json!({
+                "course": "职业生涯规划",
+                "title": "第五节课 课前测",
+                "kind": "assignment",
+                "end_at": platform_time(1),
+                "completed": true,
+                "exam_style": false,
+                "todo_id": "todo-old",
+                "todo_synced": false,
+                "first_seen": 1,
+            }),
+        )
+        .unwrap();
+
+    // 平台报未完成（老师打回）→ 重开：旧待办作废 + 新建一条 active。
+    let mut report = sample_report_json();
+    report["courses"][0]["tasks"][0]["completed"] = json!(false);
+    let path = write_report(dir.path(), &report);
+    let tracker = make_tracker(&store, path, None);
+    tracker.poll_once().await.unwrap();
+
+    let old_item: TodoItem = serde_json::from_value(
+        store
+            .document("todo_item", "todo-old")
+            .unwrap()
+            .unwrap()
+            .value,
+    )
+    .unwrap();
+    assert_eq!(
+        old_item.status,
+        TodoStatus::Cancelled,
+        "重开时旧待办没作废，待办列表会留重复条目"
+    );
+
+    let active_t1: Vec<String> = store
+        .documents("todo_item", 100)
+        .unwrap()
+        .iter()
+        .filter(|d| d.value["status"] == json!("active"))
+        .filter(|d| {
+            d.value["title"]
+                .as_str()
+                .unwrap()
+                .contains("第五节课 课前测")
+        })
+        .map(|d| d.id.clone())
+        .collect();
+    assert_eq!(active_t1.len(), 1, "重开后应只有一条 active 待办");
+}
+
+/// 历史遗留：同一条作业留了两条 active 待办（旧的重开没关旧的）→
+/// 只保留快照当前指向的那条，另一条作废。
+#[tokio::test]
+async fn legacy_duplicate_todos_are_deduped() {
+    let dir = tempfile::tempdir().unwrap();
+    let store = make_store(dir.path());
+
+    let mk_todo = |id: &str, title: &str| {
+        serde_json::to_value(TodoItem {
+            id: id.into(),
+            title: title.into(),
+            status: TodoStatus::Active,
+            priority: TodoPriority::Normal,
+            labels: vec!["智慧树".into()],
+            due_at: Some(ru41::util::now() + 86_400),
+            remind_at: None,
+            last_reminded_at: None,
+            completed_at: None,
+            created_at: 1,
+            updated_at: 1,
+            source: Some(ru41::domain::todo::TodoSource {
+                channel: "zhihuishu".into(),
+                source_id: Some("T1".into()),
+            }),
+        })
+        .unwrap()
+    };
+    store
+        .put_document(
+            "todo_item",
+            "todo-old",
+            None,
+            &mk_todo("todo-old", "智慧树｜课前测"),
+        )
+        .unwrap();
+    store
+        .put_document(
+            "todo_item",
+            "todo-new",
+            None,
+            &mk_todo("todo-new", "智慧树｜课前测"),
+        )
+        .unwrap();
+    store
+        .put_document(
+            "zhihuishu_task",
+            "职业生涯规划#T1",
+            None,
+            &json!({
+                "course": "职业生涯规划",
+                "title": "第五节课 课前测",
+                "kind": "assignment",
+                "end_at": platform_time(1),
+                "completed": false,
+                "exam_style": false,
+                "todo_id": "todo-new",
+                "first_seen": 1,
+            }),
+        )
+        .unwrap();
+
+    let mut report = sample_report_json();
+    report["courses"][0]["tasks"][0]["completed"] = json!(false);
+    let path = write_report(dir.path(), &report);
+    let tracker = make_tracker(&store, path, None);
+    let poll = tracker.poll_once().await.unwrap();
+
+    assert_eq!(poll.deduped, 1, "重复待办没被收口");
+    let old: TodoItem = serde_json::from_value(
+        store
+            .document("todo_item", "todo-old")
+            .unwrap()
+            .unwrap()
+            .value,
+    )
+    .unwrap();
+    assert_eq!(old.status, TodoStatus::Cancelled);
+    let new: TodoItem = serde_json::from_value(
+        store
+            .document("todo_item", "todo-new")
+            .unwrap()
+            .unwrap()
+            .value,
+    )
+    .unwrap();
+    assert_eq!(new.status, TodoStatus::Active, "当前待办不该被动");
+}

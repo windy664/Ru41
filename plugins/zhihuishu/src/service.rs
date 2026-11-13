@@ -7,7 +7,11 @@ use ru41::{
     ports::{channel::NotifyChannel, storage::TaskStore, vault::Vault},
 };
 use serde::Serialize;
-use std::{collections::BTreeMap, path::PathBuf, sync::Arc};
+use std::{
+    collections::{BTreeMap, BTreeSet},
+    path::PathBuf,
+    sync::Arc,
+};
 
 use crate::source::{
     ZhihuishuCourse, ZhihuishuReport, ZhihuishuTask, load_report, normalize_platform_time,
@@ -53,6 +57,10 @@ pub struct ZhihuishuPollReport {
     pub content_ready: Vec<String>,
     /// 本轮同步的文件数与播报行。
     pub vault_files: usize,
+    /// 本轮归档的僵尸任务快照数（平台换 id / 删除作业后旧 key 不再出现）。
+    pub archived: usize,
+    /// 本轮作废的重复待办数（同一条作业历史上留了多条 active）。
+    pub deduped: usize,
     pub login_ok: Option<bool>,
     pub notified: bool,
 }
@@ -107,6 +115,8 @@ impl ZhihuishuTracker {
         let mut content_ready = Vec::new();
         let mut vault_files = 0usize;
         let mut lines: Vec<String> = Vec::new();
+        // 本轮在报告里见到的任务：key → (课程原名, 作业标题)。用于归档僵尸快照。
+        let mut seen_tasks: BTreeMap<String, (String, String)> = BTreeMap::new();
 
         if report.login_ok == Some(false) {
             let key = format!("login:{today}");
@@ -152,9 +162,16 @@ impl ZhihuishuTracker {
                 }
                 tasks += 1;
                 let key = format!("{}#{}", course.title, task.activity_task_id);
+                seen_tasks.insert(key.clone(), (course.title.clone(), task.title.clone()));
                 let is_exam_style = task.exam_duration_minutes.unwrap_or(0) > 0
                     || task.video_invigilate == Some(true);
-                let completed = task.completed.unwrap_or(false);
+                // 完成态三态: Some(true)=已完成 / Some(false)=未完成 / None=平台没给(未知)。
+                // 「未知」不能当成「老师打回」——那正是 2026-11-13 之前的乱源:
+                // 消费端把 completed 猜成 false 后, 已完成作业被反复重建待办。
+                let completed_state = task.completed;
+                let is_completed = completed_state == Some(true);
+                // 展示/兜底用: 未知按「未完成」提醒(宁可多提醒也别漏截止), 但不参与状态翻转。
+                let completed = completed_state.unwrap_or(false);
                 let end_ts = task.end_at.as_deref().and_then(parse_platform_time);
                 let is_overdue = end_ts.map(|end| end < now).unwrap_or(false);
                 let is_due_soon = end_ts
@@ -165,7 +182,7 @@ impl ZhihuishuTracker {
                     "title": task.title,
                     "kind": task.kind,
                     "end_at": task.end_at,
-                    "completed": completed,
+                    "completed": completed_state,
                     "exam_style": is_exam_style,
                     "total_score": task.total_score,
                     "first_seen": now,
@@ -207,20 +224,40 @@ impl ZhihuishuTracker {
                         .put_document("zhihuishu_task", &key, None, &snapshot)?;
                     new_tasks += 1;
                 } else {
-                    // 既有任务的刷新语义（此前只同步 completed，字段漂移全丢）：
+                    // 既有任务的刷新语义：
                     // ① 重开：已完成 → 未完成（老师打回/开放补交）→ 重建待办 + 提醒
                     // ② 截止时间漂移：老师改 ddl → 快照 + 待办 postpone + 提醒
                     // ③ 完成同步：平台已完成 → 回勾待办（一次性）
+                    // ④ 撤销归档：被归档的任务又出现在报告里（平台恢复/换回原 id）
+                    //
+                    // 全程只写一次快照：同一轮里多次带 revision 的写会互相踩 CAS，
+                    // 后一次被静默丢弃（旧 bug：漂移写完后 completed 写不进去）。
                     let doc = existing.as_ref().expect("else 分支必然存在快照");
-                    let old_completed = doc
-                        .value
-                        .get("completed")
+                    let revision = doc.revision;
+                    let mut snapshot = doc.value.clone();
+                    let mut touched = false;
+
+                    // ④ 撤销归档
+                    if snapshot
+                        .get("archived")
                         .and_then(serde_json::Value::as_bool)
-                        .unwrap_or(false);
+                        .unwrap_or(false)
+                    {
+                        snapshot["archived"] = serde_json::json!(false);
+                        snapshot["missing_rounds"] = serde_json::json!(0);
+                        if let Some(obj) = snapshot.as_object_mut() {
+                            obj.remove("archived_at");
+                            obj.remove("superseded_by");
+                        }
+                        touched = true;
+                    }
+
+                    let old_completed = snapshot
+                        .get("completed")
+                        .and_then(serde_json::Value::as_bool);
                     // 快照里的 end_at 可能是历史遗留的毫秒 epoch 串（sidecar 归一化前留下的），
                     // 读出来先归一化再比较——否则「同一时刻的两种写法」会被误判成截止变更。
-                    let old_end_raw = doc
-                        .value
+                    let old_end_raw = snapshot
                         .get("end_at")
                         .and_then(serde_json::Value::as_str)
                         .map(str::to_owned);
@@ -229,15 +266,20 @@ impl ZhihuishuTracker {
                         .map(|s| normalize_platform_time(s).unwrap_or_else(|| s.to_owned()))
                         .filter(|s| !s.is_empty());
                     let new_end = task.end_at.clone();
-                    let reopened = old_completed && !completed;
+                    // 只有「平台明确说未完成」才算重开；未知(None)不触发翻转。
+                    let reopened = old_completed == Some(true) && completed_state == Some(false);
                     let drifted = old_end.as_deref() != new_end.as_deref();
 
                     if reopened {
-                        let revision = doc.revision;
-                        let mut snapshot = doc.value.clone();
                         snapshot["completed"] = serde_json::json!(false);
                         snapshot["todo_synced"] = serde_json::json!(false);
                         snapshot["end_at"] = serde_json::json!(new_end.clone());
+                        // 旧待办作废：不关掉的话，同一条作业会在待办列表里出现两条。
+                        if let Some(old_todo) =
+                            snapshot.get("todo_id").and_then(serde_json::Value::as_str)
+                        {
+                            let _ = self.todos.cancel(old_todo, now);
+                        }
                         let todo_id = if self.config.todo_sync {
                             self.create_todo(course, task, end_ts, is_exam_style, is_due_soon, now)
                                 .ok()
@@ -248,28 +290,16 @@ impl ZhihuishuTracker {
                         if let Some(id) = todo_id {
                             snapshot["todo_id"] = serde_json::json!(id);
                         }
-                        self.store.put_document(
-                            "zhihuishu_task",
-                            &key,
-                            Some(revision),
-                            &snapshot,
-                        )?;
+                        touched = true;
                         lines.push(format!(
                             "- ♻️ {course_name}｜{}｜作业重新开放（打回/补交），已重建待办",
                             task.title
                         ));
                     } else if drifted {
-                        let revision = doc.revision;
-                        let mut snapshot = doc.value.clone();
                         snapshot["end_at"] = serde_json::json!(new_end.clone());
-                        self.store.put_document(
-                            "zhihuishu_task",
-                            &key,
-                            Some(revision),
-                            &snapshot,
-                        )?;
+                        touched = true;
                         if let Some(todo_id) =
-                            doc.value.get("todo_id").and_then(serde_json::Value::as_str)
+                            snapshot.get("todo_id").and_then(serde_json::Value::as_str)
                         {
                             let _ = self.todos.postpone(
                                 todo_id,
@@ -286,32 +316,21 @@ impl ZhihuishuTracker {
                     } else if old_end_raw.as_deref() != old_end.as_deref() {
                         // 快照里存的是历史遗留的毫秒 epoch 串（如 "1794628800000"），与本轮报告
                         // 是同一时刻，不算变更——这里只把快照改写成归一化格式，自愈脏数据。
-                        let revision = doc.revision;
-                        let mut snapshot = doc.value.clone();
                         snapshot["end_at"] = serde_json::json!(new_end.clone());
-                        self.store.put_document(
-                            "zhihuishu_task",
-                            &key,
-                            Some(revision),
-                            &snapshot,
-                        )?;
+                        touched = true;
                     }
 
-                    if completed {
+                    if is_completed {
                         // 平台侧已完成 → 回勾待办（一次性；todo 已非 Active 视为人工处理过）
-                        let todo_id = doc
-                            .value
+                        let todo_id = snapshot
                             .get("todo_id")
                             .and_then(serde_json::Value::as_str)
                             .map(str::to_owned);
-                        let already_synced = doc
-                            .value
+                        let already_synced = snapshot
                             .get("todo_synced")
                             .and_then(serde_json::Value::as_bool)
                             .unwrap_or(false);
                         if let (Some(todo_id), false) = (todo_id, already_synced) {
-                            let revision = doc.revision;
-                            let mut snapshot = doc.value.clone();
                             let synced = match self.todos.complete(&todo_id, now) {
                                 Ok(_) => {
                                     lines.push(format!(
@@ -325,20 +344,24 @@ impl ZhihuishuTracker {
                             if synced {
                                 snapshot["todo_synced"] = serde_json::json!(true);
                                 snapshot["completed"] = serde_json::json!(true);
-                                // 文档必然已存在，必须带 revision 走 CAS——
-                                // put_document(None) 是仅新建，写回会被静默丢弃，
-                                // 导致作业总表永远显示未完成、每轮重复 complete。
-                                self.store.put_document(
-                                    "zhihuishu_task",
-                                    &key,
-                                    Some(revision),
-                                    &snapshot,
-                                )?;
+                                touched = true;
                             }
                         }
                     }
+
+                    if touched {
+                        // 文档必然已存在，必须带 revision 走 CAS——
+                        // put_document(None) 是仅新建，写回会被静默丢弃，
+                        // 导致作业总表永远显示未完成、每轮重复 complete。
+                        self.store.put_document(
+                            "zhihuishu_task",
+                            &key,
+                            Some(revision),
+                            &snapshot,
+                        )?;
+                    }
                 }
-                if completed {
+                if is_completed {
                     // 临期确认卡片同步收口，不再追发。
                     let _ =
                         homework_work::close_reminder(&self.store, "zhihuishu", "zs", &key, now);
@@ -465,6 +488,12 @@ impl ZhihuishuTracker {
             }
         }
 
+        // 归档僵尸快照：平台换掉/删掉作业后，旧 key 永远不再出现在报告里，
+        // 但快照一直留着 completed=false —— /作业 会永远挂一条其实已完成(且已过期)的作业。
+        let archived = self.archive_stale_tasks(&report, &seen_tasks, now)?;
+        // 同一条作业只留一条 active 待办（历史遗留的重开重复条目在这里收口）。
+        let deduped = self.dedupe_task_todos(now)?;
+
         // Obsidian 课程目录同步：结果只进报告与日志，不进 QQ 推送（噪音）；
         // 失败才降级为一条提示，不影响任务与待办。
         let vault = match self.sync_vault(&report, now) {
@@ -507,9 +536,164 @@ impl ZhihuishuTracker {
             exam_style,
             content_ready,
             vault_files,
+            archived,
+            deduped,
             login_ok: report.login_ok,
             notified,
         })
+    }
+
+    /// 同一条平台作业只留一条 active 待办。
+    ///
+    /// 重开路径（老师打回）会新建待办，旧实现没关旧的那条，于是同一条作业在待办列表里
+    /// 出现两条 active（生产实况：职业生涯规划「第五节课 课前测」两条，截止 10-31 与 11-30）。
+    /// 这里按 `source.source_id` 归组，保留任务快照当前指向的那条（必须仍是 active），
+    /// 其余 active 的作废；快照没指向 active 待办时一律不动，避免误杀。
+    fn dedupe_task_todos(&self, now: i64) -> Result<usize> {
+        // source_id → 当前快照指向的待办 id
+        let mut current: BTreeMap<String, String> = BTreeMap::new();
+        for doc in self.store.documents("zhihuishu_task", 500)? {
+            let Some(todo_id) = doc.value.get("todo_id").and_then(serde_json::Value::as_str) else {
+                continue;
+            };
+            let source_id = doc.id.rsplit('#').next().unwrap_or_default().to_owned();
+            current.insert(source_id, todo_id.to_owned());
+        }
+
+        // 同一 source_id 下所有 active 待办
+        let mut actives: BTreeMap<String, Vec<String>> = BTreeMap::new();
+        for doc in self.store.documents("todo_item", 1000)? {
+            let value = &doc.value;
+            if value.get("status").and_then(serde_json::Value::as_str) != Some("active") {
+                continue;
+            }
+            let Some(source) = value.get("source") else {
+                continue;
+            };
+            if source.get("channel").and_then(serde_json::Value::as_str) != Some("zhihuishu") {
+                continue;
+            }
+            let source_id = source
+                .get("source_id")
+                .and_then(serde_json::Value::as_str)
+                .unwrap_or_default()
+                .to_owned();
+            actives.entry(source_id).or_default().push(doc.id.clone());
+        }
+
+        let mut cancelled = 0usize;
+        for (source_id, ids) in actives {
+            if ids.len() < 2 {
+                continue;
+            }
+            let Some(keep) = current.get(&source_id) else {
+                continue;
+            };
+            if !ids.iter().any(|id| id == keep) {
+                continue;
+            }
+            for id in ids.iter().filter(|id| *id != keep) {
+                if self.todos.cancel(id, now).is_ok() {
+                    cancelled += 1;
+                }
+            }
+        }
+        Ok(cancelled)
+    }
+
+    /// 归档「僵尸」任务快照。
+    ///
+    /// 背景（2026-11-13 生产实况）：平台把作业重发一遍就会换 `activityTaskId`，
+    /// 旧 key 从此再不出现在报告里；快照却一直留着 `completed=false`，
+    /// `/作业` 里于是永远挂一条「已过期、而且其实早就交了」的作业
+    /// （思想道德与法治「德法第一次线上作业」旧 id P9d3… → 新 id M6DL… 已完成）。
+    ///
+    /// 判定（保守，宁可多留也不误删）：
+    /// - 同课程同标题出现新 key → 平台重发了作业 → 立即归档，记 `superseded_by`；
+    /// - 课程本轮仍采到任务、但该 key 连续 `STALE_MISSING_ROUNDS` 轮没出现 → 归档；
+    /// - 本轮整门课没采到任务（采集失败/页面改版）→ 整门课跳过，不做任何判定。
+    fn archive_stale_tasks(
+        &self,
+        report: &ZhihuishuReport,
+        seen_tasks: &BTreeMap<String, (String, String)>,
+        now: i64,
+    ) -> Result<usize> {
+        // 本轮至少采到一条任务的课程：只有这些课程的任务集合才可信。
+        let live_courses: BTreeSet<&str> = report
+            .courses
+            .iter()
+            .filter(|c| !c.tasks.is_empty())
+            .map(|c| c.title.as_str())
+            .collect();
+        if live_courses.is_empty() {
+            return Ok(0);
+        }
+
+        let mut archived = 0usize;
+        for doc in self.store.documents("zhihuishu_task", 500)? {
+            let key = doc.id.clone();
+            if seen_tasks.contains_key(&key) {
+                continue;
+            }
+            let course = doc
+                .value
+                .get("course")
+                .and_then(serde_json::Value::as_str)
+                .unwrap_or_default();
+            let title = doc
+                .value
+                .get("title")
+                .and_then(serde_json::Value::as_str)
+                .unwrap_or_default();
+            if !live_courses.contains(course) {
+                // 这门课本轮没采到任务（采集失败）→ 不判定，也不归档。
+                continue;
+            }
+            if doc
+                .value
+                .get("archived")
+                .and_then(serde_json::Value::as_bool)
+                .unwrap_or(false)
+            {
+                // 已经归档过：不重复计数，也不改写 archived_at。
+                continue;
+            }
+            // 同课程同标题的新 key = 平台重发的同一个作业。
+            let replacement = seen_tasks
+                .iter()
+                .find(|(_, (c, t))| c == course && t == title)
+                .map(|(k, _)| k.clone());
+            let missing_rounds = doc
+                .value
+                .get("missing_rounds")
+                .and_then(serde_json::Value::as_i64)
+                .unwrap_or(0)
+                + 1;
+
+            let mut snapshot = doc.value.clone();
+            if replacement.is_none() && missing_rounds < STALE_MISSING_ROUNDS {
+                // 还没到确认轮次：只记缺失次数，等下一轮再判。
+                snapshot["missing_rounds"] = serde_json::json!(missing_rounds);
+                self.store
+                    .put_document("zhihuishu_task", &key, Some(doc.revision), &snapshot)?;
+                continue;
+            }
+
+            snapshot["archived"] = serde_json::json!(true);
+            snapshot["archived_at"] = serde_json::json!(now);
+            snapshot["missing_rounds"] = serde_json::json!(missing_rounds);
+            if let Some(replacement) = replacement {
+                snapshot["superseded_by"] = serde_json::json!(replacement);
+            }
+            self.store
+                .put_document("zhihuishu_task", &key, Some(doc.revision), &snapshot)?;
+            // 作废对应待办：作业都没了，待办留着只会一直催。
+            if let Some(todo_id) = doc.value.get("todo_id").and_then(serde_json::Value::as_str) {
+                let _ = self.todos.cancel(todo_id, now);
+            }
+            archived += 1;
+        }
+        Ok(archived)
     }
 
     /// 把每门课程的作业清单覆写进 Vault 课程目录（`<学期>/<课程>/智慧树作业.md`）。
@@ -950,6 +1134,10 @@ fn is_optional(task: &ZhihuishuTask) -> bool {
         None => false,
     }
 }
+
+/// 僵尸任务快照的确认轮次：某个 key 连续这么多轮没在报告里出现，才归档。
+/// 取 2 是为了容忍平台/采集偶发漏采一轮（漏一轮就归档会让 /作业 少列真作业）。
+const STALE_MISSING_ROUNDS: i64 = 2;
 
 /// 实质作业的最小正文长度（字符）：课前测类模板话约 25-30 字，
 /// 真正要动笔的作业要求通常 100 字以上，取 50 作为干净的分界线。
