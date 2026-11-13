@@ -243,6 +243,25 @@ async def ensure_login(session, config, cookie_path: str) -> bool:
     return ok
 
 
+def completed_state(raw: dict):
+    """完成态三态化: True=已完成 / False=未完成 / None=接口没给完成态(未知).
+
+    polymas 的 activityTask/list 正常下发 isCompleted; 字段缺失时必须报「未知」,
+    不能默认 False——消费端会把「已完成→未完成」当成「老师打回/开放补交」,
+    重建待办并推送提醒(2026-11-13 生产实况: 军事理论作业被反复重建待办).
+    """
+    for key in ("isCompleted", "completed", "isFinish", "finished"):
+        if key not in raw:
+            continue
+        value = raw.get(key)
+        if value is None:
+            return None
+        if isinstance(value, str):
+            return value.strip().lower() in ("1", "true", "yes", "是", "已完成")
+        return bool(value)
+    return None
+
+
 def to_contract(raw: dict) -> dict:
     """平台任务字段 → report 契约字段(docs/sources-zhihuishu.md)."""
     exam_duration = raw.get("examDuration")
@@ -269,7 +288,9 @@ def to_contract(raw: dict) -> dict:
         "group_id": raw.get("groupId"),
         "start_at": normalize_time(start),
         "end_at": normalize_time(raw.get("endTime")),
-        "completed": bool(raw.get("isCompleted")),
+        # 三态: True=已完成 / False=未完成 / None=接口未给完成态(未知)。
+        # 未知不能当成未完成——那会让消费端误判「老师打回」并重建待办。
+        "completed": completed_state(raw),
         "total_score": raw.get("totalScore"),
         "exam_duration_minutes": exam_duration if exam_duration else None,
         "video_invigilate": invigilate if invigilate else None,
@@ -552,6 +573,43 @@ def wenda_pick(item: dict, *keys: str):
     return None
 
 
+def wenda_completed_state(item: dict):
+    """wenda(老平台)完成态三态化: True/False/None(未知).
+
+    活样本(homeworkUser/List, 军事理论 第一次线上作业, 2026-11-13 实测):
+        {"status":4, "answerScore":85.0, "homeworkScore":100.0, "isShowScore":1,
+         "isComplete":"0", "isHomeworkRedo":1, "submitDate":1787491902000}
+    平台页面把这条作业标成「已批阅」, 分数 85 —— 学生确实交了。
+    但 wenda 根本没有 isCompleted/completed/isFinish/finished 这几个字段,
+    旧映射只看 status 并把 status==1 当完成: 交作业后 status=1(已提交待批阅) 判对,
+    老师批完 status=4(已批阅) 反而判成「未完成」→ 消费端当成「老师打回」重建待办。
+    isComplete="0" 更不可信(已批阅的作业它也报 0), 一律不采信。
+
+    判定顺序(证据从强到弱):
+      ① answerScore / isShowScore 有值 → 已批阅 → True
+      ② status: 1=已提交(待批阅) 4=已批阅 → True; 0=未提交 → False; 其他 → None
+      ③ 都没有 → None(未知)
+    """
+    answer_score = wenda_pick(item, "answerScore", "homeworkAnswerScore")
+    if answer_score is not None:
+        return True
+    show_score = wenda_pick(item, "isShowScore")
+    if show_score is not None:
+        if isinstance(show_score, str):
+            return show_score.strip() in ("1", "true", "True")
+        return bool(show_score)
+    status = wenda_pick(item, "status", "completeStatus", "state")
+    if status is None:
+        return None
+    if isinstance(status, str):
+        status = status.strip()
+    if status in (1, "1", 4, "4", "已完成", True, "finish", "finished"):
+        return True
+    if status in (0, "0", "未提交", False):
+        return False
+    return None
+
+
 def wenda_item_to_contract(item: dict, kind: str) -> dict | None:
     """wenda 作业/考试条目 → 契约字段; 提取不到标题的条目放弃并留档."""
     title = wenda_pick(item, "homeworkTitle", "examTitle", "title", "name")
@@ -560,10 +618,6 @@ def wenda_item_to_contract(item: dict, kind: str) -> dict | None:
     end = wenda_pick(item, "endTime", "homeworkEndTime", "examEndTime", "endDate", "deadline")
     start = wenda_pick(item, "startTime", "homeworkStartTime", "examStartTime", "startDate")
     item_id = wenda_pick(item, "homeworkId", "examId", "id", "hwId")
-    completed = wenda_pick(item, "isCompleted", "completed", "isFinish", "finished")
-    if completed is None:
-        status = wenda_pick(item, "status", "completeStatus", "state")
-        completed = status in (1, "1", "已完成", True, "finish", "finished") if status is not None else None
     return {
         "activity_task_id": str(item_id or ""),
         "title": str(title).strip(),
@@ -572,9 +626,9 @@ def wenda_item_to_contract(item: dict, kind: str) -> dict | None:
         "group_id": None,
         "start_at": normalize_time(start),
         "end_at": normalize_time(end),
-        "completed": bool(completed) if completed is not None else None,
+        "completed": wenda_completed_state(item),
         "late_submit": None,
-        "score": wenda_pick(item, "score", "totalScore"),
+        "total_score": wenda_pick(item, "homeworkScore", "totalScore", "score"),
         "content": wenda_pick(item, "content", "description", "requirement"),
         "content_published": None,
     }
@@ -860,20 +914,28 @@ def merge_global_todo(report: dict, items: list) -> None:
                 "end_at": item["end_at"],
                 "completed": False,
                 "late_submit": None,
-                "score": None,
+                "total_score": None,
                 "content": item["content"],
                 "content_published": None,
             })
             changes.append(f"新增 {item['course_name']}｜{item['title']}")
             continue
-        # 待办流里的都是未完成; 截止有变以全局流为准
-        task["completed"] = False
-        if item["end_at"] and item["end_at"] != task.get("end_at"):
-            changes.append(
-                f"截止变更 {item['course_name']}｜{item['title']}: "
-                f"{task.get('end_at')} → {item['end_at']}"
-            )
+        # 全局待办是「跨课程 pending 视图」, 粒度比逐课流粗:
+        # ① 完成态以逐课流为准——平台把「等老师批阅/加分」的课堂表现类作业
+        #    也留在待办里(2026-11-13 实况: 职业生涯规划 3 个课前测已交但被「打回重做」,
+        #    全局待办照样列着), 无脑置 False 会让已完成作业反复复活;
+        #    逐课流没给完成态(未知)时才用全局流兜底。
+        # ② 截止时间只补缺失, 不覆盖逐课 ddl——全局流给的是课程级日期
+        #    (课前测被从 10-31 改成 11-30 就是这么来的)。
+        if task.get("completed") is None:
+            task["completed"] = False
+        if not task.get("end_at") and item["end_at"]:
             task["end_at"] = item["end_at"]
+        elif item["end_at"] and item["end_at"] != task.get("end_at"):
+            changes.append(
+                f"截止不一致(以逐课为准) {item['course_name']}｜{item['title']}: "
+                f"逐课 {task.get('end_at')} / 全局 {item['end_at']}"
+            )
     for line in changes:
         print(f"[collector] 全局待办: {line}", flush=True)
 

@@ -21,6 +21,12 @@ impl HomeworkQqCommand {
     }
 }
 
+impl Default for HomeworkQqCommand {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl SimpleCommand for HomeworkQqCommand {
     fn verbs(&self) -> &'static [&'static str] {
         &["作业", "homework", "deadline"]
@@ -39,7 +45,8 @@ impl SimpleCommand for HomeworkQqCommand {
         if !arg.is_empty() {
             return Ok(None);
         }
-        if let Some(reply) = ctx.require_private("查询作业", "作业信息属于个人数据")? {
+        if let Some(reply) = ctx.require_private("查询作业", "作业信息属于个人数据")?
+        {
             return Ok(Some(Reply::text(reply)));
         }
         Ok(Some(Reply::text(render(ctx.store))))
@@ -49,7 +56,8 @@ impl SimpleCommand for HomeworkQqCommand {
         if !looks_like_homework_question(content) {
             return Ok(None);
         }
-        if let Some(reply) = ctx.require_private("查询作业", "作业信息属于个人数据")? {
+        if let Some(reply) = ctx.require_private("查询作业", "作业信息属于个人数据")?
+        {
             return Ok(Some(Reply::text(reply)));
         }
         Ok(Some(Reply::text(render(ctx.store))))
@@ -148,9 +156,17 @@ fn render(store: &dyn TaskStore) -> String {
                 if remain < 0 {
                     format!("{} 截止", fmt_mmdd_hhmm(ts))
                 } else if remain < 86_400 {
-                    format!("{} 截止，剩 {} 小时", fmt_mmdd_hhmm(ts), remain.div_euclid(3600).max(1))
+                    format!(
+                        "{} 截止，剩 {} 小时",
+                        fmt_mmdd_hhmm(ts),
+                        remain.div_euclid(3600).max(1)
+                    )
                 } else {
-                    format!("{} 截止，剩 {} 天", fmt_mmdd_hhmm(ts), remain.div_euclid(86_400))
+                    format!(
+                        "{} 截止，剩 {} 天",
+                        fmt_mmdd_hhmm(ts),
+                        remain.div_euclid(86_400)
+                    )
                 }
             })
             .unwrap_or_else(|| "截止未知".to_owned());
@@ -159,7 +175,7 @@ fn render(store: &dyn TaskStore) -> String {
             row.course, row.title
         ));
     };
-    let mut push_section = |card: &mut ru41::util::msg::Card, title: String, rows: &[&Row]| {
+    let push_section = |card: &mut ru41::util::msg::Card, title: String, rows: &[&Row]| {
         if rows.is_empty() {
             return;
         }
@@ -171,7 +187,11 @@ fn render(store: &dyn TaskStore) -> String {
         }
         card.raw("");
     };
-    push_section(&mut card, format!("⚠️ 已过期（{}）", overdue.len()), &overdue);
+    push_section(
+        &mut card,
+        format!("⚠️ 已过期（{}）", overdue.len()),
+        &overdue,
+    );
     push_section(
         &mut card,
         format!("⏰ {DUE_SOON_DAYS} 天内截止（{}）", due_soon.len()),
@@ -217,6 +237,15 @@ fn collect_rows(store: &dyn TaskStore) -> (Vec<Row>, usize) {
     if let Ok(docs) = store.documents("zhihuishu_task", 500) {
         for doc in docs {
             let value = &doc.value;
+            // 已归档的快照（平台换 id / 删除作业后的旧 key）不再出现在清单里，
+            // 否则 /作业 会永远挂一条其实早就交完的作业。
+            if value
+                .get("archived")
+                .and_then(serde_json::Value::as_bool)
+                .unwrap_or(false)
+            {
+                continue;
+            }
             let row = Row {
                 platform: "智慧树",
                 course: field(value, "course"),
@@ -350,8 +379,14 @@ mod tests {
 
         let text = render(&store);
         // 两个平台同屏（多平台时带来源标注）
-        assert!(text.contains("【学习通】大学英语新视野｜作业一：函数极限"), "{text}");
-        assert!(text.contains("【智慧树】职业生涯规划｜第五节课 课前测"), "{text}");
+        assert!(
+            text.contains("【学习通】大学英语新视野｜作业一：函数极限"),
+            "{text}"
+        );
+        assert!(
+            text.contains("【智慧树】职业生涯规划｜第五节课 课前测"),
+            "{text}"
+        );
         // 分桶：学习通临期在「3 天内截止」，智慧树远期在「其他未交」
         assert!(text.contains("⏰ 3 天内截止（1）"), "{text}");
         assert!(text.contains("📝 其他未交（1）"), "{text}");
@@ -377,5 +412,44 @@ mod tests {
         let b = parse_beijing("2026-11-03 23:59:00").unwrap();
         assert_eq!(a, b);
         assert!(parse_beijing("垃圾").is_none());
+    }
+
+    /// 平台换 id / 删除作业后归档的旧快照，不再出现在 /作业 清单里
+    /// （2026-11-13 生产实况：已交的「德法第一次线上作业」旧 id 一直挂着）。
+    #[test]
+    fn archived_snapshots_are_hidden() {
+        let dir = std::env::temp_dir().join(format!("ru41-hw-arch-{}", ru41::util::now()));
+        let store = ru41::adapters::database::sqlite::SqliteTaskStore::open(&dir).unwrap();
+        store
+            .put_document(
+                "zhihuishu_task",
+                "思想道德与法治#OLD",
+                None,
+                &serde_json::json!({
+                    "course": "思想道德与法治",
+                    "title": "德法第一次线上作业",
+                    "end_at": beijing_days_from_now(-2),
+                    "completed": false,
+                    "archived": true,
+                }),
+            )
+            .unwrap();
+        store
+            .put_document(
+                "zhihuishu_task",
+                "职业生涯规划#T1",
+                None,
+                &serde_json::json!({
+                    "course": "职业生涯规划",
+                    "title": "第五节课 课前测",
+                    "end_at": beijing_days_from_now(3),
+                    "completed": false,
+                }),
+            )
+            .unwrap();
+
+        let text = render(&store);
+        assert!(!text.contains("德法第一次线上作业"), "{text}");
+        assert!(text.contains("第五节课 课前测"), "{text}");
     }
 }
