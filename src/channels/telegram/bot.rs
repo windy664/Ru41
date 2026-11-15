@@ -79,6 +79,7 @@ impl TelegramBot {
     /// 长驻运行消息网关，直到收到 shutdown。
     pub async fn run(self: &Arc<Self>, mut shutdown: watch::Receiver<bool>) -> Result<()> {
         let mut offset = self.load_offset();
+        eprintln!("[telegram] 网关启动：offset={offset}");
         let mut backoff = 1_u64;
         loop {
             if *shutdown.borrow() {
@@ -125,6 +126,7 @@ impl TelegramBot {
                 *offset = id + 1;
             }
             if received > 0 {
+                eprintln!("[telegram] 收到 {received} 条更新，新 offset={offset}");
                 self.save_offset(*offset)?;
             }
             // 存活探针：平台侧有排队但我们这轮没收到 → 消费者可能卡住。

@@ -31,13 +31,16 @@ for entry in "${PLUGINS[@]}"; do
   echo "[plugins-build] $dir @ $COMMIT"
   # lockfile 从根同步：deps stamp 以根 lock 为准，插件必须解析到同一组版本。
   cp Cargo.lock "$dir/Cargo.lock"
+  # 用 --manifest-path 而不是 -w 插件目录：cargo 的配置发现基于 cwd，
+  # 进到 plugins/ 会读到 plugins/.cargo/config.toml（本地开发加速用 clang+lld），
+  # 而构建镜像只有 cc 没有 clang → linker not found（2026-11-15 实测）。
   docker run --rm \
     -v "$PWD":/build \
     -v "$REGISTRY":/usr/local/cargo/registry \
     -e CARGO_TARGET_DIR="/build/$dir/target-docker" \
     -e RU41_GIT_HASH_OVERRIDE="$COMMIT" \
-    -w "/build/$dir" rust:1.98-trixie \
-    cargo build --release --features plugin-entry
+    -w "/build" rust:1.98-trixie \
+    cargo build --manifest-path "/build/$dir/Cargo.toml" --release --features plugin-entry
   if [[ "${PUSH:-0}" == "1" ]]; then
     python3 "$SCP" "$dir/target-docker/release/$so" "$PLUGIN_DIR_ON_SERVER/$so"
   fi
