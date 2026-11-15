@@ -83,9 +83,15 @@ docker run -d --name ru41-telegram \
 |---|---|---|
 | QQ 里发的 | `qq` | 只回 QQ |
 | Telegram 里发的 | `telegram` | 只回 Telegram |
-| 后台简报/日报/提醒 | 取全局 `[notify].channel`（现为 `qq`） | 只发 QQ |
+| 后台简报/日报/提醒 | 取全局 `[notify].channel`（现为 `qq`） | 主渠道 + `[notify].fanout` 里的并行渠道 |
 
-两道保险：① 每个容器只注册**自己**的渠道（QQ 容器没有 telegram token，Telegram 容器没有 QQ 凭据），dispatcher 找不到对应渠道就跳过；② 两个 dispatcher 同时盯上同一任务时，`delivery` 文档用 revision CAS + owner 抢占，只有一个拿到发送权。
+**双投（fanout）**：`[notify] fanout = ["telegram"]` 让**主动推送**（路由无 `msg_id` 的任务）同时发多个渠道；聊天任务带 `msg_id`，只回原会话，不双发。
+
+投递按**渠道分别记账**（`delivery` 文档里的 `sent` 映射）：某个渠道失败重试时，已送达的渠道不会重发；全部送达才标记任务已通知。
+
+两道保险：① 每个容器只注册**自己**的渠道（QQ 容器没有 telegram token，Telegram 容器没有 QQ 凭据），dispatcher 找不到对应渠道就跳过；② 两个 dispatcher 同时盯上同一任务时，`delivery` 文档用 revision CAS + owner 抢占，只有一个能拿到发送权。
+
+⚠️ **双投需要发起方容器也带 telegram token**（生产上放在 `ru41-qq` 的 env 里）：主渠道的 dispatcher 才是这份任务的唯一所有者，由它负责两个渠道的投递。
 
 ### 身份绑定
 

@@ -43,6 +43,7 @@ async fn stale_steer_is_requeued_as_new_task() {
         batch: 50,
         interval: std::time::Duration::from_secs(2),
         silent_sources: Vec::new(),
+        fanout: Vec::new(),
     };
     let converted = dispatcher.convert_stale_steers().await.unwrap();
     assert_eq!(converted, 1);

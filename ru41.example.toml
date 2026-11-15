@@ -73,12 +73,20 @@ app_secret = ""
 [channel.telegram]
 # Bot token 含密钥，建议用环境变量 RU41_TELEGRAM_BOT_TOKEN 注入。
 # bot_token = ""
-# 默认投递目标：私聊 chat_id（数字）或 @username；bot 需先与用户建立对话。
+# 默认投递目标：私聊 chat_id（数字）或 @username；也接受 chat:{id}。
 # default_chat_id = ""
+# bind_secret = ""
+# allowed_user_ids = [123456789]
+# 该渠道专属出网代理：Telegram 境内直连不通，代理只作用于 Telegram 客户端，
+# 不影响进程内其它流量（agent 调用、其它渠道）。
+# proxy_url = "http://172.17.0.1:7890"
 
 # 默认通知出口：简报类任务终态推送走哪个渠道。
 # [notify]
 # channel = "qq"   # 或 "feishu" / "telegram"
+# 主动推送的并行渠道：同一份结果同时发多个渠道（只对主动推送生效，
+# 聊天任务仍只回原会话）。
+# fanout = ["telegram"]
 # silent_sources = ["obsidian"]
 
 # Obsidian Vault 闭环。vault_path 是服务器本地克隆路径（容器内需挂载）。

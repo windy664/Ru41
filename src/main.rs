@@ -4,15 +4,15 @@ use ru41::bootstrap::agents::{AgentOverrides, registry};
 use ru41::bootstrap::assembly::{
     channel_command_handlers, default_notifier, default_notify_route, knowledge_service,
     notifier_for_route, notify_channels, qq_api, qq_image_consumers, scheduled_jobs,
-    telegram_allowed_user_ids, telegram_bind_secret, telegram_token, todo_notify_route,
-    tracker_job,
+    telegram_allowed_user_ids, telegram_api, telegram_bind_secret, telegram_token,
+    todo_notify_route, tracker_job,
 };
 use ru41::bootstrap::store::{open_store, resolve as resolve_store};
 use ru41::{
     app::{schedule::ScheduleService, task::TaskService, todo::TodoService},
     bootstrap::config::Config,
     channels::qq::{CoalesceState, QqBot, ReplySequencer},
-    channels::telegram::{TelegramNotifier, api::TelegramApi, bot::TelegramBot},
+    channels::telegram::{TelegramNotifier, bot::TelegramBot},
     domain::schedule::{EventInput, EventSource, parse_event_when},
     domain::todo::{TodoInput, parse_due},
     ingress::cli::{
@@ -240,6 +240,7 @@ async fn main() -> Result<()> {
                     batch: 20,
                     interval: Duration::from_secs(2),
                     silent_sources: config.notify.silent_sources.clone().unwrap_or_default(),
+                    fanout: config.notify.fanout.clone().unwrap_or_default(),
                 };
                 let receiver = shutdown_channel()?;
                 tokio::select! {
@@ -294,7 +295,7 @@ async fn main() -> Result<()> {
                 let token = telegram_token(&config).context(
                     "telegram bot token required: RU41_TELEGRAM_BOT_TOKEN or channel.telegram.bot_token",
                 )?;
-                let api = Arc::new(TelegramApi::new(token));
+                let api = Arc::new(telegram_api(&config, token));
                 let store = open_store(&store_config)?;
                 let command_handlers = channel_command_handlers(&config, &base_backend)?;
                 let pricing = ru41::app::usage_report::Pricing::from_config(&config.pricing);
@@ -318,6 +319,7 @@ async fn main() -> Result<()> {
                     batch: 20,
                     interval: Duration::from_secs(2),
                     silent_sources: config.notify.silent_sources.clone().unwrap_or_default(),
+                    fanout: config.notify.fanout.clone().unwrap_or_default(),
                 };
                 let receiver = shutdown_channel()?;
                 tokio::select! {
@@ -340,6 +342,7 @@ async fn main() -> Result<()> {
                 batch: 20,
                 interval: Duration::from_secs(2),
                 silent_sources: config.notify.silent_sources.clone().unwrap_or_default(),
+                fanout: config.notify.fanout.clone().unwrap_or_default(),
             };
             dispatcher.run_loop(shutdown_channel()?).await?;
             return Ok(());

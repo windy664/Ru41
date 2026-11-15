@@ -208,6 +208,7 @@ async fn dispatcher_delivers_terminal_task_to_telegram() {
     );
     let dispatcher = NotifyDispatcher {
         silent_sources: Vec::new(),
+        fanout: Vec::new(),
         store: store.clone(),
         channels: vec![Arc::new(notifier(&base, Some("998877")))],
         batch: 10,

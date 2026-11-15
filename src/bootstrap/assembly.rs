@@ -36,18 +36,26 @@ pub fn notify_channels(
     let mut channels: Vec<Arc<dyn NotifyChannel>> = Vec::new();
     if let Some(api) = qq {
         let sequencer = qq_seq.unwrap_or_else(|| Arc::new(ReplySequencer::default()));
-        channels.push(Arc::new(QqNotifier::new(api, sequencer)));
+        channels.push(Arc::new(
+            QqNotifier::new(api, sequencer)
+                .with_default_target(config.channel.qq.default_notify_target.clone()),
+        ));
     }
     if let Some(url) = feishu_webhook_url(config) {
         channels.push(Arc::new(FeishuWebhookNotifier::new(url)));
     }
     if let Some(token) = telegram_token(config) {
         channels.push(Arc::new(TelegramNotifier::new(
-            Arc::new(TelegramApi::new(token)),
+            Arc::new(telegram_api(config, token)),
             config.channel.telegram.default_chat_id.clone(),
         )));
     }
     Ok(channels)
+}
+
+/// Telegram 客户端：token + 该渠道专属出网代理（境内直连不通）。
+pub fn telegram_api(config: &Config, token: String) -> TelegramApi {
+    TelegramApi::with_proxy(token, config.channel.telegram.proxy_url.as_deref())
 }
 
 /// 注册各业务模块提供的扩展命令；这是唯一同时认识渠道与业务模块的位置。
@@ -197,21 +205,27 @@ pub fn default_notifier(config: &Config, channel: &str) -> Result<Arc<dyn Notify
                 "feishu webhook required: RU41_FEISHU_WEBHOOK_URL or channel.feishu.webhook_url",
             )?,
         ))),
-        "qq" => Ok(Arc::new(QqNotifier::new(
-            Arc::new(qq_api(
-                &QqCredentials {
-                    app_id: None,
-                    app_secret: None,
-                },
-                config,
-            )?),
-            // 跟踪器进程只发主动消息，序号器进程内独立即可。
-            Arc::new(ReplySequencer::default()),
-        ))),
+        "qq" => Ok(Arc::new(
+            QqNotifier::new(
+                Arc::new(qq_api(
+                    &QqCredentials {
+                        app_id: None,
+                        app_secret: None,
+                    },
+                    config,
+                )?),
+                // 跟踪器进程只发主动消息，序号器进程内独立即可。
+                Arc::new(ReplySequencer::default()),
+            )
+            .with_default_target(config.channel.qq.default_notify_target.clone()),
+        )),
         "telegram" => Ok(Arc::new(TelegramNotifier::new(
-            Arc::new(TelegramApi::new(telegram_token(config).context(
-                "telegram bot token required: RU41_TELEGRAM_BOT_TOKEN or channel.telegram.bot_token",
-            )?)),
+            Arc::new(telegram_api(
+                config,
+                telegram_token(config).context(
+                    "telegram bot token required: RU41_TELEGRAM_BOT_TOKEN or channel.telegram.bot_token",
+                )?,
+            )),
             config.channel.telegram.default_chat_id.clone(),
         ))),
         other => anyhow::bail!("unknown notify channel: {other}"),

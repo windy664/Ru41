@@ -311,14 +311,20 @@ pub struct TelegramSection {
     pub bind_secret: Option<String>,
     /// 用户白名单（Telegram user id）；为空表示不限制谁能跟 bot 说话。
     pub allowed_user_ids: Option<Vec<i64>>,
+    /// 该渠道专用的出网代理（如 `http://172.17.0.1:7890`）。
+    /// Telegram 在境内不可直连，代理只作用于 Telegram 客户端，不影响进程内其他流量。
+    pub proxy_url: Option<String>,
 }
 
 /// 默认通知出口：业务模块只说「要通知」，用哪个渠道由这里统一决定。
 #[derive(Debug, Default, Deserialize)]
 #[serde(default, deny_unknown_fields)]
 pub struct NotifySection {
-    /// 渠道标识（feishu / qq）；缺省表示无默认出口，简报类任务只入队不推送。
+    /// 渠道标识（feishu / qq / telegram）；缺省表示无默认出口，简报类任务只入队不推送。
     pub channel: Option<String>,
+    /// 主动推送的额外并行渠道（如 ["telegram"]）：简报/提醒同时发多个渠道。
+    /// 聊天任务只回原会话，不走这里。
+    pub fanout: Option<Vec<String>>,
     /// 静默来源：这些后台服务的 agent 过程不向用户汇报（终态通知 + 活动流都不推）。
     /// 匹配 request_key 的前缀段（段数不限）：配 "obsidian" 命中
     /// "obsidian:organize:xxx"；配 "rss:opportunities" 只命中机会雷达那类。

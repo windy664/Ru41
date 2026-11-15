@@ -132,6 +132,7 @@ async fn dispatcher_delivers_terminal_task_to_default_webhook() {
     );
     let dispatcher = NotifyDispatcher {
         silent_sources: Vec::new(),
+        fanout: Vec::new(),
         store: store.clone(),
         channels: vec![Arc::new(FeishuWebhookNotifier::new(&url))],
         batch: 10,
