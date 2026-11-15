@@ -53,6 +53,54 @@ tags: [Ru41, Telegram, channel, notify, gateway]
 
 **镜像**：`ru41:local` 已用最终 HEAD 重建（主二进制 + 24 个插件 .so），镜像内 `ru41 telegram doctor` / `run` 子命令可用。
 
+## 生产部署（192.168.1.223）
+
+生产用的是**裸 `docker run`**（不是 compose），Telegram 网关容器规格与 `ru41-qq` 同构：
+
+```bash
+# 凭据与代理放 0600 env 文件（token 绝不出现在命令行/进程列表）
+/home/windy2/.ru41-telegram.env   # RU41_TELEGRAM_BOT_TOKEN / RU41_TELEGRAM_BIND_SECRET
+                                    # + HTTP_PROXY/HTTPS_PROXY=http://172.17.0.1:7890 + NO_PROXY
+                                    # + 从 ru41-qq 动态取的 RU41_JWXT_*（library 插件需要）
+
+docker run -d --name ru41-telegram \
+  --network ru41-net --restart unless-stopped \
+  --env-file /home/windy2/.ru41-telegram.env \
+  -e CODEX_HOME=/data/codex \
+  -v /home/windy2/ru41-mimo-smoke/skills:/usr/share/ru41/plugins:ro \
+  -v /home/windy2/ru41-mimo-smoke/plugins:/etc/ru41/plugins \
+  -v /home/windy2/ru41-mimo-smoke/data:/data \
+  -v /home/windy2/ru41-mimo-smoke:/etc/ru41 \
+  ru41:local --config /etc/ru41/ru41.toml telegram run --backend pi
+```
+
+生产配置里 `[channel.telegram] default_chat_id = "8787916999"`（主动通知的默认目标；聊天消息的目标由消息本身决定，不需要它）。
+`[notify].channel` 仍是 `qq`——**后台简报/提醒不双发**（见下）。
+
+### 双网关但不双通知
+
+| 消息来源 | 任务 `notify.channel` | 投递到 |
+|---|---|---|
+| QQ 里发的 | `qq` | 只回 QQ |
+| Telegram 里发的 | `telegram` | 只回 Telegram |
+| 后台简报/日报/提醒 | 取全局 `[notify].channel`（现为 `qq`） | 只发 QQ |
+
+两道保险：① 每个容器只注册**自己**的渠道（QQ 容器没有 telegram token，Telegram 容器没有 QQ 凭据），dispatcher 找不到对应渠道就跳过；② 两个 dispatcher 同时盯上同一任务时，`delivery` 文档用 revision CAS + owner 抢占，只有一个拿到发送权。
+
+### 身份绑定
+
+绑定记录：`records` 表 `kind=identity`，键 `{channel}:{openid}`（QQ 是 `qq:{openid}`，Telegram 是 `telegram:{user_id}`），两条独立记录、同一个口令。
+口令走 `RU41_TELEGRAM_BIND_SECRET`（复用生产的 `channel.qq.bind_secret`，不落配置明文）。
+
+### 整体滚动与回滚
+
+生产 26 个容器用 `/home/windy2/ru41-mimo-smoke/.roll/` 下的脚本管理：
+
+- `apply.py`：按抓取的规格（cmd / env / 挂载 / 网络 / extra_hosts / restart）逐字重建全部容器 + 换插件；备份旧插件到 `plugins.bak-<时间戳>/`
+- `rollback.py`：恢复旧插件 + 用 `ru41:prev` 重建旧容器
+
+⚠️ **插件 ABI 纪律**：宿主与插件必须同版本。给 `ChannelSection` 加字段、改 `msg_request_key` 签名这类**边界闭包内**的公开类型变更，必须 bump `ru41-plugin-api` 的 crate 版本（0.6.0 → 0.7.0），否则握手版本号仍相等、照常放行，但结构布局已错 → **SIGSEGV 崩溃循环**（实测 exit 139）。bump 后旧插件会被明确拒绝。
+
 ## 已知限制
 
 - **媒体消息暂不支持**：Telegram 的图片/文件只给 `file_id`，取直链需要带 token 的 URL（会把密钥暴露进 prompt），需下载后再转存才能给 agent。网关对非文本消息回一句说明。
