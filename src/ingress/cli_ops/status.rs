@@ -32,6 +32,7 @@ fn snapshot(cli: &Cli, dump: bool) -> Result<Value> {
         "notify": config.notify.channel,
         "qq_configured": configured(config.channel.qq.app_id.as_deref()) && configured(config.channel.qq.app_secret.as_deref()),
         "feishu_configured": configured(config.channel.feishu.webhook_url.as_deref()),
+        "telegram_configured": configured(config.channel.telegram.bot_token.as_deref()),
         "papers_configured": config.sources.has("arxiv"),
         "rss_configured": config.sources.has("rss"),
         "ecard_configured": config.sources.has("ecard"),

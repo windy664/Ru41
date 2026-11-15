@@ -70,9 +70,15 @@ app_secret = ""
 [channel.feishu]
 # webhook_url = ""  # 建议用 RU41_FEISHU_WEBHOOK_URL
 
+[channel.telegram]
+# Bot token 含密钥，建议用环境变量 RU41_TELEGRAM_BOT_TOKEN 注入。
+# bot_token = ""
+# 默认投递目标：私聊 chat_id（数字）或 @username；bot 需先与用户建立对话。
+# default_chat_id = ""
+
 # 默认通知出口：简报类任务终态推送走哪个渠道。
 # [notify]
-# channel = "qq"   # 或 "feishu"
+# channel = "qq"   # 或 "feishu" / "telegram"
 # silent_sources = ["obsidian"]
 
 # Obsidian Vault 闭环。vault_path 是服务器本地克隆路径（容器内需挂载）。

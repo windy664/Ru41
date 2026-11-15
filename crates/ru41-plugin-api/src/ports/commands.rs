@@ -200,8 +200,9 @@ impl CommandContext<'_> {
 }
 
 /// 渠道消息的任务请求键，保证同一 msg_id 只入队一次（渠道适配器与扩展命令共用）。
-pub fn msg_request_key(msg_id: &str) -> String {
-    format!("qq:msg:{msg_id}")
+/// 渠道名进键：`{channel}:msg:{msg_id}`，不同平台的 msg_id 互不冲突。
+pub fn msg_request_key(channel: &str, msg_id: &str) -> String {
+    format!("{channel}:msg:{msg_id}")
 }
 
 /// 声明式命令：只填命令词、帮助与业务逻辑，`Pin<Box<dyn Future>>` 仪式、

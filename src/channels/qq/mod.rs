@@ -892,7 +892,7 @@ impl QqBot {
         let prompt = render_message_prompt(content, attachments);
         // 幂等短路：同 msg_id 已入过队则直接回执原任务，不得先打断再判重
         // （否则平台重推同一条消息会反而把原任务取消掉）。
-        let request_key = msg_request_key(msg_id);
+        let request_key = msg_request_key("qq", msg_id);
         if let Some(existing) = self
             .store
             .list(200)?

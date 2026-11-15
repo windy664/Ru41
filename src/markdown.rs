@@ -22,6 +22,19 @@ pub fn with_output_style(prompt: &str) -> String {
     format!("{prompt}\n\n{OUTPUT_STYLE}\n")
 }
 
+/// Telegram 平台提示：Telegram 的排版与 Markdown 不同（没有多级标题、没有表格），
+/// 告诉模型免得排出一堆渲染不出来的结构。
+pub const TELEGRAM_HINT: &str =
+    "你在 Telegram 上回复：## 标题会显示为粗体，不要使用表格；列表用 `- `；代码块用 ``` 包裹。";
+
+/// 给 Telegram 渠道的提示词追加平台提示；已包含时原样返回。
+pub fn with_telegram_hint(prompt: &str) -> String {
+    if prompt.contains(TELEGRAM_HINT) {
+        return prompt.to_owned();
+    }
+    format!("{prompt}\n\n{TELEGRAM_HINT}\n")
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

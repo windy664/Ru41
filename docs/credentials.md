@@ -23,6 +23,7 @@
 | QQ AppID/Secret | `[channel.qq]` | `RU41_QQ_APP_ID` / `RU41_QQ_APP_SECRET` | QQ 机器人鉴权 |
 | QQ 绑定口令 | `[channel.qq] bind_secret` | `RU41_QQ_BIND_SECRET` | 身份绑定命令开关 |
 | 飞书 webhook | `[channel.feishu]` | `RU41_FEISHU_WEBHOOK_URL` | 通知出口（URL 含 token） |
+| Telegram bot token | `[channel.telegram] bot_token` | `RU41_TELEGRAM_BOT_TOKEN` | 通知出口（token 等于 bot 密码，只在 URL path 里出现） |
 | 学习通账密 | `[sources.chaoxing]` | `RU41_XXT_PHONE` / `RU41_XXT_PASSWORD` | 协议登录 → cookie |
 | 教务账密 | `[sources.jwxt]` | `RU41_JWXT_USERNAME` / `RU41_JWXT_PASSWORD` | CAS 登录 → TGT |
 | 校园卡 token | `[sources.ecard]` | `RU41_ECARD_TOKEN` | 水电查询 |

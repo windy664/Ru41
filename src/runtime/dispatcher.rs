@@ -468,6 +468,11 @@ const PASSIVE_WINDOW_SECS: i64 = 240;
 fn effective_msg_id(task: &Task, now: i64) -> Option<&str> {
     let route = task.notify.as_ref()?;
     let msg_id = route.msg_id.as_deref()?;
+    // Telegram 没有被动回复窗口：msg_id 长期有效（当 reply_parameters 用），
+    // 不做 240 秒截断。
+    if route.channel == "telegram" {
+        return Some(msg_id);
+    }
     let created =
         match chrono::NaiveDateTime::parse_from_str(&task.created_at, "%Y-%m-%dT%H:%M:%S%.fZ") {
             Ok(parsed) => parsed.and_utc().timestamp(),

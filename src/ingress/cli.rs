@@ -89,6 +89,11 @@ pub enum Command {
         #[command(subcommand)]
         command: QqCommand,
     },
+    /// Telegram 渠道：单向下发（结果/进度/活动流）与连通性体检。
+    Telegram {
+        #[command(subcommand)]
+        command: TelegramCommand,
+    },
     /// 长驻运行终态通知派发；按配置注册渠道（当前为飞书 webhook）。
     /// QQ 网关在 qq run 内自带派发，此命令用于不跑 QQ 的部署。
     Notify,
@@ -306,6 +311,30 @@ pub enum QqCommand {
     },
     /// 通过 QQ 官方扫码流程创建/绑定机器人并写入本地凭证。
     Onboard,
+}
+
+#[derive(Subcommand)]
+pub enum TelegramCommand {
+    /// 检查 bot token 与网络（调用 getMe）；不发送消息。
+    Doctor,
+    /// 手动发送一条消息（测试连通性）。
+    Send {
+        /// 目标 chat_id（数字）或 @username；缺省用配置里的默认 chat。
+        #[arg(long)]
+        chat_id: Option<String>,
+        /// 文本内容。
+        #[arg(long, default_value = "")]
+        text: String,
+    },
+    /// 长驻运行消息网关（长轮询收消息 + 结果通知循环）。
+    Run {
+        /// 消息任务入队时绑定的底座。
+        #[arg(long)]
+        backend: Option<String>,
+        /// 身份绑定口令（也可用环境变量 RU41_TELEGRAM_BIND_SECRET 或配置 channel.telegram.bind_secret）。
+        #[arg(long, env = "RU41_TELEGRAM_BIND_SECRET")]
+        bind_secret: Option<String>,
+    },
 }
 
 #[derive(Subcommand)]

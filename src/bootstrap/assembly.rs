@@ -9,6 +9,7 @@ use crate::{
     channels::{
         feishu::{self, FeishuWebhookNotifier},
         qq::{QqNotifier, ReplySequencer, api::QqApiClient},
+        telegram::{self, TelegramNotifier, api::TelegramApi},
     },
     domain::NotifyRoute,
     ingress::{
@@ -40,12 +41,23 @@ pub fn notify_channels(
     if let Some(url) = feishu_webhook_url(config) {
         channels.push(Arc::new(FeishuWebhookNotifier::new(url)));
     }
+    if let Some(token) = telegram_token(config) {
+        channels.push(Arc::new(TelegramNotifier::new(
+            Arc::new(TelegramApi::new(token)),
+            config.channel.telegram.default_chat_id.clone(),
+        )));
+    }
     Ok(channels)
 }
 
-/// 注册各业务模块提供的 QQ 扩展命令；这是唯一同时认识 QQ 与业务模块的位置。
-pub fn qq_command_handlers(config: &Config, backend: &str) -> Result<Vec<Arc<dyn CommandHandler>>> {
-    // 注册表模块的 QQ 命令先行收集（数据驱动）。
+/// 注册各业务模块提供的扩展命令；这是唯一同时认识渠道与业务模块的位置。
+/// 模块内的命令处理器按契约只用 `ctx.reply_channel`，因此同一批处理器
+/// 可以原样注册给 QQ 与 Telegram。
+pub fn channel_command_handlers(
+    config: &Config,
+    backend: &str,
+) -> Result<Vec<Arc<dyn CommandHandler>>> {
+    // 注册表模块的命令先行收集（数据驱动）。
     let mut handlers: Vec<Arc<dyn CommandHandler>> = Vec::new();
     for def in crate::modules::sorted() {
         handlers.extend((def.qq_handlers)(config, backend)?);
@@ -69,6 +81,32 @@ fn feishu_webhook_url(config: &Config) -> Option<String> {
         .ok()
         .or_else(|| config.channel.feishu.webhook_url.clone())
         .filter(|url| !url.trim().is_empty())
+}
+
+/// Telegram bot token：环境变量 RU41_TELEGRAM_BOT_TOKEN > 配置文件；空串视为未配置。
+pub fn telegram_token(config: &Config) -> Option<String> {
+    std::env::var("RU41_TELEGRAM_BOT_TOKEN")
+        .ok()
+        .or_else(|| config.channel.telegram.bot_token.clone())
+        .filter(|token| !token.trim().is_empty())
+}
+
+/// Telegram 身份绑定口令：环境变量 RU41_TELEGRAM_BIND_SECRET > 配置文件。
+pub fn telegram_bind_secret(config: &Config) -> Option<String> {
+    std::env::var("RU41_TELEGRAM_BIND_SECRET")
+        .ok()
+        .or_else(|| config.channel.telegram.bind_secret.clone())
+        .filter(|secret| !secret.trim().is_empty())
+}
+
+/// Telegram 用户白名单：为空表示不限制。
+pub fn telegram_allowed_user_ids(config: &Config) -> Vec<i64> {
+    config
+        .channel
+        .telegram
+        .allowed_user_ids
+        .clone()
+        .unwrap_or_default()
 }
 
 /// 默认通知出口：渠道名 → 路由的转换只在装配层做，业务模块只拿到解析好的路由。
@@ -97,6 +135,23 @@ pub fn default_notify_route(config: &Config) -> Result<Option<NotifyRoute>> {
                 .context("qq notify requires channel.qq.default_notify_target")?,
             msg_id: None,
         },
+        "telegram" => {
+            telegram_token(config).context(
+                "telegram bot token required: RU41_TELEGRAM_BOT_TOKEN or channel.telegram.bot_token",
+            )?;
+            config
+                .channel
+                .telegram
+                .default_chat_id
+                .clone()
+                .filter(|chat| !chat.trim().is_empty())
+                .context("telegram notify requires channel.telegram.default_chat_id")?;
+            NotifyRoute {
+                channel: "telegram".into(),
+                target: telegram::DEFAULT_TARGET.into(),
+                msg_id: None,
+            }
+        }
         other => anyhow::bail!("unknown notify channel: {other}"),
     };
     Ok(Some(route))
@@ -152,6 +207,12 @@ pub fn default_notifier(config: &Config, channel: &str) -> Result<Arc<dyn Notify
             )?),
             // 跟踪器进程只发主动消息，序号器进程内独立即可。
             Arc::new(ReplySequencer::default()),
+        ))),
+        "telegram" => Ok(Arc::new(TelegramNotifier::new(
+            Arc::new(TelegramApi::new(telegram_token(config).context(
+                "telegram bot token required: RU41_TELEGRAM_BOT_TOKEN or channel.telegram.bot_token",
+            )?)),
+            config.channel.telegram.default_chat_id.clone(),
         ))),
         other => anyhow::bail!("unknown notify channel: {other}"),
     }

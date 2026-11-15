@@ -278,6 +278,7 @@ pub struct ModelPricing {
 pub struct ChannelSection {
     pub qq: QqSection,
     pub feishu: FeishuSection,
+    pub telegram: TelegramSection,
 }
 
 #[derive(Debug, Default, Deserialize)]
@@ -296,6 +297,20 @@ pub struct QqSection {
 pub struct FeishuSection {
     /// 自定义群机器人 webhook URL（含 token，建议只用配置文件或环境变量注入）。
     pub webhook_url: Option<String>,
+}
+
+/// Telegram 渠道：Bot API 适配器（单向下发 + 双向网关）。
+#[derive(Debug, Default, Deserialize)]
+#[serde(default, deny_unknown_fields)]
+pub struct TelegramSection {
+    /// Bot token（含密钥，建议只用环境变量 RU41_TELEGRAM_BOT_TOKEN 注入）。
+    pub bot_token: Option<String>,
+    /// 默认投递目标：私聊 chat_id（数字）或 @username；也接受 `chat:{id}` 形式。
+    pub default_chat_id: Option<String>,
+    /// 身份绑定口令；未配置时绑定命令不可用。
+    pub bind_secret: Option<String>,
+    /// 用户白名单（Telegram user id）；为空表示不限制谁能跟 bot 说话。
+    pub allowed_user_ids: Option<Vec<i64>>,
 }
 
 /// 默认通知出口：业务模块只说「要通知」，用哪个渠道由这里统一决定。

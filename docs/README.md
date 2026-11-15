@@ -35,6 +35,7 @@
 
 - [QQ 渠道](channels-qq.md)：WebSocket/REST、消息幂等、内置与模块命令、身份绑定
 - [飞书渠道](channels-feishu.md)：自定义群机器人 webhook 与默认通知出口
+- [Telegram 渠道](channels-telegram.md)：Bot API 单向下发（阶段 1 已实现）、双向网关方案与生产代理要求
 
 ## 来源与业务模块
 

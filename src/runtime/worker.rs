@@ -286,6 +286,16 @@ impl Worker {
         // 输出规范（Markdown + 公式用 LaTeX）在这里统一注入：底座无关，
         // Codex 与 Pi 拿到同一份规范，避免各适配器各写一份。
         let prompt = crate::markdown::with_output_style(&prompt);
+        // 渠道平台提示：Telegram 的排版规则与通用 Markdown 不同（无表格、无多级标题）。
+        let prompt = match claim
+            .task
+            .notify
+            .as_ref()
+            .map(|route| route.channel.as_str())
+        {
+            Some("telegram") => crate::markdown::with_telegram_hint(&prompt),
+            _ => prompt,
+        };
         let conversation_id = conversation_key(&claim.task);
         let conversation = match &conversation_id {
             Some(id) => self.store.document("conversation", id)?,
