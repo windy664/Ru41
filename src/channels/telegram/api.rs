@@ -29,12 +29,29 @@ pub struct TelegramApi {
 
 impl TelegramApi {
     pub fn new(token: impl Into<String>) -> Self {
-        Self {
+        Self::build(token, None)
+    }
+
+    /// 带专属出网代理的客户端：Telegram 在境内不可直连，代理只作用于本渠道，
+    /// 不影响进程内其他流量（agent 调用、其它渠道）。
+    pub fn with_proxy(token: impl Into<String>, proxy_url: Option<&str>) -> Self {
+        Self::build(token, proxy_url)
+    }
+
+    fn build(token: impl Into<String>, proxy_url: Option<&str>) -> Self {
+        let mut builder = crate::util::http_client_builder()
             // 长轮询的服务端等待最长 20s，客户端总超时必须更长，否则会被自己掐断。
-            http: crate::util::http_client_builder()
-                .timeout(std::time::Duration::from_secs(90))
-                .build()
-                .expect("reqwest client build"),
+            .timeout(std::time::Duration::from_secs(90));
+        if let Some(url) = proxy_url.map(str::trim).filter(|url| !url.is_empty()) {
+            match reqwest::Proxy::all(url) {
+                Ok(proxy) => builder = builder.proxy(proxy),
+                Err(error) => {
+                    eprintln!("[telegram] 代理地址无效（已忽略）：{url} ({error})");
+                }
+            }
+        }
+        Self {
+            http: builder.build().expect("reqwest client build"),
             token: token.into(),
             base: DEFAULT_BASE.to_owned(),
         }

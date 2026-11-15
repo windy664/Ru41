@@ -12,7 +12,7 @@ use crate::{
         storage::TaskStore,
     },
 };
-use anyhow::{Result, bail};
+use anyhow::{Context, Result, bail};
 use api::QqApiClient;
 use gateway::{GatewayEvent, GatewaySession};
 use std::{
@@ -26,6 +26,8 @@ use tokio::sync::{mpsc, watch};
 
 /// notify_target 的前缀：区分群会话与单聊。
 pub const TARGET_GROUP_PREFIX: &str = "group:";
+/// notify_target 的占位值：真正的目标由配置提供，不落库。
+pub const DEFAULT_TARGET: &str = "default";
 pub const TARGET_C2C_PREFIX: &str = "user:";
 
 /// QQ 渠道的消息请求键，保证同一 msg_id 只入队一次。
@@ -53,11 +55,36 @@ impl ReplySequencer {
 pub struct QqNotifier {
     api: Arc<QqApiClient>,
     sequencer: Arc<ReplySequencer>,
+    /// target 为 `default` 时使用的默认目标（如 `user:{openid}`）：
+    /// 主动推送双投时，另一渠道走自己的 default。
+    default_target: Option<String>,
 }
 
 impl QqNotifier {
     pub fn new(api: Arc<QqApiClient>, sequencer: Arc<ReplySequencer>) -> Self {
-        Self { api, sequencer }
+        Self {
+            api,
+            sequencer,
+            default_target: None,
+        }
+    }
+
+    /// 设定 `default` target 的解析目标。
+    pub fn with_default_target(mut self, target: Option<String>) -> Self {
+        self.default_target = target;
+        self
+    }
+
+    /// 解析 target：`default` 用配置值，其余按群/单聊前缀。
+    fn resolve_target(&self, target: &str) -> Result<String> {
+        if target == DEFAULT_TARGET {
+            return self
+                .default_target
+                .clone()
+                .filter(|value| !value.trim().is_empty())
+                .context("qq default notify target is not configured");
+        }
+        Ok(target.to_owned())
     }
 }
 
@@ -73,6 +100,7 @@ impl NotifyChannel for QqNotifier {
         text: &'a str,
     ) -> Pin<Box<dyn Future<Output = Result<()>> + Send + 'a>> {
         Box::pin(async move {
+            let target = self.resolve_target(target)?;
             let key = msg_id.unwrap_or_default();
             let seq = self.sequencer.next(key);
             if let Some(group) = target.strip_prefix(TARGET_GROUP_PREFIX) {

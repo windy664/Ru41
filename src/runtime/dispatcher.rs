@@ -20,6 +20,9 @@ pub struct NotifyDispatcher {
     /// 静默来源（后台服务）：这些任务不向用户汇报——终态通知、进度通知、活动流全不推，
     /// 但任务照跑、产物照写。匹配 request_key 的前缀段。
     pub silent_sources: Vec<String>,
+    /// 主动推送的并行渠道（[notify].fanout）：同一份结果同时发多个渠道。
+    /// 只对**主动推送**生效（路由无 msg_id）；聊天任务只回原会话，不双发。
+    pub fanout: Vec<String>,
 }
 
 /// request_key 是否命中静默来源（前缀段匹配，段数不限）。
@@ -166,13 +169,28 @@ impl NotifyDispatcher {
                 self.store.mark_notified(task.id)?;
                 continue;
             }
-            let Some(channel) = self
+            let Some(_owner) = self
                 .channels
                 .iter()
                 .find(|c| c.channel_id() == route.channel)
             else {
                 continue;
             };
+            // 发送清单：主渠道 + 主动推送的并行渠道。
+            // 聊天任务（路由带 msg_id）只回原会话——不回灌到别的渠道去打扰人。
+            let mut targets: Vec<(String, String)> =
+                vec![(route.channel.clone(), route.target.clone())];
+            if route.msg_id.is_none() {
+                for extra in &self.fanout {
+                    if extra == &route.channel {
+                        continue;
+                    }
+                    if self.channels.iter().any(|c| c.channel_id() == extra) {
+                        // 并行渠道用各渠道自己的 default 目标（由 notifier 解析）。
+                        targets.push((extra.clone(), "default".to_owned()));
+                    }
+                }
+            }
             let id = format!("task-{}-{}", task.id, task.attempt_count);
             let current = self.store.document("delivery", &id)?;
             let now = crate::runtime::worker::now();
@@ -190,8 +208,13 @@ impl NotifyDispatcher {
                 .and_then(|d| d.value["tries"].as_u64())
                 .unwrap_or(0)
                 + 1;
-            let owner = format!("{}", rand::random::<u64>());
-            let mut record = serde_json::json!({"task_id":task.id,"channel":route.channel,"target":route.target,"status":"sending","owner":owner,"tries":tries,"next_at":now+60});
+            let owner_id = format!("{}", rand::random::<u64>());
+            // 重试时保留上一轮已送达的渠道集合：一个渠道失败不该让别的渠道重发。
+            let delivered: serde_json::Map<String, serde_json::Value> = current
+                .as_ref()
+                .and_then(|doc| doc.value["sent"].as_object().cloned())
+                .unwrap_or_default();
+            let mut record = serde_json::json!({"task_id":task.id,"channel":route.channel,"target":route.target,"status":"sending","owner":owner_id,"tries":tries,"next_at":now+60,"sent":serde_json::Value::Object(delivered.clone())});
             if !self.store.put_document(
                 "delivery",
                 &id,
@@ -200,54 +223,78 @@ impl NotifyDispatcher {
             )? {
                 continue;
             }
-            let revision = current.as_ref().map(|d| d.revision + 1).unwrap_or(1);
-            let result = tokio::time::timeout(
-                Duration::from_secs(30),
-                channel.send(
-                    &route.target,
-                    effective_msg_id(&task, now),
-                    &notify_text(&task),
-                ),
-            )
-            .await;
-            match result {
-                Ok(Ok(())) => {
-                    // 结果带媒体（截图/图表/生成文档）时逐个随消息发出。
-                    // QQ 会上传成平台媒体；不支持媒体的渠道降级成文本链接。
-                    if let Some(result) = task.result.as_ref() {
-                        for media in &result.media {
-                            let caption = media.display_name().to_owned();
-                            let sent_media = tokio::time::timeout(
-                                Duration::from_secs(60),
-                                channel.send_media(
-                                    &route.target,
-                                    effective_msg_id(&task, now),
-                                    &caption,
-                                    media,
-                                ),
-                            )
-                            .await;
-                            if !matches!(sent_media, Ok(Ok(()))) {
-                                eprintln!("[notify] media delivery failed for task-{}", task.id);
-                            }
+            let mut revision = current.as_ref().map(|d| d.revision + 1).unwrap_or(1);
+            let mut delivered = delivered;
+            let mut failed = false;
+            for (channel_name, channel_target) in &targets {
+                if delivered.contains_key(channel_name) {
+                    continue;
+                }
+                let Some(channel) = self
+                    .channels
+                    .iter()
+                    .find(|c| c.channel_id() == channel_name)
+                else {
+                    continue;
+                };
+                let result = tokio::time::timeout(
+                    Duration::from_secs(30),
+                    channel.send(
+                        channel_target,
+                        effective_msg_id(&task, now),
+                        &notify_text(&task),
+                    ),
+                )
+                .await;
+                if !matches!(result, Ok(Ok(()))) {
+                    failed = true;
+                    break;
+                }
+                // 结果带媒体（截图/图表/生成文档）时逐个随消息发出。
+                // QQ 会上传成平台媒体；不支持媒体的渠道降级成文本链接。
+                if let Some(result) = task.result.as_ref() {
+                    for media in &result.media {
+                        let caption = media.display_name().to_owned();
+                        let sent_media = tokio::time::timeout(
+                            Duration::from_secs(60),
+                            channel.send_media(
+                                channel_target,
+                                effective_msg_id(&task, now),
+                                &caption,
+                                media,
+                            ),
+                        )
+                        .await;
+                        if !matches!(sent_media, Ok(Ok(()))) {
+                            eprintln!(
+                                "[notify] media delivery failed for task-{} via {channel_name}",
+                                task.id
+                            );
                         }
                     }
-                    record["status"] = "sent".into();
-                    if self
-                        .store
-                        .put_document("delivery", &id, Some(revision), &record)?
-                    {
-                        self.store.mark_notified(task.id)?;
-                        sent += 1;
-                    }
                 }
-                _ => {
-                    record["status"] = "retry_scheduled".into();
-                    record["next_at"] = (now + (1_i64 << tries.min(10)).min(3600)).into();
-                    self.store
-                        .put_document("delivery", &id, Some(revision), &record)?;
-                    eprintln!("[notify] delivery {id} failed or timed out");
-                }
+                delivered.insert(channel_name.clone(), serde_json::Value::Bool(true));
+                record["sent"] = serde_json::Value::Object(delivered.clone());
+                // 以当前存储版本做 CAS；写成功后版本 +1（写后再加）。
+                self.store
+                    .put_document("delivery", &id, Some(revision), &record)?;
+                revision += 1;
+            }
+            if failed {
+                record["status"] = "retry_scheduled".into();
+                record["next_at"] = (now + (1_i64 << tries.min(10)).min(3600)).into();
+                self.store
+                    .put_document("delivery", &id, Some(revision), &record)?;
+                eprintln!("[notify] delivery {id} failed or timed out");
+                continue;
+            }
+            record["status"] = "sent".into();
+            if self
+                .store
+                .put_document("delivery", &id, Some(revision), &record)?
+            {
+                self.store.mark_notified(task.id)?;
+                sent += 1;
             }
         }
         Ok(sent)

@@ -17,7 +17,8 @@ struct MockChannel {
     id: &'static str,
     sent: Mutex<Vec<(String, Option<String>, String)>>,
     media: Mutex<Vec<(String, String)>>,
-    fail: bool,
+    /// 可开关的失败开关：双投重试场景需要「第一次失败、第二次成功」。
+    fail: Mutex<bool>,
 }
 
 impl NotifyChannel for MockChannel {
@@ -31,7 +32,7 @@ impl NotifyChannel for MockChannel {
         text: &'a str,
     ) -> Pin<Box<dyn Future<Output = anyhow::Result<()>> + Send + 'a>> {
         Box::pin(async move {
-            if self.fail {
+            if *self.fail.lock().unwrap() {
                 anyhow::bail!("channel down");
             }
             self.sent.lock().unwrap().push((
@@ -51,7 +52,7 @@ impl NotifyChannel for MockChannel {
         media: &'a ru41::ports::channel::MediaRef,
     ) -> Pin<Box<dyn Future<Output = anyhow::Result<()>> + Send + 'a>> {
         Box::pin(async move {
-            if self.fail {
+            if *self.fail.lock().unwrap() {
                 anyhow::bail!("channel down");
             }
             self.media
@@ -105,6 +106,19 @@ fn dispatcher(
         channels,
         batch: 10,
         interval: Duration::from_secs(60),
+        fanout: Vec::new(),
+    }
+}
+
+/// 带并行渠道的 dispatcher（主动推送双投）。
+fn dispatcher_with_fanout(
+    store: Arc<dyn TaskStore>,
+    channels: Vec<Arc<dyn NotifyChannel>>,
+    fanout: Vec<String>,
+) -> NotifyDispatcher {
+    NotifyDispatcher {
+        fanout,
+        ..dispatcher(store, channels)
     }
 }
 
@@ -148,7 +162,7 @@ async fn failed_send_is_not_marked_and_retried() {
     let store = store_with_terminal_task(&dir, route);
     let qq = Arc::new(MockChannel {
         id: "qq",
-        fail: true,
+        fail: Mutex::new(true),
         ..Default::default()
     });
     let d = dispatcher(store.clone(), vec![qq]);
@@ -496,4 +510,110 @@ async fn dispatches_result_media_to_channel() {
     let media = qq.media.lock().unwrap();
     assert_eq!(media.len(), 1, "媒体应随结果发出");
     assert!(media[0].1.contains("shot.png"), "{:?}", media[0]);
+}
+
+/// 主动推送（路由无 msg_id）双投：同一份结果发主渠道 + 并行渠道。
+#[tokio::test]
+async fn proactive_push_fans_out_to_extra_channel() {
+    let dir = tempfile::tempdir().unwrap();
+    let route = NotifyRoute {
+        channel: "qq".into(),
+        target: "user:U1".into(),
+        msg_id: None,
+    };
+    let store = store_with_terminal_task(&dir, route);
+    let qq = Arc::new(MockChannel {
+        id: "qq",
+        ..Default::default()
+    });
+    let telegram = Arc::new(MockChannel {
+        id: "telegram",
+        ..Default::default()
+    });
+    let d = dispatcher_with_fanout(
+        store.clone(),
+        vec![qq.clone(), telegram.clone()],
+        vec!["telegram".into()],
+    );
+    assert_eq!(d.run_once().await.unwrap(), 1);
+    assert_eq!(qq.sent.lock().unwrap().len(), 1);
+    assert_eq!(telegram.sent.lock().unwrap().len(), 1);
+    // 并行渠道走自己的 default 目标（由 notifier 解析）。
+    assert_eq!(telegram.sent.lock().unwrap()[0].0, "default");
+    // 任务已标记送达，不重发。
+    assert_eq!(d.run_once().await.unwrap(), 0);
+    assert_eq!(qq.sent.lock().unwrap().len(), 1);
+}
+
+/// 聊天任务（路由带 msg_id）不双投：只回原会话，不打扰别的渠道。
+#[tokio::test]
+async fn chat_reply_does_not_fan_out() {
+    let dir = tempfile::tempdir().unwrap();
+    let route = NotifyRoute {
+        channel: "qq".into(),
+        target: "group:G1".into(),
+        msg_id: Some("m1".into()),
+    };
+    let store = store_with_terminal_task(&dir, route);
+    let qq = Arc::new(MockChannel {
+        id: "qq",
+        ..Default::default()
+    });
+    let telegram = Arc::new(MockChannel {
+        id: "telegram",
+        ..Default::default()
+    });
+    let d = dispatcher_with_fanout(
+        store.clone(),
+        vec![qq.clone(), telegram.clone()],
+        vec!["telegram".into()],
+    );
+    assert_eq!(d.run_once().await.unwrap(), 1);
+    assert_eq!(qq.sent.lock().unwrap().len(), 1);
+    assert!(telegram.sent.lock().unwrap().is_empty());
+}
+
+/// 并行渠道失败重试：已送达的主渠道不重发（按渠道分别记账）。
+#[tokio::test]
+async fn failed_fanout_channel_retries_without_resending_primary() {
+    let dir = tempfile::tempdir().unwrap();
+    let route = NotifyRoute {
+        channel: "qq".into(),
+        target: "user:U1".into(),
+        msg_id: None,
+    };
+    let store = store_with_terminal_task(&dir, route);
+    let qq = Arc::new(MockChannel {
+        id: "qq",
+        ..Default::default()
+    });
+    let telegram = Arc::new(MockChannel {
+        id: "telegram",
+        fail: Mutex::new(true),
+        ..Default::default()
+    });
+    let d = dispatcher_with_fanout(
+        store.clone(),
+        vec![qq.clone(), telegram.clone()],
+        vec!["telegram".into()],
+    );
+    // 第一轮：主渠道成功、并行渠道失败 → 整体未完成。
+    assert_eq!(d.run_once().await.unwrap(), 0);
+    assert_eq!(qq.sent.lock().unwrap().len(), 1);
+    assert!(telegram.sent.lock().unwrap().is_empty());
+    // 投递记录进入退避，等窗口过去再试：清掉退避时间立刻重试。
+    let delivery = store
+        .document("delivery", "task-1-1")
+        .unwrap()
+        .expect("delivery record");
+    let mut value = delivery.value.clone();
+    value["next_at"] = serde_json::json!(0);
+    store
+        .put_document("delivery", "task-1-1", Some(delivery.revision), &value)
+        .unwrap();
+    // 第二轮：并行渠道恢复 → 成功，且主渠道不重发。
+    *telegram.fail.lock().unwrap() = false;
+    assert_eq!(d.run_once().await.unwrap(), 1);
+    assert_eq!(qq.sent.lock().unwrap().len(), 1, "主渠道不应重发");
+    assert_eq!(telegram.sent.lock().unwrap().len(), 1);
 }
