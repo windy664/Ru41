@@ -30,7 +30,8 @@ else
     git -C "$BUILD_DIR" checkout -q --detach "$COMMIT" 2>/dev/null || true
     git -C "$BUILD_DIR" reset -q --hard "$COMMIT"
     # 清掉工作区残留（未跟踪文件），但保留 target/ 增量缓存。
-    git -C "$BUILD_DIR" clean -q -fd -e target
+    # .target-docker-shared 是容器以 root 创建的，宿主 git 删不动 → 必须排除。
+    git -C "$BUILD_DIR" clean -q -fd -e target -e .target-docker-shared -e target-docker
   fi
   echo "[build-fast] building HEAD=$COMMIT in $BUILD_DIR"
 fi
