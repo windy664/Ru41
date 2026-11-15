@@ -1,4 +1,4 @@
-use crate::ingress::cli::{Cli, Command, QqCommand};
+use crate::ingress::cli::{Cli, Command, QqCommand, TelegramCommand};
 use anyhow::Result;
 use serde_json::{Value, json};
 
@@ -8,6 +8,7 @@ mod init;
 mod migration;
 mod qq;
 mod status;
+mod telegram;
 mod vault;
 
 pub struct OpsOutcome {
@@ -66,6 +67,9 @@ pub async fn try_run(cli: &Cli) -> Result<Option<OpsOutcome>> {
         Command::Qq {
             command: QqCommand::Onboard,
         } => Ok(Some(qq::onboard(cli).await)),
+        Command::Telegram {
+            command: TelegramCommand::Doctor,
+        } => Ok(Some(telegram::run(cli).await)),
         Command::Status => Ok(Some(status::run(cli, false).await)),
         Command::Dump => Ok(Some(status::run(cli, true).await)),
         Command::Vault { command } => Ok(Some(vault::run(cli, command).await)),

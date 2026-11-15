@@ -2,19 +2,22 @@ use anyhow::{Context, Result};
 use clap::Parser;
 use ru41::bootstrap::agents::{AgentOverrides, registry};
 use ru41::bootstrap::assembly::{
-    default_notify_route, knowledge_service, notifier_for_route, notify_channels, qq_api,
-    qq_command_handlers, qq_image_consumers, scheduled_jobs, todo_notify_route, tracker_job,
+    channel_command_handlers, default_notifier, default_notify_route, knowledge_service,
+    notifier_for_route, notify_channels, qq_api, qq_image_consumers, scheduled_jobs,
+    telegram_allowed_user_ids, telegram_bind_secret, telegram_token, todo_notify_route,
+    tracker_job,
 };
 use ru41::bootstrap::store::{open_store, resolve as resolve_store};
 use ru41::{
     app::{schedule::ScheduleService, task::TaskService, todo::TodoService},
     bootstrap::config::Config,
     channels::qq::{CoalesceState, QqBot, ReplySequencer},
+    channels::telegram::{TelegramNotifier, api::TelegramApi, bot::TelegramBot},
     domain::schedule::{EventInput, EventSource, parse_event_when},
     domain::todo::{TodoInput, parse_due},
     ingress::cli::{
         Cli, Command, EventCommand, KnowledgeCommand, QqCommand, ScheduleCommand, SecretCommand,
-        TaskCommand, TodoCommand, TrackerCommand,
+        TaskCommand, TelegramCommand, TodoCommand, TrackerCommand,
     },
     ingress::cli_ops,
     privacy::{NoopSanitizer, RandomSanitizer, Sanitizer},
@@ -214,7 +217,7 @@ async fn main() -> Result<()> {
                 let bind_secret = bind_secret.or_else(|| config.channel.qq.bind_secret.clone());
                 let api = Arc::new(qq_api(&credentials, &config)?);
                 let store = open_store(&store_config)?;
-                let command_handlers = qq_command_handlers(&config, &base_backend)?;
+                let command_handlers = channel_command_handlers(&config, &base_backend)?;
                 let image_consumers = qq_image_consumers(&config)?;
                 // 回执与终态/进度通知共享序号器，同 msg_id 被动回复 seq 不撞车。
                 let sequencer = Arc::new(ReplySequencer::default());
@@ -266,6 +269,64 @@ async fn main() -> Result<()> {
                 serde_json::to_value(value)?
             }
             QqCommand::Doctor { .. } | QqCommand::Onboard => unreachable!("handled by cli_ops"),
+        },
+        Command::Telegram { command } => match command {
+            TelegramCommand::Send { chat_id, text } => {
+                // 目标缺省用配置里的默认 chat（占位符 default 由通知器解析）。
+                let target =
+                    chat_id.unwrap_or_else(|| ru41::channels::telegram::DEFAULT_TARGET.to_owned());
+                let notifier = default_notifier(&config, "telegram")?;
+                notifier.send(&target, None, &text).await?;
+                serde_json::json!({"ok": true, "channel": "telegram", "target": target})
+            }
+            TelegramCommand::Run {
+                backend,
+                bind_secret,
+            } => {
+                // 聊天走带会话的底座变体（pi-session）：同一会话的多轮消息才能续接上下文。
+                let base_backend =
+                    backend.unwrap_or_else(|| config.agent.default_backend().to_owned());
+                let backend = ru41::bootstrap::agents::chat_backend(
+                    &config.agent,
+                    Some(base_backend.clone()),
+                );
+                let bind_secret = bind_secret.or_else(|| telegram_bind_secret(&config));
+                let token = telegram_token(&config).context(
+                    "telegram bot token required: RU41_TELEGRAM_BOT_TOKEN or channel.telegram.bot_token",
+                )?;
+                let api = Arc::new(TelegramApi::new(token));
+                let store = open_store(&store_config)?;
+                let command_handlers = channel_command_handlers(&config, &base_backend)?;
+                let pricing = ru41::app::usage_report::Pricing::from_config(&config.pricing);
+                let notifier = TelegramNotifier::new(
+                    api.clone(),
+                    config.channel.telegram.default_chat_id.clone(),
+                );
+                let bot = Arc::new(TelegramBot {
+                    api,
+                    notifier,
+                    store: store.clone(),
+                    backend,
+                    bind_secret,
+                    command_handlers,
+                    allowed_user_ids: telegram_allowed_user_ids(&config),
+                    pricing,
+                });
+                let dispatcher = NotifyDispatcher {
+                    store,
+                    channels: notify_channels(&config, None, None)?,
+                    batch: 20,
+                    interval: Duration::from_secs(2),
+                    silent_sources: config.notify.silent_sources.clone().unwrap_or_default(),
+                };
+                let receiver = shutdown_channel()?;
+                tokio::select! {
+                    result = bot.run(receiver.clone()) => result?,
+                    result = dispatcher.run_loop(receiver) => result?,
+                }
+                return Ok(());
+            }
+            TelegramCommand::Doctor => unreachable!("handled by cli_ops"),
         },
         Command::Notify => {
             let channels = notify_channels(&config, None, None)?;

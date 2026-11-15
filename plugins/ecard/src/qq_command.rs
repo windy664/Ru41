@@ -71,7 +71,10 @@ impl SimpleCommand for EcardQqCommand {
                 .collect();
             let prompt = analysis_prompt(content, &readings);
             let queued = TaskService::new(ctx.store.clone()).enqueue_with_notify(
-                &format!("{}:ecard-analysis", msg_request_key(ctx.msg_id)),
+                &format!(
+                    "{}:ecard-analysis",
+                    msg_request_key(ctx.reply_channel, ctx.msg_id)
+                ),
                 &prompt,
                 &self.backend,
                 &ctx.reply_route(),

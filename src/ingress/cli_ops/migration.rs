@@ -536,6 +536,7 @@ fn environment_for(path: &str) -> Option<&'static str> {
         "channel.qq.bind_secret" => "RU41_QQ_BIND_SECRET",
         "channel.qq.default_notify_target" => "RU41_TODO_NOTIFY_TARGET",
         "channel.feishu.webhook_url" => "RU41_FEISHU_WEBHOOK_URL",
+        "channel.telegram.bot_token" => "RU41_TELEGRAM_BOT_TOKEN",
         "sources.ecard.token" => "RU41_ECARD_TOKEN",
         "sources.jwxt.username" => "RU41_JWXT_USERNAME",
         "sources.jwxt.password" => "RU41_JWXT_PASSWORD",

@@ -175,6 +175,7 @@ fn sensitive_key(key: &str) -> bool {
         || key.contains("openid")
         || key == "target"
         || key == "default_notify_target"
+        || key == "default_chat_id"
         || key == "app_id"
         || key == "url"
         || key == "base_url"

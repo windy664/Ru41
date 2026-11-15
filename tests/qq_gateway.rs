@@ -145,7 +145,10 @@ fn reconnect_and_invalid_session_ops_force_reidentify() {
 
 #[test]
 fn request_key_is_derived_from_msg_id() {
-    assert_eq!(ru41::channels::qq::msg_request_key("msg-1"), "qq:msg:msg-1");
+    assert_eq!(
+        ru41::channels::qq::msg_request_key("qq", "msg-1"),
+        "qq:msg:msg-1"
+    );
 }
 
 #[test]
