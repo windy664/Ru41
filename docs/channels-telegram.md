@@ -49,7 +49,9 @@ tags: [Ru41, Telegram, channel, notify, gateway]
 - `ru41 telegram doctor` → `bot @Ru41bot (id 9269761012)`，token 不出现在输出里。
 - `ru41 telegram send --chat-id …` → 真实送达，标题/粗体/列表/代码/链接渲染正确。
 - `[notify] channel = "telegram"` → 任务落库为 `channel=telegram / target=default`（**chat_id 不落库**）→ dispatcher 把终态结果推到真实 Telegram，`notified_at` 已写入。
-- `ru41 telegram run` → 真实长轮询消费到积压消息，`/start` 回欢迎语、自然语言入队成功，offset 落库（`records` 表 `telegram/offset`）。
+- `ru41 telegram run` → **真实长轮询**：收到用户回复后入队（`telegram:msg:10`，内容「收到」），offset 落库为 `357245866`，同会话未完成的旧任务被**打断并取消**（私聊打断语义生效）。
+
+**镜像**：`ru41:local` 已用最终 HEAD 重建（主二进制 + 24 个插件 .so），镜像内 `ru41 telegram doctor` / `run` 子命令可用。
 
 ## 已知限制
 
