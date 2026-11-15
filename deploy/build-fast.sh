@@ -67,14 +67,17 @@ fi
     [ -f "$dir/Cargo.toml" ] || continue
     name="$(basename "$dir")"
     cp "$BUILD_DIR/Cargo.lock" "$dir/Cargo.lock"
+    # 用 --manifest-path 而不是 -w plugins/<name>：cargo 的配置发现基于 cwd，
+    # 进到 plugins/ 会读到 plugins/.cargo/config.toml（本地开发加速用 clang+lld），
+    # 而构建镜像只有 cc 没有 clang → linker not found（2026-11-15 实测）。
     docker run --rm \
       -v "$BUILD_DIR":/build \
       -v "$HOME/.cargo/registry:/usr/local/cargo/registry" \
   -v "$HOME/.cache/ort.pyke.io:/root/.cache/ort.pyke.io" \
       -e CARGO_TARGET_DIR="$PLUGINS_TARGET" \
       -e RU41_GIT_HASH_OVERRIDE="$COMMIT" \
-      -w "/build/plugins/$name" rust:1.98-trixie \
-      cargo build --release --features plugin-entry
+      -w "/build" rust:1.98-trixie \
+      cargo build --manifest-path "/build/plugins/$name/Cargo.toml" --release --features plugin-entry
   done
   # 汇集 .so 到独立目录：Dockerfile.patch 只 COPY 这个目录，
   # 避免把共享 target（数 GB）带进构建上下文。

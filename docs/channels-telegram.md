@@ -1,20 +1,20 @@
 ---
 type: channel-adapter
-status: phase-1-implemented
+status: implemented
 channel: Telegram Bot API
 updated: 2026-11-15
-tags: [Ru41, Telegram, channel, notify, proposal]
+tags: [Ru41, Telegram, channel, notify, gateway]
 ---
 
-# Telegram 渠道接入方案（研究结论 + 阶段 1 实现记录）
+# Telegram 渠道说明（方案 + 实现记录）
 
-> **阶段 1（单向下发）已实现并实测通过**；阶段 2（双向网关）仍是方案。
-> 核心代码在 `src/channels/qq/`（全功能参考）与 `src/channels/feishu.rs`（单向通知参考）。
-> 结论：Telegram 接入在 Ru41 现有架构下是可行的，**推荐自研轻量适配器**（零新依赖），**接收侧默认用长轮询**，**生产部署必须走 mihomo 代理**（已实测直连不通）。
+> **阶段 1（单向下发）与阶段 2（双向网关）均已实现**（提交 `f5ab03e`）。
+> 核心代码在 `src/channels/telegram/`；QQ 全功能参考 `src/channels/qq/`，单向通知参考 `src/channels/feishu.rs`。
+> 结论：Telegram 接入在 Ru41 现有架构下可行，**自研轻量适配器**（零新依赖），**接收侧长轮询**，**生产部署必须走 mihomo 代理**（实测直连不通）。
 
 ## 实现状态（2026-11-15）
 
-**已落地（阶段 1）**
+**阶段 1：单向下发**
 
 | 文件 | 内容 |
 |---|---|
@@ -24,15 +24,40 @@ tags: [Ru41, Telegram, channel, notify, proposal]
 | `src/ingress/cli_ops/telegram.rs` | `ru41 telegram doctor`：只调 `getMe`，不发送消息 |
 | `tests/telegram_notify.rs` | 7 个用例：HTML 排版、target 解析、**token 不泄露**、排版失败降级、媒体、dispatcher 终态投递 |
 
-**接线**：`crates/ru41-plugin-api/src/config.rs`（`TelegramSection`）、`src/bootstrap/assembly.rs`（`notify_channels` / `default_notify_route` / `default_notifier` / `telegram_token`）、`src/ingress/cli_ops/status.rs`、`src/ingress/cli_ops/config.rs`（`default_chat_id` 脱敏）、`src/ingress/cli_ops/migration.rs`（环境变量映射）、`ru41.example.toml`、`src/main.rs`（`ru41 telegram send`）。
+**阶段 2：双向网关**
+
+| 文件 | 内容 |
+|---|---|
+| `src/channels/builtin.rs` | **渠道无关的内置命令层**：语义与 QQ 共用，命令词按渠道（QQ 中文历史行为保持 / Telegram ASCII）；帮助页与按钮按渠道渲染 |
+| `src/channels/telegram/bot.rs` | `TelegramBot`：长轮询（offset 持久化到 `records` 表 `telegram/offset`）、幂等入队（`telegram:msg:{id}`）、私聊打断、内置/扩展命令、按钮回调（`callback_query` 代发命令）、轮询存活探针（`pending_update_count` + 卡死时长）、409 冲突退避、用户白名单 |
+| `src/channels/telegram/commands.rs` | Telegram 词表封装（`/help` `/tasks` `/task` `/cancel` `/bind` `/new` `/usage` `/judge`） |
+| `tests/telegram_gateway.rs` | 5 个用例：入队路由、幂等、命令回复、白名单、轮询消费与 offset 落库 |
+
+**跨渠道改造**（影响 QQ，但行为保持）：
+
+- `crates/ru41-plugin-api/src/ports/commands.rs`：`msg_request_key(channel, msg_id)` 渠道化（原写死 `qq:`）。
+- `src/bootstrap/assembly.rs`：`qq_command_handlers` → `channel_command_handlers`；插件命令按契约只用 `ctx.reply_channel`，因此同一批处理器原样注册给 QQ 与 Telegram。
+- `src/runtime/dispatcher.rs`：`effective_msg_id` 按渠道分支——Telegram 无被动回复窗口，`msg_id` 长期有效（当 `reply_parameters` 用）。
+- `src/runtime/worker.rs` + `src/markdown.rs`：Telegram 渠道任务额外注入平台提示（无表格、无多级标题）。
+
+**配置**：`[channel.telegram]` = `bot_token` / `default_chat_id` / `bind_secret` / `allowed_user_ids`；环境变量 `RU41_TELEGRAM_BOT_TOKEN` / `RU41_TELEGRAM_BIND_SECRET`。
+
+**CLI**：`ru41 telegram doctor` / `send` / `run`（`run` = 长轮询网关 + 通知派发）。
 
 **实测结果（真实 bot @Ru41bot）**
 
 - `ru41 telegram doctor` → `bot @Ru41bot (id 9269761012)`，token 不出现在输出里。
 - `ru41 telegram send --chat-id …` → 真实送达，标题/粗体/列表/代码/链接渲染正确。
-- `[notify] channel = "telegram"` → `task add --notify` 后任务落库为 `channel=telegram / target=default`（**chat_id 不落库**）→ dispatcher 把终态结果推到真实 Telegram，`notified_at` 已写入。
+- `[notify] channel = "telegram"` → 任务落库为 `channel=telegram / target=default`（**chat_id 不落库**）→ dispatcher 把终态结果推到真实 Telegram，`notified_at` 已写入。
+- `ru41 telegram run` → 真实长轮询消费到积压消息，`/start` 回欢迎语、自然语言入队成功，offset 落库（`records` 表 `telegram/offset`）。
 
-**未做（阶段 2）**：长轮询收消息、内置命令、待办/日程交互、身份绑定双闸、活动流回推、会话续接。
+## 已知限制
+
+- **媒体消息暂不支持**：Telegram 的图片/文件只给 `file_id`，取直链需要带 token 的 URL（会把密钥暴露进 prompt），需下载后再转存才能给 agent。网关对非文本消息回一句说明。
+- **插件命令是中文词**（`/精读`、`/课表`、`#`）：直接发文本仍能命中，但不会出现在 Telegram 的命令菜单里（Telegram 命令名只允许拉丁字母数字下划线）。要做 ASCII 别名需在插件 API 上加别名机制。
+- **图片消费者（学习通二维码签到等）只在 QQ 侧接线**：Telegram 侧未接 `ImageConsumer`。
+- **`ModuleDef.qq_handlers` 字段名仍是 QQ**：功能上已渠道无关（同一批 handler 注册给两个渠道），字段重命名要动 24 个插件 crate，留作后续清理。
+- **单实例**：同一 token 只能有一个消费者轮询（两个实例会互相抢 offset，Telegram 返回 409）。
 
 ---
 
