@@ -105,7 +105,11 @@ docker run -d --name ru41-telegram \
 - `apply.py`：按抓取的规格（cmd / env / 挂载 / 网络 / extra_hosts / restart）逐字重建全部容器 + 换插件；备份旧插件到 `plugins.bak-<时间戳>/`
 - `rollback.py`：恢复旧插件 + 用 `ru41:prev` 重建旧容器
 
-⚠️ **插件 ABI 纪律**：宿主与插件必须同版本。给 `ChannelSection` 加字段、改 `msg_request_key` 签名这类**边界闭包内**的公开类型变更，必须 bump `ru41-plugin-api` 的 crate 版本（0.6.0 → 0.7.0），否则握手版本号仍相等、照常放行，但结构布局已错 → **SIGSEGV 崩溃循环**（实测 exit 139）。bump 后旧插件会被明确拒绝。
+⚠️ **插件 ABI 纪律**：宿主与插件必须同版本。给 `ChannelSection` 加字段、改 `msg_request_key` 签名这类**边界闭包内**的公开类型变更，必须 bump `ru41-plugin-api` 的 crate 版本（0.6.0 → 0.7.0 → 0.8.0），否则握手版本号仍相等、照常放行，但结构布局已错 → **SIGSEGV 崩溃循环**（实测 exit 139）。
+
+**更稳的做法已经加上了**：握手多一道 `LAYOUT_STAMP` 硬门——`ru41-plugin-api` 源码的摘要（build.rs 计算）。边界源码一变，摘要就变，旧插件被**明确拒绝**并给出可读原因（「边界布局不匹配：插件 X / 宿主 Y」），不再依赖「记得 bump」这种纪律。2026-11-15 实测：换插件后旧 .so 被干净拒绝（exit 1 + 明确日志），而不是 SIGBUS 崩溃循环。
+
+⚠️ **换宿主二进制必须同步换插件 .so**：生产容器的 `/etc/ru41/plugins` 是宿主目录挂载，**镜像里自带的 .so 会被遮住**。每次宿主二进制升级后，要么把新 .so 同步到宿主插件目录，要么明确知道「旧 .so 与新宿主不兼容」。
 
 ## 已知限制
 
