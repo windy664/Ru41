@@ -45,8 +45,8 @@ use std::sync::OnceLock;
 
 pub use ru41_plugin_api::bridge::bridge;
 pub use ru41_plugin_api::entry::{
-    API_CRATE_VERSION, DEPS_STAMP, PLUGIN_API_MAGIC, PLUGIN_API_VERSION, PLUGIN_ENTRY_SYMBOL,
-    PluginEntry,
+    API_CRATE_VERSION, DEPS_STAMP, LAYOUT_STAMP, PLUGIN_API_MAGIC, PLUGIN_API_VERSION,
+    PLUGIN_ENTRY_SYMBOL, PluginEntry,
 };
 
 /// 已加载插件：Library 句柄必须活得和 defs 一样久（进程生命周期）。
@@ -148,6 +148,12 @@ fn load_one(path: &Path) -> Result<(libloading::Library, &'static ModuleDef)> {
         "依赖版本不匹配：插件 {} / 宿主 {}（tokio/serde 等解析版本漂移，需同步 lockfile 重编）",
         meta.deps_stamp,
         DEPS_STAMP
+    );
+    anyhow::ensure!(
+        meta.layout_stamp == LAYOUT_STAMP,
+        "边界布局不匹配：插件 {} / 宿主 {}（api crate 源码已变，必须重编插件）",
+        meta.layout_stamp,
+        LAYOUT_STAMP
     );
     let host_hash = env!("RU41_GIT_HASH");
     if meta.git_hash != host_hash {

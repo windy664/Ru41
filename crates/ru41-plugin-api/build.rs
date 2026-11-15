@@ -19,8 +19,51 @@ const STAMPED_PACKAGES: &[&str] = &[
 
 fn main() {
     println!("cargo:rerun-if-env-changed=RU41_GIT_HASH_OVERRIDE");
+    // 边界源码变了就重算布局 stamp（否则会拿旧 stamp 去比，漏掉布局变更）。
+    println!("cargo:rerun-if-changed=src");
     println!("cargo:rustc-env=RU41_DEPS_STAMP={}", deps_stamp());
+    println!("cargo:rustc-env=RU41_LAYOUT_STAMP={}", layout_stamp());
     println!("cargo:rustc-env=RU41_GIT_HASH={}", git_hash());
+}
+
+/// 边界布局 stamp：本 crate 源码的摘要。
+///
+/// 边界类型/签名一改，stamp 就变 → 旧插件在握手时被**明确拒绝**，而不是
+/// 靠「记得 bump crate 版本」这种纪律兜底（漏一次就是 SIGBUS 崩溃循环）。
+/// 宿主与插件编译自同一份 api crate 源码，摘要自然一致。
+fn layout_stamp() -> String {
+    let dir = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"));
+    let mut files: Vec<std::path::PathBuf> = Vec::new();
+    collect_rs(&dir.join("src"), &mut files);
+    files.sort();
+    let mut hash: u64 = 0xcbf2_9ce4_8422_2325;
+    for file in files {
+        let rel = file
+            .strip_prefix(&dir)
+            .unwrap_or(&file)
+            .to_string_lossy()
+            .into_owned();
+        let text = std::fs::read_to_string(&file).unwrap_or_default();
+        for byte in rel.into_bytes().into_iter().chain(text.into_bytes()) {
+            hash ^= u64::from(byte);
+            hash = hash.wrapping_mul(0x0000_0100_0000_01b3);
+        }
+    }
+    format!("{hash:016x}")
+}
+
+fn collect_rs(dir: &std::path::Path, out: &mut Vec<std::path::PathBuf>) {
+    let Ok(entries) = std::fs::read_dir(dir) else {
+        return;
+    };
+    for entry in entries.flatten() {
+        let path = entry.path();
+        if path.is_dir() {
+            collect_rs(&path, out);
+        } else if path.extension().and_then(|ext| ext.to_str()) == Some("rs") {
+            out.push(path);
+        }
+    }
 }
 
 fn deps_stamp() -> String {

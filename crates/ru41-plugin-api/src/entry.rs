@@ -26,6 +26,12 @@ pub const PLUGIN_API_VERSION: u32 = 3;
 pub const API_CRATE_VERSION: &str = env!("CARGO_PKG_VERSION");
 /// 外部依赖 stamp（握手硬门之一；本 crate build.rs 从 Cargo.lock 生成）。
 pub const DEPS_STAMP: &str = env!("RU41_DEPS_STAMP");
+/// 边界布局 stamp（握手硬门之一；本 crate 源码摘要）。
+///
+/// 边界类型或签名一改，stamp 就变 → 旧插件被明确拒绝。兜住「改了边界却
+/// 忘了 bump crate 版本」这类事故：漏 bump 的代价从 SIGBUS 崩溃循环
+/// 变成一行清晰的拒绝日志。
+pub const LAYOUT_STAMP: &str = env!("RU41_LAYOUT_STAMP");
 
 /// 插件入口返回的元信息。`&'static str` 等 Rust 原生布局依赖
 /// "同一 rustc + 同一 api crate 版本"前提，握手失败即拒绝加载。
@@ -34,6 +40,8 @@ pub struct PluginEntry {
     pub api_version: u32,
     pub api_crate_version: &'static str,
     pub deps_stamp: &'static str,
+    /// 边界布局指纹：api crate 源码摘要。
+    pub layout_stamp: &'static str,
     /// 编译插件时仓库的 git commit；仅诊断，不参与加载决策。
     pub git_hash: &'static str,
     pub name: &'static str,
@@ -48,6 +56,7 @@ impl PluginEntry {
             api_version: PLUGIN_API_VERSION,
             api_crate_version: API_CRATE_VERSION,
             deps_stamp: DEPS_STAMP,
+            layout_stamp: LAYOUT_STAMP,
             git_hash: env!("RU41_GIT_HASH"),
             name,
             register,
