@@ -78,6 +78,11 @@ cp plugins/*/target-docker/release/*.so .ru41/plugins/
 插件与宿主的握手规则（api 版本 + 依赖 stamp）见
 [插件开发指南](../docs/plugin-development.md)。
 
+**插件构建的两个坑**（2026-11-15 实测踩过，构建脚本已修）：
+
+- `plugins/.cargo/config.toml` 是本地开发加速配置（clang + lld 链接器），**宿主有 clang 但构建镜像 `rust:1.98-trixie` 只有 cc**。cargo 的配置发现基于 cwd，从 `plugins/<name>` 目录构建会读到它 → `linker 'clang' not found`。构建脚本改用 `--manifest-path` 从构建根目录发起，避开这份本地配置。
+- 插件共享 target（`plugins/.target-docker-shared`）是容器以 root 创建的，宿主侧 `git clean` 删不动 → 权限报错直接中断脚本。清理命令已排除该目录（`-e .target-docker-shared`）。
+
 **核心改动上线：插件 .so 必须一起刷新。** 插件是 cdylib，但它调用的是
 `ru41` 这个 lib crate 的函数（如 `app::obsidian::ObsidianService`、
 `adapters::vault::GitVault`），**这些代码会被静态链接进 .so**。所以只换宿主

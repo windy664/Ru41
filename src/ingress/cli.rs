@@ -89,7 +89,7 @@ pub enum Command {
         #[command(subcommand)]
         command: QqCommand,
     },
-    /// Telegram 渠道：单向下发（结果/进度/活动流）与连通性体检。
+    /// Telegram 渠道：单向下发、双向网关（长轮询收消息）与连通性体检。
     Telegram {
         #[command(subcommand)]
         command: TelegramCommand,
