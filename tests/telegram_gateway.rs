@@ -1,6 +1,8 @@
 use ru41::{
     adapters::database::sqlite::SqliteTaskStore,
     channels::telegram::{TelegramNotifier, api::TelegramApi, bot::TelegramBot},
+    ports::channel::NotifyChannel,
+    ports::commands::{MarkupButton, ReplyMarkup},
     ports::storage::TaskStore,
 };
 use std::{
@@ -290,6 +292,31 @@ async fn callback_button_answers_query_and_runs_its_command() {
     // 3) 回复自带 inline keyboard：点一下即完成，不需要再手打命令。
     assert!(reply.contains("inline_keyboard"), "{reply}");
     assert!(reply.contains("callback_data"), "{reply}");
+}
+
+/// planner 的待办回执出到 Telegram：正文是纯符号，动作落在底部按钮上（点一下即完成）。
+#[tokio::test]
+async fn todo_reply_lands_as_symbol_plus_inline_buttons() {
+    let mock = MockBot::new(vec![]);
+    let api = Arc::new(TelegramApi::with_base(TOKEN, mock.base.clone()));
+    let notifier = TelegramNotifier::new(api, Some("999".into()));
+
+    let mut markup = ReplyMarkup::new();
+    markup.push_row(vec![MarkupButton::new("☐ 板子焊接", "/完成 abc123")]);
+    let text = "## 待办（1）\n\n- {{cmd:☐|/完成 abc123}} 板子焊接 — 明天\n";
+
+    NotifyChannel::send_with_markup(&notifier, "chat:12345", None, text, &markup)
+        .await
+        .unwrap();
+
+    let body = &mock.sent()[0];
+    // 正文：占位符降级成纯符号，命令不外泄。
+    assert!(body.contains("☐ 板子焊接"), "{body}");
+    assert!(!body.contains("{{cmd:"), "{body}");
+    // 动作：底部 inline keyboard，按钮带渠道无关的命令文本。
+    assert!(body.contains("inline_keyboard"), "{body}");
+    assert!(body.contains("callback_data"), "{body}");
+    assert!(body.contains("/完成 abc123"), "{body}");
 }
 
 /// 群里的按钮同样属于群聊：私人数据闸门不能被 callback 绕过。

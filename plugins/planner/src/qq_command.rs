@@ -226,8 +226,8 @@ impl TodoQqCommand {
 
     fn list_reply(&self, service: &TodoService, now: i64) -> Result<Reply> {
         // 唯一清单视图：未完成（按截止时间排序）+ 底部近 7 天已完成。
-        let items: Vec<TodoItem> = service.list(TodoView::All, now, 50)?;
-        Ok(Reply::text(format_items("待办", &items, now, self.options)))
+        // 走统一回执，正文与按钮同时产出——裸 `#` 与 `#内容` 的清单必须是同一种。
+        todo_list_reply(service, now, self.options)
     }
 
     /// `/记日程 <时间> <标题>`：时间在先，支持「明天14:00-16:00」「每周二14:00-15:40」。
