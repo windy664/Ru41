@@ -64,18 +64,72 @@ pub const TELEGRAM: RenderProfile = RenderProfile {
     max_len: 4096,
 };
 
+/// 占位符 → 链接的构造器（由网关提供）：命令文本 → 链接地址。
+/// 返回 None 表示造不出链接（超长等），此时退回纯符号。
+pub type CmdLinkBuilder<'a> = &'a dyn Fn(&str) -> Option<String>;
+
 /// 把通用 Markdown 渲染成目标方言。
 pub fn render(canonical: &str, profile: &RenderProfile) -> String {
-    // 不支持行内可点指令的渠道：占位符降级成纯符号（永不漏 token）。
-    let canonical = if profile.supports_cmd_input {
-        canonical.to_owned()
-    } else {
-        ru41_plugin_api::interactive::strip_cmd_tokens(canonical)
+    render_inner(canonical, profile, None)
+}
+
+/// 带**行内可点链接**的渲染：占位符展开成正文里的可点元素。
+///
+/// 链接目标由网关给（`link_for`：命令文本 → 链接），平台专有细节不进本层——
+/// Telegram 用 `tg://` 深链，QQ 走 `channels::qq::render` 的 cmd-input 芯片。
+pub fn render_with_cmd_links(
+    canonical: &str,
+    profile: &RenderProfile,
+    link_for: CmdLinkBuilder<'_>,
+) -> String {
+    render_inner(canonical, profile, Some(link_for))
+}
+
+fn render_inner(
+    canonical: &str,
+    profile: &RenderProfile,
+    link_for: Option<CmdLinkBuilder<'_>>,
+) -> String {
+    // 不支持行内可点指令的渠道：占位符降级成纯符号（永不漏 token）；
+    // 网关给了链接目标时，占位符展开成正文里的可点链接。
+    let canonical = match (profile.supports_cmd_input, link_for) {
+        (true, _) => canonical.to_owned(),
+        (false, Some(link_for)) => expand_cmd_tokens_as_links(canonical, link_for),
+        (false, None) => ru41_plugin_api::interactive::strip_cmd_tokens(canonical),
     };
     let canonical = canonical.as_str();
     let text = degrade_tables(canonical, profile);
     let text = degrade_latex(&text, profile);
     render_body(&text, profile)
+}
+
+/// 占位符 → 正文里的可点链接：`{{cmd:符号|指令}}` → `[符号](链接)`。
+///
+/// 借用 Markdown 链接语法，后面的 Markdown→HTML 流程会把它转成 `<a href>`，
+/// 属性转义也随之复用（`&` → `&amp;`）。
+fn expand_cmd_tokens_as_links(text: &str, link_for: CmdLinkBuilder<'_>) -> String {
+    let mut out = String::with_capacity(text.len());
+    let mut rest = text;
+    for (token, symbol, command) in ru41_plugin_api::interactive::cmd_tokens(text) {
+        let Some(start) = rest.find(&token) else {
+            break;
+        };
+        out.push_str(&rest[..start]);
+        match link_for(&command) {
+            // 链接造不出来（比如超长）→ 退回纯符号，不能留空 href。
+            Some(href) => {
+                out.push('[');
+                out.push_str(&symbol);
+                out.push_str("](");
+                out.push_str(&href);
+                out.push(')');
+            }
+            None => out.push_str(&symbol),
+        }
+        rest = &rest[start + token.len()..];
+    }
+    out.push_str(rest);
+    out
 }
 
 /// 正文渲染：围栏代码块是**原子单元**（整体处理，不逐行当列表/标题），
@@ -747,5 +801,29 @@ mod tests {
             let rendered = render(md, &profile);
             assert!(!rendered.contains("|---"), "{profile:?}: {rendered}");
         }
+    }
+
+    #[test]
+    fn cmd_token_can_become_an_inline_link() {
+        let md = "- {{cmd:☐|/完成 abc123}} 板子焊接";
+        let rendered = render_with_cmd_links(md, &TELEGRAM, &|command| {
+            Some(format!("tg://resolve?domain=Ru41bot&start={command}"))
+        });
+        // 复选框本身变成可点链接，标题照旧。
+        assert!(
+            rendered.contains("<a href=\"tg://resolve?domain=Ru41bot&amp;start=/完成 abc123\">☐</a>"),
+            "{rendered}"
+        );
+        assert!(rendered.contains("• <a href="), "{rendered}");
+        assert!(rendered.contains("板子焊接"), "{rendered}");
+        assert!(!rendered.contains("{{cmd:"), "{rendered}");
+    }
+
+    #[test]
+    fn link_target_too_long_falls_back_to_plain_symbol() {
+        let md = "- {{cmd:☐|/完成 abc123}} 板子焊接";
+        let rendered = render_with_cmd_links(md, &TELEGRAM, &|_| None);
+        assert!(rendered.contains("• ☐ 板子焊接"), "{rendered}");
+        assert!(!rendered.contains("<a href"), "{rendered}");
     }
 }

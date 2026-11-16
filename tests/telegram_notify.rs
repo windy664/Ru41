@@ -301,6 +301,40 @@ async fn different_chats_do_not_block_each_other() {
     );
 }
 
+/// 正文里的复选框展开成可点深链（点一下 Telegram 会把命令发回来）。
+#[tokio::test]
+async fn todo_checkbox_becomes_an_inline_deep_link() {
+    let (base, recorded) = mock_bot(vec![
+        // 第一次调用是 getMe（取 bot 用户名）。
+        r#"{"ok":true,"result":{"id":1,"username":"ru41bot"}}"#,
+        r#"{"ok":true,"result":{"message_id":21}}"#,
+    ]);
+    let notifier = notifier(&base, Some("900007"));
+    let text = format!(
+        "- {} 板子焊接",
+        ru41::interactive::cmd_token("☐", "/完成 abc123")
+    );
+    notifier.send(DEFAULT_TARGET, None, &text).await.unwrap();
+    let recorded = recorded.lock().unwrap();
+    let body = &recorded[1].body;
+    // body 是 JSON 原文，HTML 里的引号被转义成 \"，断言避开引号。
+    assert!(body.contains("tg://resolve?domain=ru41bot"), "{body}");
+    assert!(body.contains(">☐</a>"), "{body}");
+    assert!(body.contains("板子焊接"), "{body}");
+    assert!(!body.contains("{{cmd:"), "{body}");
+}
+
+/// 没有可点指令的普通消息：不额外去取 bot 用户名（少一次 API 调用）。
+#[tokio::test]
+async fn plain_message_does_not_fetch_bot_username() {
+    let (base, recorded) = mock_bot(vec![r#"{"ok":true,"result":{"message_id":22}}"#]);
+    let notifier = notifier(&base, Some("900008"));
+    notifier.send(DEFAULT_TARGET, None, "普通消息").await.unwrap();
+    let recorded = recorded.lock().unwrap();
+    assert_eq!(recorded.len(), 1, "多发了一次请求：{:?}", recorded);
+    assert!(recorded[0].body.contains("普通消息"));
+}
+
 /// 长文本被切成多条时，每条都要排进同一会话的发送队列。
 #[tokio::test]
 async fn long_message_chunks_are_spaced_out() {

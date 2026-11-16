@@ -168,6 +168,16 @@ impl TelegramBot {
             attachments: &[],
             reply_channel: "telegram",
         };
+        // 深链：正文里的复选框点开 → Telegram 发来 `/start <payload>`，
+        // payload 里是编码过的命令文本，按用户输入的命令执行（身份/私聊闸门照旧）。
+        if let Some(command_text) = start_payload(&message.text) {
+            match self.run_command_text(&command_text, &ctx).await {
+                Ok(Some(reply)) => self.reply(&target, message.message_id, &reply).await,
+                Ok(None) => eprintln!("[telegram] 深链命令无法识别：{command_text}"),
+                Err(error) => eprintln!("[telegram] 深链命令执行失败：{error:#}"),
+            }
+            return;
+        }
         // 1) 内置命令
         if let Some(command) = builtin::parse_command(&message.text, &builtin::DEFAULT) {
             match builtin::execute(&command, &ctx, &self.pricing, &builtin::DEFAULT) {
@@ -209,6 +219,19 @@ impl TelegramBot {
         if let Err(error) = self.ingest(&message).await {
             eprintln!("[telegram] 入队失败：{error:#}");
         }
+    }
+
+    /// 执行一条命令文本：内置命令优先，再落到扩展命令（插件）。
+    /// 不是命令则返回 None（交给自然语言）。
+    async fn run_command_text(
+        &self,
+        text: &str,
+        ctx: &CommandContext<'_>,
+    ) -> Result<Option<Reply>> {
+        if let Some(command) = builtin::parse_command(text, &builtin::DEFAULT) {
+            return builtin::execute(&command, ctx, &self.pricing, &builtin::DEFAULT).map(Some);
+        }
+        Ok(self.run_extension(text, ctx).await)
     }
 
     /// 扩展命令：先按动词匹配，再让模块自行判定自然语言。
@@ -393,6 +416,28 @@ fn is_start_command(text: &str) -> bool {
     let text = text.trim();
     let text = text.strip_prefix('/').unwrap_or(text);
     text == "start" || text.starts_with("start@")
+}
+
+/// `/start <payload>`：深链带来的命令。
+///
+/// payload 是 base64url 编码的命令文本（`channels::telegram::deep_link` 生成）。
+/// 解不出、或解出来不是命令（不以 `/` 开头）→ 当作普通 `/start` 处理。
+fn start_payload(text: &str) -> Option<String> {
+    let text = text.trim();
+    let payload = if let Some(rest) = text.strip_prefix("/start ") {
+        rest
+    } else {
+        // "/start@bot payload"：前段是 bot 用户名。
+        let rest = text.strip_prefix("/start@")?;
+        let (_, payload) = rest.split_once(' ')?;
+        payload
+    };
+    let payload = payload.trim();
+    if payload.is_empty() {
+        return None;
+    }
+    let decoded = crate::channels::telegram::decode_start_payload(payload)?;
+    decoded.starts_with('/').then_some(decoded)
 }
 
 /// 从更新对象里取消息；非文本消息也会被解析出来（文本为空）。

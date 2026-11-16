@@ -65,6 +65,10 @@ impl MockBot {
                         vec![queue.remove(0)]
                     };
                     serde_json::json!({"ok": true, "result": updates}).to_string()
+                } else if path.ends_with("/getMe") {
+                    // bot 身份（正文深链要用 username）。
+                    serde_json::json!({"ok": true, "result": {"id": 9269761012i64, "username": "ru41bot"}})
+                        .to_string()
                 } else {
                     sent_clone.lock().unwrap().push(body);
                     serde_json::json!({"ok": true, "result": {"message_id": 1}}).to_string()
@@ -294,9 +298,10 @@ async fn callback_button_answers_query_and_runs_its_command() {
     assert!(reply.contains("callback_data"), "{reply}");
 }
 
-/// planner 的待办回执出到 Telegram：正文是纯符号，动作落在底部按钮上（点一下即完成）。
+/// planner 的待办回执出到 Telegram：正文里的复选框是可点深链，
+/// 底部按钮同时保留（两套入口：深链一跳完成，按钮不切会话）。
 #[tokio::test]
-async fn todo_reply_lands_as_symbol_plus_inline_buttons() {
+async fn todo_reply_lands_as_deep_link_plus_inline_buttons() {
     let mock = MockBot::new(vec![]);
     let api = Arc::new(TelegramApi::with_base(TOKEN, mock.base.clone()));
     let notifier = TelegramNotifier::new(api, Some("999".into()));
@@ -309,11 +314,17 @@ async fn todo_reply_lands_as_symbol_plus_inline_buttons() {
         .await
         .unwrap();
 
-    let body = &mock.sent()[0];
-    // 正文：占位符降级成纯符号，命令不外泄。
-    assert!(body.contains("☐ 板子焊接"), "{body}");
+    let sent = mock.sent();
+    let body = sent
+        .iter()
+        .find(|body| body.contains(r#""chat_id":"12345""#))
+        .expect("没有发出消息");
+    // 正文：复选框本身是可点深链（tg://），标题照旧。
+    // 注意 body 是 JSON 原文，HTML 里的引号被转义成 \"，断言避开引号。
+    assert!(body.contains("tg://resolve?domain=ru41bot"), "{body}");
+    assert!(body.contains(">☐</a> 板子焊接"), "{body}");
     assert!(!body.contains("{{cmd:"), "{body}");
-    // 动作：底部 inline keyboard，按钮带渠道无关的命令文本。
+    // 动作：底部 inline keyboard 也在，按钮带渠道无关的命令文本。
     assert!(body.contains("inline_keyboard"), "{body}");
     assert!(body.contains("callback_data"), "{body}");
     assert!(body.contains("/完成 abc123"), "{body}");
@@ -332,6 +343,50 @@ async fn same_message_id_in_different_chats_does_not_collide() {
 
     let tasks = store.list(50).unwrap();
     assert_eq!(tasks.len(), 2, "两个会话的同号消息互相吞了");
+}
+
+/// 深链：正文里的复选框点开 → Telegram 发来 `/start <payload>` → 执行里面的命令。
+#[tokio::test]
+async fn start_payload_runs_the_encoded_command() {
+    let mock = MockBot::new(vec![]);
+    let (_dir, store) = store();
+    let bot = bot(&mock, store.clone(), Vec::new());
+
+    let link = ru41::channels::telegram::deep_link("Ru41bot", "/tasks").expect("深链");
+    let payload = link.split_once("start=").unwrap().1;
+    bot.handle_update(&message_update(
+        1,
+        7,
+        12345,
+        678,
+        &format!("/start {payload}"),
+    ))
+    .await;
+
+    let sent = mock.sent();
+    let reply = sent
+        .iter()
+        .find(|body| body.contains(r#""chat_id":"12345""#))
+        .expect("深链命令没有产生回复");
+    assert!(reply.contains("任务列表") || reply.contains("最近任务"), "{reply}");
+}
+
+/// 普通 `/start`（没有 payload）还是回欢迎语，不当成命令。
+#[tokio::test]
+async fn plain_start_command_is_not_treated_as_a_command() {
+    let mock = MockBot::new(vec![]);
+    let (_dir, store) = store();
+    let bot = bot(&mock, store.clone(), Vec::new());
+
+    bot.handle_update(&message_update(1, 7, 12345, 678, "/start"))
+        .await;
+
+    let sent = mock.sent();
+    let reply = sent
+        .iter()
+        .find(|body| body.contains(r#""chat_id":"12345""#))
+        .expect("没有回复");
+    assert!(reply.contains("Ru41 已就绪"), "{reply}");
 }
 
 /// 群里的按钮同样属于群聊：私人数据闸门不能被 callback 绕过。
