@@ -11,7 +11,7 @@ description: 用于回答用户「校园跑」历史记录与账号状态类问�
 - `ru41 campusrun cheat`：违规名单状态（no_record / flagged / unknown / stale）。
 - `ru41 campusrun all`：进度 + 记录 + 状态（用户泛问「我的校园跑记录」用这个）。
 
-输出是 Markdown 表格，可直接整理后回复用户。
+输出是一个 JSON 字符串，里面装的是 Markdown 表格（`\n` 是换行）——解析出正文再整理回复。
 
 ## 读数时必须注意
 
