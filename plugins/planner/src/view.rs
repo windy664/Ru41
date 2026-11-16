@@ -21,8 +21,10 @@ pub(super) fn format_items(
     now: i64,
     options: TodoOptions,
 ) -> String {
-    let active: Vec<&TodoItem> = items
+    let visible = visible_items(items, now);
+    let active: Vec<&TodoItem> = visible
         .iter()
+        .copied()
         .filter(|item| item.status == TodoStatus::Active)
         .collect();
     // 栏目标题：规范层用通用二级标题（QQ 侧由网关放大成一级标题+加粗）。
@@ -33,6 +35,24 @@ pub(super) fn format_items(
         lines.extend(active.iter().map(|item| format_item(item, now, options)));
     }
     // 底部：近 7 天的已完成（粗勾 + 划横线）——一眼看到「干掉了多少」。
+    for item in visible
+        .iter()
+        .filter(|item| item.status != TodoStatus::Active)
+    {
+        lines.push(format_completed(item));
+    }
+    lines.join("\n")
+}
+
+/// 清单**展示**的条目：未完成（全部）+ 近 7 天已完成里最近的 5 条。
+///
+/// 正文与交互按钮共用这一份——看不到的条目不该有可点动作（否则按钮与正文对不上：
+/// 正文只显示 5 条已完成，按钮却给全部历史条目都配了）。
+pub(super) fn visible_items(items: &[TodoItem], now: i64) -> Vec<&TodoItem> {
+    let mut visible: Vec<&TodoItem> = items
+        .iter()
+        .filter(|item| item.status == TodoStatus::Active)
+        .collect();
     let mut completed: Vec<&TodoItem> = items
         .iter()
         .filter(|item| item.status != TodoStatus::Active && is_recent_completed(item, now))
@@ -43,19 +63,13 @@ pub(super) fn format_items(
             .unwrap_or(b.created_at)
             .cmp(&a.completed_at.unwrap_or(a.created_at))
     });
-    if !completed.is_empty() {
-        // 完成项紧接在未完成项下面，不留空行；最多显示 5 条（最近的优先），
-        // 更多的留在数据库里（问 agent 能查到），不往列表里堆。
-        const COMPLETED_SHOWN: usize = 5;
-        lines.extend(
-            completed
-                .iter()
-                .take(COMPLETED_SHOWN)
-                .map(|item| format_completed(item)),
-        );
-    }
-    lines.join("\n")
+    // 最多显示 5 条（最近的优先），更多的留在数据库里（问 agent 能查到）。
+    visible.extend(completed.into_iter().take(COMPLETED_SHOWN));
+    visible
 }
+
+/// 完成项在清单里最多显示几条。
+const COMPLETED_SHOWN: usize = 5;
 
 /// 已完成条目：粗勾 + 标题划横线。
 ///

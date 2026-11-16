@@ -556,3 +556,62 @@ async fn todo_list_carries_channel_neutral_action_buttons() {
     // 正文里是中性占位符（平台专有标签由网关展开）。
     assert!(reply.text.contains("{{cmd:☐|/完成 "), "{}", reply.text);
 }
+
+/// 按钮必须与正文一一对应：正文只显示最近 5 条已完成，按钮却给全部历史条目
+/// 都配过（正文里没有的动作反而有按钮）—— Telegram 侧靠这个不变量判断
+/// 「底部按钮是不是重复入口」。
+#[tokio::test]
+async fn todo_buttons_cover_exactly_the_items_shown_in_text() {
+    let fixture = fixture();
+    let command = TodoQqCommand::new(ru41::domain::todo::TodoOptions::default(), None);
+    let context = ctx(&fixture, "user:U1", "U1", true);
+    commands::execute(
+        &Command::Bind("s3cret".into()),
+        &context,
+        &ru41::app::usage_report::Pricing::builtin(),
+    )
+    .unwrap();
+
+    // 8 条已完成（正文只显示最近 5 条）+ 2 条未完成。
+    for index in 0..8 {
+        command
+            .handle_message(&format!("#已完成{index}"), &context)
+            .await
+            .unwrap()
+            .unwrap();
+    }
+    let documents = fixture.store.documents("todo_item", 10).unwrap();
+    for document in &documents {
+        let item: ru41::domain::todo::TodoItem =
+            serde_json::from_value(document.value.clone()).unwrap();
+        command
+            .handle_command("完成", item.short_id(), &context)
+            .await
+            .unwrap()
+            .unwrap();
+    }
+    for index in 0..2 {
+        command
+            .handle_message(&format!("#未完成{index}"), &context)
+            .await
+            .unwrap()
+            .unwrap();
+    }
+
+    let list = command.handle_message("#", &context).await.unwrap().unwrap();
+    let tokens = ru41::interactive::cmd_tokens(&list.text);
+    let markup = list.markup.expect("待办清单应带交互按钮");
+    let buttons: Vec<&ru41::ports::commands::MarkupButton> =
+        markup.rows.iter().flatten().collect();
+
+    // 正文里出现的可点指令 = 2 条未完成 + 5 条已完成（只显示最近 5 条）。
+    assert_eq!(tokens.len(), 7, "{}", list.text);
+    // 按钮与正文一一对应。
+    assert_eq!(buttons.len(), tokens.len(), "按钮与正文对不上");
+    for button in &buttons {
+        assert!(
+            tokens.iter().any(|(_, _, command)| command == &button.command),
+            "按钮动作不在正文里：{button:?}"
+        );
+    }
+}
