@@ -110,6 +110,29 @@ fn message_update(
     })
 }
 
+fn callback_update(
+    update_id: i64,
+    callback_id: &str,
+    chat_id: i64,
+    chat_type: &str,
+    user_id: i64,
+    message_id: i64,
+    data: &str,
+) -> serde_json::Value {
+    serde_json::json!({
+        "update_id": update_id,
+        "callback_query": {
+            "id": callback_id,
+            "from": {"id": user_id},
+            "message": {
+                "message_id": message_id,
+                "chat": {"id": chat_id, "type": chat_type},
+            },
+            "data": data,
+        }
+    })
+}
+
 fn bot(mock: &MockBot, store: Arc<dyn TaskStore>, allowed: Vec<i64>) -> Arc<TelegramBot> {
     let api = Arc::new(TelegramApi::with_base(TOKEN, mock.base.clone()));
     Arc::new(TelegramBot {
@@ -226,4 +249,125 @@ async fn polling_loop_consumes_updates_and_persists_offset() {
         .expect("offset document missing");
     assert_eq!(offset.value["offset"].as_i64(), Some(6));
     assert_eq!(mock.pending_updates(), 0);
+}
+
+/// 按钮点击：先应答（否则 Telegram 转圈），再把按钮里的指令文本当作用户消息执行。
+#[tokio::test]
+async fn callback_button_answers_query_and_runs_its_command() {
+    let mock = MockBot::new(vec![]);
+    let (_dir, store) = store();
+    let bot = bot(&mock, store.clone(), Vec::new());
+
+    // 先造一条属于私聊 chat:12345 的任务，让任务列表有内容（列表才带按钮）。
+    bot.handle_update(&message_update(1, 7, 12345, 678, "整理一下今天的课表"))
+        .await;
+    let task_id = store.list(50).unwrap()[0].id;
+
+    bot.handle_update(&callback_update(
+        2,
+        "cb-1",
+        12345,
+        "private",
+        678,
+        42,
+        "/tasks",
+    ))
+    .await;
+
+    let sent = mock.sent();
+    // 1) 必须先应答按钮。
+    assert!(
+        sent.iter().any(|body| body.contains("callback_query_id")),
+        "按钮未被应答：{sent:?}"
+    );
+    // 2) 按钮里的指令被执行，结果回到原会话。
+    let reply = sent
+        .iter()
+        .find(|body| body.contains(r#""chat_id":"12345""#))
+        .expect("按钮指令没有产生回复");
+    assert!(reply.contains("最近任务"), "{reply}");
+    assert!(reply.contains(&format!("#{task_id}")), "{reply}");
+    // 3) 回复自带 inline keyboard：点一下即完成，不需要再手打命令。
+    assert!(reply.contains("inline_keyboard"), "{reply}");
+    assert!(reply.contains("callback_data"), "{reply}");
+}
+
+/// 群里的按钮同样属于群聊：私人数据闸门不能被 callback 绕过。
+#[tokio::test]
+async fn callback_in_group_chat_cannot_reach_private_task() {
+    let mock = MockBot::new(vec![]);
+    let (_dir, store) = store();
+    let bot = bot(&mock, store.clone(), Vec::new());
+
+    bot.handle_update(&message_update(1, 7, 12345, 678, "只属于我私聊的任务"))
+        .await;
+    let task_id = store.list(50).unwrap()[0].id;
+
+    // 私聊里点按钮：看得见自己的任务。
+    bot.handle_update(&callback_update(
+        2,
+        "cb-private",
+        12345,
+        "private",
+        678,
+        42,
+        "/tasks",
+    ))
+    .await;
+    let private_reply = mock
+        .sent()
+        .into_iter()
+        .find(|body| body.contains(r#""chat_id":"12345""#))
+        .expect("私聊按钮没有回复");
+    assert!(private_reply.contains(&format!("#{task_id}")), "{private_reply}");
+
+    // 群里点按钮：同一条任务不可见。
+    bot.handle_update(&callback_update(
+        3,
+        "cb-group",
+        999,
+        "group",
+        678,
+        43,
+        "/tasks",
+    ))
+    .await;
+    let group_reply = mock
+        .sent()
+        .into_iter()
+        .find(|body| body.contains(r#""chat_id":"999""#))
+        .expect("群聊按钮没有回复");
+    assert!(
+        !group_reply.contains(&format!("#{task_id}")),
+        "群聊按钮不得越过私人数据闸门：{group_reply}"
+    );
+}
+
+/// 空白名单之外的点击者不得触发任何动作。
+#[tokio::test]
+async fn callback_from_non_whitelisted_user_is_ignored() {
+    let mock = MockBot::new(vec![]);
+    let (_dir, store) = store();
+    let bot = bot(&mock, store.clone(), vec![111]);
+
+    bot.handle_update(&callback_update(
+        1,
+        "cb-out",
+        12345,
+        "private",
+        222,
+        42,
+        "/tasks",
+    ))
+    .await;
+
+    // 应答照发（免得对方按钮一直转圈），但指令不执行。
+    assert!(
+        mock.sent()
+            .iter()
+            .all(|body| !body.contains(r#""chat_id""#)),
+        "非白名单用户触发了执行：{:?}",
+        mock.sent()
+    );
+    assert!(store.list(50).unwrap().is_empty());
 }
