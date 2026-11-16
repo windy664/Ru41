@@ -240,6 +240,18 @@ impl TelegramApi {
         self.call("sendMessage", body).await
     }
 
+    /// 删一条消息。
+    ///
+    /// 深链点击后 Telegram 会以用户名义发来 `/start <payload>`——处理完把这条
+    /// 机器消息删掉，聊天记录里不留痕（机器人自己的私聊里可以删用户消息）。
+    pub async fn delete_message(&self, chat_id: &str, message_id: i64) -> Result<Value> {
+        self.call(
+            "deleteMessage",
+            json!({"chat_id": chat_id, "message_id": message_id}),
+        )
+        .await
+    }
+
     /// 发媒体：远端 URL 直接引用，本地文件走 multipart 上传。
     pub async fn send_media(
         &self,

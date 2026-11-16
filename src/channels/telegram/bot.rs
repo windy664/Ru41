@@ -172,9 +172,19 @@ impl TelegramBot {
         // payload 里是编码过的命令文本，按用户输入的命令执行（身份/私聊闸门照旧）。
         if let Some(command_text) = start_payload(&message.text) {
             match self.run_command_text(&command_text, &ctx).await {
-                Ok(Some(reply)) => self.reply(&target, message.message_id, &reply).await,
+                // 不挂回复锚点：锚的那条消息马上要删，挂着会变成「原消息已删除」。
+                Ok(Some(reply)) => self.reply(&target, 0, &reply).await,
                 Ok(None) => eprintln!("[telegram] 深链命令无法识别：{command_text}"),
                 Err(error) => eprintln!("[telegram] 深链命令执行失败：{error:#}"),
+            }
+            // 这条 `/start` 是机器消息，处理完删掉，聊天记录里不留痕。
+            // deleteMessage 要的是裸 chat_id（不是 notify 的 chat: 前缀形式）。
+            if let Err(error) = self
+                .api
+                .delete_message(&message.chat_id.to_string(), message.message_id)
+                .await
+            {
+                eprintln!("[telegram] 深链消息清理失败（可忽略）：{error:#}");
             }
             return;
         }
