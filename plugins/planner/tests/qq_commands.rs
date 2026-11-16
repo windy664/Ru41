@@ -246,7 +246,7 @@ async fn todo_commands_add_list_and_complete_in_private_chat() {
         .await
         .unwrap()
         .unwrap();
-    assert!(summary.text.contains("# **待办（1）**"));
+    assert!(summary.text.contains("## 待办（1）"));
     assert!(summary.text.contains("写项目周报"));
 
     let completed = command
@@ -256,12 +256,10 @@ async fn todo_commands_add_list_and_complete_in_private_chat() {
         .unwrap();
     // 完成回执只给清单：完成的条目落到划横线区，不带「已完成」提示行。
     assert!(!completed.text.contains("已完成"), "{}", completed.text);
-    // 完成项：可点的恢复复选框（show=「☑ 空格」，指令藏在 chip 里）+ 划横线标题。
-    assert!(completed.text.contains("%E2%98%91"), "{}", completed.text);
+    // 完成项：可点的恢复复选框（中性占位符，QQ 侧由 qq::render 展开成 cmd-input）+ 划横线标题。
+    assert!(completed.text.contains("{{cmd:☑|/恢复待办 "), "{}", completed.text);
     assert!(
-        completed
-            .text
-            .contains("%2F%E6%81%A2%E5%A4%8D%E5%BE%85%E5%8A%9E"),
+        completed.text.contains("~~写项目周报~~"),
         "{}",
         completed.text
     );
@@ -271,14 +269,14 @@ async fn todo_commands_add_list_and_complete_in_private_chat() {
         completed.text
     );
     // 回执下方是剩余待办清单（此时已为空），不是已完成条目的详情。
-    assert!(completed.text.contains("# **待办（0）**"));
+    assert!(completed.text.contains("## 待办（0）"));
 
     let empty = command
         .handle_message("#", &context)
         .await
         .unwrap()
         .unwrap();
-    assert!(empty.text.contains("# **待办（0）**"));
+    assert!(empty.text.contains("## 待办（0）"));
     assert!(empty.text.contains("暂无"));
 }
 
@@ -329,15 +327,11 @@ async fn quick_note_enters_todo_inbox_without_agent_or_schedule() {
         .unwrap();
     // 回执只给当前完整待办清单，不带「已记入」提示行。
     assert!(!reply.text.contains("已记入"), "{}", reply.text);
-    assert!(reply.text.contains("# **待办（1）**"));
-    // 行首大复选框：cmd-input 标签，点击把 /完成 <id> 填进输入框。
-    assert!(
-        reply
-            .text
-            .contains("<qqbot-cmd-input text=\"%2F%E5%AE%8C%E6%88%90%20")
-    );
+    assert!(reply.text.contains("## 待办（1）"));
+    // 行首复选框：中性占位符（QQ 侧展开成行内 cmd-input，点击把 /完成 <id> 填进输入框）。
+    assert!(reply.text.contains("{{cmd:☐|/完成 "));
     // 复选框符号是 ☐，与完成态的 ☑ 对齐。
-    assert!(reply.text.contains("show=\"%E2%98%90\""));
+    assert!(reply.text.contains("{{cmd:☐|"));
 
     let documents = fixture.store.documents("todo_item", 10).unwrap();
     assert_eq!(documents.len(), 1);
@@ -363,7 +357,7 @@ async fn quick_note_enters_todo_inbox_without_agent_or_schedule() {
         .await
         .unwrap()
         .unwrap();
-    assert!(list.text.contains("# **待办（1）**"));
+    assert!(list.text.contains("## 待办（1）"));
     assert!(list.text.contains("有空整理一下英文播客订阅"));
 }
 
@@ -380,7 +374,7 @@ fn extension_commands_match_aliases_and_join_help() {
 
     let handlers: Vec<Arc<dyn CommandHandler>> = vec![Arc::new(todo)];
     let help = commands::help_text(&handlers);
-    assert!(help.contains("# Ru41 · 个人 AI 助理"));
+    assert!(help.contains("Ru41 · 个人 AI 助理"));
     assert!(help.contains("## 记录与日程"));
     assert!(!help.contains("## 其他能力"));
     assert!(help.contains("`#`：全部待办清单"));

@@ -11,7 +11,7 @@ use anyhow::Result;
 use std::sync::Arc;
 
 /// QQ 命令词表（中文裸词也能命中，与历史行为一致）。
-pub const VOCABULARY: Vocabulary = builtin::QQ;
+pub const VOCABULARY: Vocabulary = builtin::DEFAULT;
 
 pub use builtin::{Command, format_task_detail, format_task_list};
 

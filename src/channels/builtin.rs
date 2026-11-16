@@ -61,8 +61,11 @@ pub struct Display {
     pub clear: &'static str,
 }
 
-/// QQ 词表：保持历史行为（中文裸词也能命中）。
-pub const QQ: Vocabulary = Vocabulary {
+/// **唯一的命令词表**（两个渠道共用）：保持历史行为（中文裸词也能命中）。
+///
+/// 不按渠道分裂命令输入——QQ 与 Telegram 收到同样的文本、走同一套解析与执行；
+/// 差异只在渲染层（各网关方言）与投递。
+pub const DEFAULT: Vocabulary = Vocabulary {
     help: &["帮助", "help", "/"],
     list: &["任务", "tasks", "/任务", "/tasks"],
     clear: &["新建", "/新建", "clear", "/clear"],
@@ -80,28 +83,6 @@ pub const QQ: Vocabulary = Vocabulary {
         usage: "/用量",
         judge: "/答复",
         clear: "/新建",
-    },
-};
-
-/// Telegram 词表：ASCII 命令词（Telegram 命令名只允许拉丁字母数字下划线）。
-pub const TELEGRAM: Vocabulary = Vocabulary {
-    help: &["/help", "help"],
-    list: &["/tasks", "tasks"],
-    clear: &["/new", "new"],
-    show: &["task", "tasks"],
-    cancel: &["cancel"],
-    bind: &["bind"],
-    usage: &["usage"],
-    judge: &["judge"],
-    shown: Display {
-        help: "/help",
-        list: "/tasks",
-        show: "/task",
-        cancel: "/cancel",
-        bind: "/bind",
-        usage: "/usage",
-        judge: "/judge",
-        clear: "/new",
     },
 };
 
@@ -470,37 +451,41 @@ mod tests {
     use super::*;
 
     #[test]
-    fn qq_vocabulary_keeps_legacy_behaviour() {
+    fn one_shared_vocabulary_keeps_legacy_behaviour() {
+        // 命令输入不分渠道：这一份词表两个渠道共用（历史行为原样保留）。
         for input in ["帮助", "help", "/", " / "] {
-            assert_eq!(parse_command(input, &QQ), Some(Command::Help));
+            assert_eq!(parse_command(input, &DEFAULT), Some(Command::Help));
         }
         for input in ["任务", "/任务", "tasks", "/tasks"] {
-            assert_eq!(parse_command(input, &QQ), Some(Command::List));
+            assert_eq!(parse_command(input, &DEFAULT), Some(Command::List));
         }
         for input in ["任务 3", "/任务 3", "task 3", "/task 3", "show 3"] {
-            assert_eq!(parse_command(input, &QQ), Some(Command::Show(3)));
+            assert_eq!(parse_command(input, &DEFAULT), Some(Command::Show(3)));
         }
-        assert_eq!(parse_command("/帮助", &QQ), None);
-        assert_eq!(parse_command("任务怎么做", &QQ), None);
-        assert_eq!(parse_command("取消", &QQ), None);
-        assert_eq!(parse_command("绑定", &QQ), None);
+        assert_eq!(parse_command("/帮助", &DEFAULT), None);
+        assert_eq!(parse_command("任务怎么做", &DEFAULT), None);
+        assert_eq!(parse_command("取消", &DEFAULT), None);
+        assert_eq!(parse_command("绑定", &DEFAULT), None);
     }
 
     #[test]
-    fn telegram_vocabulary_uses_ascii_commands() {
-        assert_eq!(parse_command("/help", &TELEGRAM), Some(Command::Help));
-        assert_eq!(parse_command("/tasks", &TELEGRAM), Some(Command::List));
-        assert_eq!(parse_command("/task 7", &TELEGRAM), Some(Command::Show(7)));
+    fn ascii_aliases_work_and_invented_commands_do_not() {
+        // ASCII 别名沿用 QQ 侧已有的那批。
+        assert_eq!(parse_command("/tasks", &DEFAULT), Some(Command::List));
+        assert_eq!(parse_command("/task 7", &DEFAULT), Some(Command::Show(7)));
         assert_eq!(
-            parse_command("/cancel 7", &TELEGRAM),
+            parse_command("/cancel 7", &DEFAULT),
             Some(Command::Cancel(7))
         );
         assert_eq!(
-            parse_command("/bind secret", &TELEGRAM),
+            parse_command("/bind secret", &DEFAULT),
             Some(Command::Bind("secret".into()))
         );
-        assert_eq!(parse_command("/new", &TELEGRAM), Some(Command::Clear));
-        // 中文命令词不属于 Telegram 内置命令（插件命令仍可命中）。
-        assert_eq!(parse_command("/任务", &TELEGRAM), None);
+        // 没有 /help 这个命令：帮助的入口是「/」。
+        assert_eq!(parse_command("/help", &DEFAULT), None);
+        // 也没有 /new：清会话是「/新建」或 /clear。
+        assert_eq!(parse_command("/new", &DEFAULT), None);
+        assert_eq!(parse_command("/clear", &DEFAULT), Some(Command::Clear));
+        assert_eq!(parse_command("/新建", &DEFAULT), Some(Command::Clear));
     }
 }

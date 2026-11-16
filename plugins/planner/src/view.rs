@@ -4,30 +4,6 @@
 pub(super) use ru41::domain::todo::due_label;
 use ru41::domain::todo::{TodoItem, TodoOptions, TodoPriority, TodoStatus};
 
-/// 拼 `<qqbot-cmd-input>` 标签：show 是显示文本，text 是点击后填入输入框的指令；
-/// 两个参数按文档要求 urlencode。用于待办复选框与日程列表的行内「✕ 取消」。
-pub(super) fn cmd_input_chip(show: &str, command: &str) -> String {
-    format!(
-        "<qqbot-cmd-input text=\"{}\" show=\"{}\" reference=\"false\" />",
-        url_encode(command),
-        url_encode(show)
-    )
-}
-
-/// percent-encode：保留 RFC 3986 unreserved，其余按 UTF-8 字节转义。
-pub(super) fn url_encode(text: &str) -> String {
-    let mut encoded = String::with_capacity(text.len() * 3);
-    for byte in text.bytes() {
-        match byte {
-            b'A'..=b'Z' | b'a'..=b'z' | b'0'..=b'9' | b'-' | b'_' | b'.' | b'~' => {
-                encoded.push(byte as char)
-            }
-            _ => encoded.push_str(&format!("%{byte:02X}")),
-        }
-    }
-    encoded
-}
-
 /// 回执标题截断：最多 max 个字符，超出补省略号。
 pub(super) fn truncate_title(title: &str, max: usize) -> String {
     let mut chars = title.chars();
@@ -49,9 +25,8 @@ pub(super) fn format_items(
         .iter()
         .filter(|item| item.status == TodoStatus::Active)
         .collect();
-    // 主标题保留 markdown 标题格式（`## 待办（3）`）；下面的完成项不另起栏目。
-    // 栏目标题：一级标题（最大号）+ 显式加粗（移动端渲染双保险）。
-    let mut lines = vec![format!("# **{title}（{}）**", active.len())];
+    // 栏目标题：规范层用通用二级标题（QQ 侧由网关放大成一级标题+加粗）。
+    let mut lines = vec![format!("## {title}（{}）", active.len())];
     if active.is_empty() {
         lines.push("\n> 暂无".to_owned());
     } else {
@@ -89,12 +64,12 @@ pub(super) fn format_items(
 pub(super) fn format_completed(item: &TodoItem) -> String {
     // 完成态：可点的恢复复选框 + 英文空格 + 划横线标题（点一下换回未完成）。
     // 结构与未完成项一致（标签 + 空格 + 文字），间距才相同。
-    format!("### {} ~~{}~~", restore_chip(item), item.title)
+    format!("- {} ~~{}~~", restore_chip(item), item.title)
 }
 
 /// 已完成条目的「恢复」复选框：点击 = 把待办换回未完成。
 fn restore_chip(item: &TodoItem) -> String {
-    cmd_input_chip("☑", &format!("/恢复待办 {}", item.short_id()))
+    ru41::interactive::cmd_token("☑", &format!("/恢复待办 {}", item.short_id()))
 }
 
 /// 近 7 天的已完成：判定在核心里（domain::todo::is_recent_completed），
@@ -121,10 +96,9 @@ pub(super) fn format_item(item: &TodoItem, now: i64, options: TodoOptions) -> St
     } else {
         String::new()
     };
-    // 正文用三级标题：QQ markdown 没有字号语法，只有标题层级能放大。
-    // 层级：## 栏目标题 > ### 正文条目。
-    // 标签外补一个英文空格：可见间隙，和完成项结构完全一致。
-    format!("### {checkbox} {}{due}{priority}", item.title)
+    // 规范层只放中性内容：复选框用可点指令占位符（渠道无关），
+    // 放大/内联标签等平台细节由网关适配（见 channels::qq::render）。
+    format!("- {checkbox} {}{due}{priority}", item.title)
 }
 
 /// 待办「完成」复选框：`<qqbot-cmd-input show="囗">`，点击后指令填入输入框、
@@ -136,7 +110,7 @@ pub(super) fn format_item(item: &TodoItem, now: i64, options: TodoOptions) -> St
 pub(super) fn done_chip(item: &TodoItem) -> String {
     // show 只有复选框：QQ 会在行内标签后自动插零宽空格，再往里塞英文空格会叠出两段间隙。
     // 可见的英文空格统一放在标签外面（见 format_item / format_completed），两态格式一致。
-    cmd_input_chip("☐", &format!("/完成 {}", item.short_id()))
+    ru41::interactive::cmd_token("☐", &format!("/完成 {}", item.short_id()))
 }
 
 pub(super) fn usage() -> String {
@@ -145,23 +119,8 @@ pub(super) fn usage() -> String {
 
 #[cfg(test)]
 mod tests {
-    use super::{cmd_input_chip, format_items, truncate_title, url_encode};
+    use super::{format_items, truncate_title};
     use ru41::domain::todo::{TodoItem, TodoOptions, TodoPriority, TodoStatus};
-
-    #[test]
-    fn url_encode_escapes_non_unreserved() {
-        assert_eq!(url_encode("/完成 abc123"), "%2F%E5%AE%8C%E6%88%90%20abc123");
-        assert_eq!(url_encode("/done a1-b2_c3.4~"), "%2Fdone%20a1-b2_c3.4~");
-    }
-
-    #[test]
-    fn cmd_input_chip_encodes_show_and_text() {
-        assert_eq!(
-            cmd_input_chip("☐", "/完成 abc123"),
-            "<qqbot-cmd-input text=\"%2F%E5%AE%8C%E6%88%90%20abc123\" \
-             show=\"%E2%98%90\" reference=\"false\" />"
-        );
-    }
 
     #[test]
     fn renders_active_list_and_recent_completed_footer() {
@@ -189,23 +148,19 @@ mod tests {
         done.created_at = now - 7200;
         let text = format_items("待办", &[active, done], now, options);
         assert!(text.contains("待办（1）"), "{text}");
-        // 正文是三级标题行（行首 ### 后面紧跟复选框标签，再是标题）。
+        // 正文是列表项（行首 "- " 后面紧跟复选框占位符，再是标题）。
         let body_line = text.lines().nth(1).unwrap_or_default();
-        assert!(body_line.starts_with("### "), "{text}");
-        // 复选框后有英文空格（QQ 会在标签后插零宽空格，这里补的是可见空格）。
+        assert!(body_line.starts_with("- "), "{text}");
         assert!(body_line.contains("板子焊接"), "{text}");
         assert!(body_line.ends_with("板子焊接"), "{text}");
-        // 主标题是 markdown 标题；完成项不另起栏目。
-        assert!(text.starts_with("# **待办（1）**"), "{text}");
+        // 主标题是通用二级标题；完成项不另起栏目。
+        assert!(text.starts_with("## 待办（1）"), "{text}");
         assert!(!text.contains("已完成"), "{text}");
         assert!(!text.contains("已完成"), "{text}");
         assert!(text.contains("~~写周报~~"), "{text}");
-        // 完成项的复选框是可点的恢复按钮（指令藏在 chip 里）。
-        assert!(
-            text.contains("%2F%E6%81%A2%E5%A4%8D%E5%BE%85%E5%8A%9E"),
-            "{text}"
-        );
-        assert!(!text.contains("\n\n### ☑"), "{text}");
+        // 完成项的复选框是可点的恢复按钮（指令藏在占位符里）。
+        assert!(text.contains("{{cmd:☑|/恢复待办 "), "{text}");
+        assert!(!text.contains("\n\n- ☑"), "{text}");
     }
 
     #[test]

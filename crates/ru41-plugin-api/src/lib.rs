@@ -17,6 +17,7 @@ pub mod config;
 pub mod domain;
 pub mod entry;
 pub mod identity;
+pub mod interactive;
 pub mod module;
 pub mod ports;
 pub mod schedule;

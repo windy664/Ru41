@@ -17,7 +17,7 @@ use crate::{
         extract_note, parse_event_view, split_leading_time, split_selector_and_time,
         split_when_and_title,
     },
-    view::{cmd_input_chip, format_items, usage},
+    view::{format_items, usage},
 };
 
 /// QQ 私人待办入口；持久化与日期视图由核心 TodoService 提供。
@@ -282,7 +282,7 @@ impl TodoQqCommand {
                     .unwrap_or(&occurrence.event_id);
                 line.push_str(&format!(
                     "　{}",
-                    cmd_input_chip("✕", &format!("/取消日程 {short}"))
+                    ru41::interactive::cmd_token("✕", &format!("/取消日程 {short}"))
                 ));
                 lines.push(line);
             }

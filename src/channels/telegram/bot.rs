@@ -9,7 +9,8 @@
 
 use crate::{
     app::task::TaskService,
-    channels::telegram::{TelegramNotifier, api::TelegramApi, commands},
+    channels::builtin,
+    channels::telegram::{TelegramNotifier, api::TelegramApi},
     domain::NotifyRoute,
     ports::{
         channel::NotifyChannel,
@@ -168,8 +169,8 @@ impl TelegramBot {
             reply_channel: "telegram",
         };
         // 1) 内置命令
-        if let Some(command) = commands::parse_command(&message.text) {
-            match commands::execute(&command, &ctx, &self.pricing) {
+        if let Some(command) = builtin::parse_command(&message.text, &builtin::DEFAULT) {
+            match builtin::execute(&command, &ctx, &self.pricing, &builtin::DEFAULT) {
                 Ok(reply) => self.reply(&target, message.message_id, &reply).await,
                 Err(error) => {
                     eprintln!("[telegram] 内置命令执行失败：{error:#}");
@@ -189,7 +190,7 @@ impl TelegramBot {
                 message.message_id,
                 &Reply::text(format!(
                     "## Ru41 已就绪\n\n直接发消息即可（自然语言会交给 Agent）；命令见 `{}`。",
-                    commands::VOCABULARY.shown.help
+                    builtin::DEFAULT.shown.help
                 )),
             )
             .await;
@@ -267,8 +268,10 @@ impl TelegramBot {
             attachments: &[],
             reply_channel: "telegram",
         };
-        let reply = match commands::parse_command(&data) {
-            Some(command) => commands::execute(&command, &ctx, &self.pricing).ok(),
+        let reply = match builtin::parse_command(&data, &builtin::DEFAULT) {
+            Some(command) => {
+                builtin::execute(&command, &ctx, &self.pricing, &builtin::DEFAULT).ok()
+            }
             None => self.run_extension(&data, &ctx).await,
         };
         if let Some(reply) = reply {

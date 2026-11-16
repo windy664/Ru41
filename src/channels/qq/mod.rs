@@ -2,6 +2,7 @@ pub mod api;
 pub mod commands;
 pub mod gateway;
 pub mod onboard;
+pub mod render;
 
 use crate::{
     app::task::TaskService,

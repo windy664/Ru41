@@ -90,7 +90,16 @@ Telegram 不是「再写一套 Markdown」——**规范层是渠道无关的，
 Telegram 的 profile：`markup=Html`、`supports_headings=false`（标题降级粗体）、`supports_tables=false`、`supports_latex=false`、`max_len=4096`。
 QQ 的 profile：`markup=Markdown`（平台自己解析）、标题保留、同样不支持表格/公式。
 
-**踩过的坑**：帮助页早先写的是 Markdown 表格，而**没有平台支持表格**（QQ 的 markdown 子集也不支持）→ 两端都渲染成一堆竖线。现在表格一律降级成条目列表，帮助页改走 `Card` 版式。
+**踩过的坑（两处）**：
+
+1. 帮助页早先写的是 Markdown 表格，而**没有平台支持表格**（QQ 的 markdown 子集也不支持）→ 两端都渲染成一堆竖线。现在表格一律降级成条目列表，帮助页改走 `Card` 版式。
+2. 待办清单早先把 QQ 专有的 `###`（拿标题层级当字号）与 `<qqbot-cmd-input>`（行内可点复选框）
+   直接写进正文 → 在 Telegram 上渲染成一坨标签文本。现在规范层只产出中性占位符
+   `{{cmd:符号|指令}}`，`channels::qq::render` 是**唯一一处** cmd-input 适配：
+   QQ 展开成行内可点标签并放大字号，其它渠道降级成纯文本符号。
+
+**命令输入不分渠道**：内置命令只有一份词表（`channels::builtin::DEFAULT`），
+QQ 与 Telegram 走同一套解析与执行；help 的入口是「/」，**没有 `/help` 这个命令**。
 
 
 ### 双网关但不双通知
