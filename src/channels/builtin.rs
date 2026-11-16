@@ -115,32 +115,40 @@ const HELP_SECTIONS: &[&str] = &[
 ];
 
 /// 内置帮助正文：命令词按渠道渲染（Telegram 用 ASCII，QQ 用历史中文词）。
+///
+/// 走 `util::msg::Card` 版式（`## 标题` + `- 条目` + `> 指路`）——这是所有 bot
+/// 平台的 Markdown 交集，QQ/Telegram/未来渠道都不用改版式。早先这里写的是
+/// Markdown 表格，而**没有平台支持表格**（QQ 的 markdown 子集也不支持），
+/// 结果在两端都渲染成一堆竖线。
 fn builtin_help(vocabulary: &Vocabulary) -> String {
     let shown = &vocabulary.shown;
-    format!(
-        "# Ru41 · 个人 AI 助理\n\n\
-> 校园事务、学习资料、信息订阅与个人知识库，统一从这里调用。\n\n\
----\n\n\
-## 基础指令\n\n\
-| 命令 | 用途 |\n\
-|---|---|\n\
-| `{help}` | 查看这份说明 |\n\
-| `{list}` | 最近 10 条任务 |\n\
-| `{show} <id>` | 查看任务详情 |\n\
-| `{cancel} <id>` | 取消任务 |\n\
-| `{usage}` | Token 用量与实际消耗（单聊绑定后可用） |\n\
-| `{bind} <口令>` | 绑定个人身份 |\n\
-| `{judge} <编号> <序号>` | 答复审批或提问卡片（需绑定） |\n\
-| `{clear}` | 开始新对话 |",
-        help = shown.help,
-        list = shown.list,
-        show = shown.show,
-        cancel = shown.cancel,
-        usage = shown.usage,
-        bind = shown.bind,
-        judge = shown.judge,
-        clear = shown.clear,
-    )
+    let mut card = crate::util::msg::Card::new("📖 Ru41 · 个人 AI 助理");
+    card.item(
+        "💡",
+        "校园事务、学习资料、信息订阅与个人知识库，统一从这里调用。",
+    );
+    card.item("🆘", format!("`{}` — 查看这份说明", shown.help));
+    card.item("📋", format!("`{}` — 最近 10 条任务", shown.list));
+    card.item("🔍", format!("`{} <id>` — 查看任务详情", shown.show));
+    card.item("❌", format!("`{} <id>` — 取消任务", shown.cancel));
+    card.item(
+        "📊",
+        format!("`{}` — Token 用量与实际消耗（单聊绑定后可用）", shown.usage),
+    );
+    card.item("🔗", format!("`{} <口令>` — 绑定个人身份", shown.bind));
+    card.item(
+        "💬",
+        format!(
+            "`{} <编号> <序号>` — 答复审批或提问卡片（需绑定）",
+            shown.judge
+        ),
+    );
+    card.item("🆕", format!("`{}` — 开始新对话", shown.clear));
+    card.hint(format!(
+        "不必记命令，直接描述任务即可，例如“明天有什么课”或“整理这篇文章”。当前对话会自动保留上下文；发送 `{}` 可重新开始。",
+        shown.clear
+    ));
+    card.build()
 }
 
 /// 内置命令与当前启用的扩展命令共同组成帮助文本，扩展命令由插件声明分区。

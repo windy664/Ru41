@@ -77,6 +77,22 @@ docker run -d --name ru41-telegram \
 生产配置里 `[channel.telegram] default_chat_id = "8787916999"`（主动通知的默认目标；聊天消息的目标由消息本身决定，不需要它）。
 `[notify].channel` 仍是 `qq`——**后台简报/提醒不双发**（见下）。
 
+### 消息渲染：规范一份 + 网关各适配
+
+Telegram 不是「再写一套 Markdown」——**规范层是渠道无关的，渲染层按网关方言适配**：
+
+| 层 | 位置 | 职责 |
+|---|---|---|
+| 规范层 | `src/markdown.rs`（`OUTPUT_STYLE`）+ `src/util/msg::Card` | 模型只填内容，不填版式；`Card` 版式落在所有 bot 平台的 Markdown 交集里 |
+| 渲染层 | `src/channels/markdown.rs`（`RenderProfile`） | 通用 Markdown → 目标方言；**表格/公式统一降级**（所有平台都不支持） |
+| 网关层 | `src/channels/telegram/` | 只负责投递（Bot API 调用 + 失败兜底） |
+
+Telegram 的 profile：`markup=Html`、`supports_headings=false`（标题降级粗体）、`supports_tables=false`、`supports_latex=false`、`max_len=4096`。
+QQ 的 profile：`markup=Markdown`（平台自己解析）、标题保留、同样不支持表格/公式。
+
+**踩过的坑**：帮助页早先写的是 Markdown 表格，而**没有平台支持表格**（QQ 的 markdown 子集也不支持）→ 两端都渲染成一堆竖线。现在表格一律降级成条目列表，帮助页改走 `Card` 版式。
+
+
 ### 双网关但不双通知
 
 | 消息来源 | 任务 `notify.channel` | 投递到 |

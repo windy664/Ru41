@@ -123,20 +123,44 @@ rebase 会把冲突标记插进笔记正文，而本地没有 AI 合并能力（
 - 服务器聚合文件里的时间戳（如「最近巡查」）每轮都变 → 每轮必提交 →
   无谓冲突面。
 
-## 6. 红线
+## 6. 消息渲染分层（规范一份 + 网关各适配）
+
+外发消息分三层，职责不重叠：
+
+1. **规范层（渠道无关）**：`src/markdown.rs` 的 `OUTPUT_STYLE`（注入模型提示词）
+   + `src/util/msg::Card`（外发版式：`## 标题` + `- 条目` + `> 指路`）。
+   **模型只填内容，不填版式。**
+2. **渲染层（渠道无关）**：`src/channels/markdown.rs` 的 `RenderProfile`。
+   把规范里的通用 Markdown 转成目标网关方言，并对**所有 bot 平台都不支持的能力
+   统一降级**：表格 → 条目列表、公式 → 行内代码、标题 → 粗体（平台不支持层级时）。
+3. **网关层**：`src/channels/<渠道>/` 只负责投递（平台 API 调用 + 失败兜底）。
+
+平台事实（2026-11）：bot 平台的 Markdown 交集 = 标题、列表、粗体、斜体、代码、
+引用、链接；**表格几乎无人支持**（QQ / Telegram / Slack / Discord / 飞书 / 企微
+都不支持），公式同样无人渲染（LaTeX 只对 Obsidian vault 有意义）。
+
+红线：
+
+- 外发消息一律走 `Card`，**不要手写 Markdown 表格**——表格在渲染层会被降级成
+  条目，写表等于白写。
+- **不要在模型提示词里加渠道专属排版要求**：版式由渲染层适配，模型侧只有一份规范。
+- 新增网关只需写一份 `RenderProfile` + API 调用，不碰渲染逻辑。
+
+## 7. 红线
 
 - 配置文件、运行目录、任何 key/cookie/密码**不进 git、不进博客、不进 Issue**；
   写文档用占位符。
 - vault（Obsidian）仓库的自提交一律 `[ru41]` 前缀，不要伪装成人工提交。
 - QQ/飞书消息渲染走渠道网关，插件不要自己直连渠道 API。
+- 外发消息不写 Markdown 表格（平台都不支持，渲染层会降级成条目）。
 - 机器生成的状态/镜像数据不进 vault：用户看的是知识与索引，不是我们的内部
   快照（要状态就给命令，不要写文件）。
 
-## 7. 文档入口
+## 8. 文档入口
 
 - 上手路径：[开发者上手](onboarding.md)
 - 插件机制：[动态插件开发指南](plugin-development.md)
 - 核心状态：[核心宿主状态](core-status.md)
 - 命令/配置/HTTP API 全集：[usage.md](usage.md)
 - 各数据源逆向笔记与协议红线：`docs/sources-*.md`、`docs/*-recon.md`
-- 渠道协议细节：[channels-qq.md](channels-qq.md) / [channels-feishu.md](channels-feishu.md)
+- 渠道协议细节：[channels-qq.md](channels-qq.md) / [channels-feishu.md](channels-feishu.md) / [channels-telegram.md](channels-telegram.md)
