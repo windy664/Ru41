@@ -75,14 +75,68 @@ pub fn render(canonical: &str, profile: &RenderProfile) -> String {
     let canonical = canonical.as_str();
     let text = degrade_tables(canonical, profile);
     let text = degrade_latex(&text, profile);
-    let mut out = String::new();
-    for (index, line) in text.lines().enumerate() {
-        if index > 0 {
-            out.push('\n');
+    render_body(&text, profile)
+}
+
+/// 正文渲染：围栏代码块是**原子单元**（整体处理，不逐行当列表/标题），
+/// 其余按行渲染。
+fn render_body(text: &str, profile: &RenderProfile) -> String {
+    let lines: Vec<&str> = text.lines().collect();
+    let mut pieces: Vec<String> = Vec::new();
+    let mut index = 0;
+    while index < lines.len() {
+        if fence_open(lines[index]).is_some() {
+            let mut body: Vec<&str> = Vec::new();
+            index += 1;
+            while index < lines.len() && !is_fence_close(lines[index]) {
+                body.push(lines[index]);
+                index += 1;
+            }
+            // 闭合围栏（如果有）跳过。
+            if index < lines.len() {
+                index += 1;
+            }
+            pieces.push(render_fence(&body, profile));
+            continue;
         }
-        out.push_str(&render_line(line, profile));
+        pieces.push(render_line(lines[index], profile));
+        index += 1;
     }
-    out
+    pieces.join("\n")
+}
+
+/// 围栏代码块：HTML 方言落成 `<pre>`（等宽、保空白），Markdown 方言落成裸正文
+/// （QQ 的 markdown 子集没有围栏语法，留着 ``` 只会露出标记）。
+///
+/// 围栏内的内容**不再走行内标记**——代码里的 `*`、`_`、`[x](y)` 都是字面量。
+fn render_fence(body: &[&str], profile: &RenderProfile) -> String {
+    match profile.markup {
+        Markup::Html => {
+            let mut out = String::from("<pre>");
+            for (index, line) in body.iter().enumerate() {
+                if index > 0 {
+                    out.push('\n');
+                }
+                out.push_str(&escape(line));
+            }
+            out.push_str("</pre>");
+            out
+        }
+        Markup::Markdown => body.join("\n"),
+    }
+}
+
+/// 围栏开始行 → 语言标注（` ```python ` → `python`）；不是围栏则 None。
+fn fence_open(line: &str) -> Option<String> {
+    let trimmed = line.trim_start();
+    let rest = trimmed.strip_prefix("```")?;
+    Some(rest.trim().to_owned())
+}
+
+/// 围栏结束行：只有 ```（可带缩进），后面不能再跟语言标注。
+fn is_fence_close(line: &str) -> bool {
+    let trimmed = line.trim();
+    trimmed.starts_with("```") && trimmed.trim_start_matches('`').trim().is_empty()
 }
 
 /// 单行渲染：标题 / 引用 / 列表 / 行内标记。
@@ -194,7 +248,7 @@ fn inline_html(text: &str) -> String {
             work.push_str(&placeholder(stash.len()));
             stash.push(format!(
                 "<a href=\"{}\">{}</a>",
-                escape(&url),
+                escape_attr(&url),
                 inline_html(&label)
             ));
             index = next;
@@ -386,41 +440,47 @@ pub fn escape(text: &str) -> String {
         .replace('>', "&gt;")
 }
 
-/// 按消息长度上限切 Markdown：优先段落边界，其次行边界，最后硬切。
+/// 属性值转义：比正文多转义引号——URL 落在 `href="…"` 里，
+/// 一个裸引号就能把属性撑破（正文里的引号不需要转义）。
+pub fn escape_attr(text: &str) -> String {
+    escape(text).replace('"', "&quot;")
+}
+
+/// UTF-16 码元长度：Telegram 按 UTF-16 码元计长（星平面字符占 2 个），
+/// 用字符数算会低估——一屏 emoji 就能把 4096 的上限顶穿。
+pub fn utf16_len(text: &str) -> usize {
+    text.chars().map(char::len_utf16).sum()
+}
+
+/// 按消息长度上限切 Markdown：段落边界 → 行边界 → 硬切。
+///
+/// **围栏代码块是原子单元**：不会从中间切开；实在太长时按行切，并用同一段
+/// 语言标注在下一片重新开围栏（否则 Telegram 会把后半截当普通文本）。
+///
+/// 长度按 **UTF-16 码元**计（Telegram 的口径），不是字符数。
 pub fn split_markdown(text: &str, limit: usize) -> Vec<String> {
     if limit == 0 {
         return vec![text.to_owned()];
     }
-    if text.chars().count() <= limit {
+    if utf16_len(text) <= limit {
         return vec![text.to_owned()];
     }
     let mut chunks: Vec<String> = Vec::new();
     let mut current = String::new();
-    for paragraph in text.split("\n\n") {
-        let candidate = current.chars().count() + paragraph.chars().count() + 2;
-        if !current.is_empty() && candidate > limit {
-            chunks.push(std::mem::take(&mut current));
-        }
-        if paragraph.chars().count() > limit {
-            for line in paragraph.split('\n') {
-                let candidate = current.chars().count() + line.chars().count() + 1;
-                if !current.is_empty() && candidate > limit {
-                    chunks.push(std::mem::take(&mut current));
-                }
-                if line.chars().count() > limit {
-                    chunks.push(line.chars().take(limit).collect());
-                } else {
-                    if !current.is_empty() {
-                        current.push('\n');
-                    }
-                    current.push_str(line);
-                }
+    for unit in split_units(text) {
+        for piece in split_unit(&unit, limit) {
+            let extra = if current.is_empty() {
+                utf16_len(&piece)
+            } else {
+                utf16_len(&current) + 1 + utf16_len(&piece)
+            };
+            if !current.is_empty() && extra > limit {
+                chunks.push(std::mem::take(&mut current));
             }
-        } else {
             if !current.is_empty() {
-                current.push_str("\n\n");
+                current.push('\n');
             }
-            current.push_str(paragraph);
+            current.push_str(&piece);
         }
     }
     if !current.is_empty() {
@@ -430,6 +490,159 @@ pub fn split_markdown(text: &str, limit: usize) -> Vec<String> {
         chunks.push(String::new());
     }
     chunks
+}
+
+/// 切分单元：段落（空行分隔）与围栏代码块各自成组，不互相拆散。
+fn split_units(text: &str) -> Vec<Vec<String>> {
+    let lines: Vec<&str> = text.lines().collect();
+    let mut units: Vec<Vec<String>> = Vec::new();
+    let mut paragraph: Vec<String> = Vec::new();
+    let mut index = 0;
+    while index < lines.len() {
+        let line = lines[index];
+        if fence_open(line).is_some() {
+            if !paragraph.is_empty() {
+                units.push(std::mem::take(&mut paragraph));
+            }
+            let mut block = vec![line.to_owned()];
+            index += 1;
+            while index < lines.len() {
+                let closing = is_fence_close(lines[index]);
+                block.push(lines[index].to_owned());
+                index += 1;
+                if closing {
+                    break;
+                }
+            }
+            units.push(block);
+            continue;
+        }
+        if line.trim().is_empty() {
+            if !paragraph.is_empty() {
+                units.push(std::mem::take(&mut paragraph));
+            }
+            index += 1;
+            continue;
+        }
+        paragraph.push(line.to_owned());
+        index += 1;
+    }
+    if !paragraph.is_empty() {
+        units.push(paragraph);
+    }
+    units
+}
+
+/// 一个单元切成若干片，每片自身不超限。
+fn split_unit(unit: &[String], limit: usize) -> Vec<String> {
+    let joined_len = utf16_len(&unit.join("\n"));
+    if joined_len <= limit {
+        return vec![unit.join("\n")];
+    }
+    let is_fence = unit.first().is_some_and(|line| fence_open(line).is_some());
+    if is_fence {
+        return split_fence(unit, limit);
+    }
+    // 普通段落：按行贪心装片。
+    let mut pieces: Vec<String> = Vec::new();
+    let mut current: Vec<String> = Vec::new();
+    let mut current_len = 0usize;
+    for line in unit {
+        let line_len = utf16_len(line) + 1;
+        if !current.is_empty() && current_len + line_len > limit {
+            pieces.push(current.join("\n"));
+            current = Vec::new();
+            current_len = 0;
+        }
+        if line_len > limit {
+            // 单行就超限：硬切（按 UTF-16 码元，不切碎字符）。
+            for part in hard_split(line, limit) {
+                pieces.push(part);
+            }
+            continue;
+        }
+        current.push(line.clone());
+        current_len += line_len;
+    }
+    if !current.is_empty() {
+        pieces.push(current.join("\n"));
+    }
+    pieces
+}
+
+/// 围栏块超长：按行切，每片都用同一段语言标注重新开围栏并补上闭合。
+fn split_fence(unit: &[String], limit: usize) -> Vec<String> {
+    let open = unit.first().map(String::as_str).unwrap_or("");
+    let info = fence_open(open).unwrap_or_default();
+    let closing = unit
+        .last()
+        .is_some_and(|line| is_fence_close(line));
+    let body: &[String] = if closing && unit.len() > 1 {
+        &unit[1..unit.len() - 1]
+    } else {
+        &unit[1..]
+    };
+    // 每片的固定开销：开围栏 + 换行 + 闭合围栏。
+    let overhead = utf16_len(&format!("```{info}")) + 1 + 3;
+    let budget = limit.saturating_sub(overhead).max(1);
+    let mut pieces: Vec<String> = Vec::new();
+    let mut current: Vec<String> = Vec::new();
+    let mut current_len = 0usize;
+    let flush = |current: &mut Vec<String>, pieces: &mut Vec<String>| {
+        if current.is_empty() {
+            return;
+        }
+        let mut piece = format!("```{info}");
+        for line in current.iter() {
+            piece.push('\n');
+            piece.push_str(line);
+        }
+        piece.push_str("\n```");
+        pieces.push(piece);
+        current.clear();
+    };
+    for line in body {
+        let line_len = utf16_len(line) + 1;
+        if !current.is_empty() && current_len + line_len > budget {
+            flush(&mut current, &mut pieces);
+            current_len = 0;
+        }
+        if line_len > budget {
+            flush(&mut current, &mut pieces);
+            for part in hard_split(line, budget) {
+                pieces.push(format!("```{info}\n{part}\n```"));
+            }
+            current_len = 0;
+            continue;
+        }
+        current.push(line.clone());
+        current_len += line_len;
+    }
+    flush(&mut current, &mut pieces);
+    if pieces.is_empty() {
+        pieces.push(format!("```{info}\n```"));
+    }
+    pieces
+}
+
+/// 按 UTF-16 码元硬切（不切碎字符；代理对不拆开——Rust 的 char 已是完整码点）。
+fn hard_split(text: &str, limit: usize) -> Vec<String> {
+    let mut out: Vec<String> = Vec::new();
+    let mut current = String::new();
+    let mut len = 0usize;
+    for ch in text.chars() {
+        let width = ch.len_utf16();
+        if len + width > limit && !current.is_empty() {
+            out.push(std::mem::take(&mut current));
+            len = 0;
+        }
+        current.push(ch);
+        len += width;
+    }
+    if !current.is_empty() {
+        out.push(current);
+    }
+    out
 }
 
 /// 按字节上限截断（不切碎 UTF-8）。Telegram 的 callback_data 上限 64 字节。
@@ -445,4 +658,94 @@ pub fn truncate_bytes(text: &str, max_bytes: usize) -> String {
 }
 
 #[cfg(test)]
-mod tests {}
+mod tests {
+    use super::*;
+
+    #[test]
+    fn fenced_code_becomes_pre_block() {
+        let md = "```python\nprint('x')\n```";
+        let rendered = render(md, &TELEGRAM);
+        assert_eq!(rendered, "<pre>print('x')</pre>");
+        // 不残留裸反引号，也不被拆成两个空 inline code。
+        assert!(!rendered.contains('`'), "{rendered}");
+    }
+
+    #[test]
+    fn fence_body_keeps_markdown_literal() {
+        // 代码里的 * _ [x](y) 都是字面量，不能被当成强调/链接。
+        let md = "```\na *b* _c_ [d](e)\n```";
+        let rendered = render(md, &TELEGRAM);
+        assert_eq!(rendered, "<pre>a *b* _c_ [d](e)</pre>");
+    }
+
+    #[test]
+    fn qq_profile_drops_fence_markers_but_keeps_body() {
+        let md = "```python\nprint('x')\n```";
+        let rendered = render(md, &QQ);
+        assert_eq!(rendered, "print('x')");
+    }
+
+    #[test]
+    fn unclosed_fence_does_not_leak_markers() {
+        let md = "```python\nprint('never closed')";
+        let rendered = render(md, &TELEGRAM);
+        assert_eq!(rendered, "<pre>print('never closed')</pre>");
+    }
+
+    #[test]
+    fn split_never_cuts_inside_a_fence() {
+        let mut md = String::from("```python\n");
+        for index in 0..40 {
+            md.push_str(&format!("line_{index}\n"));
+        }
+        md.push_str("```\n");
+        let chunks = split_markdown(&md, 120);
+        assert!(chunks.len() > 1, "{chunks:?}");
+        for chunk in &chunks {
+            let opens = chunk.matches("```").count();
+            assert_eq!(opens % 2, 0, "围栏不成对：{chunk:?}");
+            // 每片都是完整的围栏块。
+            assert!(chunk.trim_start().starts_with("```"), "{chunk:?}");
+            assert!(chunk.trim_end().ends_with("```"), "{chunk:?}");
+            // 语言标注在每片都保留。
+            assert!(chunk.starts_with("```python"), "{chunk:?}");
+        }
+    }
+
+    #[test]
+    fn length_counts_utf16_code_units() {
+        // 星平面字符占 2 个码元。
+        assert_eq!(utf16_len("😀"), 2);
+        assert_eq!(utf16_len("ab😀"), 4);
+        // 一屏 emoji 的字符数远小于 Telegram 的计长口径。
+        let text = "😀".repeat(10);
+        assert_eq!(text.chars().count(), 10);
+        assert_eq!(utf16_len(&text), 20);
+    }
+
+    #[test]
+    fn split_respects_utf16_budget_with_emoji() {
+        let text = "😀".repeat(50);
+        let chunks = split_markdown(&text, 40);
+        assert!(chunks.len() > 1);
+        for chunk in &chunks {
+            assert!(utf16_len(chunk) <= 40, "分片超限：{}", utf16_len(chunk));
+        }
+    }
+
+    #[test]
+    fn link_url_cannot_break_out_of_attribute() {
+        let rendered = render(r#"[点我](x" onmouseover="alert(1))"#, &TELEGRAM);
+        assert!(!rendered.contains(r#"onmouseover=""#), "{rendered}");
+        assert!(rendered.contains("&quot;"), "{rendered}");
+    }
+
+    #[test]
+    fn table_never_reaches_any_channel() {
+        let md = "| 命令 | 用途 |\n|---|---|\n| `/` | 帮助 |";
+        for profile in [QQ, TELEGRAM] {
+            let rendered = render(md, &profile);
+            assert!(!rendered.contains("|---"), "{profile:?}: {rendered}");
+        }
+    }
+}

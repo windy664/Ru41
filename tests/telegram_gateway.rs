@@ -168,7 +168,7 @@ async fn natural_language_is_enqueued_with_telegram_route() {
     let tasks = store.list(50).unwrap();
     assert_eq!(tasks.len(), 1);
     let task = &tasks[0];
-    assert_eq!(task.request_key, "telegram:msg:7");
+    assert_eq!(task.request_key, "telegram:msg:12345:7");
     let notify = task.notify.as_ref().unwrap();
     assert_eq!(notify.channel, "telegram");
     assert_eq!(notify.target, "chat:12345");
@@ -239,7 +239,7 @@ async fn polling_loop_consumes_updates_and_persists_offset() {
         }
     }
     let task = task.expect("message was not ingested");
-    assert_eq!(task.request_key, "telegram:msg:9");
+    assert_eq!(task.request_key, "telegram:msg:12345:9");
 
     tx.send(true).unwrap();
     let _ = runner.await;
@@ -317,6 +317,21 @@ async fn todo_reply_lands_as_symbol_plus_inline_buttons() {
     assert!(body.contains("inline_keyboard"), "{body}");
     assert!(body.contains("callback_data"), "{body}");
     assert!(body.contains("/完成 abc123"), "{body}");
+}
+
+/// message_id 只在会话内唯一：两个会话的同号消息不能互相顶掉
+/// （幂等键必须带 chat，否则后一条被当成重复而丢弃）。
+#[tokio::test]
+async fn same_message_id_in_different_chats_does_not_collide() {
+    let mock = MockBot::new(vec![]);
+    let (_dir, store) = store();
+    let bot = bot(&mock, store.clone(), Vec::new());
+
+    bot.handle_update(&message_update(1, 7, 12345, 678, "私聊的一条")).await;
+    bot.handle_update(&message_update(2, 7, 999, 678, "群里的另一条")).await;
+
+    let tasks = store.list(50).unwrap();
+    assert_eq!(tasks.len(), 2, "两个会话的同号消息互相吞了");
 }
 
 /// 群里的按钮同样属于群聊：私人数据闸门不能被 callback 绕过。

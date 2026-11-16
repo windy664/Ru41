@@ -303,10 +303,14 @@ impl TelegramBot {
         }
     }
 
-    /// 自然语言入队：同 message_id 幂等；私聊新消息打断同会话未完成的旧任务。
+    /// 自然语言入队：同会话同 message_id 幂等；私聊新消息打断同会话未完成的旧任务。
     async fn ingest(&self, message: &InboundMessage) -> Result<()> {
-        let request_key =
-            crate::ports::commands::msg_request_key("telegram", &message.message_id.to_string());
+        // message_id **只在会话内唯一**：群聊与私聊可以是同一个号，键里必须带
+        // chat，否则两个会话的消息会互相顶掉（后一条被当成重复而丢弃）。
+        let request_key = crate::ports::commands::msg_request_key(
+            "telegram",
+            &format!("{}:{}", message.chat_id, message.message_id),
+        );
         if let Some(existing) = self
             .store
             .list(200)?

@@ -221,3 +221,83 @@ async fn dispatcher_delivers_terminal_task_to_telegram() {
     assert!(recorded[0].body.contains("论文核心结论"));
     assert!(store.get(task.id).unwrap().unwrap().notified_at.is_some());
 }
+
+/// 限速（429）短等待：就地退避后重试，消息不丢。
+#[tokio::test]
+async fn flood_control_is_retried_in_place() {
+    let (base, recorded) = mock_bot(vec![
+        r#"{"ok":false,"error_code":429,"description":"Too Many Requests: retry after 1","parameters":{"retry_after":1}}"#,
+        r#"{"ok":true,"result":{"message_id":11}}"#,
+    ]);
+    let notifier = notifier(&base, Some("998877"));
+    notifier.send(DEFAULT_TARGET, None, "hi").await.unwrap();
+    let recorded = recorded.lock().unwrap();
+    assert_eq!(recorded.len(), 2, "限速后应重试一次");
+    assert!(recorded[1].body.contains("hi"));
+}
+
+/// 限速等待过长：不就地睡（网关是长驻进程），把失败交给投递层改期重发。
+#[tokio::test]
+async fn long_flood_wait_is_not_slept_inline() {
+    let (base, recorded) = mock_bot(vec![
+        r#"{"ok":false,"error_code":429,"description":"Too Many Requests: retry after 30","parameters":{"retry_after":30}}"#,
+    ]);
+    let notifier = notifier(&base, Some("998877"));
+    let started = std::time::Instant::now();
+    let error = notifier.send(DEFAULT_TARGET, None, "hi").await.unwrap_err();
+    assert!(format!("{error:#}").contains("429"), "{error:#}");
+    assert!(
+        started.elapsed() < Duration::from_secs(5),
+        "不该就地等 30 秒：{:?}",
+        started.elapsed()
+    );
+    assert_eq!(recorded.lock().unwrap().len(), 1);
+}
+
+/// 同一会话连发要排队：Telegram 对单会话有速率上限，连发会被 429 拒收（消息直接丢）。
+#[tokio::test]
+async fn same_chat_messages_are_spaced_out() {
+    let (base, recorded) = mock_bot(vec![]);
+    let notifier = notifier(&base, Some("998877"));
+    let started = std::time::Instant::now();
+    notifier.send(DEFAULT_TARGET, None, "第一条").await.unwrap();
+    notifier.send(DEFAULT_TARGET, None, "第二条").await.unwrap();
+    assert!(
+        started.elapsed() >= Duration::from_millis(1000),
+        "两条消息之间没有间隔：{:?}",
+        started.elapsed()
+    );
+    assert_eq!(recorded.lock().unwrap().len(), 2);
+}
+
+/// 不同会话互不阻塞：一个会话排队不该拖住另一个。
+#[tokio::test]
+async fn different_chats_do_not_block_each_other() {
+    let (base, _) = mock_bot(vec![]);
+    let notifier = notifier(&base, Some("998877"));
+    let started = std::time::Instant::now();
+    notifier.send("chat:111", None, "a").await.unwrap();
+    notifier.send("chat:222", None, "b").await.unwrap();
+    assert!(
+        started.elapsed() < Duration::from_millis(900),
+        "不同会话不该互相等：{:?}",
+        started.elapsed()
+    );
+}
+
+/// 长文本被切成多条时，每条都要排进同一会话的发送队列。
+#[tokio::test]
+async fn long_message_chunks_are_spaced_out() {
+    let (base, recorded) = mock_bot(vec![]);
+    let notifier = notifier(&base, Some("998877"));
+    let body = "正文段落。\n\n".repeat(900);
+    let started = std::time::Instant::now();
+    notifier.send(DEFAULT_TARGET, None, &body).await.unwrap();
+    let count = recorded.lock().unwrap().len();
+    assert!(count > 1, "长文本应被切片");
+    assert!(
+        started.elapsed() >= Duration::from_millis(1000),
+        "切片之间没有间隔：{:?}",
+        started.elapsed()
+    );
+}
