@@ -207,7 +207,9 @@ async fn renders_markdown_for_each_view() {
     let cheat = ru41_plugin_campusrun::service::fetch_cheat(&client)
         .await
         .unwrap();
-    assert!(cheat.contains("违规名单：暂未发现违规记录"), "{cheat}");
+    assert!(cheat.contains("你的违规记录：暂未发现违规记录"), "{cheat}");
+    // 全校通报榜人数不是你的违规数（服务端 self 与 list 是两回事）。
+    assert!(cheat.contains("全校违规通报榜：9 人"), "{cheat}");
 
     let all = ru41_plugin_campusrun::service::fetch_all(&client)
         .await

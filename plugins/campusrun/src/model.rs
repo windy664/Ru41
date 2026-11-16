@@ -216,7 +216,10 @@ pub struct CheatStatus {
     /// 查询时间（毫秒）。
     #[serde(default)]
     pub checked_at_ms: Option<i64>,
-    /// 通报列表条数（不是违规数，是通报条数）。
+    /// 全校违规通报榜的**人数**（服务端原始响应里的 `list`）。
+    ///
+    /// ⚠️ 与你自己的违规无关：原始响应里 `self`（你的违规信息，null = 干净）
+    /// 和 `list`（全校榜）是两回事，别把这两个数混为一谈。
     #[serde(default)]
     pub list_count: Option<i64>,
 }

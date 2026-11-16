@@ -117,6 +117,10 @@ pub fn render_records(records: &[RunRecord], limit: usize) -> String {
 }
 
 /// 违规名单/风控状态。
+///
+/// ⚠️ 服务端原始响应里是**两回事**：`self` = 自己的违规信息（null = 干净），
+/// `list` = **全校通报榜**（别人）。控制台把 `list` 压成了 `listCount`，
+/// 渲染时必须说清这是全校人数，否则会被读成「你有 9 条」。
 pub fn render_cheat(cheat: &CheatStatus) -> String {
     let mut lines = vec!["## 校园跑账号状态".to_owned()];
     let label = cheat
@@ -124,12 +128,14 @@ pub fn render_cheat(cheat: &CheatStatus) -> String {
         .as_deref()
         .filter(|s| !s.trim().is_empty())
         .unwrap_or("（服务端未给标签）");
-    lines.push(format!("- 违规名单：{label}（{}）", cheat.status));
+    lines.push(format!("- 你的违规记录：{label}（{}）", cheat.status));
     if let Some(count) = cheat.count {
-        lines.push(format!("- 违规条数：{count}"));
+        lines.push(format!("- 你的违规条数：{count}"));
     }
     if let Some(list) = cheat.list_count {
-        lines.push(format!("- 服务端通报条数：{list}"));
+        lines.push(format!(
+            "- 全校违规通报榜：{list} 人（**全校通报名单，是别人的记录，与你无关**）"
+        ));
     }
     if let Some(reason) = cheat.reason.as_deref().filter(|s| !s.trim().is_empty()) {
         lines.push(format!("- 原因：{reason}"));
@@ -330,7 +336,29 @@ mod tests {
         };
         let text = render_cheat(&cheat);
         assert!(text.contains("不等于清白"), "{text}");
-        assert!(text.contains("通报条数：9"), "{text}");
+    }
+
+    /// listCount 是**全校通报榜人数**，不是你的违规条数——
+    /// 服务端原始响应里 self（你的违规信息）与 list（全校榜）是两回事。
+    #[test]
+    fn cheat_list_count_is_labelled_as_school_wide() {
+        let cheat = CheatStatus {
+            status: "no_record".into(),
+            label: Some("暂未发现违规记录".into()),
+            count: None,
+            reason: Some("服务端未提供原因".into()),
+            appeal: Some("未知".into()),
+            occurred_at: Some("服务端未提供时间".into()),
+            rrid: None,
+            checked_at_ms: Some(1_794_871_590_236),
+            list_count: Some(9),
+        };
+        let text = render_cheat(&cheat);
+        assert!(text.contains("你的违规记录：暂未发现违规记录"), "{text}");
+        assert!(text.contains("全校违规通报榜：9 人"), "{text}");
+        assert!(text.contains("与你无关"), "{text}");
+        // 旧措辞「服务端通报条数」容易被读成自己有 9 条，别再出现。
+        assert!(!text.contains("通报条数"), "{text}");
     }
 
     #[test]
