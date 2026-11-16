@@ -40,11 +40,17 @@
 `goal.targetDis`（1.0 km，即规则最小单次里程）。插件一律以 API 字段为准，
 单测 `status_shows_goal_count_not_cli_zero` 钉住这一点。
 
-### ⚠️ `unknown` ≠ 清白
+### ⚠️ `unknown` ≠ 清白；`listCount` ≠ 你的违规数
 
-违规查询返回 `unknown`（服务端字段缺失/格式异常）或 `stale`（超过 5 分钟）时，
-插件会额外加一行警告，skill 也要求转告用户「需要去 App 里核对」——把未知报成清白
-比不报更糟。
+服务端原始响应（`POST /api/v78/cheat/cheatlist`）里是**两回事**：
+
+- `self` = **你自己的**违规信息（`null` = 干净）；
+- `list` = **全校违规通报榜**（别人。2026-11-17 实测 9 人，含姓名/uid/次数/校区）。
+
+控制台把 `self` 压成 `status`/`label`/`count`/`reason`/`appeal`，把 `list` 压成
+`listCount`（人数）。插件渲染时必须分开说：违规查询返回 `unknown`（服务端字段缺失）
+或 `stale`（超过 5 分钟）时**不等于清白**，要提示去 App 核对；`listCount` 要标成
+「全校通报榜 N 人，与你无关」，别让人读成「你被通报了 N 次」。
 
 ## 配置
 
