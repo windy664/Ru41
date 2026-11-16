@@ -117,6 +117,35 @@ QQ 与 Telegram 走同一套解析与执行；help 的入口是「/」，**没�
 `todo_list_reply`——早先裸 `#` 走的是重构前的旧写法（只回正文、不挂 markup），
 于是 Telegram 上「没看到按钮」，退化成两跳。
 
+### 参考实现：hermes-agent 的 Telegram 层（2026-11-16 调研）
+
+NousResearch/hermes-agent（★26 万）的 telegram 适配层有 **60 个模块**
+（`plugins/platforms/telegram/`），比这边完整得多。逐个读过之后，
+**已采纳**下面这些（都带回归测试）：
+
+| 借鉴点 | 他们的做法 | 我们的落地 |
+|---|---|---|
+| 围栏代码块是原子单元 | 切块时 fence 闭合重开（带语言）、表格重复表头 | `channels::markdown.rs`：围栏整体渲染成 `<pre>`，切分时用同一语言标注重开 |
+| 长度按 UTF-16 码元 | emoji/CJK Ext B 占 2 单位，`len()` 会低估 | `utf16_len()` + 分片按码元算（`CHUNK_BUDGET` 留余量） |
+| 表格降级有章法 | `**行标题**` + `• 列: 值`，不删列 | 我们降级成「一行 · 一行」条目（`Card` 版式一致性优先） |
+| 只允许白名单标签 | 白名单外全转义 | 我们正文统一转义 `& < >`，URL 额外转义 `"`（属性） |
+| 占位符 stash | 先成型的片段存住，最后统一回填 | 已有（行内代码/链接先 stash，避免被后续替换二次破坏） |
+| 每会话发送槽 | send 与 edit 共用 1s 槽；429 冷却窗 fail closed | `ChatGate`：每 chat 最小间隔 1.1s + 429 冷却 |
+| 限速错误分类 | REFUSED/FLOOD/UNSENT/LOST 分开处理；LOST 绝不换形重发 | `PlatformError` 带 `error_code`/`retry_after`；429 短等待就地退避，长等待交给投递层改期 |
+| 长惩罚不 inline sleep | >5s 交上层 ledger，避免钉死协程 | 同上（`MAX_INLINE_FLOOD_WAIT = 5s`） |
+| 幂等键不能只靠 message_id | 用 `bot_id:update_id`（message_id 在群聊里不全局唯一） | 键改成 `telegram:msg:{chat_id}:{message_id}` |
+| 按钮状态用 pop 消费 | 第二次点返回「已处理」 | 未采纳：我们的动作是幂等命令（`/完成 <id>`），重复点只会得到「已完成」 |
+| 卡死探针用 `getWebhookInfo` | 不抢 update 的探针 | 已有（我们本来就是 `getWebhookInfo().pending_update_count`） |
+| 代理在场则禁用 IP fallback | 有代理就不走直连 IP 兜底 | 天然一致（我们只走 `channel.telegram.proxy_url`） |
+
+**明确没抄的**：Topic/会话绑定、媒体相册、草稿流式编辑、inline query 选择器、
+DoH + IP 字面量兜底、连接池代退休——这些是**多用户/群组/大媒体**场景的需求，
+当前是单人私聊 + 纯文本，投入产出不划算。
+
+⚠️ **用户/模型正文不得携带占位符**：可点动作只该由插件的结构化动作产生。
+待办标题、模型输出进入规范文本时，`{{cmd:…}}` 会被作废（插一个零宽空格，
+肉眼不可见），否则用户写一段 `{{cmd:☐|/取消待办 x}}` 就能伪造出一个可点动作。
+
 
 ### 双网关但不双通知
 
@@ -159,6 +188,11 @@ QQ 与 Telegram 走同一套解析与执行；help 的入口是「/」，**没�
 - **图片消费者（学习通二维码签到等）只在 QQ 侧接线**：Telegram 侧未接 `ImageConsumer`。
 - **`ModuleDef.qq_handlers` 字段名仍是 QQ**：功能上已渠道无关（同一批 handler 注册给两个渠道），字段重命名要动 24 个插件 crate，留作后续清理。
 - **单实例**：同一 token 只能有一个消费者轮询（两个实例会互相抢 offset，Telegram 返回 409）。
+- **限流只做到第一层**：有每会话最小间隔与 429 退避，但**冷却窗没有落盘**——
+  网关重启会忘记上一次的罚时（hermes 把冷却窗持久化，重启不遗忘）。
+- **没有「可能已投递」的不确定态**：超时/连接重置这类「请求没拿到响应」的情况，
+  投递层仍按失败重试，可能重复发一条（hermes 会标 `delivery_uncertain` 且绝不换形重发）。
+- **按钮没有「已处理」反馈**：重复点同一条待办会得到「已完成」而不是「刚才已处理」。
 
 ---
 
