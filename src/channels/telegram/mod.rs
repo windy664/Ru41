@@ -7,7 +7,6 @@
 
 pub mod api;
 pub mod bot;
-pub mod commands;
 
 use crate::{
     channels::markdown,

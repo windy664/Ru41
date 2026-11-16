@@ -33,6 +33,8 @@ pub struct RenderProfile {
     pub supports_tables: bool,
     /// 是否渲染公式；false → 公式降级为行内代码。
     pub supports_latex: bool,
+    /// 是否支持行内可点指令（QQ 的 `<qqbot-cmd-input>`）；false → 占位符降级为纯符号。
+    pub supports_cmd_input: bool,
     /// 单条消息长度上限（字符）。
     pub max_len: usize,
 }
@@ -47,6 +49,7 @@ pub const QQ: RenderProfile = RenderProfile {
     supports_headings: true,
     supports_tables: false,
     supports_latex: false,
+    supports_cmd_input: true,
     max_len: 4000,
 };
 
@@ -57,11 +60,19 @@ pub const TELEGRAM: RenderProfile = RenderProfile {
     supports_headings: false,
     supports_tables: false,
     supports_latex: false,
+    supports_cmd_input: false,
     max_len: 4096,
 };
 
 /// 把通用 Markdown 渲染成目标方言。
 pub fn render(canonical: &str, profile: &RenderProfile) -> String {
+    // 不支持行内可点指令的渠道：占位符降级成纯符号（永不漏 token）。
+    let canonical = if profile.supports_cmd_input {
+        canonical.to_owned()
+    } else {
+        ru41_plugin_api::interactive::strip_cmd_tokens(canonical)
+    };
+    let canonical = canonical.as_str();
     let text = degrade_tables(canonical, profile);
     let text = degrade_latex(&text, profile);
     let mut out = String::new();

@@ -1,0 +1,69 @@
+//! 跨渠道渲染回归：同一份规范文本，QQ 与 Telegram 各自落成能渲染的形态。
+//!
+//! 规范层（`channels::builtin` / planner 的 view）只产出中性内容：
+//! 标题是通用二级标题、条目是列表项、复选框是可点指令占位符。
+//! 渲染层按网关方言适配：QQ 展开行内 cmd-input 并放大字号，其它渠道降级成纯符号。
+
+use ru41::channels::{builtin, markdown, qq::render::qq_render};
+
+/// planner 的待办清单（规范层形态）。
+fn canonical_todo_list() -> String {
+    "## 待办（1）\n\n- {{cmd:☐|/完成 abc123}} 板子焊接 — 明天\n- {{cmd:☑|/恢复待办 def456}} ~~写周报~~\n"
+        .to_owned()
+}
+
+#[test]
+fn qq_rendering_keeps_inline_chip_and_font_scaling() {
+    let rendered = qq_render(&canonical_todo_list());
+    // 栏目标题：一级标题 + 加粗（QQ 没有字号语法，靠标题层级放大）。
+    assert!(rendered.starts_with("# **待办（1）**"), "{rendered}");
+    // 条目：三级标题 + 行内可点 cmd-input。
+    assert!(
+        rendered.contains("### <qqbot-cmd-input text=\"%2F%E5%AE%8C%E6%88%90%20abc123\""),
+        "{rendered}"
+    );
+    assert!(rendered.contains("show=\"%E2%98%90\""), "{rendered}");
+    assert!(rendered.contains("~~写周报~~"), "{rendered}");
+    // 不残留中性占位符。
+    assert!(!rendered.contains("{{cmd:"), "{rendered}");
+}
+
+#[test]
+fn telegram_rendering_degrades_chip_to_plain_symbol() {
+    let rendered = markdown::render(&canonical_todo_list(), &markdown::TELEGRAM);
+    // 标题降级成粗体（Telegram 无多级标题）。
+    assert!(rendered.contains("<b>待办（1）</b>"), "{rendered}");
+    // 复选框降级成纯文本符号，命令不外泄。
+    assert!(rendered.contains("• ☐ 板子焊接 — 明天"), "{rendered}");
+    assert!(rendered.contains("☑ <s>写周报</s>"), "{rendered}");
+    assert!(!rendered.contains("{{cmd:"), "{rendered}");
+    assert!(!rendered.contains("<qqbot-cmd-input"), "{rendered}");
+}
+
+#[test]
+fn both_channels_share_one_command_vocabulary() {
+    // 命令输入不分渠道：同一份词表、同一套解析。
+    assert_eq!(
+        builtin::parse_command("/", &builtin::DEFAULT),
+        Some(builtin::Command::Help),
+        "「/」在两个渠道都应是帮助",
+    );
+    assert_eq!(
+        builtin::parse_command("任务", &builtin::DEFAULT),
+        Some(builtin::Command::List),
+    );
+    assert_eq!(
+        builtin::parse_command("/help", &builtin::DEFAULT),
+        None,
+        "不存在 /help 命令：help 的入口是「/」",
+    );
+}
+
+#[test]
+fn table_never_reaches_any_channel() {
+    let canonical = "## 标题\n\n| 命令 | 用途 |\n|---|---|\n| `/` | 帮助 |\n";
+    for profile in [markdown::QQ, markdown::TELEGRAM] {
+        let rendered = markdown::render(canonical, &profile);
+        assert!(!rendered.contains("|---"), "{profile:?}: {rendered}");
+    }
+}

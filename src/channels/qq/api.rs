@@ -572,7 +572,9 @@ fn message_body(
     let mut body = if markdown {
         // 走通用渲染层：QQ 平台自己解析 markdown，但表格/公式它不支持，
         // 统一在渲染层降级（与 Telegram 同一套规则，见 channels::markdown）。
+        // 先过通用渲染层（表格/公式降级），再过 QQ 专有适配（行内可点 cmd-input + 字号）。
         let rendered = crate::channels::markdown::render(content, &crate::channels::markdown::QQ);
+        let rendered = crate::channels::qq::render::qq_render(&rendered);
         serde_json::json!({ "msg_type": 2, "markdown": { "content": rendered } })
     } else {
         serde_json::json!({ "msg_type": 0, "content": content })
