@@ -4,7 +4,7 @@
 use crate::config::LectureConfig;
 use crate::dns;
 use crate::pending::{
-    PENDING_KIND, PendingItem, is_audio_filename, recorded_time_of, sanitize_name,
+    PENDING_KIND, PendingItem, is_audio_filename, recorded_time_of, sanitize_name, unfinished_count,
 };
 use crate::service::match_course;
 use anyhow::{Context, Result};
@@ -73,15 +73,9 @@ impl LectureHandler {
         };
         // put_document(None) insert-or-ignore：同 msg_id 重复投递不覆盖（幂等）。
         store.put_document(PENDING_KIND, &msg_id, None, &serde_json::to_value(&item)?)?;
-        // 队列位置：除本条外仍未消化完的节数（worker 串行，按这个数报「前面还有几节」）。
-        let ahead = store
-            .documents(PENDING_KIND, 100)?
-            .iter()
-            .filter_map(|doc| PendingItem::from_document(doc).ok())
-            .filter(|other| {
-                other.msg_id != msg_id && other.status != "done" && other.status != "failed"
-            })
-            .count();
+        // 队列位置：除本条外仍未消化完的节数（worker 串行，按收到时间排队，
+        // 所以这个数就是「排在我前面的节数」）。
+        let ahead = unfinished_count(store.as_ref(), &msg_id)?;
         Ok((size, ahead, received_at))
     }
 
@@ -283,8 +277,8 @@ impl CommandHandler for LectureHandler {
             // 回执的主语是「这节课」，不是「一段音频」：课表能对上就直接点名课程，
             // 对不上才说课程未知、笔记先放收件箱。匹配逻辑与 worker 共用，
             // 所以这里说的课程就是最后写进 Vault 的那门课。
-            let recorded_at = recorded_time_of(&audio.display_name(), received_at);
-            let course = match_course(&ctx.store, self.options, &self.config, recorded_at);
+            let recorded_at = recorded_time_of(audio.display_name(), received_at);
+            let course = match_course(ctx.store, self.options, &self.config, recorded_at);
             let matched = course != self.config.fallback_course;
             let headline = if matched {
                 format!("## {} 这节课已结束", course)

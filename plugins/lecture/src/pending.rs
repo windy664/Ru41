@@ -5,10 +5,17 @@
 
 use anyhow::{Context, Result};
 use ru41::domain::records::Document;
+use ru41::ports::storage::TaskStore;
 use serde::{Deserialize, Serialize};
 use std::path::Path;
 
 pub const PENDING_KIND: &str = "lecture.pending";
+
+/// 待办扫描窗口（起始档）：日常排队量远小于这个数。
+pub const PENDING_SCAN_LIMIT: u32 = 200;
+/// 扫描窗口上限：done 的待办记录永远不删（存储接口没有 delete），
+/// 历史记录会把窗口占满——窗口必须能放大，否则排在窗口外的录音永远轮不到。
+pub const PENDING_SCAN_LIMIT_MAX: u32 = 20_000;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct PendingItem {
@@ -61,6 +68,63 @@ impl PendingItem {
             "文件名无时间，按收到时刻回退"
         }
     }
+}
+
+/// 待办里「收到时间最早」的未完成项（先到先转）。
+///
+/// 不能靠 `documents()` 的返回顺序：它按文档 id 排，而 id 就是 QQ 的 msg_id
+/// （一串随机 blob），顺序毫无意义——实测生产库里 id 序与收到时间序完全对不上。
+/// 这里把一批待办拉回来自己按 `received_at` 排。
+pub fn oldest_unfinished(store: &dyn TaskStore) -> Result<Option<(Document, PendingItem)>> {
+    let mut limit = PENDING_SCAN_LIMIT;
+    loop {
+        let docs = store.documents(PENDING_KIND, limit)?;
+        if let Some(picked) = pick_oldest(&docs) {
+            return Ok(Some(picked));
+        }
+        // 窗口取满 = 外面可能还挂着没转写的（历史 done 记录把窗口占满了）→ 放大重扫。
+        // 否则排在窗口外的录音会永远轮不到：队列静默饿死，不报错也不转写。
+        if docs.len() < limit as usize || limit >= PENDING_SCAN_LIMIT_MAX {
+            return Ok(None);
+        }
+        limit = (limit * 10).min(PENDING_SCAN_LIMIT_MAX);
+    }
+}
+
+/// 在一批待办文档里挑收到时间最早的一条未完成项。
+fn pick_oldest(docs: &[Document]) -> Option<(Document, PendingItem)> {
+    docs.iter()
+        .filter_map(|doc| {
+            let item = PendingItem::from_document(doc).ok()?;
+            if item.status == "done" || item.status == "failed" {
+                return None;
+            }
+            Some((item.received_at, doc.clone(), item))
+        })
+        .min_by_key(|(received_at, _, _)| *received_at)
+        .map(|(_, doc, item)| (doc, item))
+}
+
+/// 未完成的待办条数（不含 exclude）：handler 报「前面还有几节」用。
+///
+/// 必须全量扫才数得准，所以窗口逐级放大到取不满为止。
+pub fn unfinished_count(store: &dyn TaskStore, exclude_msg_id: &str) -> Result<usize> {
+    let mut limit = PENDING_SCAN_LIMIT;
+    let count = loop {
+        let docs = store.documents(PENDING_KIND, limit)?;
+        let count = docs
+            .iter()
+            .filter_map(|doc| PendingItem::from_document(doc).ok())
+            .filter(|item| {
+                item.msg_id != exclude_msg_id && item.status != "done" && item.status != "failed"
+            })
+            .count();
+        if docs.len() < limit as usize || limit >= PENDING_SCAN_LIMIT_MAX {
+            break count;
+        }
+        limit = (limit * 10).min(PENDING_SCAN_LIMIT_MAX);
+    };
+    Ok(count)
 }
 
 /// 上课时间：优先取文件名里解析出的时刻，回退收到时刻。
