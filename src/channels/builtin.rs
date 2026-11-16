@@ -105,7 +105,6 @@ pub const TELEGRAM: Vocabulary = Vocabulary {
     },
 };
 
-const HELP_FOOTER: &str = "---\n> 不必记命令，直接描述任务即可，例如“明天有什么课”或“整理这篇文章”。\n> 当前对话会自动保留上下文；发送 `/新建` 可重新开始。";
 const HELP_SECTIONS: &[&str] = &[
     "记录与日程",
     "课程与学习",
@@ -172,8 +171,6 @@ pub fn help_text(
             text.push_str(handler.help());
         }
     }
-    text.push_str("\n\n");
-    text.push_str(HELP_FOOTER);
     text
 }
 
