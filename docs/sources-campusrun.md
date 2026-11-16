@@ -48,14 +48,18 @@
 
 ## 配置
 
-`plugins.d/campusrun/config.toml`（或主配置里的 `[sources.campusrun]`）：
+**插件专属配置目录**：`plugins.d/campusrun/config.toml`（顶层段名就是插件的配置键名）：
 
 ```toml
 [campusrun]
-base_url = "http://172.22.0.1:9999"   # 宿主在 pace-forge 网络上的网关
+base_url = "http://172.20.0.1:9999"   # 宿主在 ru41-net 上的网关
 token_env = "PACE_FORGE_TOKEN"          # 令牌走环境变量，勿写进仓库
 timeout_secs = 15
 ```
+
+生产实况：宿主 `~/ru41-mimo-smoke/plugins.d/campusrun/config.toml`（0600，
+令牌内联）。**不要塞进主 toml**——worker 与其他容器用的不是同一份配置文件，
+塞主 toml 两边就对不上（见下面的「worker 要单独补挂载」）。
 
 **连不上怎么办**：两个容器不在同一个 compose 网络，**容器名 `pace-forge` 解析不了**。
 可用地址（ru41 容器内实测）：
@@ -66,8 +70,31 @@ timeout_secs = 15
 
 想让容器名直连，把 pace-forge 也挂进 `ru41-net` 网络即可（改它的 compose 一行）。
 
-令牌从容器环境变量 `PACE_FORGE_TOKEN` 注入；也可以在 gitignore 的本地
-`config.toml` 里写 `token = "..."`（配置里的 token 优先于环境变量）。
+令牌两种给法：容器环境变量 `PACE_FORGE_TOKEN`，或配置里内联 `token = "..."`
+（配置里的 token 优先于环境变量）。生产上用的是**内联**——令牌在 pace-forge 的
+compose 里本来就是明文，再抄一份到 gitignore 的 `plugins.d/campusrun/config.toml`
+（0600）不增加暴露面。
+
+### ⚠️ worker 容器要单独补一个挂载（2026-11-17 踩过）
+
+插件配置的根 = **主配置文件同级的 `plugins.d/`**（`Config::load` 启动时合并）。
+生产上：
+
+- 绝大多数容器把整个 `~/ru41-mimo-smoke` 挂在 `/etc/ru41` → 天然能读到
+  `/etc/ru41/plugins.d/<插件>/config.toml`；
+- **`ru41-mimo-worker` 只挂了 `ru41-worker.toml` 一个文件**（它和 `ru41.toml` 是两份
+  配置，worker 读前者）→ 容器里没有 `/etc/ru41/plugins.d`，插件配置**读不到**。
+
+后果很隐蔽：QQ 命令正常，**agent 在 worker 里跑 `ru41 campusrun status` 却报
+「没有 pace-forge 控制台令牌」**——2026-11-17 用户在 Telegram 问「我校园跑跑了多少
+公里」没得到答案，根因就是这个（agent 甚至自己翻了 8 条托管凭据去试令牌）。
+
+修法：给 worker 容器补一个挂载 `-v ~/ru41-mimo-smoke/plugins.d:/etc/ru41/plugins.d:ro`。
+重建容器照抄 `deploy/roll.sh` 的「从 docker inspect 逐字段恢复」逻辑（env/挂载/网络/
+重启策略都保留）；roll.sh 之后也会照原样带上这个挂载。
+
+**教训**：插件配置放 `plugins.d/`，别塞进主 toml——主 toml 每个容器一份
+（worker 与其他容器用的还不是同一份），塞主 toml 必然两边不一致。
 
 ## 对外接口
 
@@ -80,7 +107,8 @@ ru41 campusrun cheat           # 违规名单状态
 ru41 campusrun all             # 三样一起（用户泛问「我的校园跑怎么样」）
 ```
 
-输出是 Markdown。
+输出是一个 JSON 字符串，里面装的是 Markdown（`\n` 是换行）——和 jwxt 一样，
+宿主统一把 CLI 结果 `to_string_pretty` 打出来。
 
 ### QQ 命令
 
