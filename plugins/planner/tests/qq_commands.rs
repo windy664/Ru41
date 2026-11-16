@@ -248,6 +248,18 @@ async fn todo_commands_add_list_and_complete_in_private_chat() {
         .unwrap();
     assert!(summary.text.contains("## 待办（1）"));
     assert!(summary.text.contains("写项目周报"));
+    // 裸 `#` 的清单必须与 `#内容` 的清单同款：正文带中性占位符 + 一条可点的「完成」按钮。
+    // 少了按钮，Telegram 侧就只剩纯符号，退化成「两跳」（先点符号再填输入框）。
+    assert!(summary.text.contains("{{cmd:☐|/完成 "), "{}", summary.text);
+    let summary_markup = summary.markup.expect("裸 # 的清单必须带交互按钮");
+    let summary_buttons: Vec<&ru41::ports::commands::MarkupButton> =
+        summary_markup.rows.iter().flatten().collect();
+    assert_eq!(summary_buttons.len(), 1, "{summary_buttons:?}");
+    assert!(
+        summary_buttons[0].command.starts_with("/完成 "),
+        "{summary_buttons:?}"
+    );
+    assert!(summary_buttons[0].label.contains("写项目周报"), "{summary_buttons:?}");
 
     let completed = command
         .handle_command("完成", item.short_id(), &context)
