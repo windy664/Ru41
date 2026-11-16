@@ -345,7 +345,8 @@ async fn same_message_id_in_different_chats_does_not_collide() {
     assert_eq!(tasks.len(), 2, "两个会话的同号消息互相吞了");
 }
 
-/// 深链：正文里的复选框点开 → Telegram 发来 `/start <payload>` → 执行里面的命令。
+/// 深链：正文里的复选框点开 → Telegram 发来 `/start <payload>` → 执行里面的命令，
+/// 并把那条机器消息删掉（聊天记录里不留痕）。
 #[tokio::test]
 async fn start_payload_runs_the_encoded_command() {
     let mock = MockBot::new(vec![]);
@@ -369,6 +370,13 @@ async fn start_payload_runs_the_encoded_command() {
         .find(|body| body.contains(r#""chat_id":"12345""#))
         .expect("深链命令没有产生回复");
     assert!(reply.contains("任务列表") || reply.contains("最近任务"), "{reply}");
+    // 那条 `/start` 机器消息要被删掉（不留痕）。
+    // mock 只记录请求体（方法名在 URL 路径里），所以按 body 特征找。
+    let deleted = sent
+        .iter()
+        .find(|body| body.contains(r#""message_id":7"#))
+        .expect("没有清理深链消息");
+    assert!(deleted.contains(r#""chat_id":"12345""#), "{deleted}");
 }
 
 /// 普通 `/start`（没有 payload）还是回欢迎语，不当成命令。
