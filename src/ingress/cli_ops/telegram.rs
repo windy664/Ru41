@@ -2,8 +2,7 @@
 
 use super::{OpsOutcome, check};
 use crate::{
-    bootstrap::{assembly::telegram_token, config::Config},
-    channels::telegram::api::TelegramApi,
+    bootstrap::{assembly::{telegram_api, telegram_token}, config::Config},
     ingress::cli::Cli,
 };
 use serde_json::json;
@@ -20,7 +19,9 @@ pub(crate) async fn run(cli: &Cli) -> OpsOutcome {
             "telegram bot token is not configured (RU41_TELEGRAM_BOT_TOKEN or channel.telegram.bot_token)",
         )]);
     };
-    let api = TelegramApi::new(token);
+    // 体检走网关同一条构造路径：境内直连不通，必须带上 channel.telegram.proxy_url，
+    // 否则 doctor 在生产上必然假报警（早期版本在这里直连，getMe 必失败）。
+    let api = telegram_api(&config, token);
     match api.get_me().await {
         Ok(identity) => OpsOutcome::report(vec![
             check("credentials", "ok", "telegram bot token is configured"),
