@@ -1,17 +1,25 @@
-//! QQ 消息拦截：单聊收到课堂录音文件（音频扩展名）时立即下载落盘，
-//! 写入待转写队列并即时回执；转写整理在 worker 侧异步完成。
+//! QQ 消息拦截：单聊收到课堂录音文件（音频扩展名）时**当场登记 + 立刻回执**，
+//! 下载甩到插件自己的 runtime 后台跑；转写整理在 worker 侧异步完成。
+//!
+//! 为什么不在入站线程里同步下完（2026-11-16 实测踩坑）：一节录音几十 MB，
+//! 家宽到腾讯云 CDN 要几分钟——同步下载会把 QQ 入站线程整个堵住：
+//! 网关心跳停摆掉线（`gateway disconnected ... heartbeat stalled`），
+//! 断线窗口里用户发的下一条录音直接丢了（QQ 侧无消息重放），
+//! 用户还因为回执排在下载之后而以为「没反应」。现在入站只做登记。
 
 use crate::config::LectureConfig;
 use crate::dns;
 use crate::pending::{
-    PENDING_KIND, PendingItem, is_audio_filename, recorded_time_of, sanitize_name, unfinished_count,
+    PENDING_KIND, PendingItem, STATUS_DOWNLOADING, STATUS_PENDING, is_audio_filename,
+    recorded_time_of, sanitize_name, unfinished_count,
 };
 use crate::service::match_course;
 use anyhow::{Context, Result};
 use ru41::domain::todo::TodoOptions;
 use ru41::ports::channel::MediaKind;
 use ru41::ports::commands::{CommandContext, CommandHandler, Reply};
-use std::{future::Future, net::SocketAddr, pin::Pin, time::Duration};
+use ru41::ports::storage::TaskStore;
+use std::{future::Future, net::SocketAddr, path::PathBuf, pin::Pin, sync::Arc, time::Duration};
 
 #[derive(Clone)]
 pub struct LectureHandler {
@@ -22,10 +30,15 @@ pub struct LectureHandler {
 }
 
 /// 下载客户端的统一参数（超时），普通客户端与「固定 IP」客户端共用。
+///
+/// 总超时给到 30 分钟：70MB 的录音在家宽上实测要 9 分钟（130KB/s），
+/// 原来的 600s 差点就顶到了。读超时 60s：连接卡住时立刻失败重试，
+/// 而不是干等到总超时。
 fn http_builder() -> reqwest::ClientBuilder {
     reqwest::Client::builder()
         .connect_timeout(Duration::from_secs(15))
-        .timeout(Duration::from_secs(600))
+        .read_timeout(Duration::from_secs(60))
+        .timeout(Duration::from_secs(1800))
 }
 
 impl LectureHandler {
@@ -37,46 +50,117 @@ impl LectureHandler {
         }
     }
 
-    /// 下载 + 入库（插件自己的 runtime 里跑，见 handle_message 的 bridge 说明）。
-    /// 返回（文件大小字节数, 前面排队节数, 收到时刻）：
-    /// 排队数让回执告诉用户还要等几节；收到时刻用于回执侧匹配课程名。
+    /// 登记一条录音并回执；下载甩到插件自己的 runtime 后台跑。
+    ///
+    /// 返回（前面排队节数, 收到时刻）：排队数让回执告诉用户还要等几节；
+    /// 收到时刻用于回执侧匹配课程名。
     #[allow(clippy::too_many_arguments)]
-    async fn run_job(
+    async fn accept_recording(
         &self,
-        store: std::sync::Arc<dyn ru41::ports::storage::TaskStore>,
+        store: Arc<dyn TaskStore>,
         source: String,
         auth: Option<String>,
         display_name: String,
         channel: String,
         target: String,
         msg_id: String,
-    ) -> Result<(u64, usize, i64)> {
+    ) -> Result<(usize, i64)> {
         let filename = sanitize_name(&display_name);
         let raw_dir = self.config.workspace.join(&msg_id).join("raw");
         std::fs::create_dir_all(&raw_dir)?;
         let dest = raw_dir.join(&filename);
-        // QQ CDN 链接有时效，必须当场下载完。
-        let size = self.download(&source, auth.as_deref(), &dest).await?;
         let received_at = ru41::util::now();
         let item = PendingItem {
             file: dest.display().to_string(),
-            filename: display_name,
-            size,
+            filename: display_name.clone(),
+            size: 0,
             channel,
             target,
             msg_id: msg_id.clone(),
             received_at,
-            status: "pending".into(),
+            status: STATUS_DOWNLOADING.into(),
             error: None,
             course: None,
             transcript: None,
         };
-        // put_document(None) insert-or-ignore：同 msg_id 重复投递不覆盖（幂等）。
-        store.put_document(PENDING_KIND, &msg_id, None, &serde_json::to_value(&item)?)?;
+        // 幂等：同 msg_id 重复投递不覆盖已有文档；已经在队列里就别再下一遍。
+        let queued = store.document(PENDING_KIND, &msg_id)?.is_some();
+        if !queued {
+            store.put_document(PENDING_KIND, &msg_id, None, &serde_json::to_value(&item)?)?;
+        }
         // 队列位置：除本条外仍未消化完的节数（worker 串行，按收到时间排队，
-        // 所以这个数就是「排在我前面的节数」）。
+        // 所以这个数就是「排在我前面的节数」）。正在下载的也算在队列里。
         let ahead = unfinished_count(store.as_ref(), &msg_id)?;
-        Ok((size, ahead, received_at))
+        if !queued {
+            // 下载甩后台：bridge 把任务 spawn 到插件自己的 runtime，这里不 await——
+            // 回执立刻发，QQ 入站线程不被几十 MB 的下载堵住。
+            let worker = self.clone();
+            drop(ru41::plugins::bridge(async move {
+                worker
+                    .download_and_queue(store, source, auth, msg_id, dest)
+                    .await
+            }));
+        }
+        Ok((ahead, received_at))
+    }
+
+    /// 后台下载：下完把待办从 downloading 翻成 pending（worker 才会去转写）；
+    /// 失败翻成 failed，并通知用户重发（QQ 的链接有时效，失败基本等于要重发）。
+    async fn download_and_queue(
+        &self,
+        store: Arc<dyn TaskStore>,
+        source: String,
+        auth: Option<String>,
+        msg_id: String,
+        dest: PathBuf,
+    ) -> Result<()> {
+        match self.download(&source, auth.as_deref(), &dest).await {
+            Ok(size) => {
+                let Some(doc) = store.document(PENDING_KIND, &msg_id)? else {
+                    return Ok(());
+                };
+                let mut item = PendingItem::from_document(&doc)?;
+                item.size = size;
+                item.status = STATUS_PENDING.into();
+                item.error = None;
+                let written = store.put_document(
+                    PENDING_KIND,
+                    &msg_id,
+                    Some(doc.revision),
+                    &serde_json::to_value(&item)?,
+                )?;
+                anyhow::ensure!(written, "lecture.pending {msg_id} 状态更新竞争失败");
+                Ok(())
+            }
+            Err(err) => {
+                eprintln!("[lecture] 下载录音失败（{msg_id}）：{err:#}");
+                if let Some(doc) = store.document(PENDING_KIND, &msg_id)? {
+                    let mut item = PendingItem::from_document(&doc)?;
+                    item.status = "failed".into();
+                    item.error = Some(format!("{err:#}"));
+                    let _ = store.put_document(
+                        PENDING_KIND,
+                        &msg_id,
+                        Some(doc.revision),
+                        &serde_json::to_value(&item)?,
+                    );
+                    self.notify_download_failed(store.as_ref(), &item);
+                }
+                Err(err)
+            }
+        }
+    }
+
+    /// 下载失败要通知用户：改成后台下载后，失败不再有即时回执兜着，
+    /// 静默失败会让人以为还在排队。插件不直连渠道 API，走 worker 同款
+    /// 「入队 + 通知」通道，让 agent 把失败原因转述给用户。
+    fn notify_download_failed(&self, store: &dyn TaskStore, item: &PendingItem) {
+        crate::service::notify_download_failed(
+            store,
+            &self.config.backend,
+            item,
+            item.error.as_deref().unwrap_or("未知原因"),
+        );
     }
 
     /// 流式落盘，避免大文件整读进内存。
@@ -242,6 +326,7 @@ impl CommandHandler for LectureHandler {
             }
             // bridge：插件 cdylib 带独立 tokio 副本，reqwest 的 reactor TLS 跨不过
             // .so 边界，网络下载必须放进插件自己的 runtime；入参全部物化为 owned。
+            // 这里只做「登记 + 计数」——下载在后台跑，不等它（见 accept_recording）。
             let worker = self.clone();
             let store = ctx.store.clone();
             let source = audio.source.clone();
@@ -250,20 +335,18 @@ impl CommandHandler for LectureHandler {
             let channel = ctx.reply_channel.to_owned();
             let target = ctx.target.to_owned();
             let msg_id = ctx.msg_id.to_owned();
-            // size 只被「分段识别中」那句用到（已去掉），故用 _ 前缀免得 unused 警告。
-            let (_size, ahead, received_at) = match ru41::plugins::bridge(async move {
+            let (ahead, received_at) = match ru41::plugins::bridge(async move {
                 worker
-                    .run_job(store, source, auth, display_name, channel, target, msg_id)
+                    .accept_recording(store, source, auth, display_name, channel, target, msg_id)
                     .await
             })
             .await
             {
                 Ok(ok) => ok,
-                // 下载失败要回执（链接时效/网络故障用户需要知道并重发），
-                // 不能只在服务端日志里留个 handle failed。
+                // 登记失败要回执（用户需要知道并重发），不能只在服务端日志里留个 handle failed。
                 Err(error) => {
                     return Ok(Some(Reply::text(format!(
-                        "## 这份文件没收到\n\n《{}》下载没成功：{error:#}\n\n\
+                        "## 这份文件没收到\n\n《{}》登记失败：{error:#}\n\n\
                          QQ 文件链接有时效，也可能是网络临时故障，请重新发一次。",
                         audio.display_name(),
                     ))));
@@ -286,9 +369,9 @@ impl CommandHandler for LectureHandler {
                 "## 这节课已结束".to_owned()
             };
             let action = if matched {
-                "开始分析这节课并整理成课堂笔记，完成后写进 Vault 并通知你。"
+                "正在下载并转写这节录音，完成后整理成课堂笔记、写进 Vault 并通知你。"
             } else {
-                "开始整理课堂笔记；课表里没对上这节课的时间，笔记先放收件箱，等你确认归到哪门课。"
+                "正在下载并转写这节录音；课表里没对上这节课的时间，笔记先放收件箱，等你确认归到哪门课。"
             };
             let queue = if ahead > 0 {
                 format!("\n- 队列：前面还有 {} 节，按收到的顺序来", ahead)
@@ -297,6 +380,8 @@ impl CommandHandler for LectureHandler {
             };
             // 2026-11-13：只去掉「《xxx.mp3》（xx.x MB），分段识别中（每段约 5 分钟）」
             // 这一句（用户要求）——课程名、要做什么、队列、附言都照旧发。
+            // 2026-11-16：下载改后台，回执立刻发，文案从「开始分析」改成
+            // 「正在下载并转写」——别让用户以为已经在转写了。
             Ok(Some(Reply::text(format!(
                 "{headline}\n\n{action}{queue}{hint}"
             ))))

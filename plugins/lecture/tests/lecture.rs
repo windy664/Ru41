@@ -16,6 +16,7 @@ use std::{
     net::TcpListener,
     path::PathBuf,
     sync::Arc,
+    time::Duration,
 };
 
 fn config(workspace: PathBuf) -> LectureConfig {
@@ -79,6 +80,47 @@ fn mock_file_server(payload: &'static [u8]) -> String {
 }
 
 const AUDIO: &[u8] = b"fake-m4a-bytes";
+
+/// 慢速 mock 文件服务器：先睡 delay 再回包（模拟几十 MB 的慢下载）。
+fn slow_file_server(payload: &'static [u8], delay: Duration) -> String {
+    let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+    let addr = listener.local_addr().unwrap();
+    std::thread::spawn(move || {
+        for stream in listener.incoming() {
+            let mut stream = stream.unwrap();
+            let mut line = String::new();
+            let _ = std::io::BufReader::new(&mut stream).read_line(&mut line);
+            std::thread::sleep(delay);
+            let head = format!(
+                "HTTP/1.1 200 OK\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
+                payload.len()
+            );
+            stream.write_all(head.as_bytes()).unwrap();
+            stream.write_all(payload).unwrap();
+        }
+    });
+    format!("http://{addr}/lec.m4a")
+}
+
+/// 等后台下载把待办翻成目标状态（下载在插件自己的 runtime 上跑，异步）。
+fn wait_for_status(
+    store: &Arc<dyn TaskStore>,
+    msg_id: &str,
+    want: &str,
+    timeout: Duration,
+) -> Option<ru41_plugin_lecture::pending::PendingItem> {
+    let deadline = std::time::Instant::now() + timeout;
+    while std::time::Instant::now() < deadline {
+        if let Some(doc) = store.document("lecture.pending", msg_id).unwrap()
+            && let Ok(item) = ru41_plugin_lecture::pending::PendingItem::from_document(&doc)
+            && item.status == want
+        {
+            return Some(item);
+        }
+        std::thread::sleep(Duration::from_millis(50));
+    }
+    None
+}
 
 fn audio_attachment(url: &str) -> Vec<MediaRef> {
     vec![MediaRef {
@@ -274,23 +316,56 @@ fn audio_file_is_downloaded_and_queued() {
     // 其余照旧：课程名 + 要做什么 + 队列。
     assert!(text.contains("这节课已结束"), "{text}");
     assert!(text.contains("课表里没对上"), "{text}");
-    assert!(!text.contains("录音"), "{text}");
-    assert!(!text.contains("分段识别中"), "{text}");
     assert!(!text.contains("MB"), "{text}");
-    // 文件已落盘，pending 文档已登记。
-    let docs = store.documents("lecture.pending", 10).unwrap();
-    assert_eq!(docs.len(), 1);
-    let item = ru41_plugin_lecture::pending::PendingItem::from_document(&docs[0]).unwrap();
-    assert_eq!(item.status, "pending");
+    // 下载在后台跑：等它把待办从 downloading 翻成 pending。
+    let item = wait_for_status(&store, "m-audio", "pending", Duration::from_secs(10))
+        .expect("后台下载应把待办翻成 pending");
     assert_eq!(
         PathBuf::from(&item.file).file_name().unwrap(),
         "高数 03-12.m4a"
     );
     assert_eq!(std::fs::read(&item.file).unwrap(), AUDIO);
-    // 重复投递（同 msg_id）不覆盖文档。
+    assert_eq!(item.size, AUDIO.len() as u64);
+    // 重复投递（同 msg_id）不覆盖文档，也不重复下载。
     let cx = ctx(&store, &atts, "user:U1", "U1", "m-audio", true);
     tokio_bridge_block(async { handler.handle_message("", &cx).await.unwrap() });
     assert_eq!(store.documents("lecture.pending", 10).unwrap().len(), 1);
+}
+
+/// 回执不能等下载：2026-11-16 实测，70MB 的录音同步下载要 9 分钟，
+/// 把 QQ 入站线程堵到心跳停摆掉线（断线窗口里用户发的下一条录音直接丢）。
+/// 现在入站只登记 + 回执，下载在后台跑。
+#[test]
+fn receipt_does_not_wait_for_the_download() {
+    let tmp = tempfile::tempdir().unwrap();
+    let store: Arc<dyn TaskStore> =
+        Arc::new(SqliteTaskStore::open(&tmp.path().join("state.db")).unwrap());
+    let handler = LectureHandler::new(config(tmp.path().to_path_buf()), TodoOptions::default());
+    // 服务器睡 3 秒才回包——模拟慢下载。
+    let url = slow_file_server(AUDIO, Duration::from_secs(3));
+    let atts = audio_attachment(&url);
+    bind(&store);
+    let cx = ctx(&store, &atts, "user:U1", "U1", "m-slow", true);
+    let started = std::time::Instant::now();
+    let reply = tokio_bridge_block(async { handler.handle_message("", &cx).await.unwrap() });
+    let elapsed = started.elapsed();
+    let text = reply.unwrap().text;
+    assert!(text.contains("正在下载并转写"), "{text}");
+    assert!(
+        elapsed < Duration::from_secs(2),
+        "回执不该等下载：实际耗时 {elapsed:?}"
+    );
+    // 下载仍在后台跑，状态是 downloading。
+    let doc = store
+        .document("lecture.pending", "m-slow")
+        .unwrap()
+        .unwrap();
+    let item = ru41_plugin_lecture::pending::PendingItem::from_document(&doc).unwrap();
+    assert_eq!(item.status, "downloading");
+    // 后台下载完成后翻成 pending，文件落盘。
+    let done = wait_for_status(&store, "m-slow", "pending", Duration::from_secs(20))
+        .expect("后台下载应把待办翻成 pending");
+    assert_eq!(std::fs::read(&done.file).unwrap(), AUDIO);
 }
 
 /// 回执全文快照：整条消息逐字断言，不只看 contains。
@@ -341,7 +416,7 @@ fn receipt_text_is_exact() {
     assert_eq!(
         matched,
         "## 高等数学 这节课已结束\n\n\
-         开始分析这节课并整理成课堂笔记，完成后写进 Vault 并通知你。\n\
+         正在下载并转写这节录音，完成后整理成课堂笔记、写进 Vault 并通知你。\n\
          - 队列：就这一节，不用等"
     );
 
@@ -359,7 +434,7 @@ fn receipt_text_is_exact() {
     assert_eq!(
         unmatched,
         "## 这节课已结束\n\n\
-         开始整理课堂笔记；课表里没对上这节课的时间，笔记先放收件箱，等你确认归到哪门课。\n\
+         正在下载并转写这节录音；课表里没对上这节课的时间，笔记先放收件箱，等你确认归到哪门课。\n\
          - 队列：就这一节，不用等"
     );
 
@@ -412,7 +487,7 @@ fn receipt_names_the_matched_course() {
     let reply = tokio_bridge_block(async { handler.handle_message("", &cx).await.unwrap() });
     let text = reply.unwrap().text;
     assert!(text.contains("高等数学 这节课已结束"), "{text}");
-    assert!(text.contains("开始分析这节课"), "{text}");
+    assert!(text.contains("正在下载并转写"), "{text}");
     assert!(!text.contains("分段识别中"), "{text}");
 }
 

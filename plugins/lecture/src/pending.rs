@@ -11,6 +11,13 @@ use std::path::Path;
 
 pub const PENDING_KIND: &str = "lecture.pending";
 
+/// 待办状态：downloading（后台下载中）→ pending（可转写）→ done / failed。
+/// downloading 这段是 2026-11-16 加的：下载甩到后台后，worker 必须跳过它，
+/// 否则会去转写还没下完的文件（ffmpeg 直接失败，录音就废了）。
+pub const STATUS_DOWNLOADING: &str = "downloading";
+/// 待办状态：已下载完，等 worker 转写。
+pub const STATUS_PENDING: &str = "pending";
+
 /// 待办扫描窗口（起始档）：日常排队量远小于这个数。
 pub const PENDING_SCAN_LIMIT: u32 = 200;
 /// 扫描窗口上限：done 的待办记录永远不删（存储接口没有 delete），
@@ -29,7 +36,7 @@ pub struct PendingItem {
     pub msg_id: String,
     /// 收到录音的 unix 时间戳（秒）；课程匹配与归档日期都基于它。
     pub received_at: i64,
-    /// pending | transcribed | done | failed
+    /// downloading | pending | done | failed
     #[serde(default = "default_status")]
     pub status: String,
     #[serde(default)]
@@ -68,6 +75,11 @@ impl PendingItem {
             "文件名无时间，按收到时刻回退"
         }
     }
+
+    /// 能不能交给 worker 转写：不在下载中，也没到终态。
+    pub fn is_ready(&self) -> bool {
+        !matches!(self.status.as_str(), "done" | "failed" | STATUS_DOWNLOADING)
+    }
 }
 
 /// 待办里「收到时间最早」的未完成项（先到先转）。
@@ -96,7 +108,7 @@ fn pick_oldest(docs: &[Document]) -> Option<(Document, PendingItem)> {
     docs.iter()
         .filter_map(|doc| {
             let item = PendingItem::from_document(doc).ok()?;
-            if item.status == "done" || item.status == "failed" {
+            if !item.is_ready() {
                 return None;
             }
             Some((item.received_at, doc.clone(), item))

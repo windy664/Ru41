@@ -4,7 +4,10 @@
 
 use crate::asr::AsrClient;
 use crate::config::LectureConfig;
-use crate::pending::{PENDING_KIND, PendingItem, oldest_unfinished, sanitize_name};
+use crate::pending::{
+    PENDING_KIND, PENDING_SCAN_LIMIT, PendingItem, STATUS_DOWNLOADING, oldest_unfinished,
+    sanitize_name,
+};
 use anyhow::{Context, Result};
 use chrono::{Local, TimeZone};
 use ru41::app::schedule::ScheduleService;
@@ -24,6 +27,41 @@ struct Transcript {
 
 /// 转写短于这个长度就内联进 prompt，超过则只给文件路径。
 const TRANSCRIPT_INLINE_LIMIT: usize = 4000;
+
+/// 下载超过这个秒数还没翻成 pending，就判失败（多半是容器重启把下载掐了）。
+const DOWNLOAD_STALE_SECS: i64 = 1800;
+
+/// 通知用户某条录音没下下来，请重发。
+///
+/// 插件不直连渠道 API（红线），走 worker 同款「入队 + 通知」通道，
+/// 让 agent 把失败原因转述给用户——改成后台下载后，失败不再有即时回执兜着，
+/// 静默失败会让人以为还在排队。
+pub fn notify_download_failed(
+    store: &dyn TaskStore,
+    backend: &str,
+    item: &PendingItem,
+    reason: &str,
+) {
+    let prompt = format!(
+        "课堂录音《{}》下载失败：{reason}\n\
+         QQ 的文件链接有时效，多半要用户重新发一次。\n\
+         请直接回复用户一句话：这份录音没能下下来（原因），请重新发一次；不要展开分析。",
+        item.filename
+    );
+    if let Err(err) = store.enqueue_with_notify(
+        &format!("lecture:download-failed:{}", item.msg_id),
+        &prompt,
+        backend,
+        ru41::domain::RunContract::AnalysisV1,
+        &ru41::domain::NotifyRoute {
+            channel: item.channel.clone(),
+            target: item.target.clone(),
+            msg_id: Some(item.msg_id.clone()),
+        },
+    ) {
+        eprintln!("[lecture] 下载失败通知入队失败：{err:#}");
+    }
+}
 
 /// 按上课时间匹配课表上的课程。
 ///
@@ -78,10 +116,13 @@ impl LectureWorker {
     /// 单轮：取最旧一条未完成项处理。run_periodic 串行等待，天然不并发。
     pub async fn poll_once(&self) -> Result<serde_json::Value> {
         let now = ru41::util::now();
+        // 先收尾「卡在 downloading」的：容器重启/下载进程被杀时它会永远占着
+        // 队列位置，用户还以为在下载。超时判失败并通知重发。
+        let stale = self.fail_stale_downloads(now)?;
         // 队列按**收到时间**排队：先到的先转。
         // 不能用 documents() 的返回顺序（按 id 排，id 是 QQ 的随机 msg_id）。
         let Some((doc, item)) = oldest_unfinished(self.store.as_ref())? else {
-            return Ok(serde_json::json!({"processed": null}));
+            return Ok(serde_json::json!({"processed": null, "stale_failed": stale}));
         };
         let course = self.course_at(item.recorded_time());
         match self.transcribe(&item).await {
@@ -121,6 +162,43 @@ impl LectureWorker {
                 }))
             }
         }
+    }
+
+    /// 把「下载中」超时未完成的待办判失败，并通知用户重发。
+    ///
+    /// 下载在后台跑（2026-11-16 起），容器重启/进程被杀会把它掐在半路——
+    /// 那条待办会永远停在 downloading：worker 跳过它，用户还以为在下载。
+    /// 这里按下载超时（30 分钟）兜底判失败。
+    fn fail_stale_downloads(&self, now: i64) -> Result<usize> {
+        let mut failed = 0;
+        for doc in self.store.documents(PENDING_KIND, PENDING_SCAN_LIMIT)? {
+            let Ok(item) = PendingItem::from_document(&doc) else {
+                continue;
+            };
+            if item.status != STATUS_DOWNLOADING || now - item.received_at < DOWNLOAD_STALE_SECS {
+                continue;
+            }
+            let mut next = item.clone();
+            next.status = "failed".into();
+            next.error = Some("下载超时未完成（服务可能重启过）".into());
+            let written = self.store.put_document(
+                PENDING_KIND,
+                &item.msg_id,
+                Some(doc.revision),
+                &serde_json::to_value(&next)?,
+            )?;
+            if written {
+                failed += 1;
+                eprintln!("[lecture] 下载超时未完成，判失败：{}", item.msg_id);
+                notify_download_failed(
+                    self.store.as_ref(),
+                    &self.config.backend,
+                    &next,
+                    "下载超时未完成（服务可能重启过）",
+                );
+            }
+        }
+        Ok(failed)
     }
 
     /// 切片 → ASR 逐片转写 → 落盘成一份转写全文。
