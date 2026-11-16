@@ -172,7 +172,7 @@ Worker 会真实调用 Agent 并消耗对应额度。`--once` 最多领取一个
 | [`src/domain/`](src/domain/) · [`src/app/`](src/app/) | 领域规则与公共用例 |
 | [`src/ports/`](src/ports/) · [`src/adapters/`](src/adapters/) | 能力接口与 Agent、数据库、来源适配 |
 | [`src/runtime/`](src/runtime/) · [`src/privacy/`](src/privacy/) | 执行机制、通知派发、脱敏与回填 |
-| [`plugins/`](plugins/) | 24 个业务附属（论文/RSS/水电/课表/作业/图书馆/课堂录音等），独立 crate 编译热插拔 |
+| [`plugins/`](plugins/) | 25 个业务附属（论文/RSS/水电/课表/作业/图书馆/课堂录音/校园跑等），独立 crate 编译热插拔 |
 | [`src/channels/`](src/channels/) | 消息渠道（QQ 网关与飞书 webhook） |
 | [`src/ingress/`](src/ingress/) · [`src/bootstrap/`](src/bootstrap/) | 入口、配置与装配 |
 | [`src/modules/`](src/modules/) | 插件注册表空壳（2026-11-03 全量插件化后仅剩 linkme 定义与共享工具） |

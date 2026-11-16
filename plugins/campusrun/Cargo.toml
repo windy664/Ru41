@@ -1,0 +1,26 @@
+[package]
+name = "ru41-plugin-campusrun"
+version = "0.1.0"
+edition = "2024"
+description = "校园跑附属：只读运动世界校园（pace-forge 控制台）的校园跑进度与记录"
+
+[lib]
+crate-type = ["cdylib", "rlib"]
+
+[features]
+plugin-entry = []
+
+[dependencies]
+# 必须与宿主同一版本（ABI 握手校验 crate 版本 + deps stamp）。
+ru41 = { path = "../.." }
+anyhow = "1"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+chrono = { version = "0.4", default-features = false, features = ["std", "clock"] }
+reqwest = { version = "0.12", default-features = false, features = ["rustls-tls", "json"] }
+tokio = { version = "1", features = ["time"] }
+
+[dev-dependencies]
+tempfile = "3"
+axum = { version = "0.8", features = ["json", "tokio", "http1"] }
+tokio = { version = "1", features = ["macros", "rt-multi-thread", "net"] }
