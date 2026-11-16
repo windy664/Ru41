@@ -12,7 +12,7 @@ description: 用于回答用户「校园跑」（运动世界校园的记分跑�
 - `ru41 campusrun records [条数]`：最近若干条记录。
 - `ru41 campusrun cheat`：违规名单状态。
 
-输出是 Markdown（含数字与单位），可直接整理后回复用户。
+输出是一个 JSON 字符串，里面装的是 Markdown（`\n` 是换行）——解析出正文再整理回复，别把转义符原样贴给用户。
 
 ## 读数时必须注意
 
