@@ -497,7 +497,9 @@ fn is_quiet_digest(summary: &str) -> bool {
 /// 用户要的是原生 codex 输出，不是 ru41 的机械说明。
 fn notify_text(task: &Task) -> String {
     match &task.result {
-        Some(result) => result.summary.clone(),
+        // 模型输出同样要作废占位符：模型正文里写了 `{{cmd:…}}` 会被 QQ 侧
+        // 当成可点指令，伪造出一个动作。可点动作只该由插件的结构化动作产生。
+        Some(result) => crate::interactive::escape_cmd_tokens(&result.summary),
         None => format!(
             "## 任务失败\n\n{}\n\n> {}",
             task_brief(task),

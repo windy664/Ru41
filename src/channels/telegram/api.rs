@@ -20,6 +20,30 @@ pub struct BotIdentity {
     pub first_name: String,
 }
 
+/// 平台拒绝的结构化错误：保留 `error_code` 与 flood 的 `retry_after`，
+/// 上层据此区分「重试」「退避」「永久失败」——只靠错误文案判断太脆。
+#[derive(Debug, Clone)]
+pub struct PlatformError {
+    /// 脱敏后的方法地址（不含 token）。
+    pub method: String,
+    pub code: i64,
+    pub description: String,
+    /// 429 时平台给的等待秒数。
+    pub retry_after: Option<u64>,
+}
+
+impl std::fmt::Display for PlatformError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(
+            f,
+            "telegram {} rejected ({}): {}",
+            self.method, self.code, self.description
+        )
+    }
+}
+
+impl std::error::Error for PlatformError {}
+
 /// Telegram Bot API 客户端。
 pub struct TelegramApi {
     http: reqwest::Client,
@@ -126,11 +150,16 @@ impl TelegramApi {
                 .get("error_code")
                 .and_then(Value::as_i64)
                 .unwrap_or(0);
-            bail!(
-                "telegram {} rejected ({code}): {}",
-                self.redacted_url(method),
-                self.sanitize(description)
-            );
+            let retry_after = payload
+                .get("parameters")
+                .and_then(|parameters| parameters.get("retry_after"))
+                .and_then(Value::as_u64);
+            bail!(PlatformError {
+                method: self.redacted_url(method),
+                code,
+                description: self.sanitize(description),
+                retry_after,
+            });
         }
         Ok(payload.get("result").cloned().unwrap_or(Value::Null))
     }
@@ -254,6 +283,15 @@ pub fn is_parse_error(error: &anyhow::Error) -> bool {
         || text.contains("can't find end tag")
 }
 
+/// 平台是否因限速（429）拒收；返回平台建议的等待秒数。
+///
+/// 429 是**可恢复**的：短等待就地退避重试，长等待交给投递层改期重发
+/// （就地 sleep 太久会把整个网关卡住）。
+pub fn flood_retry_after(error: &anyhow::Error) -> Option<u64> {
+    let platform = error.downcast_ref::<PlatformError>()?;
+    (platform.code == 429).then(|| platform.retry_after.unwrap_or(1).max(1))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -280,5 +318,49 @@ mod tests {
         assert!(!is_parse_error(&ok));
         let bad = anyhow::anyhow!("telegram rejected (400): Bad Request: can't parse entities");
         assert!(is_parse_error(&bad));
+    }
+
+    #[test]
+    fn flood_error_exposes_retry_after() {
+        let error = anyhow::Error::new(PlatformError {
+            method: "https://api.telegram.org/bot<redacted>/sendMessage".into(),
+            code: 429,
+            description: "Too Many Requests: retry after 7".into(),
+            retry_after: Some(7),
+        });
+        assert_eq!(flood_retry_after(&error), Some(7));
+        // 非限速错误不触发退避。
+        let other = anyhow::Error::new(PlatformError {
+            method: "https://api.telegram.org/bot<redacted>/sendMessage".into(),
+            code: 400,
+            description: "Bad Request".into(),
+            retry_after: None,
+        });
+        assert_eq!(flood_retry_after(&other), None);
+    }
+
+    #[test]
+    fn flood_error_without_parameters_defaults_to_one_second() {
+        let error = anyhow::Error::new(PlatformError {
+            method: "https://api.telegram.org/bot<redacted>/sendMessage".into(),
+            code: 429,
+            description: "Too Many Requests".into(),
+            retry_after: None,
+        });
+        assert_eq!(flood_retry_after(&error), Some(1));
+    }
+
+    #[test]
+    fn platform_error_keeps_the_redacted_method() {
+        let api = TelegramApi::new("123456:secret-token-value");
+        let error = PlatformError {
+            method: api.redacted_url("sendMessage"),
+            code: 400,
+            description: "Bad Request".into(),
+            retry_after: None,
+        };
+        let text = error.to_string();
+        assert!(!text.contains("secret-token-value"), "{text}");
+        assert!(text.contains("sendMessage"), "{text}");
     }
 }

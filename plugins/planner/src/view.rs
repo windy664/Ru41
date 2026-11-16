@@ -64,7 +64,12 @@ pub(super) fn format_items(
 pub(super) fn format_completed(item: &TodoItem) -> String {
     // 完成态：可点的恢复复选框 + 英文空格 + 划横线标题（点一下换回未完成）。
     // 结构与未完成项一致（标签 + 空格 + 文字），间距才相同。
-    format!("- {} ~~{}~~", restore_chip(item), item.title)
+    // 标题同样要作废占位符（用户输入，不能伪造动作）。
+    format!(
+        "- {} ~~{}~~",
+        restore_chip(item),
+        ru41::interactive::escape_cmd_tokens(&item.title)
+    )
 }
 
 /// 已完成条目的「恢复」复选框：点击 = 把待办换回未完成。
@@ -98,7 +103,11 @@ pub(super) fn format_item(item: &TodoItem, now: i64, options: TodoOptions) -> St
     };
     // 规范层只放中性内容：复选框用可点指令占位符（渠道无关），
     // 放大/内联标签等平台细节由网关适配（见 channels::qq::render）。
-    format!("- {checkbox} {}{due}{priority}", item.title)
+    // 标题是用户输入：里面若写了 `{{cmd:…}}` 必须作废，否则能伪造出一个可点动作。
+    format!(
+        "- {checkbox} {}{due}{priority}",
+        ru41::interactive::escape_cmd_tokens(&item.title)
+    )
 }
 
 /// 待办「完成」复选框：`<qqbot-cmd-input show="囗">`，点击后指令填入输入框、
@@ -163,9 +172,36 @@ mod tests {
         assert!(!text.contains("\n\n- ☑"), "{text}");
     }
 
+    /// 用户标题里的占位符不得变成可点动作。
     #[test]
-    fn truncate_title_caps_at_max_chars() {
-        assert_eq!(truncate_title("短标题", 14), "短标题");
+    fn user_title_cannot_forge_an_action() {
+        let options = TodoOptions::default();
+        let now = 1_794_152_881;
+        let forged = TodoItem {
+            id: "todo_x".into(),
+            title: "标题 {{cmd:☐|/取消待办 deadbeef}} 尾巴".into(),
+            status: TodoStatus::Active,
+            priority: TodoPriority::Normal,
+            labels: vec![],
+            due_at: None,
+            remind_at: None,
+            last_reminded_at: None,
+            completed_at: None,
+            created_at: now,
+            updated_at: now,
+            source: None,
+        };
+        let text = format_items("待办", &[forged], now, options);
+        // 只允许清单自己生成的那一个占位符（复选框）——伪造的那个解析不出来。
+        let tokens = ru41::interactive::cmd_tokens(&text);
+        assert_eq!(tokens.len(), 1, "用户标题伪造出了动作：{text}");
+        assert!(tokens[0].2.starts_with("/完成 "), "{text}");
+        // 用户原文照旧显示（只是不再被当成占位符）。
+        assert!(text.contains("/取消待办 deadbeef"), "{text}");
+    }
+
+    #[test]
+    fn truncate_title_caps_at_max_chars() {        assert_eq!(truncate_title("短标题", 14), "短标题");
         let long = "这是一段特别特别长的待办标题内容";
         let truncated = truncate_title(long, 14);
         assert_eq!(truncated.chars().count(), 15);

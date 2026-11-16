@@ -27,6 +27,61 @@ pub struct TelegramNotifier {
     api: Arc<TelegramApi>,
     /// target 为 `default` 时使用的默认 chat（数字 chat_id 或 @username）。
     default_chat_id: Option<String>,
+    /// 每会话出站节流（限速冷却 + 最小间隔）。
+    gate: Arc<ChatGate>,
+}
+
+/// 同一会话的最小发送间隔：Telegram 对单个会话的消息速率有限（实务上约 1 条/秒），
+/// 长日报被切成多条后连发会被 429 拒收，消息直接丢。
+const MIN_SEND_INTERVAL: std::time::Duration = std::time::Duration::from_millis(1100);
+/// 429 后就地退避的上限：超过就不等了，交给投递层改期重发
+/// （网关是长驻进程，为一条消息睡几十秒会把其它会话一起堵住）。
+const MAX_INLINE_FLOOD_WAIT: std::time::Duration = std::time::Duration::from_secs(5);
+
+/// 每会话的出站闸门：最小间隔 + 限速冷却截止时间。
+#[derive(Default)]
+struct ChatGate {
+    min_interval: std::time::Duration,
+    state: std::sync::Mutex<std::collections::HashMap<String, GateState>>,
+}
+
+#[derive(Default)]
+struct GateState {
+    /// 下一条消息允许发出的时刻。
+    next_allowed: Option<std::time::Instant>,
+    /// 平台限速的冷却截止时间。
+    cooldown_until: Option<std::time::Instant>,
+}
+
+impl ChatGate {
+    /// 排队等一个发送位；返回后该会话的间隔已预留（并发发送不会挤在一起）。
+    async fn wait_turn(&self, chat_id: &str) {
+        let wait = {
+            let mut map = self.state.lock().unwrap();
+            let now = std::time::Instant::now();
+            let entry = map.entry(chat_id.to_owned()).or_default();
+            let allowed = entry
+                .next_allowed
+                .into_iter()
+                .chain(entry.cooldown_until)
+                .max()
+                .map(|at| at.max(now))
+                .unwrap_or(now);
+            entry.next_allowed = Some(allowed + self.min_interval);
+            allowed.saturating_duration_since(now)
+        };
+        if !wait.is_zero() {
+            tokio::time::sleep(wait).await;
+        }
+    }
+
+    /// 平台限速：这段时间内该会话的所有出站都往后排。
+    fn note_flood(&self, chat_id: &str, retry_after: std::time::Duration) {
+        let mut map = self.state.lock().unwrap();
+        let entry = map.entry(chat_id.to_owned()).or_default();
+        let until = std::time::Instant::now() + retry_after;
+        entry.cooldown_until = Some(entry.cooldown_until.map_or(until, |at: std::time::Instant| at.max(until)));
+    }
 }
 
 impl TelegramNotifier {
@@ -34,6 +89,10 @@ impl TelegramNotifier {
         Self {
             api,
             default_chat_id,
+            gate: Arc::new(ChatGate {
+                min_interval: MIN_SEND_INTERVAL,
+                state: std::sync::Mutex::new(std::collections::HashMap::new()),
+            }),
         }
     }
 
@@ -74,19 +133,39 @@ impl TelegramNotifier {
     ) -> Result<()> {
         // 通用渲染层：规范 Markdown → Telegram HTML（表格/公式统一降级）。
         let html = markdown::render(chunk, &markdown::TELEGRAM);
-        match self
+        // 每会话排队：长日报会切成多条，连发会撞限速被 429 拒收（消息直接丢）。
+        self.gate.wait_turn(chat_id).await;
+        let result = self
             .api
             .send_message(chat_id, &html, Some("HTML"), reply_to, reply_markup)
-            .await
-        {
+            .await;
+        match result {
             Ok(_) => Ok(()),
             Err(error) if api::is_parse_error(&error) => {
+                // 排版被拒：降级成纯文本重发（仍要排队，别再撞一次限速）。
+                self.gate.wait_turn(chat_id).await;
                 self.api
                     .send_message(chat_id, chunk, None, reply_to, reply_markup)
                     .await?;
                 Ok(())
             }
-            Err(error) => Err(error),
+            Err(error) => {
+                // 限速（429）：短等待就地退避重试；长等待不睡——交给投递层改期重发，
+                // 长驻网关为一条消息睡几十秒会把其它会话一起堵住。
+                if let Some(seconds) = api::flood_retry_after(&error) {
+                    let wait = std::time::Duration::from_secs(seconds);
+                    self.gate.note_flood(chat_id, wait);
+                    if wait <= MAX_INLINE_FLOOD_WAIT {
+                        tokio::time::sleep(wait).await;
+                        self.gate.wait_turn(chat_id).await;
+                        self.api
+                            .send_message(chat_id, &html, Some("HTML"), reply_to, reply_markup)
+                            .await?;
+                        return Ok(());
+                    }
+                }
+                Err(error)
+            }
         }
     }
 }
@@ -147,6 +226,8 @@ impl NotifyChannel for TelegramNotifier {
     ) -> Pin<Box<dyn Future<Output = Result<()>> + Send + 'a>> {
         Box::pin(async move {
             let chat_id = self.resolve_chat(target)?;
+            // 媒体同样占会话的发送额度，多张图连发也要排队。
+            self.gate.wait_turn(&chat_id).await;
             self.api.send_media(&chat_id, media, caption).await?;
             Ok(())
         })

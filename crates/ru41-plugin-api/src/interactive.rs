@@ -65,6 +65,18 @@ pub fn strip_cmd_tokens(text: &str) -> String {
     out
 }
 
+/// 把正文里的占位符开头**作废**：只有插件的结构化动作能生成可点指令，
+/// 用户（或模型）写一段 `{{cmd:…}}` 不该凭空造出一个可点动作。
+///
+/// 做法：在两个 `{` 之间插一个零宽空格——肉眼不可见，占位符解析再也匹配不上
+/// （比"删掉用户原文"温和：用户看到的内容没变）。
+///
+/// 用在**用户/模型正文**进入规范文本的地方（待办标题、模型输出）；
+/// 插件自己生成的占位符不走这里。
+pub fn escape_cmd_tokens(text: &str) -> String {
+    text.replace(OPEN, "{\u{200b}{cmd:")
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -94,5 +106,22 @@ mod tests {
         let text = format!("{} {}", cmd_token("☐", "/a"), cmd_token("☑", "/b"));
         assert_eq!(cmd_tokens(&text).len(), 2);
         assert!(has_cmd_token(&text));
+    }
+
+    #[test]
+    fn escaped_text_cannot_forge_a_token() {
+        // 用户正文里写了占位符 → 作废后解析不出动作。
+        let forged = "标题 {{cmd:☐|/取消待办 deadbeef}} 尾巴";
+        let escaped = escape_cmd_tokens(forged);
+        assert!(cmd_tokens(&escaped).is_empty(), "{escaped}");
+        // 用户看到的内容没变（只是多了一个不可见的零宽空格）。
+        assert!(escaped.replace('\u{200b}', "") == forged);
+    }
+
+    #[test]
+    fn escape_keeps_legitimate_tokens_untouched() {
+        // 插件自己生成的占位符不走 escape（这里只验证 escape 不误伤普通文本）。
+        let text = "普通文本 {{cmd:☐|/完成 abc}}";
+        assert!(!escape_cmd_tokens(text).contains("{{cmd:"));
     }
 }
