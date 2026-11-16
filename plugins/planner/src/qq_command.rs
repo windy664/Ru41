@@ -17,7 +17,7 @@ use crate::{
         extract_note, parse_event_view, split_leading_time, split_selector_and_time,
         split_when_and_title,
     },
-    view::{format_items, truncate_title, usage},
+    view::{format_items, truncate_title, usage, visible_items},
 };
 
 /// QQ 私人待办入口；持久化与日期视图由核心 TodoService 提供。
@@ -164,12 +164,14 @@ impl SimpleCommand for TodoQqCommand {
 fn todo_list_reply(service: &TodoService, now: i64, options: TodoOptions) -> Result<Reply> {
     let items: Vec<TodoItem> = service.list(TodoView::All, now, 50)?;
     let text = format_items("待办", &items, now, options);
-    let markup = todo_actions_markup(&items);
+    // 按钮只给**正文里出现的条目**配：正文只显示最近 5 条已完成，按钮却给全部
+    // 历史条目都配的话，按钮与正文对不上（正文里没有的动作反而有按钮）。
+    let markup = todo_actions_markup(&visible_items(&items, now));
     Ok(Reply::with_markup(text, markup))
 }
 
 /// 待办条目的交互按钮：一行一条，标签带 ☐/☑ 与标题短名，指令是渠道无关的命令文本。
-fn todo_actions_markup(items: &[TodoItem]) -> ReplyMarkup {
+fn todo_actions_markup(items: &[&TodoItem]) -> ReplyMarkup {
     let mut markup = ReplyMarkup::new();
     for item in items {
         let (marker, command) = if item.status == TodoStatus::Active {
