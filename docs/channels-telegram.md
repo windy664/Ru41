@@ -182,6 +182,21 @@ DoH + IP 字面量兜底、连接池代退休——这些是**多用户/群组/�
 
 **双投（fanout）**：`[notify] fanout = ["telegram"]` 让**主动推送**（路由无 `msg_id` 的任务）同时发多个渠道；聊天任务带 `msg_id`，只回原会话，不双发。
 
+⚠️ **提醒类消息曾经不双投**：`fanout` 原本只在 dispatcher 里生效，而到点提醒、行程提醒、
+错过的课程提醒是**直接调渠道发的**（`notifier_for_route` → 单个渠道），只到 QQ；
+提醒容器也没带 telegram token。现在：
+
+- 新增 `ports::channel::ProactiveChannel` 端口 + `runtime::proactive`：
+  主动推送**按渠道分别记账**（与 dispatcher 同一套 `delivery` 文档与 CAS 写法），
+  某个渠道失败重试时已送达的渠道不重发，同一 `delivery_id` 幂等；
+- 三个提醒函数改走该投递口，各自带稳定的投递 id（该轮最早那条的时间戳）；
+- **容器必须带凭据**：`ru41-todo-remind` / `ru41-class-remind` 现在也带
+  `RU41_TELEGRAM_BOT_TOKEN`（从 `/home/windy2/.ru41-telegram.env` 读，写在
+  `.roll/specs.json` 的容器规格里）——没有凭据就发不出去。
+
+实测（2026-11-16）：造一条到期待办 → `todo remind --once` → 记账
+`proactive:todo:<anchor>` 的 `sent = {"qq": true, "telegram": true}` ✓。
+
 投递按**渠道分别记账**（`delivery` 文档里的 `sent` 映射）：某个渠道失败重试时，已送达的渠道不会重发；全部送达才标记任务已通知。
 
 两道保险：① 每个容器只注册**自己**的渠道（QQ 容器没有 telegram token，Telegram 容器没有 QQ 凭据），dispatcher 找不到对应渠道就跳过；② 两个 dispatcher 同时盯上同一任务时，`delivery` 文档用 revision CAS + owner 抢占，只有一个能拿到发送权。
