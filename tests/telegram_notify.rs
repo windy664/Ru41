@@ -229,7 +229,7 @@ async fn flood_control_is_retried_in_place() {
         r#"{"ok":false,"error_code":429,"description":"Too Many Requests: retry after 1","parameters":{"retry_after":1}}"#,
         r#"{"ok":true,"result":{"message_id":11}}"#,
     ]);
-    let notifier = notifier(&base, Some("998877"));
+    let notifier = notifier(&base, Some("900005"));
     notifier.send(DEFAULT_TARGET, None, "hi").await.unwrap();
     let recorded = recorded.lock().unwrap();
     assert_eq!(recorded.len(), 2, "限速后应重试一次");
@@ -242,7 +242,7 @@ async fn long_flood_wait_is_not_slept_inline() {
     let (base, recorded) = mock_bot(vec![
         r#"{"ok":false,"error_code":429,"description":"Too Many Requests: retry after 30","parameters":{"retry_after":30}}"#,
     ]);
-    let notifier = notifier(&base, Some("998877"));
+    let notifier = notifier(&base, Some("900003"));
     let started = std::time::Instant::now();
     let error = notifier.send(DEFAULT_TARGET, None, "hi").await.unwrap_err();
     assert!(format!("{error:#}").contains("429"), "{error:#}");
@@ -258,7 +258,7 @@ async fn long_flood_wait_is_not_slept_inline() {
 #[tokio::test]
 async fn same_chat_messages_are_spaced_out() {
     let (base, recorded) = mock_bot(vec![]);
-    let notifier = notifier(&base, Some("998877"));
+    let notifier = notifier(&base, Some("900001"));
     let started = std::time::Instant::now();
     notifier.send(DEFAULT_TARGET, None, "第一条").await.unwrap();
     notifier.send(DEFAULT_TARGET, None, "第二条").await.unwrap();
@@ -270,14 +270,30 @@ async fn same_chat_messages_are_spaced_out() {
     assert_eq!(recorded.lock().unwrap().len(), 2);
 }
 
+/// 进程级共享：网关回复与投递推送是两条路，但发的是同一个会话——必须共用的闸门。
+#[tokio::test]
+async fn gate_is_shared_across_notifiers() {
+    let (base, _) = mock_bot(vec![]);
+    let gateway_side = notifier(&base, Some("900006"));
+    let dispatcher_side = notifier(&base, Some("900006"));
+    let started = std::time::Instant::now();
+    gateway_side.send(DEFAULT_TARGET, None, "网关回复").await.unwrap();
+    dispatcher_side.send(DEFAULT_TARGET, None, "投递推送").await.unwrap();
+    assert!(
+        started.elapsed() >= Duration::from_millis(1000),
+        "两个 notifier 各发各的，会连发撞限速：{:?}",
+        started.elapsed()
+    );
+}
+
 /// 不同会话互不阻塞：一个会话排队不该拖住另一个。
 #[tokio::test]
 async fn different_chats_do_not_block_each_other() {
     let (base, _) = mock_bot(vec![]);
-    let notifier = notifier(&base, Some("998877"));
+    let notifier = notifier(&base, Some("900002"));
     let started = std::time::Instant::now();
-    notifier.send("chat:111", None, "a").await.unwrap();
-    notifier.send("chat:222", None, "b").await.unwrap();
+    notifier.send("chat:900002a", None, "a").await.unwrap();
+    notifier.send("chat:900002b", None, "b").await.unwrap();
     assert!(
         started.elapsed() < Duration::from_millis(900),
         "不同会话不该互相等：{:?}",
@@ -289,7 +305,7 @@ async fn different_chats_do_not_block_each_other() {
 #[tokio::test]
 async fn long_message_chunks_are_spaced_out() {
     let (base, recorded) = mock_bot(vec![]);
-    let notifier = notifier(&base, Some("998877"));
+    let notifier = notifier(&base, Some("900004"));
     let body = "正文段落。\n\n".repeat(900);
     let started = std::time::Instant::now();
     notifier.send(DEFAULT_TARGET, None, &body).await.unwrap();
