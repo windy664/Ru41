@@ -129,17 +129,12 @@ impl LectureWorker {
             Ok(transcript) => {
                 // 转写只存在于内存与 agent prompt，不落 vault。
                 let enqueued = self.enqueue_agent(&item, &course, &transcript)?;
-                self.update(&doc.revision, &item, |v| {
-                    v.status = "done".into();
-                    v.course = Some(course.clone());
-                    v.error = None;
-                })?;
-                // 转写持久化进记录：工作区会被清理，转写不能只活在磁盘上——
-                // 丢了就再也补不回来（2026-11-09 丢过一节网络空间安全导论的转写，
-                // 连原始录音一起没了，笔记只能写「待补」）。
-                self.update(&doc.revision, &item, |v| {
-                    v.transcript = Some(transcript.text.clone());
-                })?;
+                // 状态、课程、转写全文**一次 CAS 更新**落库。
+                // （原来分两次 update：第一次把 revision 推上去了，第二次还拿着旧
+                // revision → CAS 必失败 → 转写从未落库、工作区也从不清理。
+                // 2026-11-16 线上实测：29 条记录 transcript 全是 NULL、切片堆了 1.1G、
+                // 每轮 poll 都报「状态更新竞争失败」。）
+                self.mark_done(&doc, &item, &course, &transcript.text)?;
                 // 清理只删磁盘大头：切片立刻删（每片几十 MB），原始音频按保留期留，
                 // 转写文本留着。整目录删掉会让重跑变成不可能。
                 let work = self.config.workspace.join(&item.msg_id);
@@ -162,6 +157,26 @@ impl LectureWorker {
                 }))
             }
         }
+    }
+
+    /// 转写完成后落库：状态、课程、转写全文一次 CAS 更新写完。
+    ///
+    /// 转写必须持久化进记录：工作区会被清理，转写不能只活在磁盘上——
+    /// 丢了就再也补不回来（2026-11-09 丢过一节网络空间安全导论的转写，
+    /// 连原始录音一起没了，笔记只能写「待补」）。
+    fn mark_done(
+        &self,
+        doc: &ru41::domain::records::Document,
+        item: &PendingItem,
+        course: &str,
+        transcript: &str,
+    ) -> Result<()> {
+        self.update(&doc.revision, item, |v| {
+            v.status = "done".into();
+            v.course = Some(course.to_owned());
+            v.error = None;
+            v.transcript = Some(transcript.to_owned());
+        })
     }
 
     /// 把「下载中」超时未完成的待办判失败，并通知用户重发。
@@ -541,6 +556,74 @@ fn archive_name(item: &PendingItem) -> (String, String) {
 mod tests {
     use super::{NotePrompt, TRANSCRIPT_INLINE_LIMIT, Transcript, build_note_prompt};
     use std::path::PathBuf;
+
+    /// 状态、课程、转写全文必须**一次 CAS 更新**落库。
+    ///
+    /// 原来分两次 update：第一次把 revision 推上去了，第二次还拿着旧 revision
+    /// → CAS 必失败 → 转写从未落库、工作区也从不清理（2026-11-16 线上实测：
+    /// 29 条记录 transcript 全是 NULL、切片堆了 1.1G、每轮 poll 报竞争失败）。
+    #[test]
+    fn done_state_lands_with_transcript_in_one_update() {
+        use ru41::adapters::database::sqlite::SqliteTaskStore;
+        use ru41::ports::storage::TaskStore;
+        use std::sync::Arc;
+
+        let tmp = tempfile::tempdir().unwrap();
+        let store: Arc<dyn TaskStore> =
+            Arc::new(SqliteTaskStore::open(&tmp.path().join("state.db")).unwrap());
+        let mut config = crate::config::LectureSection {
+            api_key: Some("test-key".into()),
+            ..Default::default()
+        }
+        .resolved()
+        .unwrap();
+        config.workspace = tmp.path().to_path_buf();
+        let worker = super::LectureWorker::new(
+            store.clone(),
+            ru41::domain::todo::TodoOptions::default(),
+            config,
+        );
+        let item = crate::pending::PendingItem {
+            file: String::new(),
+            filename: "a.mp3".into(),
+            size: 1,
+            channel: "qq".into(),
+            target: "u".into(),
+            msg_id: "m1".into(),
+            received_at: ru41::util::now(),
+            status: "pending".into(),
+            error: None,
+            course: None,
+            transcript: None,
+        };
+        store
+            .put_document(
+                crate::pending::PENDING_KIND,
+                "m1",
+                None,
+                &serde_json::to_value(&item).unwrap(),
+            )
+            .unwrap();
+        let doc = store
+            .document(crate::pending::PENDING_KIND, "m1")
+            .unwrap()
+            .unwrap();
+        worker
+            .mark_done(&doc, &item, "高等数学", "老师讲了导数")
+            .unwrap();
+        let after = store
+            .document(crate::pending::PENDING_KIND, "m1")
+            .unwrap()
+            .unwrap();
+        let saved = crate::pending::PendingItem::from_document(&after).unwrap();
+        assert_eq!(saved.status, "done");
+        assert_eq!(saved.course.as_deref(), Some("高等数学"));
+        assert_eq!(
+            saved.transcript.as_deref(),
+            Some("老师讲了导数"),
+            "转写全文必须一起落库（2026-11-16 之前它从没落过）"
+        );
+    }
 
     /// 短转写内联、长转写只给路径：两种形态都要让 agent 拿到全文。
     #[test]
