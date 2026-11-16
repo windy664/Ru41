@@ -130,7 +130,7 @@ NousResearch/hermes-agent（★26 万）的 telegram 适配层有 **60 个模块
 | 表格降级有章法 | `**行标题**` + `• 列: 值`，不删列 | 我们降级成「一行 · 一行」条目（`Card` 版式一致性优先） |
 | 只允许白名单标签 | 白名单外全转义 | 我们正文统一转义 `& < >`，URL 额外转义 `"`（属性） |
 | 占位符 stash | 先成型的片段存住，最后统一回填 | 已有（行内代码/链接先 stash，避免被后续替换二次破坏） |
-| 每会话发送槽 | send 与 edit 共用 1s 槽；429 冷却窗 fail closed | `ChatGate`：每 chat 最小间隔 1.1s + 429 冷却 |
+| 每会话发送槽 | send 与 edit 共用 1s 槽；429 冷却窗 fail closed | `ChatGate`：每 chat 最小间隔 1.1s + 429 冷却；**进程级共享**（网关回复与投递推送是两条路，发的是同一个会话，各自一份节流器就会各发各的） |
 | 限速错误分类 | REFUSED/FLOOD/UNSENT/LOST 分开处理；LOST 绝不换形重发 | `PlatformError` 带 `error_code`/`retry_after`；429 短等待就地退避，长等待交给投递层改期 |
 | 长惩罚不 inline sleep | >5s 交上层 ledger，避免钉死协程 | 同上（`MAX_INLINE_FLOOD_WAIT = 5s`） |
 | 幂等键不能只靠 message_id | 用 `bot_id:update_id`（message_id 在群聊里不全局唯一） | 键改成 `telegram:msg:{chat_id}:{message_id}` |
