@@ -1,0 +1,13 @@
+# 校园跑插件配置模板；复制到 plugins.d/campusrun/config.toml 后修改。
+# 令牌属密钥：用环境变量注入（容器 compose 里配 PACE_FORGE_TOKEN），别写进仓库。
+
+[campusrun]
+# pace-forge 控制台基址。两个容器不在同一个 compose 网络，
+# **容器名 pace-forge 解析不了**，用宿主地址：
+#   http://172.22.0.1:9999    宿主在 pace-forge 网络上的网关
+#   http://192.168.1.223:9999 宿主 LAN IP
+base_url = "http://172.22.0.1:9999"
+# 控制台令牌的环境变量名（默认 PACE_FORGE_TOKEN）。
+token_env = "PACE_FORGE_TOKEN"
+# 单次请求超时（秒），默认 15。
+timeout_secs = 15

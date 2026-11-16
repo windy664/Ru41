@@ -48,9 +48,10 @@
 - [恒源云 GPU 库存监控](sources-compshare.md)：light-gpu 容量接口、P40 有货提醒与会话过期告警
 - [微助教签到与作业](sources-teachermate.md)：openid 直连、作业临期/过期提醒（每日一次）
 - [课堂录音转写](sources-lecture.md)：Paraformer 自托管 ASR、笔记落课程目录
+- [校园跑进度（只读）](sources-campusrun.md)：读 pace-forge 控制台的学期进度、记录与违规状态
 - [图书馆检索逆向](library-recon.md)：libsp 检索协议、馆藏定位与追书
 
-## 插件清单（23 个，均在 `plugins/`）
+## 插件清单（24 个，均在 `plugins/`）
 
 新开发者从这里对照找代码；标 📄 的有独立文档。
 
@@ -65,6 +66,7 @@
 | 📄 jwxt | 教务课表拉取、调停课、每日课表推送 | sources-jwxt.md |
 | 📄 compshare | 恒源云 GPU 有货监控 | sources-compshare.md |
 | 📄 lecture | 课堂录音转写整理为课程笔记 | sources-lecture.md |
+| 📄 campusrun | 校园跑学期进度/记录/违规状态（只读） | sources-campusrun.md |
 | 📄 library | 图书馆藏检索、找书、追书 | library-recon.md |
 | homework | 三平台作业聚合 → 学期「作业总表.md」 | 与 zhihuishu/chaoxing/teachermate 快照字段对齐 |
 | events | 活动/讲座/论坛日程抓取 → Obsidian | 偏科技/AI/安全，大湾区优先 |
