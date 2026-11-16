@@ -6,6 +6,7 @@
 use anyhow::{Context, Result};
 use ru41::domain::records::Document;
 use serde::{Deserialize, Serialize};
+use std::path::Path;
 
 pub const PENDING_KIND: &str = "lecture.pending";
 
@@ -140,93 +141,117 @@ fn resolve_weekday_time(weekday: u32, hour: u32, minute: u32, anchor: i64) -> Op
 /// 从录音文件名解析开录时刻（本地时区 unix 秒）。覆盖常见录音 app 命名：
 /// `20261103_143000`、`20261103143000`、`2026-11-03 14-30-05`、
 /// `Rec_2026.11.03-14.30`、`录音 2026年11月3日 14_30`、
-/// `2026年11月04日 上午09点11分(1).mp3`（QQ 常见中文时刻格式）。
+/// `2026年11月04日 上午09点11分(1).mp3`（QQ 常见中文时刻格式）、
+/// `语音 261116_144234`（两位年份的紧凑命名）。
 /// 解析不出返回 None。
 pub fn parse_recorded_at(filename: &str) -> Option<i64> {
     use chrono::{Local, NaiveDate, TimeZone};
-    // 去扩展名；时间串可能在任意位置（Rec_ 前缀、「录音 」等字样前后）。
-    let stem = filename
-        .rsplit_once('.')
-        .map(|(s, _)| s)
-        .unwrap_or(filename);
+    // 去扩展名：只剥音频扩展名——无扩展名的名字（`语音 26.11.16 14.42`）若按
+    // 「最后一个点」切，会把时刻尾巴切掉。时间串本身可能在任意位置
+    // （Rec_ 前缀、「录音 」等字样前后）。
+    let stem = match filename.rsplit_once('.') {
+        Some((head, ext)) if AUDIO_EXTENSIONS.contains(&ext.to_ascii_lowercase().as_str()) => head,
+        _ => filename,
+    };
     // 分隔符格式：2026-11-03 14-30-05 / 2026.11.03-14.30 / 2026年11月3日 14_30
     // / 2026年11月4日 下午05点04分（上下午等时段字样可出现在日期与时刻之间）。
+    // 年份 4 位（2026）与 2 位（26）都认。
     let sep = regex::Regex::new(
-        r"(?P<y>\d{4})[-_.年](?P<m>\d{1,2})[-_.月](?P<d>\d{1,2})[日\s_-]*(?:(?P<ampm>上午|早上|凌晨|中午|午后|下午|晚上|傍晚)\s*)?(?P<h>\d{1,2})[点時:：._-](?P<min>\d{1,2})(?:(?:分)?(?:[:：._-](?P<s>\d{1,2}))?秒?)?",
+        r"(?P<y>\d{2,4})[-_.年](?P<m>\d{1,2})[-_.月](?P<d>\d{1,2})[日\s_-]*(?:(?P<ampm>上午|早上|凌晨|中午|午后|下午|晚上|傍晚)\s*)?(?P<h>\d{1,2})[点時:：._-](?P<min>\d{1,2})(?:(?:分)?(?:[:：._-](?P<s>\d{1,2}))?秒?)?",
     )
     .ok()?;
-    // 紧凑格式：20261103_143000 / 20261103143000（纯数字时间戳）
+    // 紧凑格式（4 位年份）：20261103_143000 / 20261103143000（纯数字时间戳）
     let compact = regex::Regex::new(
         r"(?P<y>\d{4})(?P<m>\d{2})(?P<d>\d{2})[_-]?(?P<h>\d{2})(?P<min>\d{2})(?:[_-]?(?P<s>\d{2}))?",
+    )
+    .ok()?;
+    // 紧凑格式（2 位年份）：261116_144234 —— 录音 app 常见「语音 261116_144234」命名。
+    let compact_short = regex::Regex::new(
+        r"(?P<y>\d{2})(?P<m>\d{2})(?P<d>\d{2})[_-]?(?P<h>\d{2})(?P<min>\d{2})(?:[_-]?(?P<s>\d{2}))?",
     )
     .ok()?;
     let num = |caps: &regex::Captures<'_>, name: &str| {
         caps.name(name).and_then(|m| m.as_str().parse::<u32>().ok())
     };
-    for pattern in [&sep, &compact] {
-        let Some(caps) = pattern.captures(stem) else {
-            continue;
-        };
-        let (Some(y), Some(mo), Some(d), Some(h), Some(mi)) = (
-            num(&caps, "y"),
-            num(&caps, "m"),
-            num(&caps, "d"),
-            num(&caps, "h"),
-            num(&caps, "min"),
-        ) else {
-            continue;
-        };
-        let s = num(&caps, "s").unwrap_or(0);
-        // 下午/晚上等字样 + 12 小时制：小于 12 才加，避免「下午17点」变 29 点。
-        let mut h = h;
-        if matches!(
-            caps.name("ampm").map(|m| m.as_str()),
-            Some("下午") | Some("晚上") | Some("午后") | Some("傍晚")
-        ) && h < 12
-        {
-            h += 12;
-        }
-        let Some(date) = NaiveDate::from_ymd_opt(y as i32, mo, d) else {
-            continue;
-        };
-        let Some(naive) = date.and_hms_opt(h, mi, s) else {
-            continue;
-        };
-        let Some(local) = Local.from_local_datetime(&naive).single() else {
-            continue;
-        };
-        // 录音文件名里的时间不该落在未来（如误匹配到随机数字），明显异常就跳过。
-        if local.timestamp() <= chrono::Local::now().timestamp() + 3600 {
-            return Some(local.timestamp());
+    // 一个名字里可能有多串数字（时刻 + 别的），逐个试到解析出合法时刻为止。
+    for pattern in [&sep, &compact, &compact_short] {
+        for caps in pattern.captures_iter(stem) {
+            let (Some(y), Some(mo), Some(d), Some(h), Some(mi)) = (
+                num(&caps, "y"),
+                num(&caps, "m"),
+                num(&caps, "d"),
+                num(&caps, "h"),
+                num(&caps, "min"),
+            ) else {
+                continue;
+            };
+            let s = num(&caps, "s").unwrap_or(0);
+            // 下午/晚上等字样 + 12 小时制：小于 12 才加，避免「下午17点」变 29 点。
+            let mut h = h;
+            if matches!(
+                caps.name("ampm").map(|m| m.as_str()),
+                Some("下午") | Some("晚上") | Some("午后") | Some("傍晚")
+            ) && h < 12
+            {
+                h += 12;
+            }
+            let Some(date) = NaiveDate::from_ymd_opt(normalize_year(y), mo, d) else {
+                continue;
+            };
+            let Some(naive) = date.and_hms_opt(h, mi, s) else {
+                continue;
+            };
+            let Some(local) = Local.from_local_datetime(&naive).single() else {
+                continue;
+            };
+            // 录音文件名里的时间不该落在未来（如误匹配到随机数字），明显异常就跳过。
+            if local.timestamp() <= chrono::Local::now().timestamp() + 3600 {
+                return Some(local.timestamp());
+            }
         }
     }
     None
 }
 
-/// 文件名是否为常见音频扩展名（课堂录音通常以文件形式发送）。
+/// 文件名里的年份归一：4 位直接用；2 位按 POSIX %y 惯例分界（69-99 → 19xx，00-68 → 20xx）。
+fn normalize_year(y: u32) -> i32 {
+    match y {
+        0..=68 => 2000 + y as i32,
+        69..=99 => 1900 + y as i32,
+        _ => y as i32,
+    }
+}
+
+/// 常见音频扩展名（小写，不含点）。
+const AUDIO_EXTENSIONS: [&str; 14] = [
+    "m4a", "mp3", "wav", "aac", "amr", "ogg", "oga", "flac", "wma", "opus", "3gp", "aiff", "aif",
+    "mp2",
+];
+
+/// 文件名是否为课堂录音：常见音频扩展名，或「语音/录音 + 时刻」这种无扩展名命名
+/// （部分录音 app 导出「语音 261116_144234」，转发后扩展名常常就没了）。
 pub fn is_audio_filename(name: &str) -> bool {
     let ext = name
         .rsplit('.')
         .next()
         .unwrap_or_default()
         .to_ascii_lowercase();
-    matches!(
-        ext.as_str(),
-        "m4a"
-            | "mp3"
-            | "wav"
-            | "aac"
-            | "amr"
-            | "ogg"
-            | "oga"
-            | "flac"
-            | "wma"
-            | "opus"
-            | "3gp"
-            | "aiff"
-            | "aif"
-            | "mp2"
-    )
+    if AUDIO_EXTENSIONS.contains(&ext.as_str()) {
+        return true;
+    }
+    Path::new(name).extension().is_none()
+        && has_recording_prefix(name)
+        && parse_recorded_at(name).is_some()
+}
+
+/// 录音类命名前缀：中文「语音/录音/录制」或英文 rec/voice。
+fn has_recording_prefix(name: &str) -> bool {
+    let name = name.trim_start();
+    if name.starts_with("语音") || name.starts_with("录音") || name.starts_with("录制") {
+        return true;
+    }
+    let lower = name.to_ascii_lowercase();
+    lower.starts_with("rec") || lower.starts_with("voice")
 }
 
 /// vault 文件名清洗：路径分隔符与控制字符剔除，长度封顶。
@@ -257,6 +282,51 @@ mod tests {
         for name in ["doc.pdf", "pic.png", "noext", "video.mp4", "note.md"] {
             assert!(!is_audio_filename(name), "{name}");
         }
+    }
+
+    #[test]
+    fn audio_extensionless_recorder_names() {
+        // 部分录音 app 导出「语音 261116_144234」这种无扩展名文件：要当录音收下。
+        // 用 2025 的日子，保证不在未来（解析器拒绝未来的时刻）。
+        assert!(is_audio_filename("语音 250316_144234"));
+        assert!(is_audio_filename("录音 250316_144234"));
+        assert!(is_audio_filename("voice 250316_144234"));
+        // 没有时刻的同前缀文件不算录音，免得把别的文件拖进 ASR。
+        assert!(!is_audio_filename("语音备忘"));
+        assert!(!is_audio_filename("recording"));
+        assert!(!is_audio_filename("语音 250316_144234.txt"));
+    }
+
+    #[test]
+    fn recorded_at_parses_two_digit_year_names() {
+        use chrono::{Local, TimeZone};
+        let ts = |y, mo, d, h, mi: u32, s| {
+            Local
+                .with_ymd_and_hms(y, mo, d, h, mi, s)
+                .single()
+                .unwrap()
+                .timestamp()
+        };
+        // 「语音 261116_144234」这类两位年份命名（真实例子是 2026-11-16 14:42:34；
+        // 这里用 2025 的日子，保证解析器不会因为「未来时刻」把它拒掉）。
+        assert_eq!(
+            parse_recorded_at("语音 250316_144234.m4a"),
+            Some(ts(2025, 3, 16, 14, 42, 34))
+        );
+        assert_eq!(
+            parse_recorded_at("语音 250316_144234"),
+            Some(ts(2025, 3, 16, 14, 42, 34))
+        );
+        // 无扩展名但中间有点：不能把「.42」当扩展名切掉。
+        assert_eq!(
+            parse_recorded_at("语音 25.03.16 14.42"),
+            Some(ts(2025, 3, 16, 14, 42, 0))
+        );
+        // 两位年份按 POSIX %y 惯例分界：99 → 1999。
+        assert_eq!(
+            parse_recorded_at("991231_235959.mp3"),
+            Some(ts(1999, 12, 31, 23, 59, 59))
+        );
     }
 
     #[test]
