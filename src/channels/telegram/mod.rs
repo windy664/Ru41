@@ -27,8 +27,8 @@ pub struct TelegramNotifier {
     api: Arc<TelegramApi>,
     /// target 为 `default` 时使用的默认 chat（数字 chat_id 或 @username）。
     default_chat_id: Option<String>,
-    /// 每会话出站节流（限速冷却 + 最小间隔）。
-    gate: Arc<ChatGate>,
+    /// 每会话出站节流（限速冷却 + 最小间隔）；进程级共享。
+    gate: &'static ChatGate,
 }
 
 /// 同一会话的最小发送间隔：Telegram 对单个会话的消息速率有限（实务上约 1 条/秒），
@@ -80,8 +80,25 @@ impl ChatGate {
         let mut map = self.state.lock().unwrap();
         let entry = map.entry(chat_id.to_owned()).or_default();
         let until = std::time::Instant::now() + retry_after;
-        entry.cooldown_until = Some(entry.cooldown_until.map_or(until, |at: std::time::Instant| at.max(until)));
+        entry.cooldown_until = Some(
+            entry
+                .cooldown_until
+                .map_or(until, |at: std::time::Instant| at.max(until)),
+        );
     }
+}
+
+/// 进程级闸门：**网关回复**与**投递推送**是两条路，但发的是同一个会话——
+/// 各自一份节流器就会各发各的，连发撞限速。所以进程内共用一份。
+///
+/// （跨进程不共享：生产里 Telegram 的主动推送也发生在另一个容器里。
+/// 那种情况靠 429 分类退避兜底，不追求严格节奏。）
+fn shared_gate() -> &'static ChatGate {
+    static GATE: std::sync::OnceLock<ChatGate> = std::sync::OnceLock::new();
+    GATE.get_or_init(|| ChatGate {
+        min_interval: MIN_SEND_INTERVAL,
+        state: std::sync::Mutex::new(std::collections::HashMap::new()),
+    })
 }
 
 impl TelegramNotifier {
@@ -89,10 +106,7 @@ impl TelegramNotifier {
         Self {
             api,
             default_chat_id,
-            gate: Arc::new(ChatGate {
-                min_interval: MIN_SEND_INTERVAL,
-                state: std::sync::Mutex::new(std::collections::HashMap::new()),
-            }),
+            gate: shared_gate(),
         }
     }
 
