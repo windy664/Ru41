@@ -12,8 +12,14 @@ tags: [Ru41, lecture, asr, plugin]
 
 ## 数据流
 
-1. **handler（即时）**：`handle_message` 拦截带音频扩展名文件附件的单聊消息（m4a/mp3/wav/aac/amr/ogg/flac/wma/opus/3gp/aiff/mp2）→ `require_private`（绑定 + 单聊双闸）→ **立即下载**（QQ CDN 链接有时效，不能攒）到 `{workspace}/{msg_id}/raw/` → 写 `lecture.pending` 文档（含回话路由）→ **回空回复，不推送任何提示**（2026-11-13 起「分段识别中」那条回执停发；handler 必须回 `Some(空串)` 而不是 `None`，否则消息掉进 Agent 通道、音频会被当聊天内容再处理一遍）。
-2. **worker（`schedule run lecture`，默认 60s 一轮）**：取**收到时间最早**的一条 pending（见下「队列顺序」）→ `ffmpeg` 切单声道 16k mp3 片（默认 600s/片，切片目录已有产物则跳过，支持中断续跑）→ ASR 逐片转写拼接 → 按收到时刻匹配当天课表（含该时刻的课优先，否则 2 小时窗内最近一节，匹配不到进 fallback 课程）→ **转写全量内联进 agent prompt**（不落盘、不进 Vault）→ `enqueue_with_notify` 入队 agent 整理笔记（幂等键 `lecture:notes:{msg_id}`，终态通知回原会话）——**一门课一份连续笔记** `{vault_dir}/{课程}/课堂笔记.md`，每次课按 `## 日期 主题` 章节追加在末尾，已有内容不动→ 立即清理工作区（原始录音+切片删除）→ 状态机 pending → done；failed 终态不自动重试（改完删文档重投）。
+1. **handler（即时）**：`handle_message` 拦截带音频扩展名文件附件的单聊消息（m4a/mp3/wav/aac/amr/ogg/flac/wma/opus/3gp/aiff/mp2）→ `require_private`（绑定 + 单聊双闸）→ **当场登记**：写 `lecture.pending` 文档（status=`downloading`，含回话路由）→ **立刻回执**（课程名 + 队列位置）→ **下载甩到插件自己的 runtime 后台跑**，下完把状态翻成 `pending`。
+   2026-11-16 之前是**同步下载完才回执**——一节录音几十 MB，家宽到腾讯云 CDN 要 9 分钟，
+   整个 QQ 入站线程被堵住：网关心跳停摆掉线，断线窗口里用户发的下一条录音直接丢
+   （QQ 侧无消息重放），用户还因为回执排在下载之后而以为「没反应」。现在入站只做登记。
+2. **worker（`schedule run lecture`，默认 60s 一轮）**：取**收到时间最早**的一条 `pending`（`downloading` 的跳过——文件还没下完，转写它只会 ffmpeg 失败；见下「队列顺序」）→ `ffmpeg` 切单声道 16k mp3 片（默认 600s/片，切片目录已有产物则跳过，支持中断续跑）→ ASR 逐片转写拼接 → 按收到时刻匹配当天课表（含该时刻的课优先，否则 2 小时窗内最近一节，匹配不到进 fallback 课程）→ **转写全量内联进 agent prompt**（不落盘、不进 Vault）→ `enqueue_with_notify` 入队 agent 整理笔记（幂等键 `lecture:notes:{msg_id}`，终态通知回原会话）——**一门课一份连续笔记** `{vault_dir}/{课程}/课堂笔记.md`，每次课按 `## 日期 主题` 章节追加在末尾，已有内容不动→ 立即清理工作区（原始录音+切片删除）→ 状态机 pending → done；failed 终态不自动重试（改完删文档重投）。
+   **下载失败要通知用户**：后台下载没有即时回执兜着，失败会静默——插件走 worker 同款
+   「入队 + 通知」通道让 agent 转述「请重新发一次」。卡在 `downloading` 超过 30 分钟的
+   （容器重启掐断的）由 worker 兜底判失败并同样通知。
 **只沉淀整理后的笔记**：转写与音频都是临时产物，Vault 里每门课只有一份连续
 `课堂笔记.md`（章节即时间线），不散落成碎片文件。原始文件手机上还有，需要复盘重录即可。
 
