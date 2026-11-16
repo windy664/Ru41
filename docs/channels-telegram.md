@@ -19,7 +19,7 @@ tags: [Ru41, Telegram, channel, notify, gateway]
 | 文件 | 内容 |
 |---|---|
 | `src/channels/telegram/api.rs` | Bot API 客户端：`getMe` / `sendMessage` / `sendPhoto` / `sendVideo` / `sendVoice` / `sendDocument`；token 只以脱敏地址出现在日志与错误里 |
-| `src/channels/telegram/markdown.rs` | Markdown → Telegram HTML（标题降级粗体、列表、代码块、行内代码、链接、HTML 转义）+ 按 4096 上限分片 |
+| `src/channels/markdown.rs` | **渠道无关的渲染层**（`RenderProfile`）：通用 Markdown → 目标方言；标题/表格/公式按 profile 降级；QQ 与 Telegram 各一份 profile |
 | `src/channels/telegram/mod.rs` | `TelegramNotifier`（`NotifyChannel`）：target 解析（`default` / `chat:{id}` / 裸数字 / @username）、inline keyboard、媒体发送、排版失败降级纯文本 |
 | `src/ingress/cli_ops/telegram.rs` | `ru41 telegram doctor`：只调 `getMe`，不发送消息 |
 | `tests/telegram_notify.rs` | 7 个用例：HTML 排版、target 解析、**token 不泄露**、排版失败降级、媒体、dispatcher 终态投递 |
@@ -28,17 +28,16 @@ tags: [Ru41, Telegram, channel, notify, gateway]
 
 | 文件 | 内容 |
 |---|---|
-| `src/channels/builtin.rs` | **渠道无关的内置命令层**：语义与 QQ 共用，命令词按渠道（QQ 中文历史行为保持 / Telegram ASCII）；帮助页与按钮按渠道渲染 |
+| `src/channels/builtin.rs` | **渠道无关的内置命令层**：只有一份词表（`builtin::DEFAULT`），QQ 与 Telegram 走同一套解析与执行；help 的入口是「/」 |
 | `src/channels/telegram/bot.rs` | `TelegramBot`：长轮询（offset 持久化到 `records` 表 `telegram/offset`）、幂等入队（`telegram:msg:{id}`）、私聊打断、内置/扩展命令、按钮回调（`callback_query` 代发命令）、轮询存活探针（`pending_update_count` + 卡死时长）、409 冲突退避、用户白名单 |
-| `src/channels/telegram/commands.rs` | Telegram 词表封装（`/help` `/tasks` `/task` `/cancel` `/bind` `/new` `/usage` `/judge`） |
-| `tests/telegram_gateway.rs` | 5 个用例：入队路由、幂等、命令回复、白名单、轮询消费与 offset 落库 |
+| `tests/telegram_gateway.rs` | 9 个用例：入队路由、幂等、命令回复、白名单、轮询消费与 offset 落库、**按钮回调**（应答→执行→回复带 inline keyboard）、群里按钮不越权、非白名单点击忽略、待办回执落成「纯符号 + 底部按钮」 |
 
 **跨渠道改造**（影响 QQ，但行为保持）：
 
 - `crates/ru41-plugin-api/src/ports/commands.rs`：`msg_request_key(channel, msg_id)` 渠道化（原写死 `qq:`）。
 - `src/bootstrap/assembly.rs`：`qq_command_handlers` → `channel_command_handlers`；插件命令按契约只用 `ctx.reply_channel`，因此同一批处理器原样注册给 QQ 与 Telegram。
 - `src/runtime/dispatcher.rs`：`effective_msg_id` 按渠道分支——Telegram 无被动回复窗口，`msg_id` 长期有效（当 `reply_parameters` 用）。
-- `src/runtime/worker.rs` + `src/markdown.rs`：Telegram 渠道任务额外注入平台提示（无表格、无多级标题）。
+- `src/runtime/worker.rs` + `src/markdown.rs`：平台提示不再按渠道注入——`OUTPUT_STYLE` 统一写「不要用表格」，各渠道的降级由渲染层 profile 负责。
 
 **配置**：`[channel.telegram]` = `bot_token` / `default_chat_id` / `bind_secret` / `allowed_user_ids`；环境变量 `RU41_TELEGRAM_BOT_TOKEN` / `RU41_TELEGRAM_BIND_SECRET`。
 
@@ -75,7 +74,7 @@ docker run -d --name ru41-telegram \
 ```
 
 生产配置里 `[channel.telegram] default_chat_id = "8787916999"`（主动通知的默认目标；聊天消息的目标由消息本身决定，不需要它）。
-`[notify].channel` 仍是 `qq`——**后台简报/提醒不双发**（见下）。
+`[notify].channel` 仍是 `qq`（主渠道），`[notify].fanout = ["telegram"]` → **后台简报/日报/提醒已经双发**（见下）。
 
 ### 消息渲染：规范一份 + 网关各适配
 
@@ -100,6 +99,23 @@ QQ 的 profile：`markup=Markdown`（平台自己解析）、标题保留、同�
 
 **命令输入不分渠道**：内置命令只有一份词表（`channels::builtin::DEFAULT`），
 QQ 与 Telegram 走同一套解析与执行；help 的入口是「/」，**没有 `/help` 这个命令**。
+
+### 待办复选框：动作走渠道无关的 Reply 按钮
+
+待办清单的动作**不写进正文**，而是放在 `Reply.markup`（渠道无关的 `ReplyMarkup`：label + 命令文本）：
+
+| 渠道 | 正文 | 动作落点 | 交互 |
+|---|---|---|---|
+| QQ | 展开成行内 cmd-input 芯片 | 正文里（`has_inline_actions()` 命中 → **不挂底部键盘**，避免两个可点入口） | 两跳：点芯片 → 填输入框 → 发送 |
+| Telegram | 芯片降级成纯符号 `☐`/`☑` | 底部 inline keyboard（`callback_data` = 命令文本） | **一跳**：点一下直接完成 |
+
+- 插件零改动：回调执行的仍是同一条命令文本（`/完成 <id>`、`/恢复待办 <id>`）。
+- 回调的私聊判定看**会话类型**（`chat.type == "private"`）——群里的按钮同样属于群聊，私人数据闸门不能被绕过。
+- 回调的 `callback_query` 会先 `answerCallbackQuery`（否则 Telegram 按钮一直转圈），再执行命令。
+
+⚠️ **清单回执必须走同一条产出路径**：裸 `#`（列清单）与 `#内容`（记一条后回清单）都要用
+`todo_list_reply`——早先裸 `#` 走的是重构前的旧写法（只回正文、不挂 markup），
+于是 Telegram 上「没看到按钮」，退化成两跳。
 
 
 ### 双网关但不双通知
