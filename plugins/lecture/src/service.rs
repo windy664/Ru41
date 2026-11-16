@@ -116,13 +116,14 @@ impl LectureWorker {
     /// 单轮：取最旧一条未完成项处理。run_periodic 串行等待，天然不并发。
     pub async fn poll_once(&self) -> Result<serde_json::Value> {
         let now = ru41::util::now();
-        // 先收尾「卡在 downloading」的：容器重启/下载进程被杀时它会永远占着
-        // 队列位置，用户还以为在下载。超时判失败并通知重发。
-        let stale = self.fail_stale_downloads(now)?;
+        // 每轮收尾：卡在 downloading 的判失败 + 回收过期原始音频。
+        let (stale, reaped) = self.sweep_queue(now)?;
         // 队列按**收到时间**排队：先到的先转。
         // 不能用 documents() 的返回顺序（按 id 排，id 是 QQ 的随机 msg_id）。
         let Some((doc, item)) = oldest_unfinished(self.store.as_ref())? else {
-            return Ok(serde_json::json!({"processed": null, "stale_failed": stale}));
+            return Ok(
+                serde_json::json!({"processed": null, "stale_failed": stale, "audio_reaped": reaped}),
+            );
         };
         let course = self.course_at(item.recorded_time());
         match self.transcribe(&item).await {
@@ -179,41 +180,59 @@ impl LectureWorker {
         })
     }
 
-    /// 把「下载中」超时未完成的待办判失败，并通知用户重发。
+    /// 每轮扫一遍待办队列，做两件收尾：
     ///
-    /// 下载在后台跑（2026-11-16 起），容器重启/进程被杀会把它掐在半路——
-    /// 那条待办会永远停在 downloading：worker 跳过它，用户还以为在下载。
-    /// 这里按下载超时（30 分钟）兜底判失败。
-    fn fail_stale_downloads(&self, now: i64) -> Result<usize> {
+    /// 1. 把「下载中」超时未完成的判失败并通知用户重发——
+    ///    下载在后台跑（2026-11-16 起），容器重启/进程被杀会把它掐在半路，
+    ///    那条待办会永远停在 downloading：worker 跳过它，用户还以为在下载。
+    /// 2. 回收过期的原始音频——`cleanup_workspace` 只在转写当下跑一次，
+    ///    那时 age_days=0，「过期再删」的条件永远不满足，原始音频就永远留着
+    ///    （一节课几十 MB，一学期几个 G）。这里按 received_at 删。
+    ///
+    /// 返回（判失败的条数, 回收的原始音频条数）。
+    fn sweep_queue(&self, now: i64) -> Result<(usize, usize)> {
         let mut failed = 0;
+        let mut reaped = 0;
+        let retain_days = self.config.retain_audio_days as i64;
         for doc in self.store.documents(PENDING_KIND, PENDING_SCAN_LIMIT)? {
             let Ok(item) = PendingItem::from_document(&doc) else {
                 continue;
             };
-            if item.status != STATUS_DOWNLOADING || now - item.received_at < DOWNLOAD_STALE_SECS {
+            // ① 卡在 downloading 超时的
+            if item.status == STATUS_DOWNLOADING && now - item.received_at >= DOWNLOAD_STALE_SECS {
+                let mut next = item.clone();
+                next.status = "failed".into();
+                next.error = Some("下载超时未完成（服务可能重启过）".into());
+                let written = self.store.put_document(
+                    PENDING_KIND,
+                    &item.msg_id,
+                    Some(doc.revision),
+                    &serde_json::to_value(&next)?,
+                )?;
+                if written {
+                    failed += 1;
+                    eprintln!("[lecture] 下载超时未完成，判失败：{}", item.msg_id);
+                    notify_download_failed(
+                        self.store.as_ref(),
+                        &self.config.backend,
+                        &next,
+                        "下载超时未完成（服务可能重启过）",
+                    );
+                }
                 continue;
             }
-            let mut next = item.clone();
-            next.status = "failed".into();
-            next.error = Some("下载超时未完成（服务可能重启过）".into());
-            let written = self.store.put_document(
-                PENDING_KIND,
-                &item.msg_id,
-                Some(doc.revision),
-                &serde_json::to_value(&next)?,
-            )?;
-            if written {
-                failed += 1;
-                eprintln!("[lecture] 下载超时未完成，判失败：{}", item.msg_id);
-                notify_download_failed(
-                    self.store.as_ref(),
-                    &self.config.backend,
-                    &next,
-                    "下载超时未完成（服务可能重启过）",
-                );
+            // ② 原始音频过保留期就删（retain_days=0 表示一律不留）
+            let age_days = (now - item.received_at).max(0) / 86_400;
+            if !(retain_days == 0 || age_days >= retain_days) {
+                continue;
+            }
+            let raw = self.config.workspace.join(&item.msg_id).join("raw");
+            if raw.is_dir() && std::fs::remove_dir_all(&raw).is_ok() {
+                reaped += 1;
+                eprintln!("[lecture] 原始音频过保留期，删除：{}", item.msg_id);
             }
         }
-        Ok(failed)
+        Ok((failed, reaped))
     }
 
     /// 切片 → ASR 逐片转写 → 落盘成一份转写全文。
@@ -557,8 +576,63 @@ mod tests {
     use super::{NotePrompt, TRANSCRIPT_INLINE_LIMIT, Transcript, build_note_prompt};
     use std::path::PathBuf;
 
-    /// 状态、课程、转写全文必须**一次 CAS 更新**落库。
+    /// 每轮收尾要回收过期原始音频。
     ///
+    /// `cleanup_workspace` 只在转写当下跑一次，那时 age_days=0，
+    /// 「过期再删」的条件永远不满足——原始音频就永远留着（每节课几十 MB）。
+    #[test]
+    fn sweep_reaps_expired_audio() {
+        use ru41::adapters::database::sqlite::SqliteTaskStore;
+        use ru41::ports::storage::TaskStore;
+        use std::sync::Arc;
+
+        let tmp = tempfile::tempdir().unwrap();
+        let store: Arc<dyn TaskStore> =
+            Arc::new(SqliteTaskStore::open(&tmp.path().join("state.db")).unwrap());
+        let mut config = crate::config::LectureSection {
+            api_key: Some("test-key".into()),
+            ..Default::default()
+        }
+        .resolved()
+        .unwrap();
+        config.workspace = tmp.path().to_path_buf();
+        let worker = super::LectureWorker::new(
+            store.clone(),
+            ru41::domain::todo::TodoOptions::default(),
+            config,
+        );
+        let now = ru41::util::now();
+        let item = crate::pending::PendingItem {
+            file: String::new(),
+            filename: "a.m4a".into(),
+            size: 1,
+            channel: "qq".into(),
+            target: "u".into(),
+            msg_id: "old".into(),
+            // 8 天前：过了 7 天保留期。
+            received_at: now - 8 * 86_400,
+            status: "done".into(),
+            error: None,
+            course: None,
+            transcript: None,
+        };
+        store
+            .put_document(
+                crate::pending::PENDING_KIND,
+                "old",
+                None,
+                &serde_json::to_value(&item).unwrap(),
+            )
+            .unwrap();
+        let raw = tmp.path().join("old").join("raw");
+        std::fs::create_dir_all(&raw).unwrap();
+        std::fs::write(raw.join("a.m4a"), b"x").unwrap();
+        let (_stale, reaped) = worker.sweep_queue(now).unwrap();
+        assert_eq!(reaped, 1, "过期原始音频应被回收");
+        assert!(!raw.exists(), "过期原始音频应删掉");
+    }
+
+    /// 状态、课程、转写全文必须**一次 CAS 更新**落库。
     /// 原来分两次 update：第一次把 revision 推上去了，第二次还拿着旧 revision
     /// → CAS 必失败 → 转写从未落库、工作区也从不清理（2026-11-16 线上实测：
     /// 29 条记录 transcript 全是 NULL、切片堆了 1.1G、每轮 poll 报竞争失败）。
