@@ -514,3 +514,33 @@ fn c2c_new_message_interrupts_unfinished_tasks_same_conversation() {
     assert_eq!(status_of("qq:msg:m2"), Some(TaskStatus::Queued));
     assert_eq!(status_of("qq:msg:g9"), Some(TaskStatus::Queued));
 }
+
+#[tokio::test]
+async fn todo_list_carries_channel_neutral_action_buttons() {
+    // 待办清单带渠道无关的交互按钮：QQ 侧正文里是行内 chip（不重复挂键盘），
+    // 其它渠道（Telegram）把动作放底部按钮，点一下直接完成（一跳）。
+    let fixture = fixture();
+    let command = TodoQqCommand::new(ru41::domain::todo::TodoOptions::default(), None);
+    let context = ctx(&fixture, "user:U1", "U1", true);
+    commands::execute(
+        &Command::Bind("s3cret".into()),
+        &context,
+        &ru41::app::usage_report::Pricing::builtin(),
+    )
+    .unwrap();
+    let reply = command
+        .handle_message("#写项目周报", &context)
+        .await
+        .unwrap()
+        .unwrap();
+    let markup = reply.markup.expect("待办清单应带交互按钮");
+    let buttons: Vec<&ru41::ports::commands::MarkupButton> =
+        markup.rows.iter().flatten().collect();
+    assert!(!buttons.is_empty(), "按钮不能为空");
+    assert!(
+        buttons.iter().any(|b| b.command.starts_with("/完成 ")),
+        "应有「完成 <id>」动作：{buttons:?}"
+    );
+    // 正文里是中性占位符（平台专有标签由网关展开）。
+    assert!(reply.text.contains("{{cmd:☐|/完成 "), "{}", reply.text);
+}

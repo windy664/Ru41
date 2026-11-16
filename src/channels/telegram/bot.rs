@@ -257,13 +257,17 @@ impl TelegramBot {
             .as_i64()
             .unwrap_or_default()
             .to_string();
+        // 私聊判定看会话类型：群里的按钮同样属于群聊，私人数据闸门不能被绕过。
+        let chat_type = callback["message"]["chat"]["type"]
+            .as_str()
+            .unwrap_or("private");
         let ctx = CommandContext {
             store: &self.store,
             bind_secret: self.bind_secret.as_deref(),
             target: &target,
             msg_id: &msg_id,
             author_openid: &author,
-            is_c2c: true,
+            is_c2c: chat_type == "private",
             image_url: None,
             attachments: &[],
             reply_channel: "telegram",

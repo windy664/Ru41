@@ -3,10 +3,10 @@ use ru41::{
     app::{schedule::ScheduleService, todo::TodoService},
     domain::{
         schedule::{EventInput, EventSource, event_time_label},
-        todo::{TodoInput, TodoItem, TodoOptions, TodoPriority, TodoSource, TodoView},
+        todo::{TodoInput, TodoItem, TodoOptions, TodoPriority, TodoSource, TodoStatus, TodoView},
     },
     ports::{
-        commands::{CommandContext, Reply, SimpleCommand},
+        commands::{CommandContext, MarkupButton, Reply, ReplyMarkup, SimpleCommand},
         storage::TaskStore,
     },
 };
@@ -17,7 +17,7 @@ use crate::{
         extract_note, parse_event_view, split_leading_time, split_selector_and_time,
         split_when_and_title,
     },
-    view::{format_items, usage},
+    view::{format_items, truncate_title, usage},
 };
 
 /// QQ 私人待办入口；持久化与日期视图由核心 TodoService 提供。
@@ -155,9 +155,34 @@ impl SimpleCommand for TodoQqCommand {
 
 /// 待办类操作的统一回执：只给完整清单（未完成 + 近 7 天已完成划横线）。
 /// 不加「已记入/已完成」这类提示行——清单本身已经反映了状态。
+///
+/// 同时带上**渠道无关的交互按钮**（每个条目一个「完成/恢复」）：
+/// - QQ：正文里已有行内可点 chip（见 `channels::qq::render`），不再挂底部键盘，
+///   保持原有手感；
+/// - 其它渠道（如 Telegram）：正文里的 chip 降级成纯文本符号，动作落到按钮上，
+///   点一下直接完成（一跳，比 QQ 的两跳顺手）。
 fn todo_list_reply(service: &TodoService, now: i64, options: TodoOptions) -> Result<Reply> {
     let items: Vec<TodoItem> = service.list(TodoView::All, now, 50)?;
-    Ok(Reply::text(format_items("待办", &items, now, options)))
+    let text = format_items("待办", &items, now, options);
+    let markup = todo_actions_markup(&items);
+    Ok(Reply::with_markup(text, markup))
+}
+
+/// 待办条目的交互按钮：一行一条，标签带 ☐/☑ 与标题短名，指令是渠道无关的命令文本。
+fn todo_actions_markup(items: &[TodoItem]) -> ReplyMarkup {
+    let mut markup = ReplyMarkup::new();
+    for item in items {
+        let (marker, command) = if item.status == TodoStatus::Active {
+            ("☐", format!("/完成 {}", item.short_id()))
+        } else {
+            ("☑", format!("/恢复待办 {}", item.short_id()))
+        };
+        markup.push_row(vec![MarkupButton::new(
+            format!("{marker} {}", truncate_title(&item.title, 24)),
+            command,
+        )]);
+    }
+    markup
 }
 
 /// 私人待办必须保持与水电一致的单聊和身份边界（由 CommandContext::require_private 统一执行）。

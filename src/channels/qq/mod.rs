@@ -61,6 +61,12 @@ pub struct QqNotifier {
     default_target: Option<String>,
 }
 
+/// 正文里已有行内可点 chip（`{{cmd:…}}` 会被 qq::render 展开成
+/// `<qqbot-cmd-input>`）时，不再挂底部键盘——同一批动作给两个入口会重复。
+fn has_inline_actions(text: &str) -> bool {
+    ru41_plugin_api::interactive::has_cmd_token(text)
+}
+
 impl QqNotifier {
     pub fn new(api: Arc<QqApiClient>, sequencer: Arc<ReplySequencer>) -> Self {
         Self {
@@ -830,8 +836,9 @@ impl QqBot {
             }
         }
         let seq = self.sequencer.next(msg_id);
+        let markup = reply.markup.as_ref().filter(|_| !has_inline_actions(&text));
         if let Some(group) = target.strip_prefix(TARGET_GROUP_PREFIX) {
-            match &reply.markup {
+            match markup {
                 Some(markup) if !markup.is_empty() => {
                     self.api
                         .send_group_markup(group, &text, markup, Some(msg_id), seq)
@@ -844,7 +851,7 @@ impl QqBot {
                 }
             }
         } else if let Some(user) = target.strip_prefix(TARGET_C2C_PREFIX) {
-            match &reply.markup {
+            match markup {
                 Some(markup) if !markup.is_empty() => {
                     self.api
                         .send_c2c_markup(user, &text, markup, Some(msg_id), seq)
@@ -1112,6 +1119,16 @@ impl IngestReceipt {
 
 #[cfg(test)]
 mod tests {
+    use super::has_inline_actions;
+
+    #[test]
+    fn inline_actions_win_over_bottom_keyboard() {
+        // 正文带行内 chip → QQ 侧不再挂底部键盘（避免两个可点入口）。
+        assert!(has_inline_actions("- {{cmd:☐|/完成 a1}} 标题"));
+        assert!(!has_inline_actions("- 标题"));
+        assert!(!has_inline_actions("## 待办（1）"));
+    }
+
     use super::{
         COALESCE_MAX_WAIT, CoalesceDecision, QUICK_DISCONNECT_THRESHOLD, coalesce_decision,
         reconnect_delay,
