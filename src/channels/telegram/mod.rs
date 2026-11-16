@@ -29,6 +29,8 @@ pub struct TelegramNotifier {
     default_chat_id: Option<String>,
     /// 每会话出站节流（限速冷却 + 最小间隔）；进程级共享。
     gate: &'static ChatGate,
+    /// bot 用户名（正文深链需要它）：首次用到时用 getMe 取一次。
+    bot_username: tokio::sync::OnceCell<String>,
 }
 
 /// 同一会话的最小发送间隔：Telegram 对单个会话的消息速率有限（实务上约 1 条/秒），
@@ -37,6 +39,31 @@ const MIN_SEND_INTERVAL: std::time::Duration = std::time::Duration::from_millis(
 /// 429 后就地退避的上限：超过就不等了，交给投递层改期重发
 /// （网关是长驻进程，为一条消息睡几十秒会把其它会话一起堵住）。
 const MAX_INLINE_FLOOD_WAIT: std::time::Duration = std::time::Duration::from_secs(5);
+
+/// Telegram 深链：点击后 Telegram 会把 `/start <payload>` 发给机器人。
+///
+/// payload 用 base64url 编码命令文本——Telegram 的 start 参数只允许
+/// `A-Za-z0-9_-`（且 ≤64 字符），中文命令必须编码。
+pub fn deep_link(username: &str, command: &str) -> Option<String> {
+    use base64::Engine as _;
+    let payload = base64::engine::general_purpose::URL_SAFE_NO_PAD.encode(command.as_bytes());
+    if payload.len() > MAX_START_PAYLOAD {
+        return None;
+    }
+    Some(format!("tg://resolve?domain={username}&start={payload}"))
+}
+
+/// Telegram start 参数长度上限（官方 64 字符）。
+pub const MAX_START_PAYLOAD: usize = 64;
+
+/// 从深链 payload 解回命令文本（base64url）。
+pub fn decode_start_payload(payload: &str) -> Option<String> {
+    use base64::Engine as _;
+    let bytes = base64::engine::general_purpose::URL_SAFE_NO_PAD
+        .decode(payload.as_bytes())
+        .ok()?;
+    String::from_utf8(bytes).ok()
+}
 
 /// 每会话的出站闸门：最小间隔 + 限速冷却截止时间。
 #[derive(Default)]
@@ -107,7 +134,23 @@ impl TelegramNotifier {
             api,
             default_chat_id,
             gate: shared_gate(),
+            bot_username: tokio::sync::OnceCell::new(),
         }
+    }
+
+    /// bot 用户名：正文深链要它（`tg://resolve?domain=…`）。取不到就退回纯符号。
+    async fn bot_username(&self) -> Option<String> {
+        let name = self
+            .bot_username
+            .get_or_init(|| async {
+                self.api
+                    .get_me()
+                    .await
+                    .map(|identity| identity.username)
+                    .unwrap_or_default()
+            })
+            .await;
+        (!name.is_empty()).then(|| name.clone())
     }
 
     /// 解析 target：`default` 用配置值；`chat:{id}`、裸数字或 @username 直接用。
@@ -137,6 +180,24 @@ impl TelegramNotifier {
         bail!("unknown telegram notify target: {target}");
     }
 
+    /// 正文渲染：可点指令占位符展开成**正文里的深链**（复选框本身可点）。
+    ///
+    /// 正文里只有链接能点（Telegram 没有「正文内嵌按钮」这种能力），所以用
+    /// `tg://` 深链：点击后 Telegram 会把 `/start <payload>` 发给机器人。
+    /// 底部按钮仍同时保留——那是「不切会话、一跳完成」的入口。
+    async fn render_for_telegram(&self, chunk: &str) -> String {
+        // 只有正文里真有可点指令时才去取 bot 用户名（getMe 是一次额外请求）。
+        if !ru41_plugin_api::interactive::has_cmd_token(chunk) {
+            return markdown::render(chunk, &markdown::TELEGRAM);
+        }
+        let Some(username) = self.bot_username().await else {
+            return markdown::render(chunk, &markdown::TELEGRAM);
+        };
+        markdown::render_with_cmd_links(chunk, &markdown::TELEGRAM, &|command| {
+            deep_link(&username, command)
+        })
+    }
+
     /// 发一条（已分片）消息；排版被平台拒收时降级成纯文本重发一次。
     async fn deliver(
         &self,
@@ -146,7 +207,7 @@ impl TelegramNotifier {
         reply_markup: Option<&serde_json::Value>,
     ) -> Result<()> {
         // 通用渲染层：规范 Markdown → Telegram HTML（表格/公式统一降级）。
-        let html = markdown::render(chunk, &markdown::TELEGRAM);
+        let html = self.render_for_telegram(chunk).await;
         // 每会话排队：长日报会切成多条，连发会撞限速被 429 拒收（消息直接丢）。
         self.gate.wait_turn(chat_id).await;
         let result = self
@@ -314,5 +375,29 @@ mod tests {
         let buttons = &keyboard["inline_keyboard"][0];
         assert_eq!(buttons[0]["text"], "取消");
         assert!(buttons[0]["callback_data"].as_str().unwrap().len() <= 64);
+    }
+
+    #[test]
+    fn deep_link_round_trips_the_command() {
+        let link = deep_link("Ru41bot", "/完成 abc123").expect("深链");
+        assert!(link.starts_with("tg://resolve?domain=Ru41bot&start="), "{link}");
+        let payload = link.split_once("start=").unwrap().1;
+        // payload 是 base64url：只有 A-Za-z0-9_-（Telegram 的 start 参数约束）。
+        assert!(
+            payload
+                .chars()
+                .all(|c| c.is_ascii_alphanumeric() || c == '_' || c == '-'),
+            "{payload}"
+        );
+        assert_eq!(
+            decode_start_payload(payload).as_deref(),
+            Some("/完成 abc123")
+        );
+    }
+
+    #[test]
+    fn deep_link_gives_up_on_oversized_payload() {
+        let long = format!("/完成 {}", "x".repeat(200));
+        assert!(deep_link("Ru41bot", &long).is_none());
     }
 }
