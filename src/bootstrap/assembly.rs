@@ -22,6 +22,7 @@ use crate::{
         storage::TaskStore,
         vault::Vault,
     },
+    runtime::proactive::ProactiveDispatcher,
 };
 use anyhow::{Context, Result};
 use std::sync::Arc;
@@ -311,6 +312,32 @@ pub fn todo_notify_route(
 /// 按已解析路由取具体通知器；渠道知识只存在于装配层，入口侧不做渠道判断。
 pub fn notifier_for_route(config: &Config, route: &NotifyRoute) -> Result<Arc<dyn NotifyChannel>> {
     default_notifier(config, &route.channel)
+}
+
+/// 主动推送的投递器：主渠道 + `[notify].fanout` 里的并行渠道。
+///
+/// 提醒类消息（到点提醒、行程提醒、错过的课程提醒）走这里——
+/// 它们不经过 dispatcher，只用 `default_notifier` 就只到主渠道，
+/// 用户的「双网关推送」预期就落空了。
+pub fn proactive_dispatcher(
+    config: &Config,
+    store: Arc<dyn TaskStore>,
+) -> Result<ProactiveDispatcher> {
+    // QQ 凭据缺失不算致命：容器没带 QQ 凭据时只发并行渠道。
+    let qq_api = qq_api(
+        &QqCredentials {
+            app_id: None,
+            app_secret: None,
+        },
+        config,
+    )
+    .ok();
+    let channels = notify_channels(config, qq_api.map(Arc::new), None)?;
+    Ok(ProactiveDispatcher::new(
+        store,
+        channels,
+        config.notify.fanout.clone().unwrap_or_default(),
+    ))
 }
 
 pub fn qq_api(credentials: &QqCredentials, config: &Config) -> Result<QqApiClient> {

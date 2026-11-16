@@ -7,7 +7,7 @@ use crate::{
             TodoView, due_label, local_date,
         },
     },
-    ports::{channel::NotifyChannel, storage::TaskStore},
+    ports::{channel::ProactiveChannel, storage::TaskStore},
 };
 use anyhow::{Context, Result, ensure};
 
@@ -17,9 +17,12 @@ const VERSION_ID: &str = "version";
 
 /// 到点提醒的单轮发送：汇总应提醒条目，经通知渠道送达后成功才去重；
 /// 发送失败不记录，由调度循环下一轮重试。
+///
+/// 走**主动推送投递口**：主渠道 + fanout 渠道都发（提醒类消息同样要双投），
+/// 并按渠道分别记账——某个渠道失败重试时，已送达的渠道不重发。
 pub async fn send_due_reminders(
     service: &TodoService,
-    notifier: &dyn NotifyChannel,
+    deliverer: &dyn ProactiveChannel,
     route: &NotifyRoute,
     options: TodoOptions,
 ) -> Result<serde_json::Value> {
@@ -28,10 +31,16 @@ pub async fn send_due_reminders(
     if due.is_empty() {
         return Ok(serde_json::json!({"due": 0, "sent": false}));
     }
-    notifier
-        .send(&route.target, None, &format_reminder(&due, now, options))
+    // 投递 id：这一轮最早那条的提醒时间（同一轮重试 id 不变，跨轮各条分开）。
+    let anchor = due.iter().filter_map(|item| item.remind_at).min().unwrap_or(now);
+    deliverer
+        .deliver(
+            route,
+            &format!("todo:{anchor}"),
+            &format_reminder(&due, now, options),
+        )
         .await?;
-    // 只有通知成功后才记录，失败会在下一轮重试；极端崩溃窗口下可能重发一条。
+    // 只有全部渠道都送达后才记录，失败会在下一轮重试（只补没送达的渠道）。
     for item in &due {
         service.mark_reminded(&item.id, now)?;
     }

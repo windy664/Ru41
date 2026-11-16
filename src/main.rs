@@ -3,7 +3,7 @@ use clap::Parser;
 use ru41::bootstrap::agents::{AgentOverrides, registry};
 use ru41::bootstrap::assembly::{
     channel_command_handlers, default_notifier, default_notify_route, knowledge_service,
-    notifier_for_route, notify_channels, qq_api, qq_image_consumers, scheduled_jobs,
+    notify_channels, qq_api, qq_image_consumers, scheduled_jobs,
     telegram_allowed_user_ids, telegram_api, telegram_bind_secret, telegram_token,
     todo_notify_route, tracker_job,
 };
@@ -500,10 +500,14 @@ async fn main() -> Result<()> {
                 } => {
                     if once {
                         let route = todo_notify_route(&config, channel, target)?;
-                        let notifier = notifier_for_route(&config, &route)?;
+                        // 主动推送投递器：主渠道 + fanout 渠道（提醒类消息也要双投）。
+                        let deliverer = ru41::bootstrap::assembly::proactive_dispatcher(
+                            &config,
+                            service.store().clone(),
+                        )?;
                         let report = ru41::app::todo::send_due_reminders(
                             &service,
-                            notifier.as_ref(),
+                            &deliverer,
                             &route,
                             options,
                         )
@@ -511,7 +515,7 @@ async fn main() -> Result<()> {
                         let events = ScheduleService::new(service.store().clone(), options);
                         ru41::app::schedule::send_event_reminders(
                             &events,
-                            notifier.as_ref(),
+                            &deliverer,
                             &route,
                             options,
                         )
@@ -863,14 +867,16 @@ async fn run_todo_remind_loop(
 ) -> Result<()> {
     let options = config.todo.options()?;
     let route = todo_notify_route(config, channel, target)?;
-    let notifier = notifier_for_route(config, &route)?;
+    // 主动推送投递器：主渠道 + fanout 渠道（提醒类消息也要双投）。
+    let deliverer =
+        ru41::bootstrap::assembly::proactive_dispatcher(config, service.store().clone())?;
 
     // 启动补发：进程停机期间错过的课程提醒，合并成一条消息发出。
     {
         let events = ScheduleService::new(service.store().clone(), options);
         match ru41::app::schedule::send_missed_class_reminders(
             &events,
-            notifier.as_ref(),
+            &deliverer,
             &route,
             options,
         )
@@ -889,18 +895,18 @@ async fn run_todo_remind_loop(
 
     // 到点提醒循环：只发 todo 到点。课程提醒走独立的 class-remind 任务（schedule run class-remind）。
     let service_ref = service;
-    let notifier_ref = notifier;
+    let deliverer_ref = deliverer;
     ru41::ingress::schedule::run_periodic(
         "todo-remind",
         Duration::from_secs(interval_secs),
         move || {
             let service = service_ref;
-            let notifier = notifier_ref.clone();
+            let deliverer = deliverer_ref.clone();
             let route = route.clone();
             async move {
                 let todo_report = ru41::app::todo::send_due_reminders(
                     service,
-                    notifier.as_ref(),
+                    &deliverer,
                     &route,
                     options,
                 )

@@ -15,7 +15,7 @@ use crate::{
         },
         todo::TodoOptions,
     },
-    ports::{channel::NotifyChannel, storage::TaskStore},
+    ports::{channel::ProactiveChannel, storage::TaskStore},
 };
 
 pub struct ScheduleService {
@@ -318,9 +318,11 @@ fn reminder_time_label(starts_at: i64, recurring: bool, offset_seconds: i32) -> 
 
 /// 启动后补发错过的课程提醒：合并成一条消息发出，逐条标记。
 /// 返回 (发出条数, 是否成功发送)。无错过项时不发送任何消息。
+///
+/// 同样走主动推送投递口（双投 + 按渠道记账）。
 pub async fn send_missed_class_reminders(
     service: &ScheduleService,
-    notifier: &dyn NotifyChannel,
+    deliverer: &dyn ProactiveChannel,
     route: &NotifyRoute,
     options: TodoOptions,
 ) -> Result<(usize, bool)> {
@@ -329,10 +331,11 @@ pub async fn send_missed_class_reminders(
     if missed.is_empty() {
         return Ok((0, false));
     }
-    notifier
-        .send(
-            &route.target,
-            None,
+    let anchor = missed.iter().map(|item| item.starts_at).min().unwrap_or(now);
+    deliverer
+        .deliver(
+            route,
+            &format!("missed:{anchor}"),
             &format_missed_reminder(&missed, options),
         )
         .await?;
@@ -361,9 +364,12 @@ fn format_missed_reminder(items: &[EventOccurrence], options: TodoOptions) -> St
 }
 
 /// 发送到点行程提醒；发送成功才记录，失败留给下一轮重试。
+///
+/// 走**主动推送投递口**：主渠道 + fanout 渠道都发（提醒类消息同样要双投），
+/// 并按渠道分别记账——某个渠道失败重试时，已送达的渠道不重发。
 pub async fn send_event_reminders(
     service: &ScheduleService,
-    notifier: &dyn NotifyChannel,
+    deliverer: &dyn ProactiveChannel,
     route: &NotifyRoute,
     options: TodoOptions,
 ) -> Result<serde_json::Value> {
@@ -372,8 +378,14 @@ pub async fn send_event_reminders(
     if due.is_empty() {
         return Ok(serde_json::json!({"due": 0, "sent": false}));
     }
-    notifier
-        .send(&route.target, None, &format_event_reminder(&due, options))
+    // 投递 id：这一轮最早那条的开始时间（同一轮重试 id 不变，跨轮各次分开）。
+    let anchor = due.iter().map(|item| item.starts_at).min().unwrap_or(now);
+    deliverer
+        .deliver(
+            route,
+            &format!("event:{anchor}"),
+            &format_event_reminder(&due, options),
+        )
         .await?;
     for occurrence in &due {
         service.mark_reminded(occurrence, now)?;
@@ -391,7 +403,8 @@ fn new_event_id(now: i64) -> String {
 /// 固定低频轮询作为兜底，防止精准睡眠因事件增删而失效。
 pub struct ClassRemindTracker {
     service: ScheduleService,
-    notifier: Arc<dyn NotifyChannel>,
+    /// 主动推送投递口（主渠道 + fanout 渠道，按渠道分别记账）。
+    deliverer: crate::runtime::proactive::ProactiveDispatcher,
     route: NotifyRoute,
     /// 兜底轮询间隔（秒）；精准睡眠之外的安全网。
     fallback_interval_secs: u64,
@@ -400,13 +413,13 @@ pub struct ClassRemindTracker {
 impl ClassRemindTracker {
     pub fn new(
         store: Arc<dyn TaskStore>,
-        notifier: Arc<dyn NotifyChannel>,
+        deliverer: crate::runtime::proactive::ProactiveDispatcher,
         route: NotifyRoute,
         options: TodoOptions,
     ) -> Self {
         Self {
             service: ScheduleService::new(store, options),
-            notifier,
+            deliverer,
             route,
             fallback_interval_secs: 60,
         }
@@ -427,11 +440,11 @@ impl crate::ingress::schedule::PollJob for ClassRemindTracker {
         Box<dyn std::future::Future<Output = anyhow::Result<serde_json::Value>> + Send + '_>,
     > {
         let service = ScheduleService::new(self.service.store().clone(), self.service.options());
-        let notifier = self.notifier.clone();
+        let deliverer = self.deliverer.clone();
         let route = self.route.clone();
         let options = self.service.options();
         crate::plugins::bridge(async move {
-            let report = send_event_reminders(&service, notifier.as_ref(), &route, options).await?;
+            let report = send_event_reminders(&service, &deliverer, &route, options).await?;
             Ok(report)
         })
     }
