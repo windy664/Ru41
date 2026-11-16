@@ -434,6 +434,4 @@ pub fn truncate_bytes(text: &str, max_bytes: usize) -> String {
 }
 
 #[cfg(test)]
-mod tests {
-    use super::*;
-}
+mod tests {}
