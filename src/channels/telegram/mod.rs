@@ -8,9 +8,11 @@
 pub mod api;
 pub mod bot;
 pub mod commands;
-pub mod markdown;
 
-use crate::ports::channel::{MediaRef, NotifyChannel};
+use crate::{
+    channels::markdown,
+    ports::channel::{MediaRef, NotifyChannel},
+};
 use anyhow::{Context, Result, bail};
 use std::{future::Future, pin::Pin, sync::Arc};
 
@@ -71,7 +73,8 @@ impl TelegramNotifier {
         reply_to: Option<i64>,
         reply_markup: Option<&serde_json::Value>,
     ) -> Result<()> {
-        let html = markdown::to_html(chunk);
+        // 通用渲染层：规范 Markdown → Telegram HTML（表格/公式统一降级）。
+        let html = markdown::render(chunk, &markdown::TELEGRAM);
         match self
             .api
             .send_message(chat_id, &html, Some("HTML"), reply_to, reply_markup)

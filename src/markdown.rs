@@ -7,12 +7,18 @@
 //! 避免各适配器各写一份、越改越不一样。
 
 /// 输出规范正文（注入到提示词尾部）。
+///
+/// 这是**唯一的、渠道无关**的输出规范：内容落在所有 bot 平台的 Markdown 交集里
+/// （标题、列表、粗体、代码、引用、链接），由 `channels::markdown` 渲染层按
+/// 各网关方言适配（表格/公式在渲染层统一降级，不指望模型按渠道调整）。
 pub const OUTPUT_STYLE: &str = "\
 输出规范（自然语言回复时遵守）：
 - 数学公式一律用 LaTeX：行内公式写 $...$，独立成行写 $$...$$；
   不要用纯文本符号拼公式（x² 写 $x^2$，√2 写 $\\sqrt{2}$，≥ 写 $\\ge$，≠ 写 $\\ne$）。
 - 标题用 # ## ###，无序列表用 -，有序列表用 1.，代码块标注语言。
-- 段落之间空一行；不使用 HTML 标签。";
+- 段落之间空一行；不使用 HTML 标签。
+- **不要用表格**：bot 平台（QQ / Telegram / Slack / Discord 等）都不渲染 Markdown
+  表格，写表只会被降级成条目。要对比多项信息就用列表，字段之间用 `·` 连接。";
 
 /// 给提示词追加输出规范；已包含时原样返回，不重复追加。
 pub fn with_output_style(prompt: &str) -> String {
@@ -20,19 +26,6 @@ pub fn with_output_style(prompt: &str) -> String {
         return prompt.to_owned();
     }
     format!("{prompt}\n\n{OUTPUT_STYLE}\n")
-}
-
-/// Telegram 平台提示：Telegram 的排版与 Markdown 不同（没有多级标题、没有表格），
-/// 告诉模型免得排出一堆渲染不出来的结构。
-pub const TELEGRAM_HINT: &str =
-    "你在 Telegram 上回复：## 标题会显示为粗体，不要使用表格；列表用 `- `；代码块用 ``` 包裹。";
-
-/// 给 Telegram 渠道的提示词追加平台提示；已包含时原样返回。
-pub fn with_telegram_hint(prompt: &str) -> String {
-    if prompt.contains(TELEGRAM_HINT) {
-        return prompt.to_owned();
-    }
-    format!("{prompt}\n\n{TELEGRAM_HINT}\n")
 }
 
 #[cfg(test)]

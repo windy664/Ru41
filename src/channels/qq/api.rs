@@ -570,7 +570,10 @@ fn message_body(
     keyboard: Option<&serde_json::Value>,
 ) -> serde_json::Value {
     let mut body = if markdown {
-        serde_json::json!({ "msg_type": 2, "markdown": { "content": content } })
+        // 走通用渲染层：QQ 平台自己解析 markdown，但表格/公式它不支持，
+        // 统一在渲染层降级（与 Telegram 同一套规则，见 channels::markdown）。
+        let rendered = crate::channels::markdown::render(content, &crate::channels::markdown::QQ);
+        serde_json::json!({ "msg_type": 2, "markdown": { "content": rendered } })
     } else {
         serde_json::json!({ "msg_type": 0, "content": content })
     };
