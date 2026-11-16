@@ -301,6 +301,38 @@ async fn different_chats_do_not_block_each_other() {
     );
 }
 
+/// 深链造不出来（拿不到 bot 用户名）→ 正文退回纯符号，底部按钮兜底，
+/// 保证永远有一个可点入口。
+#[tokio::test]
+async fn falls_back_to_bottom_buttons_when_link_is_unavailable() {
+    let (base, recorded) = mock_bot(vec![
+        // getMe：没有 username → 深链造不出来。
+        r#"{"ok":true,"result":{"id":1}}"#,
+        r#"{"ok":true,"result":{"message_id":23}}"#,
+    ]);
+    let notifier = notifier(&base, Some("900009"));
+    let text = format!(
+        "- {} 板子焊接",
+        ru41::interactive::cmd_token("☐", "/完成 abc123")
+    );
+    let mut markup = ru41::ports::commands::ReplyMarkup::new();
+    markup.push_row(vec![ru41::ports::commands::MarkupButton::new(
+        "☐ 板子焊接",
+        "/完成 abc123",
+    )]);
+    NotifyChannel::send_with_markup(&notifier, DEFAULT_TARGET, None, &text, &markup)
+        .await
+        .unwrap();
+    let recorded = recorded.lock().unwrap();
+    let body = &recorded[1].body;
+    // 正文退回纯符号，没有深链。
+    assert!(body.contains("☐ 板子焊接"), "{body}");
+    assert!(!body.contains("tg://"), "{body}");
+    // 底部按钮兜底。
+    assert!(body.contains("inline_keyboard"), "{body}");
+    assert!(body.contains("callback_data"), "{body}");
+}
+
 /// 正文里的复选框展开成可点深链（点一下 Telegram 会把命令发回来）。
 #[tokio::test]
 async fn todo_checkbox_becomes_an_inline_deep_link() {
