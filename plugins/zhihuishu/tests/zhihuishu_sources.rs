@@ -146,6 +146,7 @@ fn make_tracker_with(
                 .collect(),
             vault_task_dirs: ru41::ports::vault::VaultTaskDirs::All,
             ignore_tasks: vec![],
+            stale_after_hours: 30,
             notify_target: "user:mock".into(),
         },
         ru41::domain::todo::TodoOptions {
@@ -353,6 +354,40 @@ async fn notifies_new_tasks_once_then_idempotent() {
     assert_eq!(report.new_tasks, 0);
     assert!(!report.notified);
     assert_eq!(channel.sent.lock().unwrap().len(), 1);
+}
+
+/// 报告过期要自己说出来：采集器挂了却静默吃旧报告，用户只会以为"没刷新"
+/// （2026-11-13 停更三天的教训）。过期标记写进 meta，/作业 清单据此提示。
+#[tokio::test]
+async fn stale_report_is_flagged_and_notified_once() {
+    let dir = tempfile::tempdir().unwrap();
+    let store = make_store(dir.path());
+    let channel = mock_channel();
+    let path = write_report(dir.path(), &sample_report_json());
+    // 把报告的 mtime 推到 40 小时前（超过 stale_after_hours=30）。
+    let old = std::time::SystemTime::now() - std::time::Duration::from_secs(40 * 3600);
+    std::fs::File::open(&path)
+        .unwrap()
+        .set_times(std::fs::FileTimes::new().set_modified(old))
+        .unwrap();
+    let tracker = make_tracker(&store, path.clone(), Some(channel.clone()));
+
+    let report = tracker.poll_once().await.unwrap();
+    assert!(report.stale, "过期报告必须被标记");
+    assert_eq!(report.report_age_hours, Some(40));
+    let sent = channel.sent.lock().unwrap().clone();
+    assert!(
+        sent.iter().any(|text| text.contains("已过期")),
+        "过期要有明确提醒: {sent:?}"
+    );
+    let meta = store.document("zhihuishu_meta", "report").unwrap().unwrap();
+    assert_eq!(meta.value["stale"], serde_json::Value::Bool(true));
+    assert_eq!(meta.value["age_hours"], serde_json::Value::from(40));
+
+    // 第二轮不重复提醒（每日一次）。
+    let report = tracker.poll_once().await.unwrap();
+    assert!(report.stale);
+    assert_eq!(channel.sent.lock().unwrap().len(), sent.len());
 }
 
 #[tokio::test]
@@ -570,6 +605,7 @@ async fn ignored_task_is_fully_skipped() {
                 .collect(),
             vault_task_dirs: ru41::ports::vault::VaultTaskDirs::All,
             ignore_tasks: vec!["职业生涯规划｜课前测".into()],
+            stale_after_hours: 30,
             notify_target: "user:mock".into(),
         },
         ru41::domain::todo::TodoOptions {

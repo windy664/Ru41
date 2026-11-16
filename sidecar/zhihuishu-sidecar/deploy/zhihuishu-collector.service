@@ -15,5 +15,12 @@ ExecStart=/usr/bin/docker run --rm \
   sh -c 'Xvfb :99 -screen 0 1600x900x24 -nolisten tcp & XPID=$!; sleep 1.5; DISPLAY=:99 python -u /scripts/collector.py; kill $XPID 2>/dev/null'
 # 全量采集实测 ~195s; 放宽到 15 分钟防网络抖动误杀
 TimeoutStartSec=900
-# 失败不重试(当晚 Ru41 端仍消费上一次的有效报告, 空轮询也不会覆盖)
+# 失败自动重试：智慧树登录偶尔是网络超时（2026-11-15 09:55 与 23:33 两次
+# ERR_CONNECTION_TIMED_OUT），一失败就放弃会让报告停更、Ru41 端继续吃旧报告，
+# 用户只看到"作业没刷新"而不知道原因。10 分钟后重试，最多 3 次（systemd 默认
+# StartLimitBurst=5 够用）。
+Restart=on-failure
+RestartSec=600
+# 失败不重试的旧设计会让当晚彻底没数据；现在改为上面的失败重试，
+# 但仍保留 RemainAfterExit=no（跑完即退，不常驻占资源）。
 RemainAfterExit=no
