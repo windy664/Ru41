@@ -198,6 +198,39 @@ impl TelegramNotifier {
         })
     }
 
+    /// 正文深链是否已经覆盖了全部按钮动作 → 覆盖了就不要重复的底部键盘。
+    ///
+    /// 判定三件事：① 正文里确实有可点指令占位符（否则按钮不是重复入口）；
+    /// ② 这些占位符**都**能变成深链（有一个造不出来就得留底部键盘兜底）；
+    /// ③ 每个按钮的动作文本都在正文里出现过（正文没提到的额外动作不能被吞掉）。
+    async fn text_links_cover_buttons(
+        &self,
+        text: &str,
+        markup: &crate::ports::commands::ReplyMarkup,
+    ) -> bool {
+        let tokens: Vec<String> = ru41_plugin_api::interactive::cmd_tokens(text)
+            .into_iter()
+            .map(|(_, _, command)| command)
+            .collect();
+        if tokens.is_empty() {
+            return false;
+        }
+        let Some(username) = self.bot_username().await else {
+            return false;
+        };
+        if tokens
+            .iter()
+            .any(|command| deep_link(&username, command).is_none())
+        {
+            return false;
+        }
+        markup
+            .rows
+            .iter()
+            .flatten()
+            .all(|button| tokens.iter().any(|command| command == &button.command))
+    }
+
     /// 发一条（已分片）消息；排版被平台拒收时降级成纯文本重发一次。
     async fn deliver(
         &self,
@@ -267,6 +300,10 @@ impl NotifyChannel for TelegramNotifier {
     }
 
     /// 带快捷按钮的通知：ReplyMarkup → Telegram inline keyboard。
+    ///
+    /// 但**正文里已经是深链的可点指令不再重复挂底部键盘**——同一个动作两个入口
+    /// 是噪音。只有深链造不出来（拿不到 bot 用户名、payload 超长）时，才退回
+    /// 底部键盘，保证永远有一个可点入口。
     fn send_with_markup<'a>(
         &'a self,
         target: &'a str,
@@ -277,7 +314,11 @@ impl NotifyChannel for TelegramNotifier {
         Box::pin(async move {
             let chat_id = self.resolve_chat(target)?;
             let reply_to = msg_id.and_then(|id| id.parse::<i64>().ok());
-            let keyboard = inline_keyboard(markup);
+            let keyboard = if self.text_links_cover_buttons(text, markup).await {
+                None
+            } else {
+                inline_keyboard(markup)
+            };
             let chunks = markdown::split_markdown(text, markdown::CHUNK_BUDGET);
             let last = chunks.len().saturating_sub(1);
             for (index, chunk) in chunks.iter().enumerate() {

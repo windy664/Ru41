@@ -299,9 +299,9 @@ async fn callback_button_answers_query_and_runs_its_command() {
 }
 
 /// planner 的待办回执出到 Telegram：正文里的复选框是可点深链，
-/// 底部按钮同时保留（两套入口：深链一跳完成，按钮不切会话）。
+/// **不再重复挂底部键盘**（同一个动作两个入口是噪音）。
 #[tokio::test]
-async fn todo_reply_lands_as_deep_link_plus_inline_buttons() {
+async fn todo_reply_lands_as_deep_link_without_bottom_buttons() {
     let mock = MockBot::new(vec![]);
     let api = Arc::new(TelegramApi::with_base(TOKEN, mock.base.clone()));
     let notifier = TelegramNotifier::new(api, Some("999".into()));
@@ -324,10 +324,8 @@ async fn todo_reply_lands_as_deep_link_plus_inline_buttons() {
     assert!(body.contains("tg://resolve?domain=ru41bot"), "{body}");
     assert!(body.contains(">☐</a> 板子焊接"), "{body}");
     assert!(!body.contains("{{cmd:"), "{body}");
-    // 动作：底部 inline keyboard 也在，按钮带渠道无关的命令文本。
-    assert!(body.contains("inline_keyboard"), "{body}");
-    assert!(body.contains("callback_data"), "{body}");
-    assert!(body.contains("/完成 abc123"), "{body}");
+    // 底部键盘不再重复挂。
+    assert!(!body.contains("inline_keyboard"), "{body}");
 }
 
 /// message_id 只在会话内唯一：两个会话的同号消息不能互相顶掉
