@@ -4,7 +4,7 @@
 
 use crate::asr::AsrClient;
 use crate::config::LectureConfig;
-use crate::pending::{PENDING_KIND, PendingItem, sanitize_name};
+use crate::pending::{PENDING_KIND, PendingItem, oldest_unfinished, sanitize_name};
 use anyhow::{Context, Result};
 use chrono::{Local, TimeZone};
 use ru41::app::schedule::ScheduleService;
@@ -78,19 +78,11 @@ impl LectureWorker {
     /// 单轮：取最旧一条未完成项处理。run_periodic 串行等待，天然不并发。
     pub async fn poll_once(&self) -> Result<serde_json::Value> {
         let now = ru41::util::now();
-        let docs = self.store.documents(PENDING_KIND, 50)?;
-        let doc = docs
-            .iter()
-            .find(|d| {
-                PendingItem::from_document(d)
-                    .map(|i| i.status != "done" && i.status != "failed")
-                    .unwrap_or(false)
-            })
-            .cloned();
-        let Some(doc) = doc else {
+        // 队列按**收到时间**排队：先到的先转。
+        // 不能用 documents() 的返回顺序（按 id 排，id 是 QQ 的随机 msg_id）。
+        let Some((doc, item)) = oldest_unfinished(self.store.as_ref())? else {
             return Ok(serde_json::json!({"processed": null}));
         };
-        let item = PendingItem::from_document(&doc)?;
         let course = self.course_at(item.recorded_time());
         match self.transcribe(&item).await {
             Ok(transcript) => {

@@ -97,6 +97,82 @@ fn worker(store: Arc<dyn TaskStore>, tmp: &tempfile::TempDir) -> LectureWorker {
     )
 }
 
+/// 往待办队列里塞一条记录（测试直接构造，不走 handler）。
+fn pending_doc(store: &Arc<dyn TaskStore>, msg_id: &str, received_at: i64, status: &str) {
+    let item = ru41_plugin_lecture::pending::PendingItem {
+        file: format!("/tmp/{msg_id}.mp3"),
+        filename: format!("{msg_id}.mp3"),
+        size: 1,
+        channel: "qq".into(),
+        target: "u".into(),
+        msg_id: msg_id.into(),
+        received_at,
+        status: status.into(),
+        error: None,
+        course: None,
+        transcript: None,
+    };
+    store
+        .put_document(
+            "lecture.pending",
+            msg_id,
+            None,
+            &serde_json::to_value(&item).unwrap(),
+        )
+        .unwrap();
+}
+
+/// 队列按**收到时间**排队：文档 id 是 QQ 的随机 msg_id，id 序毫无意义
+/// （生产库里实测 id 序与时间序完全对不上），必须按 received_at 先到先转。
+#[test]
+fn queue_is_ordered_by_received_at_not_document_id() {
+    let tmp = tempfile::tempdir().unwrap();
+    let store: Arc<dyn TaskStore> =
+        Arc::new(SqliteTaskStore::open(&tmp.path().join("state.db")).unwrap());
+    let t0 = 1761891600;
+    // id 字典序："aaa-late" 更靠前，但它收到得更晚。
+    pending_doc(&store, "aaa-late", t0 + 600, "pending");
+    pending_doc(&store, "zzz-early", t0, "pending");
+    let (_, item) = ru41_plugin_lecture::pending::oldest_unfinished(store.as_ref())
+        .unwrap()
+        .unwrap();
+    assert_eq!(item.msg_id, "zzz-early", "先转早收到的那条");
+}
+
+/// done 的待办记录永远不删（存储接口没有 delete），历史记录会把固定窗口占满。
+/// 排在窗口外的未完成项必须还能被找到，否则队列静默饿死（不报错也不转写）。
+#[test]
+fn pending_beyond_scan_window_is_not_starved() {
+    let tmp = tempfile::tempdir().unwrap();
+    let store: Arc<dyn TaskStore> =
+        Arc::new(SqliteTaskStore::open(&tmp.path().join("state.db")).unwrap());
+    let t0 = 1761891600;
+    for i in 0..250 {
+        pending_doc(&store, &format!("done-{i:04}"), t0 - 100_000, "done");
+    }
+    // 真正待转的那条 id 字典序最大，落在首个窗口之外。
+    pending_doc(&store, "zzz-waiting", t0, "pending");
+    let (_, item) = ru41_plugin_lecture::pending::oldest_unfinished(store.as_ref())
+        .unwrap()
+        .unwrap();
+    assert_eq!(item.msg_id, "zzz-waiting", "窗口外的待办不能被饿死");
+}
+
+/// 队列位置回执的「前面还有几节」：只数别的未完成项。
+#[test]
+fn ahead_count_counts_only_other_unfinished_items() {
+    let tmp = tempfile::tempdir().unwrap();
+    let store: Arc<dyn TaskStore> =
+        Arc::new(SqliteTaskStore::open(&tmp.path().join("state.db")).unwrap());
+    let t0 = 1761891600;
+    pending_doc(&store, "m1", t0, "pending");
+    pending_doc(&store, "m2", t0 + 60, "pending");
+    pending_doc(&store, "m3", t0 + 120, "done");
+    pending_doc(&store, "m4", t0 + 180, "failed");
+    let ahead = ru41_plugin_lecture::pending::unfinished_count(store.as_ref(), "m1").unwrap();
+    assert_eq!(ahead, 1, "只数未完成的别人");
+}
+
 /// 转写产出后不能把整个会话目录删掉：2026-11-09 丢过一节网络空间安全导论的
 /// 转写（连原始录音一起没了，笔记只能写「待补」）。切片立刻删（磁盘大头），
 /// 原始音频按保留期留，转写文本留着。
