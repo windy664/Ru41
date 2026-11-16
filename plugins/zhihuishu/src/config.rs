@@ -32,6 +32,9 @@ pub struct ZhihuishuSection {
     /// 或只写作业关键字（任意课程下同名即忽略）。
     #[serde(default)]
     pub ignore_tasks: Option<Vec<String>>,
+    /// 报告超过多少小时没更新就算「数据已过期」；默认 30（采集器每晚跑一次）。
+    /// 过期时作业清单会自己提示，并每日提醒一次——采集失败静默只会让人以为"没刷新"。
+    pub stale_after_hours: Option<u64>,
 }
 
 impl ZhihuishuSection {
@@ -88,6 +91,7 @@ impl ZhihuishuSection {
                 self.vault_task_dirs.as_deref(),
             )?,
             ignore_tasks: self.ignore_tasks.clone().unwrap_or_default(),
+            stale_after_hours: self.stale_after_hours.unwrap_or(30),
             notify_target,
         })
     }

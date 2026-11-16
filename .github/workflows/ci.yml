@@ -46,6 +46,8 @@ jobs:
       - name: Install Rust
         run: rustup toolchain install 1.99 --profile minimal --component rustfmt --component clippy
       - run: cargo +1.99 fmt --all -- --check
+      - name: 插件锁文件版本守卫（锁错版本 = 插件整批被宿主拒绝加载）
+        run: bash deploy/check-plugin-locks.sh
       - name: Secret scan（防手滑提交 token/手机号/openid）
         run: |
           ! grep -rInE "node[0-9a-z]{30,}|(^|[^0-9])1[3-9][0-9]{9}([^0-9]|$)|opXvX5|o6gXt5" \

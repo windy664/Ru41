@@ -105,13 +105,24 @@ struct Row {
 fn render(store: &dyn TaskStore) -> String {
     let now = ru41::util::now();
     let (open, done) = collect_rows(store);
+    let stale_note = zhihuishu_stale_note(store);
     if open.is_empty() && done == 0 {
-        return ru41::util::msg::Card::new("📚 作业清单")
+        let mut card = ru41::util::msg::Card::new("📚 作业清单");
+        if let Some(note) = &stale_note {
+            card.raw(note);
+            card.raw("");
+        }
+        return card
             .raw("两个平台都还没有采集到作业；等下一轮轮询后再问吧。")
             .build();
     }
     if open.is_empty() {
-        return ru41::util::msg::Card::new("📚 作业清单")
+        let mut card = ru41::util::msg::Card::new("📚 作业清单");
+        if let Some(note) = &stale_note {
+            card.raw(note);
+            card.raw("");
+        }
+        return card
             .raw("当前没有未完成作业 🎉")
             .hint(format!("已完成 {done} 条；清单见 Obsidian「作业总表」"))
             .build();
@@ -139,6 +150,12 @@ fn render(store: &dyn TaskStore) -> String {
     later.sort_by(by_end);
 
     let mut card = ru41::util::msg::Card::new("📚 作业清单");
+    // 智慧树采集没跟上时，清单自己说明原因——否则用户只看到"没刷新"，
+    // 不知道是平台没布置还是采集器挂了（2026-11-13 停更三天的教训）。
+    if let Some(note) = &stale_note {
+        card.raw(note);
+        card.raw("");
+    }
     // 每条一行：课程｜标题（截止时间+剩余）；平台不同才标来源，全同源时省略降噪。
     let platforms: std::collections::HashSet<_> = open.iter().map(|r| r.platform).collect();
     let multi_platform = platforms.len() > 1;
@@ -200,6 +217,36 @@ fn render(store: &dyn TaskStore) -> String {
     push_section(&mut card, format!("📝 其他未交（{}）", later.len()), &later);
     card.hint(format!("已完成 {done} 条；清单见 Obsidian「作业总表」"));
     card.build()
+}
+
+/// 智慧树采集健康度：报告过期或采集失败时，作业清单要自己说清楚，
+/// 否则用户看到的是"没刷新"却不知道原因（2026-11-13 停更三天的教训）。
+fn zhihuishu_stale_note(store: &dyn TaskStore) -> Option<String> {
+    let doc = store.document("zhihuishu_meta", "report").ok().flatten()?;
+    let stale = doc
+        .value
+        .get("stale")
+        .and_then(serde_json::Value::as_bool)
+        .unwrap_or(false);
+    if !stale {
+        return None;
+    }
+    let error = doc
+        .value
+        .get("error")
+        .and_then(serde_json::Value::as_str)
+        .unwrap_or_default();
+    if !error.is_empty() {
+        return Some(format!("⚠️ 智慧树采集失败，作业清单未更新（{error}）"));
+    }
+    let hours = doc
+        .value
+        .get("age_hours")
+        .and_then(serde_json::Value::as_i64)
+        .unwrap_or_default();
+    Some(format!(
+        "⚠️ 智慧树采集数据已过期 {hours} 小时，作业清单可能不是最新"
+    ))
 }
 
 /// 收集两平台的开放/完成行：新平台接入时在此追加。
@@ -451,5 +498,60 @@ mod tests {
         let text = render(&store);
         assert!(!text.contains("德法第一次线上作业"), "{text}");
         assert!(text.contains("第五节课 课前测"), "{text}");
+    }
+
+    /// 智慧树采集过期/失败时，清单自己说明——用户看到的不是"没刷新"，
+    /// 而是"数据过期，采集器没跟上"（2026-11-13 停更三天的教训）。
+    #[test]
+    fn stale_zhihuishu_report_is_called_out_in_the_list() {
+        let dir = std::env::temp_dir().join(format!("ru41-hw-stale-{}", ru41::util::now()));
+        let store = ru41::adapters::database::sqlite::SqliteTaskStore::open(&dir).unwrap();
+        store
+            .put_document(
+                "zhihuishu_task",
+                "职业生涯规划#T1",
+                None,
+                &serde_json::json!({
+                    "course": "职业生涯规划",
+                    "title": "第五节课 课前测",
+                    "end_at": beijing_days_from_now(3),
+                    "completed": false,
+                }),
+            )
+            .unwrap();
+        store
+            .put_document(
+                "zhihuishu_meta",
+                "report",
+                None,
+                &serde_json::json!({
+                    "age_hours": 72,
+                    "error": null,
+                    "stale": true,
+                    "ts": ru41::util::now(),
+                }),
+            )
+            .unwrap();
+
+        let text = render(&store);
+        assert!(text.contains("已过期 72 小时"), "{text}");
+        assert!(text.contains("第五节课 课前测"), "{text}");
+
+        // 数据新鲜时不加这行提示。
+        let revision = store
+            .document("zhihuishu_meta", "report")
+            .unwrap()
+            .unwrap()
+            .revision;
+        store
+            .put_document(
+                "zhihuishu_meta",
+                "report",
+                Some(revision),
+                &serde_json::json!({"age_hours": 1, "stale": false, "ts": ru41::util::now()}),
+            )
+            .unwrap();
+        let text = render(&store);
+        assert!(!text.contains("已过期"), "{text}");
     }
 }

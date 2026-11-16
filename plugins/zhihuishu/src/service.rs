@@ -40,6 +40,8 @@ pub struct ZhihuishuConfig {
     pub vault_task_dirs: ru41::ports::vault::VaultTaskDirs,
     /// 忽略名单：`课程关键字｜作业关键字` 或纯作业关键字，见 ZhihuishuSection。
     pub ignore_tasks: Vec<String>,
+    /// 报告超过多少小时没更新就算过期（默认 30）。
+    pub stale_after_hours: u64,
     /// 提醒投递目标（装配层按 [notify] 渠道解析）。
     pub notify_target: String,
 }
@@ -63,6 +65,10 @@ pub struct ZhihuishuPollReport {
     pub deduped: usize,
     pub login_ok: Option<bool>,
     pub notified: bool,
+    /// 报告文件距今多少小时（None = 报告读不到）。
+    pub report_age_hours: Option<i64>,
+    /// 报告已过期（采集器没跟上，作业清单可能不是最新）。
+    pub stale: bool,
 }
 
 /// 智慧树作业提醒：读取 sidecar 报告 → 新任务落 records 去重 →
@@ -102,9 +108,45 @@ impl ZhihuishuTracker {
     }
 
     pub async fn poll_once(&self) -> Result<ZhihuishuPollReport> {
-        let report = load_report(&self.config.report_path)?;
         let now = ru41::util::now();
         let today = ru41::util::today_utc(now);
+        // 新鲜度看报告文件的 mtime，不看报告里的 generated_at：
+        // sidecar 写的是 UTC 时间（2026-11-16 03:31 对应本地 11:31），
+        // 文档按本地时区解释，直接比会差一个时区、把新报告误判成过期。
+        let report_age_hours = std::fs::metadata(&self.config.report_path)
+            .ok()
+            .and_then(|meta| meta.modified().ok())
+            .and_then(|time| time.duration_since(std::time::UNIX_EPOCH).ok())
+            .map(|delta| (now - delta.as_secs() as i64) / 3600);
+        let stale = report_age_hours
+            .map(|hours| hours > self.config.stale_after_hours as i64)
+            .unwrap_or(false);
+        let report = match load_report(&self.config.report_path) {
+            Ok(report) => report,
+            Err(error) => {
+                // 报告读不到 = 采集器没跑或崩了。静默失败最坏：作业清单永远停在
+                // 上一次的成功报告，用户只看到"没刷新"却不知道原因
+                // （2026-11-13 停更三天的教训）。这里显式记 meta 并每日提醒一次。
+                self.write_meta(None, Some(&error.to_string()), true)?;
+                self.notify_once(
+                    &format!("collect-failed:{today}"),
+                    &format!("⚠️ 智慧树作业采集失败，作业清单未更新：{error:#}"),
+                )
+                .await?;
+                return Err(error);
+            }
+        };
+        self.write_meta(report_age_hours, None, stale)?;
+        if stale {
+            let hours = report_age_hours.unwrap_or_default();
+            self.notify_once(
+                &format!("stale:{today}"),
+                &format!(
+                    "⚠️ 智慧树采集数据已过期 {hours} 小时（最近一次成功采集），作业清单可能不是最新"
+                ),
+            )
+            .await?;
+        }
         let urgent_window = self.config.deadline_days * 86_400;
 
         let mut tasks = 0usize;
@@ -540,7 +582,56 @@ impl ZhihuishuTracker {
             deduped,
             login_ok: report.login_ok,
             notified,
+            report_age_hours,
+            stale,
         })
+    }
+
+    /// 写采集健康度：作业清单消费它来提示「数据已过期 / 采集失败」。
+    fn write_meta(&self, age_hours: Option<i64>, error: Option<&str>, stale: bool) -> Result<()> {
+        let revision = self
+            .store
+            .document("zhihuishu_meta", "report")?
+            .map(|doc| doc.revision);
+        self.store.put_document(
+            "zhihuishu_meta",
+            "report",
+            revision,
+            &serde_json::json!({
+                "age_hours": age_hours,
+                "error": error,
+                "stale": stale,
+                "ts": ru41::util::now(),
+            }),
+        )?;
+        Ok(())
+    }
+
+    /// 每日一次的告警推送（采集失败 / 数据过期）。
+    async fn notify_once(&self, key: &str, text: &str) -> Result<()> {
+        let Some(notifier) = &self.notifier else {
+            return Ok(());
+        };
+        if self.store.document("zhihuishu_alert", key)?.is_some() {
+            return Ok(());
+        }
+        let mut card = ru41::util::msg::Card::new("📚 作业提醒");
+        card.raw(text);
+        notifier
+            .send_with_markup(
+                &self.config.notify_target,
+                None,
+                &card.build(),
+                &ru41::ports::commands::ReplyMarkup::new(),
+            )
+            .await?;
+        self.store.put_document(
+            "zhihuishu_alert",
+            key,
+            None,
+            &serde_json::json!({ "ts": ru41::util::now() }),
+        )?;
+        Ok(())
     }
 
     /// 同一条平台作业只留一条 active 待办。
