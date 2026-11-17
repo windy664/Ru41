@@ -421,7 +421,10 @@ mod tests {
     #[test]
     fn deep_link_round_trips_the_command() {
         let link = deep_link("Ru41bot", "/完成 abc123").expect("深链");
-        assert!(link.starts_with("tg://resolve?domain=Ru41bot&start="), "{link}");
+        assert!(
+            link.starts_with("tg://resolve?domain=Ru41bot&start="),
+            "{link}"
+        );
         let payload = link.split_once("start=").unwrap().1;
         // payload 是 base64url：只有 A-Za-z0-9_-（Telegram 的 start 参数约束）。
         assert!(

@@ -277,8 +277,14 @@ async fn gate_is_shared_across_notifiers() {
     let gateway_side = notifier(&base, Some("900006"));
     let dispatcher_side = notifier(&base, Some("900006"));
     let started = std::time::Instant::now();
-    gateway_side.send(DEFAULT_TARGET, None, "网关回复").await.unwrap();
-    dispatcher_side.send(DEFAULT_TARGET, None, "投递推送").await.unwrap();
+    gateway_side
+        .send(DEFAULT_TARGET, None, "网关回复")
+        .await
+        .unwrap();
+    dispatcher_side
+        .send(DEFAULT_TARGET, None, "投递推送")
+        .await
+        .unwrap();
     assert!(
         started.elapsed() >= Duration::from_millis(1000),
         "两个 notifier 各发各的，会连发撞限速：{:?}",
@@ -361,7 +367,10 @@ async fn todo_checkbox_becomes_an_inline_deep_link() {
 async fn plain_message_does_not_fetch_bot_username() {
     let (base, recorded) = mock_bot(vec![r#"{"ok":true,"result":{"message_id":22}}"#]);
     let notifier = notifier(&base, Some("900008"));
-    notifier.send(DEFAULT_TARGET, None, "普通消息").await.unwrap();
+    notifier
+        .send(DEFAULT_TARGET, None, "普通消息")
+        .await
+        .unwrap();
     let recorded = recorded.lock().unwrap();
     assert_eq!(recorded.len(), 1, "多发了一次请求：{:?}", recorded);
     assert!(recorded[0].body.contains("普通消息"));

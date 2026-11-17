@@ -628,9 +628,7 @@ fn split_unit(unit: &[String], limit: usize) -> Vec<String> {
 fn split_fence(unit: &[String], limit: usize) -> Vec<String> {
     let open = unit.first().map(String::as_str).unwrap_or("");
     let info = fence_open(open).unwrap_or_default();
-    let closing = unit
-        .last()
-        .is_some_and(|line| is_fence_close(line));
+    let closing = unit.last().is_some_and(|line| is_fence_close(line));
     let body: &[String] = if closing && unit.len() > 1 {
         &unit[1..unit.len() - 1]
     } else {
@@ -811,7 +809,8 @@ mod tests {
         });
         // 复选框本身变成可点链接，标题照旧。
         assert!(
-            rendered.contains("<a href=\"tg://resolve?domain=Ru41bot&amp;start=/完成 abc123\">☐</a>"),
+            rendered
+                .contains("<a href=\"tg://resolve?domain=Ru41bot&amp;start=/完成 abc123\">☐</a>"),
             "{rendered}"
         );
         assert!(rendered.contains("• <a href="), "{rendered}");
