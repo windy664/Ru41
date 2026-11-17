@@ -463,15 +463,42 @@ pub fn render_plan(
     if let Some(mode) = &plan.track_mode {
         lines.push(format!("- 轨迹模式：{mode}"));
     }
-    if let Some(policy) = &plan.policy
-        && let Some(min) = policy.min_distance
-    {
+    if let Some(min) = policy_min_distance(plan) {
         lines.push(format!("- 服务端最小里程：{}", fmt_goal_distance(min)));
     }
     for line in &plan.logs {
         lines.push(format!("  {line}"));
     }
     lines.join("\n")
+}
+
+/// 服务端 policy 的最小里程（米）。
+///
+/// 预演**成功**时服务端给结构化的 `policy.minDistance`；**失败**时那个字段没有，
+/// 但工具自己的日志里有同一行策略（`√ [policy] … minDistance=1000 validTime=0`）——
+/// 从那儿读，还是服务端说的数，不写死。
+pub fn policy_min_distance(plan: &PlanData) -> Option<f64> {
+    if let Some(min) = plan.policy.as_ref().and_then(|item| item.min_distance) {
+        return Some(min);
+    }
+    plan.logs.iter().find_map(|line| {
+        let tail = line.split_once("minDistance=")?.1;
+        let digits: String = tail.chars().take_while(char::is_ascii_digit).collect();
+        digits.parse::<f64>().ok()
+    })
+}
+
+/// 工具自己的判定行（致命 / 警告）。
+///
+/// 预演失败时服务端只给一句「自检未通过：1 致命 / 0 警告 / 0 提示」，
+/// 具体是哪条致命、哪条警告**全在 logs 里**——插件只转述，不自己重新判定。
+pub fn tool_verdict_lines(plan: &PlanData) -> Vec<String> {
+    plan.logs
+        .iter()
+        .map(|line| line.trim())
+        .filter(|line| line.contains("致命") || line.contains("警告"))
+        .map(|line| line.to_owned())
+        .collect()
 }
 
 #[cfg(test)]
@@ -524,6 +551,44 @@ mod tests {
         );
         let text = render_plan(&plan, &params, None);
         assert!(!text.contains("收窄"), "{text}");
+    }
+
+    /// 最小里程：预演成功时取服务端给的结构化字段。
+    #[test]
+    fn policy_min_distance_reads_structured_field() {
+        let plan: PlanData =
+            serde_json::from_str(r#"{"ok":true,"policy":{"minDistance":1000,"validTime":0}}"#).unwrap();
+        assert_eq!(policy_min_distance(&plan), Some(1000.0));
+    }
+
+    /// 预演**失败**时服务端不给结构化字段，但同一行策略在工具日志里——
+    /// 还是服务端说的数，不写死。
+    #[test]
+    fn policy_min_distance_falls_back_to_the_tool_log() {
+        let plan: PlanData = serde_json::from_str(
+            r#"{"ok":false,"logs":["√ [policy] ts=1794901127456 policy=1 minDistance=1000 validTime=0"]}"#,
+        )
+        .unwrap();
+        assert_eq!(policy_min_distance(&plan), Some(1000.0));
+    }
+
+    /// 工具自己的致命/警告行要原样带出来（插件不重新判定）。
+    #[test]
+    fn tool_verdict_lines_are_relayed_verbatim() {
+        let plan: PlanData = serde_json::from_str(
+            r#"{"ok":false,"logs":[
+                "√ [clock] 已校时",
+                "  ✗ 致命 [CP_MISS] 打卡点 P5 最近距离 37.1m，未命中（要求 ≤0.5m）",
+                "  ! 警告 [PACE_FAST] 配速 2.25 分/km 快得离谱"
+            ]}"#,
+        )
+        .unwrap();
+        let lines = tool_verdict_lines(&plan);
+        assert_eq!(lines.len(), 2, "{lines:?}");
+        assert!(lines[0].contains("CP_MISS"), "{lines:?}");
+        assert!(lines[1].contains("PACE_FAST"), "{lines:?}");
+        // 「√ [clock] 已校时」不是判定行，别混进来。
+        assert!(!lines.iter().any(|line| line.contains("clock")), "{lines:?}");
     }
 
     fn summary() -> SemesterSummary {
