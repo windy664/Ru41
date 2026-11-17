@@ -320,6 +320,11 @@ pub struct StartTimes {
     /// 本次时长（秒）。
     #[serde(default)]
     pub duration_sec: Option<i64>,
+    /// 服务端是否把这个时段**收窄**过（本来要的点落在未来/越界，被拉回合法窗口）。
+    ///
+    /// 控制台遇到这个会弹窗让人确认；插件只转述，不自己判断。
+    #[serde(default)]
+    pub clamped: Option<bool>,
     /// 补跑限制。
     #[serde(default)]
     pub limits: Option<StartLimits>,

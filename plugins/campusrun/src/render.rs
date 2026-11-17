@@ -393,9 +393,14 @@ pub fn render_plan(
     lines.push(format!(
         "- 参数：{distance_km:.2} km / {duration_min:.1} 分钟（配速 {pace}）"
     ));
-    // 起跑时刻与海拔：按配置算出来的，一并摆出来给用户看。
+    // 起跑时刻：**服务端给的**（含它有没有把时段收窄过），一并摆出来给用户看。
+    let clamped = if params.start_clamped {
+        "（服务端把这个时段收窄过）"
+    } else {
+        ""
+    };
     lines.push(format!(
-        "- 起跑：{}",
+        "- 起跑：{}{clamped}",
         params
             .start_at_ms
             .map(|ms| fmt_datetime(Some(ms)))

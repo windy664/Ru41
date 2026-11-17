@@ -8,7 +8,7 @@ description: 用于回答用户「校园跑」（运动世界校园的记分跑�
 ## 查询（经 CLI）
 
 - `ru41 campusrun status`：学期进度——有效里程/总里程、有效次数、**学期目标里程**、目标次数、是否达标、学期剩余天数。
-- `ru41 campusrun rules`：规则面——单次门槛（最少 1.00 km、至少 5 分钟）、补跑限制（最多往前 3 天、随机时刻 07:00~20:00）、必过点、围栏。
+- `ru41 campusrun rules`：规则面——单次门槛（距离取服务端 `policy.minDistance`、时长取上次记录的规则，各门课不同）、补跑限制（最多往前几天、随机时刻窗口，以命令输出为准）、必过点、围栏。
 - `ru41 campusrun records [条数]`：最近记录表。
 - `ru41 campusrun cheat`：违规名单状态。
 - `ru41 campusrun all`：上面几样一起。

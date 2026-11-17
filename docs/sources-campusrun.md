@@ -80,15 +80,19 @@ allow_submit = false                    # 是否允许真提交；默认关
 alt_min = 15                           # 海拔区间（米）
 alt_max = 45
 start_mode = "rand"                     # now / rand / at / ago
-days_ago = 0                            # rand 模式往前找几天
-# rand_hour_lo = 7                     # 不写就取服务端 /api/starttimes 的 limits
-# rand_hour_hi = 20
+days_ago = 0                            # rand 模式往前找几天（服务端最多 3 天）
 # silence_secs = 600                   # 提交后的静默窗口
 # confirm_ttl_secs = 900               # 待确认有效期
 ```
 
 > **门槛不在配置里**：距离/时长/配速/点位的判定都在服务端（`policy.minDistance`、
 > pace-forge 的 preflight、记录详情的 `reasonList`），各门课要求不同，写死会误判。
+
+> **起跑时刻也不在配置里**：`start_mode`/`days_ago` 只是把「怎么跑」翻译成
+> `GET /api/starttimes?mode=…&days=…&dur=…` 的查询参数，**起点由服务端算**，
+> 插件拿回 `startMs` 直接用（控制台的 `resolveStartAt()` 走的就是这一步）。
+> 服务端还会照自己的 limits 把时段**收窄**（`clamped`）——越界（往前补 5 天）
+> 也是服务端报错，插件只转述，不自己那套「在随机小时窗口里挑一个整点」的规则。
 > 模板全文见 `plugins/campusrun/config.example.toml`。
 
 生产实况：宿主 `~/ru41-mimo-smoke/plugins.d/campusrun/config.toml`（0600，
@@ -180,7 +184,7 @@ ru41 campusrun confirm <token> # 确认并提交（**写操作**）
 | 配速 | 5.5~6.6 分/km | 与控制台默认值一致；时长 = 距离 × 配速区间中值 |
 | 时长 | 自动 | 1.2 km → 6.6~7.9 分钟 |
 | 步数 | 自动 | 工具的步频模型合成 |
-| 何时跑 | 当天随机（`--days 0`） | 规则允许最多往前 3 天 |
+| 何时跑 | 当天随机（`--days 0`） | **服务端算**：`GET /api/starttimes?mode=rand&days=0&dur=<秒>` → 拿回 `startMs` 当起跑时刻（规则允许最多往前 3 天） |
 | 经纬度 | 留空 = 用围栏 | 不传 `locBody` → 工具取围栏中心 |
 | 海拔 | 15~45 m | `altMin`/`altMax`（写死 150±8 会在高原场景露馅） |
 

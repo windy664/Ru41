@@ -41,11 +41,10 @@ pub struct CampusrunSection {
     pub start_hhmm: Option<String>,
     /// `ago` 模式的分钟数。
     pub ago_minutes: Option<i64>,
-    /// 随机时刻的小时区间下限（点）；不写就取服务端 `/api/starttimes` 给的。
-    pub rand_hour_lo: Option<u64>,
-    /// 随机时刻的小时区间上限（点）。
-    pub rand_hour_hi: Option<u64>,
     /// 随机时刻允许往前找几天（0 = 只当天）。
+    ///
+    /// 随机**小时**窗口由服务端 `/api/starttimes` 的 limits 给，插件不配——
+    /// 服务端才是那个说了算的（控制台也是这么调的）。
     pub days_ago: Option<i64>,
     /// 提交后的静默窗口（秒），默认 600（工具 `flow::SILENCE_SEC`）。
     pub silence_secs: Option<i64>,
@@ -160,14 +159,6 @@ impl CampusrunSection {
     /// `ago` 模式的分钟数。
     pub fn ago_minutes(&self) -> Option<i64> {
         self.ago_minutes
-    }
-
-    /// 随机时刻的小时区间（不写就取服务端 limits 给的）。
-    pub fn rand_hours(&self) -> Option<(u64, u64)> {
-        match (self.rand_hour_lo, self.rand_hour_hi) {
-            (Some(lo), Some(hi)) if hi >= lo => Some((lo, hi)),
-            _ => None,
-        }
     }
 
     /// 随机时刻允许往前找几天。

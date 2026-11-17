@@ -224,6 +224,21 @@ impl CampusrunClient {
         self.get("/api/starttimes").await
     }
 
+    /// 补跑窗口与限制（带查询参数）。
+    ///
+    /// 起跑时刻**由服务端算**：控制台的 `resolveStartAt()` 就是这么调的
+    /// （`mode=rand|at|ago`、`days`、`hhmm`、`minutes`、`dur`），
+    /// 返回 `startMs` 直接当起跑时刻用。插件不自己重造一套随机规则。
+    pub async fn start_times_query(&self, query: &str) -> Result<StartTimes> {
+        let query = query.trim();
+        let path = if query.is_empty() {
+            "/api/starttimes".to_owned()
+        } else {
+            format!("/api/starttimes?{query}")
+        };
+        self.get(&path).await
+    }
+
     /// 必到点（打卡点）。
     pub async fn points(&self) -> Result<PointsData> {
         self.get("/api/points").await

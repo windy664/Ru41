@@ -36,11 +36,12 @@ allow_submit = false
 alt_min = 15
 alt_max = 45
 
-# 何时跑：now（刚跑完）/ rand（当天随机）/ at（指定时刻）/ ago（N 分钟前）。
+# 何时跑：now（刚跑完）/ rand（随机）/ at（指定时刻）/ ago（N 分钟前）。
+# **起跑时刻由服务端算**（/api/starttimes，控制台 resolveStartAt() 走的就是它）：
+# 插件把下面的参数丢过去，拿回服务端的 startMs 直接用；随机小时窗口、
+# 往前补几天上限、时段收窄（clamped）都按服务端的 limits 走，插件不自己造规则。
 start_mode = "rand"
-# rand 模式的小时区间与往前天数；不写小时就取服务端 /api/starttimes 给的 limits。
-# rand_hour_lo = 7
-# rand_hour_hi = 20
+# rand/at 模式往前找几天（服务端最多允许 3 天，越界服务端会报错）。
 days_ago = 0
 # at 模式的时刻（HH:MM）；ago 模式的分钟数。
 # start_hhmm = "07:30"

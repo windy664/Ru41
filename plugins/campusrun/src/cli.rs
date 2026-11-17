@@ -385,6 +385,8 @@ mod tests {
         assert_eq!(body["sportType"], 1);
         assert_eq!(body["mode"], "free");
         assert!((body["distance"].as_f64().unwrap() - 1.2).abs() < 0.01);
+        // 起跑时刻是**服务端给的**（mock 的 /api/starttimes 返回 startMs）。
+        assert_eq!(body["startAtMs"], 1_794_890_000_000i64);
     }
 
     /// 距离门槛用**服务端 policy.minDistance**（mock 返回 1000 m）：
