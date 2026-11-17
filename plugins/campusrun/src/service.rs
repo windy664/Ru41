@@ -182,9 +182,11 @@ pub async fn fetch_plan(
     let params = prepare_params(client, section, intent).await?;
     let request = PlanRequest::campusrun(&params);
     let plan = client.plan(&request).await?;
-    // 服务端要求的最小里程（结构化字段优先，失败时从工具自己的策略日志读）。
-    let min_distance = crate::render::policy_min_distance(&plan);
     // 工具自己说不行，就照它的话报错——并把它的致命/警告行原样带上。
+    //
+    // ⚠️ 这里**不做插件自己的判定**：Web 端也没有距离这道闸
+    // （实测 0.9 km、配速合法，工具照样「全部通过」放行），
+    // 服务端的最小里程只在输出里**转述**（见 render 的「服务端最小里程」一行）。
     if plan.ok == Some(false) {
         let reason = plan
             .error
@@ -194,37 +196,7 @@ pub async fn fetch_plan(
         for line in crate::render::tool_verdict_lines(&plan) {
             message.push_str(&format!("\n- {line}"));
         }
-        // 服务端那条最小里程要求顺带说清楚（数值还是服务端的）。
-        if let Some(min) = min_distance
-            && params.distance_km * 1000.0 < min
-        {
-            message.push_str(&format!(
-                "\n（服务端还要求单次至少 {}，现在 {:.2} km）",
-                crate::render::fmt_goal_distance(min),
-                params.distance_km
-            ));
-        }
         return Err(CampusrunError::Invalid(message));
-    }
-    // 距离门槛用服务端当前规则（policy.minDistance），不写死数值。
-    if let Some(min) = min_distance
-        && params.distance_km * 1000.0 < min
-    {
-        let hint = match params.laps {
-            Some(laps) => {
-                let need = (min / crate::submit::lap_length_m(params.lane)).ceil();
-                format!(
-                    "—— {laps} 圈只有 {:.2} km，最少 {need} 圈",
-                    params.distance_km
-                )
-            }
-            None => String::new(),
-        };
-        return Err(CampusrunError::Invalid(format!(
-            "服务端要求单次至少 {}，现在 {:.2} km{hint}",
-            crate::render::fmt_goal_distance(min),
-            params.distance_km
-        )));
     }
     let verdict = client.last_verdict().await.ok().flatten();
     let text = crate::render::render_plan(&plan, &params, verdict.as_ref());
