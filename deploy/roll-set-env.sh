@@ -43,7 +43,7 @@ mapfile -t BASE_ARGS < <(jq -r '
   + (if $c.Config.User != "" then ["--user", $c.Config.User] else [] end)
   + (if $c.Config.WorkingDir != "" then ["-w", $c.Config.WorkingDir] else [] end)
   + (($c.Config.Env // [])
-     | map(select(startswith("ZHIPU_API_KEY=")) | not)
+     | map(select(startswith("ZHIPU_API_KEY=") | not))
      | map("--env", .))
   + ($c.Mounts | map("-v", .Source + ":" + .Destination + (if .RW then "" else ":ro" end)))
   + (if (($c.HostConfig.NetworkMode // "bridge") != "default")
@@ -52,6 +52,23 @@ mapfile -t BASE_ARGS < <(jq -r '
   + (($c.HostConfig.ExtraHosts // []) | map("--add-host", .))
   | .[]
 ' "$BACKUP/$NAME.json")
+
+# ⚠️ 上面那段 jq 的结果必须**真的被检查**：
+# 进程替换里的 jq 失败不会让 set -e 触发，一旦 jq 写错（比如括号少一个），
+# BASE_ARGS 会是空数组 → 重建出的容器**丢掉全部环境变量**（密钥、代理全没），
+# 而且没有任何报错。2026-11-17 夜里就是这么把 worker 和 telegram 弄挂的。
+# 所以这里自查：备份里有 env、恢复出来却没有 → 中止，别重建。
+EXPECTED_ENV="$(jq -r '.[0].Config.Env // [] | length' "$BACKUP/$NAME.json")"
+GOT_ENV="$(jq -r '.[0].Config.Env // [] | map(select(startswith("ZHIPU_API_KEY=") | not)) | length' "$BACKUP/$NAME.json")"
+if [[ "${GOT_ENV}" -gt 0 && "${#BASE_ARGS[@]}" -lt 3 ]]; then
+  echo "中止：备份里有 ${GOT_ENV} 个环境变量，但只恢复出 ${#BASE_ARGS[@]} 项参数（jq 可能没跑对）" >&2
+  echo "     备份在 $BACKUP（容器未动）" >&2
+  exit 1
+fi
+if [[ "${EXPECTED_ENV}" -gt 0 && "${GOT_ENV}" -eq 0 ]]; then
+  echo "中止：环境变量被整条过滤掉了（jq 过滤写错？）" >&2
+  exit 1
+fi
 
 ENTRYPOINT="$(jq -r '.[0].Config.Entrypoint // empty | if type == "array" then .[0] else . end' "$BACKUP/$NAME.json")"
 mapfile -t CMD < <(jq -r '.[0].Config.Cmd[]?' "$BACKUP/$NAME.json")
