@@ -289,6 +289,22 @@ pub fn rule_passed(verdict: &Verdict, keyword: &str) -> Option<bool> {
         .map(|item| item.passed())
 }
 
+/// 服务端规则里的时长下限：「跑7分钟以上」→ 7 分钟。
+///
+/// 各门课要求不同（实测有 6 分钟也有 7 分钟），所以从 reasonList 里读，不写死。
+pub fn rule_min_minutes(verdict: &Verdict) -> Option<f64> {
+    verdict.rules.iter().find_map(|item| {
+        let text = item.reason.as_deref()?;
+        let rest = text.strip_prefix('跑')?;
+        let end = rest.find("分钟")?;
+        let digits: String = rest[..end]
+            .chars()
+            .take_while(char::is_ascii_digit)
+            .collect();
+        digits.parse::<f64>().ok().map(|value| value * 60.0)
+    })
+}
+
 /// 校园跑规则面：补跑窗口、必过点、围栏、服务端当前门槛、上次判定。
 pub fn render_rules(
     start_times: &StartTimes,
@@ -365,16 +381,28 @@ pub fn render_rules(
 /// 预演结论（未提交）。
 pub fn render_plan(
     plan: &PlanData,
-    distance_km: f64,
-    duration_min: f64,
+    params: &crate::submit::RunParams,
     verdict: Option<&Verdict>,
 ) -> String {
+    let distance_km = params.distance_km;
+    let duration_min = params.duration_min;
     let mut lines = vec!["## 校园跑预演（未提交）".to_owned()];
     let pace =
         pace_per_km(distance_km * 1000.0, duration_min * 60.0).unwrap_or_else(|| "—".to_owned());
     lines.push(format!(
         "- 参数：{distance_km:.2} km / {duration_min:.1} 分钟（配速 {pace}）"
     ));
+    // 起跑时刻与海拔：按配置算出来的，一并摆出来给用户看。
+    lines.push(format!(
+        "- 起跑：{}",
+        params
+            .start_at_ms
+            .map(|ms| fmt_datetime(Some(ms)))
+            .unwrap_or_else(|| "现在（刚跑完）".to_owned())
+    ));
+    if let Some((lo, hi)) = params.alt_range {
+        lines.push(format!("- 海拔：{lo:.0}~{hi:.0} m"));
+    }
     let actual = plan.actual_length.unwrap_or_default();
     lines.push(format!(
         "- 实际里程：{} · 轨迹点 {} · 步数 {} · 平均步频 {}",

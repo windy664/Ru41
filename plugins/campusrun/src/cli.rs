@@ -17,7 +17,7 @@
 use crate::client::CampusrunClient;
 use crate::config::CampusrunSection;
 use crate::service::fetch_markdown;
-use crate::submit::{RunIntent, RunParams, make_token};
+use crate::submit::{RunIntent, make_token};
 use anyhow::{Context, Result};
 use std::collections::HashMap;
 use std::sync::Arc;
@@ -81,7 +81,8 @@ async fn dispatch(
         "plan" | "预演" => {
             let client = client(section)?;
             let intent = intent_from_flags(&flags)?;
-            let (summary, plan) = crate::service::fetch_plan(&client, section, &intent).await?;
+            let (summary, plan, _params) =
+                crate::service::fetch_plan(&client, section, &intent).await?;
             let blocked = plan.blocked.unwrap_or(false);
             Ok(text(format!(
                 "{summary}\n\n{}",
@@ -98,7 +99,8 @@ async fn dispatch(
             // 只登记，不提交：提交要用户再确认一次（confirm）。
             let client = client(section)?;
             let intent = intent_from_flags(&flags)?;
-            let (summary, plan) = crate::service::fetch_plan(&client, section, &intent).await?;
+            let (summary, plan, params) =
+                crate::service::fetch_plan(&client, section, &intent).await?;
             if plan.blocked.unwrap_or(false) {
                 anyhow::bail!(
                     "预演自检没过，不能提交：{}",
@@ -111,7 +113,6 @@ async fn dispatch(
                      （刚才只做了预演，没有提交任何记录。）"
                 );
             }
-            let params = params_from_flags(section, &flags)?;
             let now = ru41::util::now();
             let token = make_token(&args.join(" "), now);
             crate::service::register_pending(store, &params, &summary, &token, now)?;
@@ -208,19 +209,13 @@ fn intent_from_flags(flags: &HashMap<String, String>) -> Result<RunIntent> {
     anyhow::bail!("要指定跑多少：--laps 3（圈）或 --km 1.2（公里）")
 }
 
-/// 从参数里读出换算后的参数（带门槛校验）。
-fn params_from_flags(
-    section: &CampusrunSection,
-    flags: &HashMap<String, String>,
-) -> Result<RunParams> {
-    let intent = intent_from_flags(flags)?;
-    crate::submit::plan_params(section, &intent).map_err(|error| anyhow::anyhow!("{error:#}"))
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
-    use axum::{Json, Router, routing::post};
+    use axum::{
+        Json, Router,
+        routing::{get, post},
+    };
     use serde_json::json;
     use tokio::sync::Mutex;
 
@@ -232,6 +227,68 @@ mod tests {
         let recorder = seen.clone();
         let plan_recorder = recorder.clone();
         let app = Router::new()
+            .route(
+                "/api/starttimes",
+                get(|| async {
+                    Json(json!({
+                        "ok": true,
+                        "data": {
+                            "mode": "now",
+                            "startMs": 1_794_890_000_000i64,
+                            "stopMs": 1_794_890_720_000i64,
+                            "startText": "2026-11-17 07:00:00",
+                            "stopText": "2026-11-17 07:12:00",
+                            "durationSec": 720,
+                            "limits": {
+                                "maxDaysAgo": 3,
+                                "maxAgoMin": 4320,
+                                "randHourLo": 7,
+                                "randHourHi": 20
+                            }
+                        }
+                    }))
+                }),
+            )
+            .route(
+                "/api/records",
+                get(|| async {
+                    Json(json!({
+                        "ok": true,
+                        "data": {"records": [{
+                            "rrid": 1367213418,
+                            "startTime": 1_794_870_446_000i64,
+                            "totalDis": 1212.0,
+                            "totalTime": 426.0,
+                            "validDis": 1212.0,
+                            "complete": true,
+                            "status": 0,
+                            "appealStatus": 0,
+                            "stepFreqStatus": 0,
+                            "avgStepFreq": 158
+                        }]}
+                    }))
+                }),
+            )
+            .route(
+                "/api/record/1367213418",
+                get(|| async {
+                    Json(json!({
+                        "ok": true,
+                        "data": {
+                            "rrid": 1367213418,
+                            "selDistance": 1.0,
+                            "speedTop": 2.17,
+                            "speedBottom": 10.0,
+                            "statusInfo": "太棒了，恭喜您完成了跑步",
+                            "reasonList": [
+                                {"complete": true, "completeStatus": 1, "type": 9, "reason": "按顺序通过所有点位"},
+                                {"complete": true, "completeStatus": 1, "type": 1, "reason": "最少要跑1.00公里"},
+                                {"complete": true, "completeStatus": 1, "type": 7, "reason": "跑7分钟以上"}
+                            ]
+                        }
+                    }))
+                }),
+            )
             .route(
                 "/api/plan",
                 post(move |body: axum::Json<serde_json::Value>| {

@@ -126,6 +126,33 @@ pub async fn fetch_rules(client: &CampusrunClient) -> Result<String, CampusrunEr
     Ok(text)
 }
 
+/// 组装一次跑的参数。
+///
+/// 三个来源分清：
+/// - **配置**：配速区间、海拔区间、起跑方式（now/rand/at/ago）；
+/// - **服务端**：时长下限（上次记录的 reasonList「跑N分钟以上」）、
+///   随机时刻窗口（`/api/starttimes` 的 limits）；
+/// - **用户**：圈数或公里数。
+pub async fn prepare_params(
+    client: &CampusrunClient,
+    section: &CampusrunSection,
+    intent: &RunIntent,
+) -> Result<RunParams, CampusrunError> {
+    let start_times = client.start_times().await?;
+    let verdict = client.last_verdict().await.ok().flatten();
+    let rule_min = verdict.as_ref().and_then(crate::render::rule_min_minutes);
+    let limits = start_times.limits.as_ref();
+    let rand_hours = section.rand_hours().unwrap_or_else(|| {
+        (
+            limits.and_then(|item| item.rand_hour_lo).unwrap_or(7),
+            limits.and_then(|item| item.rand_hour_hi).unwrap_or(20),
+        )
+    });
+    let now_ms = ru41::util::now() * 1000;
+    crate::submit::plan_params(section, intent, rule_min, rand_hours, now_ms)
+        .map_err(|error| CampusrunError::Invalid(format!("{error:#}")))
+}
+
 /// 预演：换算 → `POST /api/plan`（**不提交**）。
 ///
 /// 结论一律用工具自己的口径（`data.ok` / `error` / `issueSummary`）：
@@ -134,10 +161,9 @@ pub async fn fetch_plan(
     client: &CampusrunClient,
     section: &CampusrunSection,
     intent: &RunIntent,
-) -> Result<(String, PlanData), CampusrunError> {
-    let params = crate::submit::plan_params(section, intent)
-        .map_err(|error| CampusrunError::Invalid(format!("{error:#}")))?;
-    let request = PlanRequest::campusrun(params.distance_km, params.duration_min);
+) -> Result<(String, PlanData, RunParams), CampusrunError> {
+    let params = prepare_params(client, section, intent).await?;
+    let request = PlanRequest::campusrun(&params);
     let plan = client.plan(&request).await?;
     // 工具自己说不行，就照它的话报错。
     if plan.ok == Some(false) {
@@ -168,13 +194,8 @@ pub async fn fetch_plan(
         )));
     }
     let verdict = client.last_verdict().await.ok().flatten();
-    let text = crate::render::render_plan(
-        &plan,
-        params.distance_km,
-        params.duration_min,
-        verdict.as_ref(),
-    );
-    Ok((text, plan))
+    let text = crate::render::render_plan(&plan, &params, verdict.as_ref());
+    Ok((text, plan, params))
 }
 
 /// 登记一条待确认的提交（**只登记，不提交**）。
@@ -191,6 +212,8 @@ pub fn register_pending(
         duration_min: params.duration_min,
         lane: params.lane,
         laps: params.laps,
+        start_at_ms: params.start_at_ms,
+        alt_range: params.alt_range,
         state: "planned".to_owned(),
         created_at: now,
         rrid: None,
@@ -265,7 +288,14 @@ pub async fn confirm_and_submit(
     pending.state = "submitting".to_owned();
     save_pending(store, &pending)?;
 
-    let request = PlanRequest::campusrun(pending.distance_km, pending.duration_min);
+    let request = PlanRequest::campusrun(&crate::submit::RunParams {
+        distance_km: pending.distance_km,
+        duration_min: pending.duration_min,
+        lane: pending.lane,
+        laps: pending.laps,
+        start_at_ms: pending.start_at_ms,
+        alt_range: pending.alt_range,
+    });
     match client.run(&request).await {
         Ok(run) => {
             // 工具返回 submitted=false 就是没提交成（自检没过），照它的话报。
