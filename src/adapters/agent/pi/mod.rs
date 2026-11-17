@@ -5,4 +5,4 @@ mod rpc;
 mod steer;
 mod ui;
 
-pub use rpc::PiAgent;
+pub use rpc::{PiAgent, PiProvider};

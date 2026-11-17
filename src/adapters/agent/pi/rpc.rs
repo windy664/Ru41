@@ -48,9 +48,41 @@ pub struct PiAgent {
     /// 备用模型链：主模型失败（限流/服务端错误/协议中断）时由 Pi virtual model 按顺序切换。
     /// 每项写 `供应方/模型` 或裸 `模型`（沿用主供应方）。
     pub fallback_models: Vec<String>,
+    /// 额外供应方：fallback 链里 `供应方/模型` 的端点与密钥来源。
+    /// 每个供应方在 models.json 里是独立条目，跨供应方切换才有的放。
+    pub providers: std::collections::BTreeMap<String, PiProvider>,
     /// 底座 ID（pi / pi-session）。
     pub id: String,
 }
+
+/// Pi 的额外供应方：端点 + 密钥来源 + 输入模态。
+#[derive(Debug, Clone, Default)]
+pub struct PiProvider {
+    pub base_url: Option<String>,
+    pub api: Option<String>,
+    pub api_key_env: Option<String>,
+    pub input: Vec<String>,
+}
+impl PiAgent {
+    /// 要注入子进程的密钥环境变量名：主供应方 + 所有额外供应方，去重保序。
+    fn api_key_envs(&self) -> Vec<String> {
+        fn add(name: &Option<String>, names: &mut Vec<String>) {
+            if let Some(name) = name
+                && !name.trim().is_empty()
+                && !names.iter().any(|n| n == name)
+            {
+                names.push(name.clone());
+            }
+        }
+        let mut names: Vec<String> = Vec::new();
+        add(&self.api_key_env, &mut names);
+        for provider in self.providers.values() {
+            add(&provider.api_key_env, &mut names);
+        }
+        names
+    }
+}
+
 impl Default for PiAgent {
     fn default() -> Self {
         Self {
@@ -66,6 +98,7 @@ impl Default for PiAgent {
             extensions: Vec::new(),
             extra_env: Default::default(),
             fallback_models: Vec::new(),
+            providers: Default::default(),
             input: vec!["text".to_owned(), "image".to_owned()],
             id: "pi".into(),
         }
@@ -278,16 +311,17 @@ impl PiAgent {
             }
         }
         // 密钥只走环境变量；配置与日志里只有变量名。
-        if let Some(env_name) = &self.api_key_env {
-            let value = std::env::var(env_name).map_err(|_| {
+        // 额外供应方的密钥也要注入——fallback 链里可能有它们。
+        for env_name in self.api_key_envs() {
+            let value = std::env::var(&env_name).map_err(|_| {
                 Ru41Error::Config(format!(
                     "Pi api_key_env {env_name} is not set in the environment"
                 ))
             })?;
-            command.env(env_name, value);
+            command.env(&env_name, value);
         }
         // 自定义端点：临时 agent 目录 + models.json。
-        if self.base_url.is_some() {
+        if self.base_url.is_some() || !self.providers.is_empty() {
             let agent_dir = self.write_models_json(&request.run_dir, candidate)?;
             command.env("PI_CODING_AGENT_DIR", agent_dir);
         }
@@ -483,9 +517,10 @@ impl PiAgent {
                 if accepted && settled {
                     let message =
                         final_message.context("Pi did not produce an assistant message")?;
+                    let stop_reason = message["stopReason"].as_str().unwrap_or("unknown");
                     ensure!(
-                        message["stopReason"] == "stop",
-                        Ru41Error::AgentProcess("Pi assistant did not finish normally".into())
+                        stop_reason == "stop",
+                        Ru41Error::AgentProcess(pi_stop_error(stop_reason, &message))
                     );
                     let mut text = String::new();
                     for block in message["content"]
@@ -587,6 +622,22 @@ fn prune_session_forks(dir: &Path, keep_session_id: &str) {
             continue;
         }
         let _ = std::fs::remove_file(path);
+    }
+}
+
+/// stopReason 不是 stop 时，把 Pi 给出的真实原因带出来。
+///
+/// Pi 在 429（配额用尽）、401（key 失效）、协议中断时都会填 errorMessage，
+/// 但之前一律被翻译成「did not finish normally」——用户看到一句没头没尾的话，
+/// 还得自己去翻日志才知道是额度问题。
+fn pi_stop_error(stop_reason: &str, message: &serde_json::Value) -> String {
+    let detail = message["errorMessage"]
+        .as_str()
+        .map(str::trim)
+        .filter(|s| !s.is_empty());
+    match detail {
+        Some(detail) => format!("Pi assistant did not finish normally（{stop_reason}）：{detail}"),
+        None => format!("Pi assistant did not finish normally（{stop_reason}）"),
     }
 }
 

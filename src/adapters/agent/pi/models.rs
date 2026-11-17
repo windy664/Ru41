@@ -2,6 +2,7 @@ use super::PiAgent;
 use crate::domain::error::Ru41Error;
 use anyhow::{Context, Result, ensure};
 use serde_json::{Value, json};
+use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 
 /// 候选模型：供应方 + 模型 ID；主模型与 fallback 共同注入 Pi virtual model。
@@ -44,55 +45,98 @@ const SUPPORTED_APIS: [&str; 3] = [
 
 impl PiAgent {
     /// 兼容端点配置：models.json 内容；密钥以 `$ENV` 引用写入，真实值只留在进程环境里。
+    ///
+    /// `providers` 里每个供应方是独立条目（各自的 baseUrl / api / apiKey），
+    /// 这样 fallback 链可以跨供应方——主供应方限流时切到另一家的模型。
     pub fn models_json(&self, model: &str, provider: Option<&str>) -> Result<Value> {
-        let api = self.api.as_deref().unwrap_or("anthropic-messages");
-        ensure!(
-            SUPPORTED_APIS.contains(&api),
-            Ru41Error::Config(format!(
-                "pi api must be one of {} (got {api})",
-                SUPPORTED_APIS.join(", ")
-            ))
-        );
-        let provider_id = provider
+        let primary_id = provider
             .filter(|p| !p.is_empty())
             .unwrap_or("ru41")
             .to_owned();
         let model_id = model.split_once('/').map_or(model, |(_, id)| id);
-        let mut provider = serde_json::Map::new();
-        provider.insert(
-            "baseUrl".into(),
-            Value::String(self.base_url.clone().unwrap_or_default()),
-        );
-        provider.insert("api".into(), Value::String(api.to_owned()));
-        if let Some(env_name) = self.api_key_env.as_deref() {
-            provider.insert("apiKey".into(), Value::String(format!("${env_name}")));
-        }
-        let mut entries = Vec::new();
-        let mut push_model = |id: &str| {
-            let mut entry = serde_json::Map::new();
-            entry.insert("id".into(), Value::String(id.to_owned()));
-            if !self.input.is_empty() {
-                entry.insert("input".into(), json!(self.input));
-            }
-            entries.push(Value::Object(entry));
-        };
-        push_model(model_id);
+
+        // 每个供应方负责哪些模型：主模型归主供应方，fallback 按 `供应方/模型` 归位。
+        let mut assigned: BTreeMap<String, Vec<String>> = BTreeMap::new();
+        assigned
+            .entry(primary_id.clone())
+            .or_default()
+            .push(model_id.to_owned());
         for fallback in &self.fallback_models {
             let candidate = Candidate {
                 model: fallback.clone(),
                 provider: self.provider.clone(),
             };
-            let (fallback_provider, fallback_id) = candidate.parts();
-            if fallback_provider == provider_id && fallback_id != model_id {
-                push_model(&fallback_id);
+            let (pid, id) = candidate.parts();
+            let list = assigned.entry(pid).or_default();
+            if !list.contains(&id) {
+                list.push(id);
             }
         }
-        provider.insert("models".into(), Value::Array(entries));
+
+        let mut providers = serde_json::Map::new();
+        for (pid, ids) in assigned {
+            let (base_url, api, api_key_env, mut input) = if pid == primary_id {
+                (
+                    self.base_url.clone(),
+                    self.api.clone(),
+                    self.api_key_env.clone(),
+                    self.input.clone(),
+                )
+            } else {
+                match self.providers.get(&pid) {
+                    Some(spec) => (
+                        spec.base_url.clone(),
+                        spec.api.clone(),
+                        spec.api_key_env.clone(),
+                        spec.input.clone(),
+                    ),
+                    None => {
+                        return Err(Ru41Error::Config(format!(
+                            "fallback 模型属于未配置的供应方 {pid}：在 [agent.pi.providers.{pid}] 里补 base_url / api / api_key_env"
+                        ))
+                        .into());
+                    }
+                }
+            };
+            let api = api.unwrap_or_else(|| "anthropic-messages".to_owned());
+            ensure!(
+                SUPPORTED_APIS.contains(&api.as_str()),
+                Ru41Error::Config(format!(
+                    "pi api must be one of {} (got {api})",
+                    SUPPORTED_APIS.join(", ")
+                ))
+            );
+            // 主供应方没配端点 = 用 Pi 自带的 provider 目录，不在 models.json 里重复声明。
+            if pid == primary_id && base_url.is_none() {
+                continue;
+            }
+            if input.is_empty() {
+                input = self.input.clone();
+            }
+            let mut provider = serde_json::Map::new();
+            provider.insert(
+                "baseUrl".into(),
+                Value::String(base_url.unwrap_or_default()),
+            );
+            provider.insert("api".into(), Value::String(api));
+            if let Some(env_name) = api_key_env {
+                provider.insert("apiKey".into(), Value::String(format!("${env_name}")));
+            }
+            let mut entries = Vec::new();
+            for id in ids {
+                let mut entry = serde_json::Map::new();
+                entry.insert("id".into(), Value::String(id));
+                if !input.is_empty() {
+                    entry.insert("input".into(), json!(input));
+                }
+                entries.push(Value::Object(entry));
+            }
+            provider.insert("models".into(), Value::Array(entries));
+            providers.insert(pid, Value::Object(provider));
+        }
+
         let mut root = serde_json::Map::new();
-        root.insert(
-            "providers".into(),
-            json!({ provider_id: Value::Object(provider) }),
-        );
+        root.insert("providers".into(), Value::Object(providers));
         Ok(Value::Object(root))
     }
 

@@ -42,6 +42,26 @@ pub struct AgentOverrides {
 }
 
 /// 装配所有已配置底座；不启动进程，也不调用模型。
+/// 配置里的额外供应方 → 适配器结构。
+fn pi_providers(
+    pi: &super::config::PiSection,
+) -> std::collections::BTreeMap<String, crate::adapters::agent::pi::PiProvider> {
+    pi.providers
+        .iter()
+        .map(|(name, spec)| {
+            (
+                name.clone(),
+                crate::adapters::agent::pi::PiProvider {
+                    base_url: spec.base_url.clone(),
+                    api: spec.api.clone(),
+                    api_key_env: spec.api_key_env.clone(),
+                    input: spec.input.clone(),
+                },
+            )
+        })
+        .collect()
+}
+
 pub fn registry(
     agents: &super::config::AgentSection,
     overrides: AgentOverrides,
@@ -103,6 +123,7 @@ pub fn registry(
             extensions: pi.extensions.clone(),
             extra_env: pi.extra_env.clone(),
             fallback_models: pi.fallback_models.clone(),
+            providers: pi_providers(pi),
             input: pi.input.clone(),
             id: "pi".into(),
         };
@@ -125,6 +146,7 @@ pub fn registry(
                     extensions: pi.extensions.clone(),
                     extra_env: pi.extra_env.clone(),
                     fallback_models: pi.fallback_models.clone(),
+                    providers: pi_providers(pi),
                     input: pi.input.clone(),
                     id: "pi".into(),
                 }
