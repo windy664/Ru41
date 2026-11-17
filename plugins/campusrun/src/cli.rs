@@ -17,7 +17,7 @@
 use crate::client::CampusrunClient;
 use crate::config::CampusrunSection;
 use crate::service::fetch_markdown;
-use crate::submit::{RunIntent, make_token};
+use crate::submit::{RunIntent, StartIntent, make_token};
 use anyhow::{Context, Result};
 use std::collections::HashMap;
 use std::sync::Arc;
@@ -81,8 +81,9 @@ async fn dispatch(
         "plan" | "预演" => {
             let client = client(section)?;
             let intent = intent_from_flags(&flags)?;
+            let start = start_from_flags(&flags)?;
             let (summary, plan, _params) =
-                crate::service::fetch_plan(&client, section, &intent).await?;
+                crate::service::fetch_plan(&client, section, &intent, &start).await?;
             let blocked = plan.blocked.unwrap_or(false);
             Ok(text(format!(
                 "{summary}\n\n{}",
@@ -99,8 +100,9 @@ async fn dispatch(
             // 只登记，不提交：提交要用户再确认一次（confirm）。
             let client = client(section)?;
             let intent = intent_from_flags(&flags)?;
+            let start = start_from_flags(&flags)?;
             let (summary, plan, params) =
-                crate::service::fetch_plan(&client, section, &intent).await?;
+                crate::service::fetch_plan(&client, section, &intent, &start).await?;
             if plan.blocked.unwrap_or(false) {
                 anyhow::bail!(
                     "预演自检没过，不能提交：{}",
@@ -153,7 +155,11 @@ pub fn usage() -> String {
      ru41 campusrun plan --km 1.2     预演（不提交）\n  \
      ru41 campusrun submit --laps 3    登记待确认提交（不提交）\n  \
      ru41 campusrun submit --km 1.2    同上\n  \
-     ru41 campusrun confirm <token>   确认并提交（写操作）"
+     ru41 campusrun confirm <token>   确认并提交（写操作）\n  \
+     什么时候跑（由 agent 从对话里读出来再传，默认=刚跑完）：\n  \
+     --ago 30            补跑 30 分钟前那次\n  \
+     --at 09:00          补跑今天九点那次（可加 --days 1 = 昨天九点）\n  \
+     --rand [--days 2]   补跑前天某个随机时刻（时刻由服务端算）"
         .to_owned()
 }
 
@@ -207,6 +213,35 @@ fn intent_from_flags(flags: &HashMap<String, String>) -> Result<RunIntent> {
         return Ok(RunIntent::DistanceKm { km });
     }
     anyhow::bail!("要指定跑多少：--laps 3（圈）或 --km 1.2（公里）")
+}
+
+/// 从参数里读出「什么时候跑」。
+///
+/// **由 agent 从对话里读出来再传进来**，插件不猜、配置里也没有默认值：
+/// - 不带时间参数 → 刚跑完（`now`，也是 Web 端和工具 CLI 的默认档）；
+/// - `--ago 30` → 补跑半小时前那次；
+/// - `--at 09:00 [--days 1]` → 补跑昨天九点那次；
+/// - `--rand [--days 2]` → 补跑前天某个随机时刻（**时刻由服务端算**）。
+fn start_from_flags(flags: &HashMap<String, String>) -> Result<StartIntent> {
+    let days = flags
+        .get("days")
+        .or_else(|| flags.get("天"))
+        .and_then(|raw| raw.parse::<i64>().ok())
+        .unwrap_or(0);
+    if let Some(raw) = flags.get("ago").or_else(|| flags.get("前")) {
+        let minutes: i64 = raw.parse().with_context(|| format!("分钟数不对：{raw}"))?;
+        return Ok(StartIntent::Ago { minutes });
+    }
+    if let Some(raw) = flags.get("at").or_else(|| flags.get("时刻")) {
+        return Ok(StartIntent::At {
+            hhmm: raw.clone(),
+            days,
+        });
+    }
+    if flags.contains_key("rand") || flags.contains_key("随机") {
+        return Ok(StartIntent::Rand { days });
+    }
+    Ok(StartIntent::Now)
 }
 
 #[cfg(test)]
@@ -395,6 +430,43 @@ mod tests {
         store
     }
 
+    /// 时间参数由 agent 从对话里读出来传进来；插件默认「刚跑完」。
+    #[test]
+    fn start_flags_map_to_intents() {
+        let parse = |args: &[&str]| -> Result<StartIntent> {
+            let owned: Vec<String> = args.iter().map(|s| (*s).to_owned()).collect();
+            start_from_flags(&parse_flags(&owned))
+        };
+        // 不带时间参数 → 刚跑完。
+        assert_eq!(parse(&["--laps", "3"]).unwrap(), StartIntent::Now);
+        // 半小时前那次。
+        assert_eq!(
+            parse(&["--laps", "3", "--ago", "30"]).unwrap(),
+            StartIntent::Ago { minutes: 30 }
+        );
+        // 今天九点那次。
+        assert_eq!(
+            parse(&["--km", "1.2", "--at", "09:00"]).unwrap(),
+            StartIntent::At {
+                hhmm: "09:00".to_owned(),
+                days: 0
+            }
+        );
+        // 昨天九点那次。
+        assert_eq!(
+            parse(&["--km", "1.2", "--at", "09:00", "--days", "1"]).unwrap(),
+            StartIntent::At {
+                hhmm: "09:00".to_owned(),
+                days: 1
+            }
+        );
+        // 前天某个随机时刻（时刻由服务端算）。
+        assert_eq!(
+            parse(&["--km", "1.2", "--rand", "--days", "2"]).unwrap(),
+            StartIntent::Rand { days: 2 }
+        );
+    }
+
     #[tokio::test]
     async fn plan_never_submits() {
         let (base_url, seen) = mock_console().await;
@@ -416,7 +488,26 @@ mod tests {
         assert_eq!(body["sportType"], 1);
         assert_eq!(body["mode"], "free");
         assert!((body["distance"].as_f64().unwrap() - 1.2).abs() < 0.01);
-        // 起跑时刻是**服务端给的**（mock 的 /api/starttimes 返回 startMs）。
+        // 默认「刚跑完」：不发 startAtMs（跟控制台一致）。
+        assert!(body["startAtMs"].is_null(), "{body}");
+    }
+
+    /// 补跑档：起跑时刻**由服务端给**（mock 的 /api/starttimes 返回 startMs）。
+    #[tokio::test]
+    async fn plan_with_backdated_start_sends_the_server_start() {
+        let (base_url, seen) = mock_console().await;
+        let section = section_with(&base_url, true);
+        let store = store().await;
+        let args = vec![
+            "plan".to_owned(),
+            "--laps".to_owned(),
+            "3".to_owned(),
+            "--ago".to_owned(),
+            "30".to_owned(),
+        ];
+        dispatch(&section, &store, &args).await.unwrap();
+        let calls = seen.lock().await;
+        let body = &calls[0].1;
         assert_eq!(body["startAtMs"], 1_794_890_000_000i64);
     }
 

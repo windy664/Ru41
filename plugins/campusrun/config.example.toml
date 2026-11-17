@@ -36,16 +36,12 @@ allow_submit = false
 alt_min = 15
 alt_max = 45
 
-# 何时跑：now（刚跑完）/ rand（随机）/ at（指定时刻）/ ago（N 分钟前）。
-# **起跑时刻由服务端算**（/api/starttimes，控制台 resolveStartAt() 走的就是它）：
-# 插件把下面的参数丢过去，拿回服务端的 startMs 直接用；随机小时窗口、
-# 往前补几天上限、时段收窄（clamped）都按服务端的 limits 走，插件不自己造规则。
-start_mode = "rand"
-# rand/at 模式往前找几天（服务端最多允许 3 天，越界服务端会报错）。
-days_ago = 0
-# at 模式的时刻（HH:MM）；ago 模式的分钟数。
-# start_hhmm = "07:30"
-# ago_minutes = 60
+# 什么时候跑：**不在配置里**。
+# 由 agent 从对话里读出时态，再按请求传给插件：
+#   不带时间参数          = 刚跑完（默认，也是 Web 端/工具 CLI 的默认档）
+#   --ago 30              = 补跑 30 分钟前那次
+#   --at 09:00 [--days 1] = 补跑今天/昨天九点那次
+#   --rand [--days 2]     = 补跑前天某个随机时刻（时刻由服务端算）
 
 # 提交后的静默窗口（秒），默认 600。
 # 「上次提交」的时刻读**服务端**的 lastSubmitMs（/api/accounts）——从 Web 控制台

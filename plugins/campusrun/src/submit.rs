@@ -165,6 +165,26 @@ fn pseudo_random_unit(seed_source: i64) -> f64 {
     (z >> 11) as f64 / (1u64 << 53) as f64
 }
 
+/// 什么时候跑（**按次请求给**，不来自配置）。
+///
+/// 谁定：由 **agent 从对话里读出来**再传进来——
+/// 「帮我跑」= 刚跑完；「补一下半小时前那次」= 半小时前；「今天早上九点那次」= 指定时刻。
+/// 插件自己不再猜、配置里也不再有「默认什么时候跑」。
+#[derive(Debug, Clone, Default, PartialEq)]
+pub enum StartIntent {
+    /// 刚跑完（默认）：不发 startAtMs，服务端按「刚跑完」记。
+    ///
+    /// 也是 Web 端和工具 CLI（`pace-forge run 2`）的默认档。
+    #[default]
+    Now,
+    /// N 分钟前补跑。
+    Ago { minutes: i64 },
+    /// 指定时刻补跑（往前 `days` 天）。
+    At { hhmm: String, days: i64 },
+    /// 当天（或往前 `days` 天）随机时刻补跑——**时刻由服务端算**。
+    Rand { days: i64 },
+}
+
 /// 起跑方式 → 服务端 `/api/starttimes` 的查询串。
 ///
 /// **起跑时刻归服务端算**：控制台的 `resolveStartAt()` 就是把这些参数丢给
@@ -173,25 +193,19 @@ fn pseudo_random_unit(seed_source: i64) -> f64 {
 /// 还会漏掉服务端的收窄（clamped）与越界限制（maxDaysAgo）。
 ///
 /// `None` = 「刚跑完」：不发 startAtMs（跟控制台 `mode === 'now'` 一致）。
-pub fn start_query(section: &CampusrunSection, duration_min: f64) -> Result<Option<String>> {
-    // dur = 这次要跑的秒数：服务端靠它算窗口长度和收窄。
-    let dur = (duration_min * 60.0).round().max(1.0) as i64;
-    let query = match section.start_mode() {
-        "now" => return Ok(None),
-        "rand" => format!("mode=rand&days={}&dur={dur}", section.days_ago()),
-        "at" => {
-            let hhmm = section.start_hhmm().unwrap_or("07:00");
+pub fn start_query(intent: &StartIntent, duration_sec: i64) -> Result<Option<String>> {
+    let dur = duration_sec.max(1);
+    let query = match intent {
+        StartIntent::Now => return Ok(None),
+        StartIntent::Ago { minutes } => format!("mode=ago&minutes={minutes}&dur={dur}"),
+        StartIntent::At { hhmm, days } => {
             let (hour, minute) = parse_hhmm(hhmm)?;
             format!(
-                "mode=at&hhmm={hour:02}:{minute:02}&days={}&dur={dur}",
-                section.days_ago()
+                "mode=at&hhmm={hour:02}:{minute:02}&days={days}&dur={dur}",
+                days = days.max(&0)
             )
         }
-        "ago" => {
-            let minutes = section.ago_minutes().unwrap_or(60);
-            format!("mode=ago&minutes={minutes}&dur={dur}")
-        }
-        other => bail!("未知的 start_mode：{other}（支持 now/rand/at/ago）"),
+        StartIntent::Rand { days } => format!("mode=rand&days={}&dur={dur}", days.max(&0)),
     };
     Ok(Some(query))
 }
@@ -401,41 +415,48 @@ mod tests {
         assert!((short.distance_km - 0.8).abs() < 0.001);
     }
 
-    /// 起跑时刻**交给服务端**：插件只把参数拼成查询串，不自己算随机点。
+    /// 起跑时刻**交给服务端**：插件只把意图翻成查询串，不自己算随机点。
     #[test]
     fn start_query_defers_to_the_server() {
-        let mut section = section();
-        section.start_mode = Some("rand".to_owned());
-        section.days_ago = Some(2);
-        let query = start_query(&section, 7.3).unwrap().unwrap();
+        let dur = 438;
+        let query = start_query(&StartIntent::Rand { days: 2 }, dur).unwrap().unwrap();
         assert_eq!(query, "mode=rand&days=2&dur=438");
 
-        section.start_mode = Some("at".to_owned());
-        section.start_hhmm = Some("07:30".to_owned());
-        section.days_ago = Some(0);
-        let query = start_query(&section, 7.3).unwrap().unwrap();
+        let query = start_query(
+            &StartIntent::At {
+                hhmm: "07:30".to_owned(),
+                days: 0,
+            },
+            dur,
+        )
+        .unwrap()
+        .unwrap();
         assert_eq!(query, "mode=at&hhmm=07:30&days=0&dur=438");
 
-        section.start_mode = Some("ago".to_owned());
-        section.ago_minutes = Some(60);
-        let query = start_query(&section, 7.3).unwrap().unwrap();
+        let query = start_query(&StartIntent::Ago { minutes: 60 }, dur).unwrap().unwrap();
         assert_eq!(query, "mode=ago&minutes=60&dur=438");
     }
 
-    /// now 模式不发 startAtMs（跟控制台 `mode === 'now'` 一致）。
+    /// 「刚跑完」不发 startAtMs（跟控制台 `mode === 'now'` 一致），也是默认档。
     #[test]
-    fn start_mode_now_sends_no_start_at() {
-        let mut section = section();
-        section.start_mode = Some("now".to_owned());
-        assert!(start_query(&section, 7.3).unwrap().is_none());
+    fn start_intent_now_sends_no_start_at() {
+        assert!(start_query(&StartIntent::Now, 438).unwrap().is_none());
+        assert_eq!(StartIntent::default(), StartIntent::Now);
     }
 
-    /// 未知起跑方式要报错，别默默用默认值。
+    /// 时刻格式不对要报错，别默默用默认值。
     #[test]
-    fn unknown_start_mode_is_rejected() {
-        let mut section = section();
-        section.start_mode = Some("yesterday".to_owned());
-        assert!(start_query(&section, 7.3).is_err());
+    fn bad_clock_is_rejected() {
+        assert!(
+            start_query(
+                &StartIntent::At {
+                    hhmm: "晚上".to_owned(),
+                    days: 0
+                },
+                438
+            )
+            .is_err()
+        );
     }
 
     #[test]

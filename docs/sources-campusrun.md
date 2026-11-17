@@ -79,8 +79,6 @@ allow_submit = false                    # 是否允许真提交；默认关
 # pace_max = 6.6
 alt_min = 15                           # 海拔区间（米）
 alt_max = 45
-start_mode = "rand"                     # now / rand / at / ago
-days_ago = 0                            # rand 模式往前找几天（服务端最多 3 天）
 # silence_secs = 600                   # 提交后的静默窗口
 # confirm_ttl_secs = 900               # 待确认有效期
 ```
@@ -88,11 +86,15 @@ days_ago = 0                            # rand 模式往前找几天（服务端
 > **门槛不在配置里**：距离/时长/配速/点位的判定都在服务端（`policy.minDistance`、
 > pace-forge 的 preflight、记录详情的 `reasonList`），各门课要求不同，写死会误判。
 
-> **起跑时刻也不在配置里**：`start_mode`/`days_ago` 只是把「怎么跑」翻译成
-> `GET /api/starttimes?mode=…&days=…&dur=…` 的查询参数，**起点由服务端算**，
-> 插件拿回 `startMs` 直接用（控制台的 `resolveStartAt()` 走的就是这一步）。
+> **「什么时候跑」也不在配置里**：**由 agent 从对话里读出时态**，再按请求传参
+> （不带时间参数 = 刚跑完；`--ago 30` = 半小时前那次；`--at 09:00 --days 1` = 昨天九点；
+> `--rand --days 2` = 前天某个随机时刻）。
+> 插件只把意图翻译成 `GET /api/starttimes?mode=…&days=…&dur=…`，**起点由服务端算**
+> （控制台的 `resolveStartAt()` 走的就是这一步），拿回 `startMs` 直接用。
 > 服务端还会照自己的 limits 把时段**收窄**（`clamped`）——越界（往前补 5 天）
 > 也是服务端报错，插件只转述，不自己那套「在随机小时窗口里挑一个整点」的规则。
+> 未来时间（「半小时后」）工具不支持（记录只能补已发生的：开始+用时 ≤ 现在，最多往前 3 天），
+> 要真到点再跑，用宿主的一次性提醒（`ru41 todo add --remind "YYYY-MM-DD HH:MM"`）。
 > 模板全文见 `plugins/campusrun/config.example.toml`。
 
 生产实况：宿主 `~/ru41-mimo-smoke/plugins.d/campusrun/config.toml`（0600，
@@ -184,7 +186,7 @@ ru41 campusrun confirm <token> # 确认并提交（**写操作**）
 | 配速 | 5.5~6.6 分/km | **用户给的推荐参数**，原样用（不夹范围）；时长 = 距离 × 区间里**随机**取的一个配速 |
 | 时长 | 自动 | 照抄控制台 `autoDur(dist)`：`Math.max(3, dist × 随机配速)`；服务端自己的默认是**固定 720 秒**、不按距离算 |
 | 步数 | 自动 | 工具的步频模型合成 |
-| 何时跑 | 当天随机（`--days 0`） | **服务端算**：`GET /api/starttimes?mode=rand&days=0&dur=<秒>` → 拿回 `startMs` 当起跑时刻（规则允许最多往前 3 天） |
+| 何时跑 | **按次请求给**（agent 从对话里读） | 不带时间参数 = 刚跑完；`--ago 30` = 半小时前；`--at 09:00 --days 1` = 昨天九点；`--rand --days 2` = 前天随机。**起点由服务端算**：`GET /api/starttimes?mode=…&days=…&dur=<秒>` → 拿回 `startMs`（最多往前 3 天） |
 | 经纬度 | 留空 = 用围栏 | 不传 `locBody` → 工具取围栏中心 |
 | 海拔 | 15~45 m | `altMin`/`altMax`（写死 150±8 会在高原场景露馅） |
 
