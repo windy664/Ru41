@@ -100,8 +100,8 @@ pub fn base_params(
     section: &CampusrunSection,
     intent: &RunIntent,
     rule_min_minutes: Option<f64>,
+    now_ms: i64,
 ) -> Result<BaseParams> {
-    let (pace_lo, pace_hi) = section.pace_range();
     let (distance_km, laps, lane) = match *intent {
         RunIntent::Laps { laps, lane } => {
             let meters = laps * lap_length_m(lane);
@@ -112,11 +112,13 @@ pub fn base_params(
     if !(distance_km.is_finite() && distance_km > 0.0) {
         bail!("距离不对：{distance_km} km");
     }
-    // 时长自动：距离 × 配速区间中值（与控制台 autoDur 同口径，取中值可复现）。
-    let mut duration_min = distance_km * (pace_lo + pace_hi) / 2.0;
-    // 服务端规则的时长下限（「跑N分钟以上」，从上次记录的 reasonList 读）：
-    // 不够就抬到门槛——否则交上去只进排行榜、不计学期成绩（11-16 那条就栽在这）。
-    if let Some(min_minutes) = rule_min_minutes
+    // 时长自动：**照抄控制台的 autoDur(dist)**（见 auto_duration_min）。
+    let mut duration_min = auto_duration_min(section, distance_km, now_ms);
+    // 「抬到服务端要求的分钟数」是插件自己加的一层（控制台没有）：
+    // 服务端各门课要求不同（「跑N分钟以上」），抬上去才计学期成绩。
+    // 开关在配置里（lift_to_rule_min），关掉就纯照抄控制台。
+    if section.lift_to_rule_min()
+        && let Some(min_minutes) = rule_min_minutes
         && duration_min < min_minutes
     {
         duration_min = min_minutes;
@@ -128,6 +130,38 @@ pub fn base_params(
         laps,
         alt_range: section.alt_range(),
     })
+}
+
+/// 时长自动（**照抄** pace-forge Web 控制台的 `autoDur(dist)`）。
+///
+/// ```js
+/// function autoDur(dist) {
+///   const [lo, hi] = paceRange();               // 配速区间（各自要落在 [2,12]）
+///   const pace = lo + Math.random() * (hi - lo);// 区间里**随机**取一个配速
+///   return Math.max(3, Math.round(dist * pace * 60) / 60);  // 下限 3 分钟
+/// }
+/// ```
+///
+/// 为什么插件也要自己算：服务端的默认时长是**固定 720 秒**（实测 1.2/2.0/3.0 km
+/// 全是 12.0 分钟），**不按距离算**——按距离的 autoDur 在控制台的浏览器 JS 里。
+/// 但算法必须**一模一样**，不自创变体（之前这里取的是区间中值，控制台是随机的）。
+pub fn auto_duration_min(section: &CampusrunSection, distance_km: f64, now_ms: i64) -> f64 {
+    let (lo, hi) = section.pace_range();
+    let pace = lo + pseudo_random_unit(now_ms) * (hi - lo);
+    // 控制台：Math.max(3, Math.round(dist * pace * 60) / 60)
+    let minutes = (distance_km * pace * 60.0).round() / 60.0;
+    minutes.max(3.0)
+}
+
+/// 伪随机数（0.0~1.0）：种子取当前时刻。
+///
+/// 控制台用 `Math.random()`，插件这边不引随机数依赖，用同样的 xorshift 近似。
+fn pseudo_random_unit(seed_source: i64) -> f64 {
+    let mut seed = seed_source as u64 ^ 0x9e37_79b9_7f4a_7c15;
+    seed ^= seed << 13;
+    seed ^= seed >> 7;
+    seed ^= seed << 17;
+    (seed >> 11) as f64 / (1u64 << 53) as f64
 }
 
 /// 起跑方式 → 服务端 `/api/starttimes` 的查询串。
@@ -275,6 +309,7 @@ mod tests {
                 &section(),
                 &RunIntent::Laps { laps: 3.0, lane: 1 },
                 None,
+                1_794_890_000_000,
             )
             .unwrap(),
             StartAt::default(),
@@ -288,6 +323,63 @@ mod tests {
         assert!((5.5..=6.6).contains(&pace), "配速 {pace}");
     }
 
+    /// 时长照抄控制台的 `autoDur(dist)`：配速在**用户给的区间**里随机取，
+    /// 时长 = 距离 × 配速，下限 3 分钟。
+    #[test]
+    fn auto_duration_copies_the_console_formula() {
+        let section = section();
+        for seed in 0..50 {
+            let now = 1_794_890_000_000 + seed * 37_000;
+            let duration = auto_duration_min(&section, 1.2, now);
+            assert!(
+                (6.6..=7.92).contains(&duration),
+                "1.2 km × 配速 5.5~6.6 → 6.6~7.92 分钟，实得 {duration}"
+            );
+        }
+        // 下限 3 分钟：0.4 km × 5.5 = 2.2 分钟 → 抬到 3 分钟（控制台的 max(3, …)）。
+        assert_eq!(auto_duration_min(&section, 0.4, 1_794_890_000_000), 3.0);
+    }
+
+    /// **用户给的配速原样用**：插件不夹范围、不回落默认。
+    #[test]
+    fn pace_parameters_are_used_as_given() {
+        let mut section = section();
+        section.pace_min = Some(4.0);
+        section.pace_max = Some(12.0);
+        assert_eq!(section.pace_range(), (4.0, 12.0));
+        for seed in 0..50 {
+            let now = 1_794_890_000_000 + seed * 37_000;
+            let duration = auto_duration_min(&section, 1.0, now);
+            assert!((4.0..=12.0).contains(&duration), "实得 {duration}");
+        }
+    }
+
+    /// 「抬到服务端要求的分钟数」是插件加的一层，可以关掉（关掉 = 纯照抄控制台）。
+    #[test]
+    fn lifting_to_the_rule_minimum_is_optional() {
+        let mut section = section();
+        let distance = 0.4;
+        // 开：抬到服务端要求的 7 分钟。
+        let lifted = base_params(
+            &section,
+            &RunIntent::DistanceKm { km: distance },
+            Some(7.0),
+            1_794_890_000_000,
+        )
+        .unwrap();
+        assert_eq!(lifted.duration_min, 7.0, "{lifted:?}");
+        // 关：不管服务端要求，照 autoDur 算。
+        section.lift_to_rule_min = Some(false);
+        let plain = base_params(
+            &section,
+            &RunIntent::DistanceKm { km: distance },
+            Some(7.0),
+            1_794_890_000_000,
+        )
+        .unwrap();
+        assert_eq!(plain.duration_min, 3.0, "{plain:?}");
+    }
+
     /// 换算只管换算：**门槛不在这儿判**（服务端 policy + 工具 preflight 判）。
     /// 1 圈 = 400 m；距离不够也不拦，由服务端门槛拦（见 service 层）。
     #[test]
@@ -297,6 +389,7 @@ mod tests {
                 &section(),
                 &RunIntent::Laps { laps: 1.0, lane: 1 },
                 None,
+                1_794_890_000_000,
             )
             .unwrap(),
             StartAt::default(),
@@ -308,6 +401,7 @@ mod tests {
                 &section(),
                 &RunIntent::DistanceKm { km: 0.8 },
                 None,
+                1_794_890_000_000,
             )
             .unwrap(),
             StartAt::default(),
@@ -322,6 +416,7 @@ mod tests {
             &section(),
             &RunIntent::DistanceKm { km: 0.4 },
             Some(7.0),
+            1_794_890_000_000,
         )
         .unwrap();
         assert!((base.duration_min - 7.0).abs() < 0.001, "{base:?}");
