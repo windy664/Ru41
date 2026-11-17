@@ -31,10 +31,6 @@ pub struct CampusrunSection {
     pub pace_min: Option<f64>,
     /// 配速区间上限（分/km），默认 6.6。
     pub pace_max: Option<f64>,
-    /// 校园跑单次最小里程（米），默认 1000（服务端 `minDistance`）。
-    pub min_distance_m: Option<f64>,
-    /// 校园跑单次最小时长（秒），默认 300（服务端 `minRunTime`）。
-    pub min_duration_sec: Option<i64>,
     /// 提交后的静默窗口（秒），默认 600（工具 `flow::SILENCE_SEC`）。
     pub silence_secs: Option<i64>,
     /// 待确认提交的有效期（秒），默认 900。
@@ -49,10 +45,6 @@ impl CampusrunSection {
     pub const DEFAULT_PACE_MIN: f64 = 5.5;
     /// 配速区间上限（分/km）。
     pub const DEFAULT_PACE_MAX: f64 = 6.6;
-    /// 校园跑单次最小里程（米）——服务端 `minDistance`。
-    pub const DEFAULT_MIN_DISTANCE_M: f64 = 1000.0;
-    /// 校园跑单次最小时长（秒）——服务端 `minRunTime`。
-    pub const DEFAULT_MIN_DURATION_SEC: i64 = 300;
     /// 提交后的静默窗口（秒）——工具 `flow::SILENCE_SEC`。
     pub const DEFAULT_SILENCE_SECS: i64 = 600;
     /// 待确认提交的有效期（秒）。
@@ -115,17 +107,6 @@ impl CampusrunSection {
         let lo = self.pace_min.unwrap_or(Self::DEFAULT_PACE_MIN);
         let hi = self.pace_max.unwrap_or(Self::DEFAULT_PACE_MAX);
         (lo.min(hi), lo.max(hi))
-    }
-
-    /// 单次最小里程（米）。
-    pub fn min_distance_m(&self) -> f64 {
-        self.min_distance_m.unwrap_or(Self::DEFAULT_MIN_DISTANCE_M)
-    }
-
-    /// 单次最小时长（秒）。
-    pub fn min_duration_sec(&self) -> i64 {
-        self.min_duration_sec
-            .unwrap_or(Self::DEFAULT_MIN_DURATION_SEC)
     }
 
     /// 静默窗口（秒）。

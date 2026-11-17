@@ -76,7 +76,7 @@ async fn dispatch(
         }
         "rules" | "规则" => {
             let client = client(section)?;
-            Ok(text(crate::service::fetch_rules(&client, section).await?))
+            Ok(text(crate::service::fetch_rules(&client).await?))
         }
         "plan" | "预演" => {
             let client = client(section)?;
@@ -328,6 +328,27 @@ mod tests {
         assert_eq!(body["sportType"], 1);
         assert_eq!(body["mode"], "free");
         assert!((body["distance"].as_f64().unwrap() - 1.2).abs() < 0.01);
+    }
+
+    /// 距离门槛用**服务端 policy.minDistance**（mock 返回 1000 m）：
+    /// 1 圈 = 0.4 km → 拒，并说清最少 3 圈。
+    #[tokio::test]
+    async fn plan_below_server_min_distance_is_refused() {
+        let (base_url, seen) = mock_console().await;
+        let section = section_with(&base_url, true);
+        let store = store().await;
+        let args = vec!["plan".to_owned(), "--laps".to_owned(), "1".to_owned()];
+        let error = dispatch(&section, &store, &args)
+            .await
+            .unwrap_err()
+            .to_string();
+        assert!(error.contains("1.00 km"), "{error}");
+        assert!(error.contains("3 圈"), "要说清最少几圈：{error}");
+        let calls = seen.lock().await;
+        assert!(
+            calls.iter().all(|(path, _)| path == "/api/plan"),
+            "不该有提交请求：{calls:?}"
+        );
     }
 
     #[tokio::test]

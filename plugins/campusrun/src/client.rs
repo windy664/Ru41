@@ -7,7 +7,7 @@
 use crate::config::CampusrunSection;
 use crate::model::{
     AccountInfo, CheatStatus, Envelope, FencesData, PlanData, PointsData, RecordsData, RunData,
-    RunRecord, RunRecordDetail, SemesterInfo, StartTimes,
+    RunRecord, RunRecordDetail, SemesterInfo, StartTimes, Verdict,
 };
 use serde::de::DeserializeOwned;
 use std::fmt;
@@ -186,6 +186,32 @@ impl CampusrunClient {
     /// 违规名单自查状态。
     pub async fn cheat(&self) -> Result<CheatStatus> {
         self.get("/api/cheat").await
+    }
+
+    /// 最近一条记录的详情（含服务端给的逐条规则判定）。
+    ///
+    /// 规则判定是权威口径：门槛（最少多少公里/多少分钟）、点位顺序过没过，
+    /// 都在这里——**不要写死**，各门课的要求不一样。
+    pub async fn last_verdict(&self) -> std::result::Result<Option<Verdict>, CampusrunError> {
+        let records = self.records().await?;
+        let Some(record) = records
+            .into_iter()
+            .max_by_key(|item| item.start_time.unwrap_or_default())
+        else {
+            return Ok(None);
+        };
+        let detail = self.record(record.rrid).await?;
+        Ok(Some(Verdict {
+            rrid: record.rrid,
+            filename: None,
+            rules: detail.reason_list.clone().unwrap_or_default(),
+            status_info: detail.status_info.clone(),
+            min_distance_km: detail.sel_distance,
+            pace_range: match (detail.speed_top, detail.speed_bottom) {
+                (Some(top), Some(bottom)) => Some((top, bottom)),
+                _ => None,
+            },
+        }))
     }
 
     /// 账号登录态（姓名/手机号不在渲染里回显）。

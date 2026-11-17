@@ -3,7 +3,7 @@
 //! 纯函数，不触网，方便单测锁住「用户到底会看到什么」。
 
 use crate::model::{
-    CheatStatus, FencesData, PlanData, PointsData, RunRecord, SemesterInfo, StartTimes,
+    CheatStatus, FencesData, PlanData, PointsData, RunRecord, SemesterInfo, StartTimes, Verdict,
 };
 use chrono::{Local, TimeZone};
 
@@ -253,20 +253,68 @@ pub fn fmt_date(ms: Option<i64>) -> String {
     }
 }
 
-/// 校园跑规则面：补跑窗口、必过点、围栏、单次门槛。
+/// 上次提交的服务端判定（reasonList：逐条规则过没过）。
+///
+/// 这是**权威口径**：门槛各门课不一样（实测有「最少要跑1.00公里/跑7分钟以上」，
+/// 也有「最少要跑1.50公里/跑6分钟以上」），所以规则只能从服务端读，不能写死。
+pub fn render_verdict(verdict: &Verdict) -> String {
+    let mut lines = vec!["## 上次提交的判定（服务端逐条规则）".to_owned()];
+    for item in verdict.rules.iter() {
+        let mark = if item.passed() { "✅" } else { "❌" };
+        lines.push(format!(
+            "- {mark} {}",
+            item.reason.clone().unwrap_or_default()
+        ));
+    }
+    if let Some(info) = verdict
+        .status_info
+        .as_deref()
+        .filter(|text| !text.trim().is_empty())
+    {
+        lines.push(format!("结论：{info}"));
+    }
+    lines.join("\n")
+}
+
+/// 某条规则在上次提交里过没过（按规则文本找）。
+pub fn rule_passed(verdict: &Verdict, keyword: &str) -> Option<bool> {
+    verdict
+        .rules
+        .iter()
+        .find(|item| {
+            item.reason
+                .as_deref()
+                .is_some_and(|text| text.contains(keyword))
+        })
+        .map(|item| item.passed())
+}
+
+/// 校园跑规则面：补跑窗口、必过点、围栏、服务端当前门槛、上次判定。
 pub fn render_rules(
     start_times: &StartTimes,
     points: &PointsData,
     fences: &FencesData,
-    min_distance_m: f64,
-    min_duration_sec: i64,
+    verdict: Option<&Verdict>,
 ) -> String {
     let mut lines = vec!["## 校园跑规则".to_owned()];
-    lines.push(format!(
-        "- 单次门槛：里程 ≥ {}、时长 ≥ {}（服务端 minDistance / minRunTime）",
-        fmt_goal_distance(min_distance_m),
-        fmt_duration(min_duration_sec as f64)
-    ));
+    // 服务端门槛：取上次那条记录用的规则（selDistance / 配速区间）。
+    match verdict {
+        Some(verdict) => {
+            let mut bits = Vec::new();
+            if let Some(min) = verdict.min_distance_km {
+                bits.push(format!("最少 {}", fmt_goal_distance(min * 1000.0)));
+            }
+            if let Some((top, bottom)) = verdict.pace_range {
+                bits.push(format!("配速 {top:.2}~{bottom:.2} 分/km"));
+            }
+            if bits.is_empty() {
+                lines.push("- 服务端门槛：上次记录里没取到".to_owned());
+            } else {
+                lines.push(format!("- 服务端门槛（上次那条用的）：{}", bits.join("、")));
+            }
+        }
+        None => lines.push("- 服务端门槛：还没有记录可比对".to_owned()),
+    }
     if let Some(limits) = &start_times.limits {
         let mut bits = Vec::new();
         if let Some(days) = limits.max_days_ago {
@@ -315,7 +363,12 @@ pub fn render_rules(
 }
 
 /// 预演结论（未提交）。
-pub fn render_plan(plan: &PlanData, distance_km: f64, duration_min: f64) -> String {
+pub fn render_plan(
+    plan: &PlanData,
+    distance_km: f64,
+    duration_min: f64,
+    verdict: Option<&Verdict>,
+) -> String {
     let mut lines = vec!["## 校园跑预演（未提交）".to_owned()];
     let pace =
         pace_per_km(distance_km * 1000.0, duration_min * 60.0).unwrap_or_else(|| "—".to_owned());
@@ -341,31 +394,34 @@ pub fn render_plan(plan: &PlanData, distance_km: f64, duration_min: f64) -> Stri
         plan.checkpoint_passed.unwrap_or(0),
         plan.checkpoint_total.unwrap_or(0)
     ));
-    // 被拦下的三种口径：data.ok=false、blocked=true、或者带 error。
-    let blocked = plan.blocked.unwrap_or(false) || plan.ok == Some(false);
+    // 结论一律用**工具自己的**口径（data.ok / error / issueSummary），插件不另判一套。
+    let blocked = plan.ok == Some(false);
     lines.push(format!(
-        "- 自检：{}{}",
+        "- 工具自检：{}{}",
         plan.issue_summary.clone().unwrap_or_else(|| "未知".into()),
         if blocked {
-            "（**被拦下，不能提交**）"
+            "（**没过，不能提交**）"
         } else {
-            "（未拦截）"
+            "（过了）"
         }
     ));
     if let Some(error) = plan.error.as_deref().filter(|text| !text.trim().is_empty()) {
-        lines.push(format!("- 原因：{error}"));
+        lines.push(format!("- 工具给的原因：{error}"));
     }
-    // 穿点顺序不符 → 服务端会判「按顺序通过所有点位」失败：单独拎出来说。
+    // 穿点顺序：工具会给一条警告。上次提交这条规则判过没过，直接摆出来（别自己吓自己）。
     let order_warning: Vec<&String> = plan
         .logs
         .iter()
         .filter(|line| line.contains("point-order"))
         .collect();
     if !order_warning.is_empty() {
-        lines.push(
-            "- ⚠️ 穿点顺序与服务端要求不一致，提交后可能被判「按顺序通过所有点位」失败："
-                .to_owned(),
-        );
+        let last = verdict.and_then(|item| rule_passed(item, "按顺序通过所有点位"));
+        let tail = match last {
+            Some(true) => "（上次提交这条规则判过了 ✅）",
+            Some(false) => "（上次提交这条规则**没判过** ❌）",
+            None => "（上次提交没有这条规则，过没过不知道）",
+        };
+        lines.push(format!("- 工具提示：穿点顺序与服务端次序不一致{tail}："));
         for line in order_warning {
             lines.push(format!("  {line}"));
         }
