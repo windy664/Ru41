@@ -239,13 +239,13 @@ fn make_tracker(
     auto_sign: bool,
     default_location: Option<(f64, f64)>,
 ) -> TeachermateTracker {
-    let client = TeachermateClient::with_api_base(openid, base.to_owned());
+    let client = TeachermateClient::with_api_base(Some(openid.to_owned()), base.to_owned());
     TeachermateTracker::new(
         store,
         client,
         notifier,
         TeachermateConfig {
-            openid: openid.into(),
+            openid: Some(openid.to_owned()),
             openid_path: std::path::PathBuf::from("unused-openid"),
             interval_secs: 60,
             notify_target: "user:mock".into(),
@@ -632,7 +632,10 @@ fn section_parses_minimal_toml_and_resolves_openid_file() {
     .unwrap();
     assert!(section.is_ready());
     let config = section.resolved("target".into()).unwrap();
-    assert_eq!(config.openid, "abcdef0123456789abcdef0123456789");
+    assert_eq!(
+        config.openid.as_deref(),
+        Some("abcdef0123456789abcdef0123456789")
+    );
     assert_eq!(config.notify_target, "target");
     assert_eq!(
         config.interval_secs,
@@ -646,11 +649,12 @@ fn section_parses_minimal_toml_and_resolves_openid_file() {
 }
 
 #[test]
-fn resolved_requires_openid() {
-    // 环境变量未设、无配置、openid_path 不存在 → 明确报错
+fn resolved_does_not_require_openid() {
+    // 凭证不在配置解析阶段强制：只读快照的容器（worker）没有 openid 也要能加载插件；
+    // 缺 openid 的报错留到真正访问平台时（见 source/client.rs 的 current_openid）。
     let section: TeachermateSection = toml::from_str("notify = true").unwrap();
-    let err = section.resolved(String::new()).unwrap_err();
-    assert!(err.to_string().contains("openid required"));
+    let resolved = section.resolved(String::new()).unwrap();
+    assert_eq!(resolved.openid, None);
 }
 
 fn make_work_tracker(
@@ -660,13 +664,13 @@ fn make_work_tracker(
     notifier: Option<Arc<dyn NotifyChannel>>,
     todo_sync: bool,
 ) -> TeachermateWorkTracker {
-    let client = TeachermateClient::with_api_base(openid, base.to_owned());
+    let client = TeachermateClient::with_api_base(Some(openid.to_owned()), base.to_owned());
     TeachermateWorkTracker::new(
         store,
         client,
         notifier,
         TeachermateConfig {
-            openid: openid.into(),
+            openid: Some(openid.to_owned()),
             openid_path: std::path::PathBuf::from("unused-openid"),
             interval_secs: 60,
             notify_target: "user:mock".into(),

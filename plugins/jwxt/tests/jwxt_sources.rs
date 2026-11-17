@@ -206,8 +206,8 @@ async fn spawn_fixture(state: Arc<FixtureState>) -> SocketAddr {
 
 fn make_client(base: &str, session_path: std::path::PathBuf) -> JwxtClient {
     JwxtClient::new(
-        "2640000001",
-        "test-pass",
+        Some("2640000001".to_owned()),
+        Some("test-pass".to_owned()),
         base.to_owned(),
         JwxtSection::DEFAULT_CAS_MODULUS.to_owned(),
         JwxtSection::DEFAULT_CAS_EXPONENT.to_owned(),

@@ -203,8 +203,8 @@ impl CookieStore for CookieJar {
 pub struct JwxtClient {
     jar: Arc<CookieJar>,
     http: reqwest::Client,
-    username: String,
-    password: String,
+    username: Option<String>,
+    password: Option<String>,
     /// CAS 基址（联奕 lyuapServer），生产默认 https://cas.gzus.edu.cn/lyuapServer。
     cas_base: String,
     /// Ohdave RSA 公钥参数（校方 CAS 前端配置，只经本地配置覆盖）。
@@ -217,8 +217,8 @@ pub struct JwxtClient {
 
 impl JwxtClient {
     pub fn new(
-        username: impl Into<String>,
-        password: impl Into<String>,
+        username: Option<String>,
+        password: Option<String>,
         cas_base: String,
         cas_modulus: String,
         cas_exponent: String,
@@ -236,8 +236,8 @@ impl JwxtClient {
         Self {
             jar,
             http,
-            username: username.into(),
-            password: password.into(),
+            username,
+            password,
             cas_base,
             cas_modulus,
             cas_exponent,
@@ -353,14 +353,23 @@ impl JwxtClient {
             #[serde(default)]
             data: Option<serde_json::Value>,
         }
+        // 凭证在这里才校验：只读课表缓存的容器（worker）没有凭证也能用。
+        let username = self
+            .username
+            .as_deref()
+            .context("jwxt username required: RU41_JWXT_USERNAME or sources.jwxt.username")?;
+        let password = self
+            .password
+            .as_deref()
+            .context("jwxt password required: RU41_JWXT_PASSWORD or sources.jwxt.password")?;
         let response: TicketsResponse = self
             .http
             .post(format!("{}{TICKETS_PATH}", self.cas_base))
             .form(&[
-                ("username", self.username.as_str()),
+                ("username", username),
                 (
                     "password",
-                    ohdave_encrypt(&self.password, &self.cas_exponent, &self.cas_modulus).as_str(),
+                    ohdave_encrypt(password, &self.cas_exponent, &self.cas_modulus).as_str(),
                 ),
                 ("service", format!("{}{SSO_PATH}", self.jwxt_base).as_str()),
                 ("loginType", ""),

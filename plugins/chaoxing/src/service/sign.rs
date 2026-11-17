@@ -1184,7 +1184,11 @@ mod tests {
             ..Default::default()
         };
         let config = section.resolved("user:test".into())?;
-        let client = ChaoxingClient::new("test", "test", dir.path().join("cookies.json"));
+        let client = ChaoxingClient::new(
+            Some("test".to_owned()),
+            Some("test".to_owned()),
+            dir.path().join("cookies.json"),
+        );
         let tracker = ChaoxingTracker::new(store.clone(), client, None, config);
 
         let now = 1_000_000;

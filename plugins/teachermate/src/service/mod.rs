@@ -13,8 +13,8 @@ pub use work::{TeachermateWorkPollReport, TeachermateWorkTracker};
 
 use crate::config::TeachermateConfig;
 use crate::source::{ActiveSign, SignsOutcome, TeachermateClient, sign_response_ok};
-use ru41::ports::{channel::NotifyChannel, storage::TaskStore};
 use anyhow::{Context, Result};
+use ru41::ports::{channel::NotifyChannel, storage::TaskStore};
 use serde::Serialize;
 use std::collections::HashSet;
 use std::sync::Arc;

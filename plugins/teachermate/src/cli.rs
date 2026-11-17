@@ -28,7 +28,7 @@ pub async fn bind_json_with_base(
     std::fs::rename(&tmp, openid_path)
         .with_context(|| format!("落盘 openid 失败: {}", openid_path.display()))?;
 
-    let client = TeachermateClient::with_api_base(openid.clone(), api_base.to_owned());
+    let client = TeachermateClient::with_api_base(Some(openid.clone()), api_base.to_owned());
     let roles = client.role().await?;
     Ok(serde_json::json!({
         "openid": openid,

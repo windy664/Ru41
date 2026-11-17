@@ -142,16 +142,16 @@ impl JwxtSection {
 
     /// 由 [sources.jwxt] 解析出运行时配置；默认值与凭证兜底只定义在这里。
     pub fn resolved(&self, notify_target: String) -> Result<JwxtConfig> {
+        // 凭证不在配置解析阶段强制：只有要登录教务的容器才需要它们。
+        // worker 之类的容器只读课表缓存，没有凭证也该能加载插件、查课表。
         let username = std::env::var("RU41_JWXT_USERNAME")
             .ok()
             .or_else(|| self.username.clone())
-            .filter(|v| !v.trim().is_empty())
-            .context("jwxt username required: RU41_JWXT_USERNAME or sources.jwxt.username")?;
+            .filter(|v| !v.trim().is_empty());
         let password = std::env::var("RU41_JWXT_PASSWORD")
             .ok()
             .or_else(|| self.password.clone())
-            .filter(|v| !v.trim().is_empty())
-            .context("jwxt password required: RU41_JWXT_PASSWORD or sources.jwxt.password")?;
+            .filter(|v| !v.trim().is_empty());
         let semester_start = match &self.semester_start {
             Some(raw) => Some(
                 NaiveDate::parse_from_str(raw.trim(), "%Y-%m-%d").with_context(|| {

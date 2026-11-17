@@ -54,7 +54,7 @@ impl SimpleCommand for TeachermateQqCommand {
             )));
         };
         // 先验证后落盘：坏凭证不写入，避免“已绑定但失效”的假状态
-        let client = TeachermateClient::new(openid.clone());
+        let client = TeachermateClient::new(Some(openid.clone()));
         let identity = match ru41::plugins::bridge(async move { client.role().await }).await {
             Ok(roles) => roles
                 .first()

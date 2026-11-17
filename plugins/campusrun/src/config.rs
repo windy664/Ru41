@@ -78,20 +78,22 @@ impl CampusrunSection {
             .unwrap_or(Self::DEFAULT_TOKEN_ENV)
     }
 
-    /// 令牌：配置里的 `token` 优先，否则读环境变量。
+    /// 令牌：**环境变量优先**，配置里的明文 `token` 只作兜底。
+    ///
+    /// 环境变量优先是硬规矩：配置文件会挂进 worker（有 agent 的容器），
+    /// 明文令牌放文件里等于交给 agent 读（2026-11-17 事故）。
     pub fn token(&self) -> Option<String> {
-        if let Some(token) = self
-            .token
+        if let Ok(value) = std::env::var(self.token_env()) {
+            let value = value.trim().to_owned();
+            if !value.is_empty() {
+                return Some(value);
+            }
+        }
+        self.token
             .as_deref()
             .map(str::trim)
             .filter(|s| !s.is_empty())
-        {
-            return Some(token.to_owned());
-        }
-        std::env::var(self.token_env())
-            .ok()
-            .map(|value| value.trim().to_owned())
-            .filter(|value| !value.is_empty())
+            .map(str::to_owned)
     }
 
     /// 请求超时。

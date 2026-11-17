@@ -448,8 +448,8 @@ fn make_tracker_full(
     auto_sign: bool,
 ) -> ChaoxingTracker {
     let client = ChaoxingClient::with_base_urls(
-        "10000000000",
-        "pw",
+        Some("10000000000".to_owned()),
+        Some("pw".to_owned()),
         cookie_path.clone(),
         base.to_owned(),
         base.to_owned(),
@@ -463,8 +463,8 @@ fn make_tracker_full(
         client,
         notifier,
         ChaoxingConfig {
-            phone: "10000000000".into(),
-            password: "pw".into(),
+            phone: Some("10000000000".to_owned()),
+            password: Some("pw".to_owned()),
             cookie_path,
             interval_secs: 60,
             notify_target: "user:mock".into(),
@@ -1292,8 +1292,8 @@ fn make_work_tracker(
     vault: Option<Arc<dyn ru41::ports::vault::Vault>>,
 ) -> ru41_plugin_chaoxing::ChaoxingWorkTracker {
     let client = ChaoxingClient::with_base_urls(
-        "10000000000",
-        "pw",
+        Some("10000000000".to_owned()),
+        Some("pw".to_owned()),
         cookie_path.clone(),
         base.to_owned(),
         base.to_owned(),
@@ -1307,8 +1307,8 @@ fn make_work_tracker(
         client,
         notifier,
         ChaoxingConfig {
-            phone: "10000000000".into(),
-            password: "pw".into(),
+            phone: Some("10000000000".to_owned()),
+            password: Some("pw".to_owned()),
             cookie_path,
             interval_secs: 60,
             notify_target: "user:mock".into(),
@@ -1561,10 +1561,13 @@ fn section_parses_minimal_toml_and_rejects_unknown() {
 }
 
 #[test]
-fn resolved_requires_credentials() {
+fn resolved_does_not_require_credentials() {
+    // 凭证不在配置解析阶段强制：只读作业缓存的容器（worker）没有凭证也要能加载插件；
+    // 缺凭证的报错留到真正登录时（见 source/client.rs 的 login）。
     let section: ChaoxingSection = toml::from_str("notify = true").unwrap();
-    let err = section.resolved(String::new()).unwrap_err();
-    assert!(err.to_string().contains("phone required"));
+    let resolved = section.resolved(String::new()).unwrap();
+    assert_eq!(resolved.phone, None);
+    assert_eq!(resolved.password, None);
 }
 
 #[test]
