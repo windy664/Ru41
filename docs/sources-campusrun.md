@@ -77,6 +77,12 @@ timeout_secs = 15
 allow_submit = false                    # 是否允许真提交；默认关
 # pace_min = 5.5                       # 配速区间（分/km），默认 5.5~6.6
 # pace_max = 6.6
+alt_min = 15                           # 海拔区间（米）
+alt_max = 45
+start_mode = "rand"                     # now / rand / at / ago
+days_ago = 0                            # rand 模式往前找几天
+# rand_hour_lo = 7                     # 不写就取服务端 /api/starttimes 的 limits
+# rand_hour_hi = 20
 # silence_secs = 600                   # 提交后的静默窗口
 # confirm_ttl_secs = 900               # 待确认有效期
 ```

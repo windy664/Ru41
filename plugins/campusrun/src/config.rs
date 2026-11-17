@@ -31,6 +31,22 @@ pub struct CampusrunSection {
     pub pace_min: Option<f64>,
     /// 配速区间上限（分/km），默认 6.6。
     pub pace_max: Option<f64>,
+    /// 海拔区间下限（米）。校园实测海拔带；不发就用工具默认的 150±8。
+    pub alt_min: Option<f64>,
+    /// 海拔区间上限（米）。
+    pub alt_max: Option<f64>,
+    /// 何时跑：`now`（刚跑完）/ `rand`（当天随机）/ `at`（指定时刻）/ `ago`（N 分钟前）。
+    pub start_mode: Option<String>,
+    /// `at` 模式的时刻（HH:MM）。
+    pub start_hhmm: Option<String>,
+    /// `ago` 模式的分钟数。
+    pub ago_minutes: Option<i64>,
+    /// 随机时刻的小时区间下限（点）；不写就取服务端 `/api/starttimes` 给的。
+    pub rand_hour_lo: Option<u64>,
+    /// 随机时刻的小时区间上限（点）。
+    pub rand_hour_hi: Option<u64>,
+    /// 随机时刻允许往前找几天（0 = 只当天）。
+    pub days_ago: Option<i64>,
     /// 提交后的静默窗口（秒），默认 600（工具 `flow::SILENCE_SEC`）。
     pub silence_secs: Option<i64>,
     /// 待确认提交的有效期（秒），默认 900。
@@ -49,6 +65,13 @@ impl CampusrunSection {
     pub const DEFAULT_SILENCE_SECS: i64 = 600;
     /// 待确认提交的有效期（秒）。
     pub const DEFAULT_CONFIRM_TTL_SECS: i64 = 900;
+    /// 何时跑：默认「当天随机」（2026-11-16 用户给的推荐参数）。
+    pub const DEFAULT_START_MODE: &str = "rand";
+    /// 随机时刻只找当天。
+    pub const DEFAULT_DAYS_AGO: i64 = 0;
+    /// 海拔区间默认值（米）——校园实测海拔带。
+    pub const DEFAULT_ALT_MIN: f64 = 15.0;
+    pub const DEFAULT_ALT_MAX: f64 = 45.0;
 
     /// 控制台基址（去掉尾部斜杠）。
     pub fn base_url(&self) -> String {
@@ -107,6 +130,49 @@ impl CampusrunSection {
         let lo = self.pace_min.unwrap_or(Self::DEFAULT_PACE_MIN);
         let hi = self.pace_max.unwrap_or(Self::DEFAULT_PACE_MAX);
         (lo.min(hi), lo.max(hi))
+    }
+
+    /// 海拔区间（米）：两个都填了才发。
+    pub fn alt_range(&self) -> Option<(f64, f64)> {
+        match (self.alt_min, self.alt_max) {
+            (Some(lo), Some(hi)) if hi > lo => Some((lo, hi)),
+            _ => None,
+        }
+    }
+
+    /// 何时跑：now | rand | at | ago。
+    pub fn start_mode(&self) -> &str {
+        self.start_mode
+            .as_deref()
+            .map(str::trim)
+            .filter(|raw| !raw.is_empty())
+            .unwrap_or(Self::DEFAULT_START_MODE)
+    }
+
+    /// `at` 模式的时刻（HH:MM）。
+    pub fn start_hhmm(&self) -> Option<&str> {
+        self.start_hhmm
+            .as_deref()
+            .map(str::trim)
+            .filter(|raw| !raw.is_empty())
+    }
+
+    /// `ago` 模式的分钟数。
+    pub fn ago_minutes(&self) -> Option<i64> {
+        self.ago_minutes
+    }
+
+    /// 随机时刻的小时区间（不写就取服务端 limits 给的）。
+    pub fn rand_hours(&self) -> Option<(u64, u64)> {
+        match (self.rand_hour_lo, self.rand_hour_hi) {
+            (Some(lo), Some(hi)) if hi >= lo => Some((lo, hi)),
+            _ => None,
+        }
+    }
+
+    /// 随机时刻允许往前找几天。
+    pub fn days_ago(&self) -> i64 {
+        self.days_ago.unwrap_or(Self::DEFAULT_DAYS_AGO).max(0)
     }
 
     /// 静默窗口（秒）。

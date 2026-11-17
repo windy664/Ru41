@@ -269,18 +269,18 @@ pub struct PlanRequest {
 }
 
 impl PlanRequest {
-    /// 校园跑（记分跑）的固定参数：自动规划 + 围栏 + 当天随机。
-    pub fn campusrun(distance_km: f64, duration_min: f64) -> Self {
+    /// 校园跑（记分跑）的参数：自动规划 + 围栏；起跑时刻与海拔按配置带。
+    pub fn campusrun(params: &crate::submit::RunParams) -> Self {
         Self {
-            distance_km,
-            duration_min,
+            distance_km: params.distance_km,
+            duration_min: params.duration_min,
             run_mode: 1,
             sport_type: 1,
             mode: "free".to_owned(),
-            lane: 1,
-            start_at_ms: None,
-            alt_min: None,
-            alt_max: None,
+            lane: params.lane,
+            start_at_ms: params.start_at_ms,
+            alt_min: params.alt_range.map(|range| range.0),
+            alt_max: params.alt_range.map(|range| range.1),
         }
     }
 

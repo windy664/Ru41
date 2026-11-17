@@ -27,9 +27,24 @@ timeout_secs = 15
 allow_submit = false
 
 # 配速区间（分/km），默认 5.5~6.6（与 pace-forge Web 控制台的默认值一致）。
-# 时长 = 距离 × 配速区间中值（工具 autoDur 的同口径，取中值可复现）。
+# 时长 = 距离 × 配速区间中值（工具 autoDur 的同口径，取中值可复现）；
+# 若服务端规则要求更长（「跑N分钟以上」），按服务端要求抬到 N 分钟。
 # pace_min = 5.5
 # pace_max = 6.6
+
+# 海拔区间（米）：校园实测海拔带。不发就用工具默认的 150±8。
+alt_min = 15
+alt_max = 45
+
+# 何时跑：now（刚跑完）/ rand（当天随机）/ at（指定时刻）/ ago（N 分钟前）。
+start_mode = "rand"
+# rand 模式的小时区间与往前天数；不写小时就取服务端 /api/starttimes 给的 limits。
+# rand_hour_lo = 7
+# rand_hour_hi = 20
+days_ago = 0
+# at 模式的时刻（HH:MM）；ago 模式的分钟数。
+# start_hhmm = "07:30"
+# ago_minutes = 60
 
 # 提交后的静默窗口（秒），默认 600（工具 flow::SILENCE_SEC）。
 # silence_secs = 600

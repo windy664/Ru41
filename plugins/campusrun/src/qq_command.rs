@@ -7,7 +7,7 @@
 use crate::client::CampusrunClient;
 use crate::config::CampusrunSection;
 use crate::service::fetch_markdown;
-use crate::submit::{RunIntent, make_token, plan_params};
+use crate::submit::{RunIntent, make_token};
 use anyhow::Result;
 use ru41::ports::channel::NotifyChannel;
 use ru41::ports::commands::{CommandContext, Reply, SimpleCommand};
@@ -97,9 +97,10 @@ impl SimpleCommand for CampusrunQqCommand {
                 Ok(Some(Reply::text(text)))
             }
             Action::Plan(intent) => {
-                let (summary, plan) = crate::service::fetch_plan(&client, &section, &intent)
-                    .await
-                    .map_err(|error| anyhow::anyhow!("{error}"))?;
+                let (summary, plan, _params) =
+                    crate::service::fetch_plan(&client, &section, &intent)
+                        .await
+                        .map_err(|error| anyhow::anyhow!("{error}"))?;
                 let tail = if plan.blocked.unwrap_or(false) {
                     "预演被拦下，**不能提交**。"
                 } else {
@@ -110,25 +111,28 @@ impl SimpleCommand for CampusrunQqCommand {
             Action::Run(intent) => {
                 if !section.allow_submit() {
                     // 没开提交就只给预演，绝不静默提交。
-                    let (summary, _) = crate::service::fetch_plan(&client, &section, &intent)
-                        .await
-                        .map_err(|error| anyhow::anyhow!("{error}"))?;
+                    let (summary, _, _params) =
+                        crate::service::fetch_plan(&client, &section, &intent)
+                            .await
+                            .map_err(|error| anyhow::anyhow!("{error}"))?;
                     return Ok(Some(Reply::text(format!(
                         "{summary}\n\n提交功能没开（[sources.campusrun] 里 allow_submit = true 才开），\
                          刚才只做了预演，没有提交任何记录。"
                     ))));
                 }
-                let (summary, plan) = crate::service::fetch_plan(&client, &section, &intent)
-                    .await
-                    .map_err(|error| anyhow::anyhow!("{error}"))?;
+                let (summary, plan, _params) =
+                    crate::service::fetch_plan(&client, &section, &intent)
+                        .await
+                        .map_err(|error| anyhow::anyhow!("{error}"))?;
                 if plan.blocked.unwrap_or(false) {
                     return Ok(Some(Reply::text(format!(
                         "预演自检没过，没法提交：{}",
                         plan.issue_summary.unwrap_or_default()
                     ))));
                 }
-                let params =
-                    plan_params(&section, &intent).map_err(|error| anyhow::anyhow!("{error:#}"))?;
+                let params = crate::service::prepare_params(&client, &section, &intent)
+                    .await
+                    .map_err(|error| anyhow::anyhow!("{error}"))?;
                 let now = ru41::util::now();
                 let token = make_token(ctx.msg_id, now);
                 crate::service::register_pending(
