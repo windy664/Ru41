@@ -142,13 +142,16 @@ pub struct RunRecord {
     /// 是否完成。
     #[serde(default)]
     pub complete: Option<bool>,
-    /// 服务端状态码（0 = 正常，非 0 表示被标记）。
+    /// 服务端状态码。
+    ///
+    /// ⚠️ **各取值的含义接口没有说明**，控制台的 JS 也不读这个字段。
+    /// 非 0 时插件只报状态码，不替服务端说「异常」还是什么。
     #[serde(default)]
     pub status: Option<i64>,
-    /// 申诉状态（非 0 = 有申诉记录）。
+    /// 申诉状态码（非 0 表示有申诉相关记录，字段名自解释）。
     #[serde(default)]
     pub appeal_status: Option<i64>,
-    /// 步频校验状态（非 0 = 步频被判异常）。
+    /// 步频校验状态码（非 0 表示步频这一项没通过，字段名自解释）。
     #[serde(default)]
     pub step_freq_status: Option<i64>,
     /// 平均步频（步/分）。

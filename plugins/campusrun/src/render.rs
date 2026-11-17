@@ -180,6 +180,12 @@ pub fn render_all(status: &SemesterInfo, records: &[RunRecord], cheat: &CheatSta
 }
 
 /// 记录状态文案。
+///
+/// ⚠️ 只说**服务端给了什么**，不替它下结论：
+/// - `complete`：控制台也拿它当有效性标志（`r.complete ?? …`）→ 说「已完成/未完成」；
+/// - `status`：控制台的 JS **根本不读这个字段**，接口也没说明各取值的含义 →
+///   非 0 时只报状态码，不说成「异常」；
+/// - `appealStatus` / `stepFreqStatus`：字段名自解释，非 0 时照名字说，并带上原值。
 fn record_state(record: &RunRecord) -> String {
     let mut parts = vec![if record.complete.unwrap_or(false) {
         "已完成".to_owned()
@@ -187,13 +193,13 @@ fn record_state(record: &RunRecord) -> String {
         "未完成".to_owned()
     }];
     if let Some(status) = record.status.filter(|s| *s != 0) {
-        parts.push(format!("服务端状态异常({status})"));
+        parts.push(format!("服务端状态码 {status}（接口未说明含义）"));
     }
-    if record.appeal_status.unwrap_or(0) != 0 {
-        parts.push("有申诉记录".to_owned());
+    if let Some(appeal) = record.appeal_status.filter(|s| *s != 0) {
+        parts.push(format!("有申诉记录(appealStatus={appeal})"));
     }
-    if record.step_freq_status.unwrap_or(0) != 0 {
-        parts.push("步频被判异常".to_owned());
+    if let Some(freq) = record.step_freq_status.filter(|s| *s != 0) {
+        parts.push(format!("步频状态异常(stepFreqStatus={freq})"));
     }
     parts.join("，")
 }
@@ -668,7 +674,9 @@ mod tests {
         };
         assert_eq!(record_state(&record), "已完成");
         record.status = Some(1);
-        assert!(record_state(&record).contains("服务端状态异常(1)"));
+        // 状态码只报码，不替服务端说「异常」。
+        assert!(record_state(&record).contains("服务端状态码 1"));
+        assert!(!record_state(&record).contains("异常(1)"));
         record.appeal_status = Some(2);
         assert!(record_state(&record).contains("有申诉记录"));
     }
