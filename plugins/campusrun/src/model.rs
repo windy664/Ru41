@@ -337,6 +337,12 @@ pub struct Fence {
 #[derive(Debug, Clone, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct PlanData {
+    /// 流程是否成功（false = 自检没过，服务端没提交）。
+    #[serde(default)]
+    pub ok: Option<bool>,
+    /// 失败原因（自检没过时在这里）。
+    #[serde(default)]
+    pub error: Option<String>,
     /// 是否连上了服务端（true = 围栏与打卡点是真实数据）。
     #[serde(default)]
     pub online: Option<bool>,
