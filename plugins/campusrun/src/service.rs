@@ -97,7 +97,7 @@ impl ru41::ingress::schedule::SimplePollJob for CampusrunTracker {
             "semester": info.summary_raw.sname,
             "valid_km": km(info.summary_raw.semester_valid_dis),
             "total_km": km(info.summary_raw.semester_dis),
-            "target_count": info.goal_raw.as_ref().and_then(|g| g.semester_goal),
+            "target_dis_m": info.goal_raw.as_ref().and_then(|g| g.semester_goal),
             "done_count": info.goal_raw.as_ref().and_then(|g| g.semester_valid),
             "days_left": info.goal.as_ref().and_then(|g| g.days_left),
             "records": records.len(),

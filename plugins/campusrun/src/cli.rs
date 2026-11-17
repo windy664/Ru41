@@ -8,7 +8,7 @@
 //! ru41 campusrun rules           规则面：窗口/必过点/围栏/单次门槛
 //! ru41 campusrun plan --laps 3   预演（不提交）
 //! ru41 campusrun plan --km 1.2   预演（不提交）
-//! ru41 campusrun run --laps 3    登记一条待确认的提交（仍不提交）
+//! ru41 campusrun submit --laps 3 登记一条待确认的提交（仍不提交）
 //! ru41 campusrun confirm <token> 确认并提交（写操作！）
 //! ```
 //!
@@ -92,7 +92,9 @@ async fn dispatch(
                 }
             )))
         }
-        "run" | "跑" => {
+        // ⚠️ 不能叫 "run"：宿主把 `ru41 <模块> run` 当成 tracker 的长驻 run
+        // 抢走（见 src/main.rs 的 Tracker 分发），根本进不到插件的 cli 钩子。
+        "submit" | "跑" | "提交" => {
             // 只登记，不提交：提交要用户再确认一次（confirm）。
             let client = client(section)?;
             let intent = intent_from_flags(&flags)?;
@@ -148,8 +150,8 @@ pub fn usage() -> String {
      ru41 campusrun rules             规则面（窗口/必过点/围栏/门槛）\n  \
      ru41 campusrun plan --laps 3     预演（不提交）\n  \
      ru41 campusrun plan --km 1.2     预演（不提交）\n  \
-     ru41 campusrun run --laps 3      登记待确认提交（不提交）\n  \
-     ru41 campusrun run --km 1.2      同上\n  \
+     ru41 campusrun submit --laps 3    登记待确认提交（不提交）\n  \
+     ru41 campusrun submit --km 1.2    同上\n  \
      ru41 campusrun confirm <token>   确认并提交（写操作）"
         .to_owned()
 }
@@ -333,7 +335,7 @@ mod tests {
         let (base_url, seen) = mock_console().await;
         let section = section_with(&base_url, false);
         let store = store().await;
-        let args = vec!["run".to_owned(), "--laps".to_owned(), "3".to_owned()];
+        let args = vec!["submit".to_owned(), "--laps".to_owned(), "3".to_owned()];
         let error = dispatch(&section, &store, &args)
             .await
             .unwrap_err()
@@ -352,7 +354,7 @@ mod tests {
         let (base_url, seen) = mock_console().await;
         let section = section_with(&base_url, true);
         let store = store().await;
-        let args = vec!["run".to_owned(), "--laps".to_owned(), "3".to_owned()];
+        let args = vec!["submit".to_owned(), "--laps".to_owned(), "3".to_owned()];
         let value = dispatch(&section, &store, &args).await.unwrap();
         let text = value.as_str().unwrap().to_owned();
         assert!(text.contains("还没有提交"), "{text}");
@@ -396,7 +398,7 @@ mod tests {
         let (base_url, seen) = mock_console().await;
         let section = section_with(&base_url, true);
         let store = store().await;
-        let args = vec!["run".to_owned(), "--laps".to_owned(), "3".to_owned()];
+        let args = vec!["submit".to_owned(), "--laps".to_owned(), "3".to_owned()];
         let text = dispatch(&section, &store, &args)
             .await
             .unwrap()
