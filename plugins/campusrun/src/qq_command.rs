@@ -7,7 +7,7 @@
 use crate::client::CampusrunClient;
 use crate::config::CampusrunSection;
 use crate::service::fetch_markdown;
-use crate::submit::{RunIntent, make_token};
+use crate::submit::{RunIntent, StartIntent, make_token};
 use anyhow::Result;
 use ru41::ports::channel::NotifyChannel;
 use ru41::ports::commands::{CommandContext, Reply, SimpleCommand};
@@ -35,9 +35,9 @@ enum Action {
     All,
     Rules,
     /// 预演（不提交）。
-    Plan(RunIntent),
+    Plan(RunIntent, StartIntent),
     /// 登记一条待确认的提交（不提交）。
-    Run(RunIntent),
+    Run(RunIntent, StartIntent),
     /// 确认并提交。
     Confirm(String),
 }
@@ -96,9 +96,9 @@ impl SimpleCommand for CampusrunQqCommand {
                     .map_err(|error| anyhow::anyhow!("{error}"))?;
                 Ok(Some(Reply::text(text)))
             }
-            Action::Plan(intent) => {
+            Action::Plan(intent, start) => {
                 let (summary, plan, _params) =
-                    crate::service::fetch_plan(&client, &section, &intent)
+                    crate::service::fetch_plan(&client, &section, &intent, &start)
                         .await
                         .map_err(|error| anyhow::anyhow!("{error}"))?;
                 let tail = if plan.blocked.unwrap_or(false) {
@@ -108,11 +108,11 @@ impl SimpleCommand for CampusrunQqCommand {
                 };
                 Ok(Some(Reply::text(format!("{summary}\n\n{tail}"))))
             }
-            Action::Run(intent) => {
+            Action::Run(intent, start) => {
                 if !section.allow_submit() {
                     // 没开提交就只给预演，绝不静默提交。
                     let (summary, _, _params) =
-                        crate::service::fetch_plan(&client, &section, &intent)
+                        crate::service::fetch_plan(&client, &section, &intent, &start)
                             .await
                             .map_err(|error| anyhow::anyhow!("{error}"))?;
                     return Ok(Some(Reply::text(format!(
@@ -121,7 +121,7 @@ impl SimpleCommand for CampusrunQqCommand {
                     ))));
                 }
                 let (summary, plan, params) =
-                    crate::service::fetch_plan(&client, &section, &intent)
+                    crate::service::fetch_plan(&client, &section, &intent, &start)
                         .await
                         .map_err(|error| anyhow::anyhow!("{error}"))?;
                 if plan.blocked.unwrap_or(false) {
@@ -216,10 +216,16 @@ fn parse_action(arg: &str) -> Option<Action> {
         return Some(Action::Rules);
     }
     if text.contains("预演") || text.contains("试跑") || text.contains("看看能不能跑") {
-        return Some(Action::Plan(intent_from_text(text)?));
+        return Some(Action::Plan(
+            intent_from_text(text)?,
+            start_intent_from_text(text),
+        ));
     }
     if text.contains("跑") {
-        return Some(Action::Run(intent_from_text(text)?));
+        return Some(Action::Run(
+            intent_from_text(text)?,
+            start_intent_from_text(text),
+        ));
     }
     if text.contains("风控") || text.contains("违规") {
         return Some(Action::Cheat);
@@ -249,6 +255,110 @@ fn intent_from_text(text: &str) -> Option<RunIntent> {
     })
 }
 
+/// 从话里读出「什么时候跑」。
+///
+/// 这是**直连路径**（`/校园跑` 斜杠命令不过 agent）的粗读；
+/// 走 agent 的对话由 agent 读得更准，它会直接给 CLI 传 `--ago/--at/--rand`。
+/// 读不出来就当「刚跑完」——和 Web 端、工具 CLI 的默认档一致。
+fn start_intent_from_text(text: &str) -> StartIntent {
+    // 「半小时前」「30 分钟前」「2 小时前」→ 补跑那一刻
+    if let Some(minutes) = minutes_before(text) {
+        return StartIntent::Ago { minutes };
+    }
+    // 「今天/昨天/前天 九点」→ 指定时刻
+    if let Some(hhmm) = clock_in_text(text) {
+        return StartIntent::At {
+            hhmm,
+            days: days_back(text),
+        };
+    }
+    StartIntent::Now
+}
+
+/// 「N 分钟前 / N 小时前 / 半小时前」→ 多少分钟前。
+fn minutes_before(text: &str) -> Option<i64> {
+    // 「半小时前」要排在「小时前」前面：它俩都含「小时前」。
+    if text.contains("半小时前") {
+        return Some(30);
+    }
+    if let Some(number) = number_before(text, "分钟前") {
+        return Some(number.round() as i64);
+    }
+    if let Some(number) = number_before(text, "小时前") {
+        return Some((number * 60.0).round() as i64);
+    }
+    None
+}
+
+/// 紧挨着单位的那段数字（阿拉伯或中文数字）。
+///
+/// 必须**贴着**单位取：否则「补一下半小时前」里的「一」会被当成 1
+/// （`chinese_number` 认「一」，连「一下」都能读成 1）。
+fn number_before(text: &str, unit: &str) -> Option<f64> {
+    let idx = text.find(unit)?;
+    // 数字和单位之间可以有空格（「跑 30 分钟前」）。
+    let head = text[..idx].trim_end();
+    let tail: String = head
+        .chars()
+        .rev()
+        .take_while(|ch| ch.is_ascii_digit() || cn_digit(*ch).is_some())
+        .collect::<Vec<char>>()
+        .into_iter()
+        .rev()
+        .collect();
+    if tail.is_empty() {
+        return None;
+    }
+    if tail.chars().all(|ch| ch.is_ascii_digit()) {
+        tail.parse::<f64>().ok()
+    } else {
+        chinese_number(&tail)
+    }
+}
+
+/// 话里的钟点 → "HH:MM"（「九点」「9点半」「晚上八点」）。
+fn clock_in_text(text: &str) -> Option<String> {
+    let idx = text.find('点')?;
+    let head = &text[..idx];
+    let hour = number_in(head)? as u32;
+    let minute = if head.ends_with('半') || text[idx..].starts_with("点半") {
+        30
+    } else {
+        0
+    };
+    if hour > 23 {
+        return None;
+    }
+    // 下午/晚上/中午 → 12 小时制换算。
+    let pm = text.contains("下午") || text.contains("晚上") || text.contains("中午");
+    let hour = if pm && hour < 12 { hour + 12 } else { hour };
+    Some(format!("{hour:02}:{minute:02}"))
+}
+
+/// 话里往前几天（「今天」0 /「昨天」1 /「前天」2 /「大前天」3）。
+fn days_back(text: &str) -> i64 {
+    if text.contains("大前天") {
+        3
+    } else if text.contains("前天") {
+        2
+    } else if text.contains("昨天") || text.contains("昨日") {
+        1
+    } else {
+        0
+    }
+}
+
+/// 取一段话里的数（阿拉伯数字、中文数字，或「半」= 0.5）。
+fn number_in(text: &str) -> Option<f64> {
+    if let Some(value) = extract_number(text) {
+        return Some(value);
+    }
+    if text.contains('半') {
+        return Some(0.5);
+    }
+    None
+}
+
 /// 取一段文本里的第一个数字（阿拉伯数字或中文数字）。
 fn extract_number(text: &str) -> Option<f64> {
     // 阿拉伯数字（含小数）
@@ -270,39 +380,23 @@ fn extract_number(text: &str) -> Option<f64> {
 
 /// 中文数字（一 ~ 九十九）。
 fn chinese_number(text: &str) -> Option<f64> {
-    let digit = |ch: char| -> Option<f64> {
-        Some(match ch {
-            '零' | '〇' => 0.0,
-            '一' | '壹' => 1.0,
-            '二' | '两' | '贰' => 2.0,
-            '三' | '叁' => 3.0,
-            '四' | '肆' => 4.0,
-            '五' | '伍' => 5.0,
-            '六' | '陆' => 6.0,
-            '七' | '柒' => 7.0,
-            '八' | '捌' => 8.0,
-            '九' | '玖' => 9.0,
-            '十' | '拾' => 10.0,
-            _ => return None,
-        })
-    };
-    let chars: Vec<char> = text.chars().filter(|ch| digit(*ch).is_some()).collect();
+    let chars: Vec<char> = text.chars().filter(|ch| cn_digit(*ch).is_some()).collect();
     if chars.is_empty() {
         return None;
     }
     if chars.len() == 1 {
-        return digit(chars[0]);
+        return cn_digit(chars[0]);
     }
     // 十X / X十 / X十Y
     let mut total = 0.0;
     let mut index = 0;
     while index < chars.len() {
-        let current = digit(chars[index])?;
+        let current = cn_digit(chars[index])?;
         if current == 10.0 {
             let lead = if index == 0 { 1.0 } else { total };
             total = lead * 10.0;
             if index + 1 < chars.len() {
-                total += digit(chars[index + 1])?;
+                total += cn_digit(chars[index + 1])?;
                 index += 2;
                 continue;
             }
@@ -313,6 +407,24 @@ fn chinese_number(text: &str) -> Option<f64> {
         index += 1;
     }
     Some(total)
+}
+
+/// 中文数字字符 → 数值。
+fn cn_digit(ch: char) -> Option<f64> {
+    Some(match ch {
+        '零' | '〇' => 0.0,
+        '一' | '壹' => 1.0,
+        '二' | '两' | '贰' => 2.0,
+        '三' | '叁' => 3.0,
+        '四' | '肆' => 4.0,
+        '五' | '伍' => 5.0,
+        '六' | '陆' => 6.0,
+        '七' | '柒' => 7.0,
+        '八' | '捌' => 8.0,
+        '九' | '玖' => 9.0,
+        '十' | '拾' => 10.0,
+        _ => return None,
+    })
 }
 
 #[cfg(test)]
@@ -333,17 +445,63 @@ mod tests {
         assert!(parse_action("随便聊聊").is_none());
     }
 
+    /// 直连路径的时间粗读（走 agent 的由 agent 读得更准）。
+    #[test]
+    fn reads_when_to_run_from_the_text() {
+        // 没提时间 → 刚跑完。
+        assert_eq!(start_intent_from_text("跑 3 圈"), StartIntent::Now);
+        // 半小时前那次。
+        assert_eq!(
+            start_intent_from_text("补一下半小时前跑的那次 3 圈"),
+            StartIntent::Ago { minutes: 30 }
+        );
+        // 30 分钟前。
+        assert_eq!(
+            start_intent_from_text("跑 30 分钟前那次"),
+            StartIntent::Ago { minutes: 30 }
+        );
+        // 2 小时前。
+        assert_eq!(
+            start_intent_from_text("跑 2 小时前那次"),
+            StartIntent::Ago { minutes: 120 }
+        );
+        // 今天九点。
+        assert_eq!(
+            start_intent_from_text("跑今天九点那次 3 圈"),
+            StartIntent::At {
+                hhmm: "09:00".to_owned(),
+                days: 0
+            }
+        );
+        // 昨天八点半（晚上八点 = 20 点）。
+        assert_eq!(
+            start_intent_from_text("跑昨天晚上八点半那次"),
+            StartIntent::At {
+                hhmm: "20:30".to_owned(),
+                days: 1
+            }
+        );
+        // 前天九点。
+        assert_eq!(
+            start_intent_from_text("跑前天九点那次"),
+            StartIntent::At {
+                hhmm: "09:00".to_owned(),
+                days: 2
+            }
+        );
+    }
+
     #[test]
     fn extracts_laps_and_km() {
         match parse_action("跑 3 圈") {
-            Some(Action::Run(RunIntent::Laps { laps, lane })) => {
+            Some(Action::Run(RunIntent::Laps { laps, lane }, _)) => {
                 assert_eq!(laps, 3.0);
                 assert_eq!(lane, 1);
             }
             other => panic!("{other:?}"),
         }
         match parse_action("预演 1.2 公里") {
-            Some(Action::Plan(RunIntent::DistanceKm { km })) => assert!((km - 1.2).abs() < 0.001),
+            Some(Action::Plan(RunIntent::DistanceKm { km }, _)) => assert!((km - 1.2).abs() < 0.001),
             other => panic!("{other:?}"),
         }
     }

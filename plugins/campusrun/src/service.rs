@@ -129,20 +129,21 @@ pub async fn fetch_rules(client: &CampusrunClient) -> Result<String, CampusrunEr
 /// 组装一次跑的参数。
 ///
 /// 三个来源分清：
-/// - **配置**：配速区间、海拔区间、起跑方式（now/rand/at/ago）；
+/// - **配置**：配速区间、海拔区间；
 /// - **服务端**：**起跑时刻**（`/api/starttimes`，控制台 `resolveStartAt()` 走的就是它）；
-/// - **用户**：圈数或公里数。
+/// - **用户/agent**：圈数或公里数、**什么时候跑**（`StartIntent`，由 agent 从对话读出）。
 ///
 /// 其余一概不碰：能不能跑、跑多久够不够、配速行不行，全由工具的 preflight 判。
 pub async fn prepare_params(
     client: &CampusrunClient,
     section: &CampusrunSection,
     intent: &RunIntent,
+    start: &crate::submit::StartIntent,
 ) -> Result<RunParams, CampusrunError> {
     let now_ms = ru41::util::now() * 1000;
     let base = crate::submit::base_params(section, intent, now_ms)
         .map_err(|error| CampusrunError::Invalid(format!("{error:#}")))?;
-    let start = fetch_start(client, section, base.duration_min).await?;
+    let start = fetch_start(client, start, base.duration_min).await?;
     Ok(crate::submit::plan_params(base, start))
 }
 
@@ -153,13 +154,14 @@ pub async fn prepare_params(
 /// 让用户确认，插件只转述。越界（比如往前补 5 天）也是服务端报错。
 async fn fetch_start(
     client: &CampusrunClient,
-    section: &CampusrunSection,
+    intent: &crate::submit::StartIntent,
     duration_min: f64,
 ) -> Result<crate::submit::StartAt, CampusrunError> {
-    let query = crate::submit::start_query(section, duration_min)
+    let duration_sec = (duration_min * 60.0).round() as i64;
+    let query = crate::submit::start_query(intent, duration_sec)
         .map_err(|error| CampusrunError::Invalid(format!("{error:#}")))?;
     let Some(query) = query else {
-        // now 模式：不发 startAtMs（跟控制台一致）。
+        // 刚跑完：不发 startAtMs（跟控制台一致）。
         return Ok(crate::submit::StartAt::default());
     };
     let times = client.start_times_query(&query).await?;
@@ -177,8 +179,9 @@ pub async fn fetch_plan(
     client: &CampusrunClient,
     section: &CampusrunSection,
     intent: &RunIntent,
+    start: &crate::submit::StartIntent,
 ) -> Result<(String, PlanData, RunParams), CampusrunError> {
-    let params = prepare_params(client, section, intent).await?;
+    let params = prepare_params(client, section, intent, start).await?;
     let request = PlanRequest::campusrun(&params);
     let plan = client.plan(&request).await?;
     // 工具自己说不行，就照它的话报错——并把它的致命/警告行原样带上。

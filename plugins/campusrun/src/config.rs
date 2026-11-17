@@ -37,17 +37,6 @@ pub struct CampusrunSection {
     pub alt_min: Option<f64>,
     /// 海拔区间上限（米）。
     pub alt_max: Option<f64>,
-    /// 何时跑：`now`（刚跑完）/ `rand`（当天随机）/ `at`（指定时刻）/ `ago`（N 分钟前）。
-    pub start_mode: Option<String>,
-    /// `at` 模式的时刻（HH:MM）。
-    pub start_hhmm: Option<String>,
-    /// `ago` 模式的分钟数。
-    pub ago_minutes: Option<i64>,
-    /// 随机时刻允许往前找几天（0 = 只当天）。
-    ///
-    /// 随机**小时**窗口由服务端 `/api/starttimes` 的 limits 给，插件不配——
-    /// 服务端才是那个说了算的（控制台也是这么调的）。
-    pub days_ago: Option<i64>,
     /// 提交后的静默窗口（秒），默认 600。
     ///
     /// 「上次提交」的时刻读**服务端**的 `lastSubmitMs`（`/api/accounts`），
@@ -70,10 +59,6 @@ impl CampusrunSection {
     pub const DEFAULT_SILENCE_SECS: i64 = 600;
     /// 待确认提交的有效期（秒）。
     pub const DEFAULT_CONFIRM_TTL_SECS: i64 = 900;
-    /// 何时跑：默认「当天随机」（2026-11-16 用户给的推荐参数）。
-    pub const DEFAULT_START_MODE: &str = "rand";
-    /// 随机时刻只找当天。
-    pub const DEFAULT_DAYS_AGO: i64 = 0;
     /// 海拔区间默认值（米）——校园实测海拔带。
     pub const DEFAULT_ALT_MIN: f64 = 15.0;
     pub const DEFAULT_ALT_MAX: f64 = 45.0;
@@ -146,33 +131,6 @@ impl CampusrunSection {
             (Some(lo), Some(hi)) if hi > lo => Some((lo, hi)),
             _ => None,
         }
-    }
-
-    /// 何时跑：now | rand | at | ago。
-    pub fn start_mode(&self) -> &str {
-        self.start_mode
-            .as_deref()
-            .map(str::trim)
-            .filter(|raw| !raw.is_empty())
-            .unwrap_or(Self::DEFAULT_START_MODE)
-    }
-
-    /// `at` 模式的时刻（HH:MM）。
-    pub fn start_hhmm(&self) -> Option<&str> {
-        self.start_hhmm
-            .as_deref()
-            .map(str::trim)
-            .filter(|raw| !raw.is_empty())
-    }
-
-    /// `ago` 模式的分钟数。
-    pub fn ago_minutes(&self) -> Option<i64> {
-        self.ago_minutes
-    }
-
-    /// 随机时刻允许往前找几天。
-    pub fn days_ago(&self) -> i64 {
-        self.days_ago.unwrap_or(Self::DEFAULT_DAYS_AGO).max(0)
     }
 
     /// 静默窗口（秒）。
