@@ -62,10 +62,12 @@
 
 ### P0 结构性隔离（不动 LLM 路径，收益最大）
 
-1. **worker 容器不挂 `/etc/ru41`**。worker 只需要：裁剪后的 config
-   （agent/notify/todo 段，sources 段的账密剔除）+ `--db` 指向的 state.db。
-   装配时由宿主生成只读的裁剪配置写入独立挂载。ru41.toml 从 agent
-   视野消失，一劳永逸。
+1. **插件配置与插件凭证物理分离**（2026-11-17 已落地）。原先的做法是给 worker
+   生成一份剔除 `sources` 账密的裁剪配置；现在改成：所有插件配置搬进
+   `plugins.d/<插件>/config.toml`（只放非敏感项），插件凭证一律走环境变量、
+   只注入真正需要登录的插件容器，主配置 `ru41.toml` 里不再有任何插件密钥 →
+   worker 直接挂主配置即可，裁剪副本与 `ru41-worker.toml` 一并退休。
+   **硬规矩**：`plugins.d` 对 agent 的 read/bash 直接可读，里面只允许出现变量名。
 2. **vault 任务改为「快照收件箱」**。obsidian 整理任务不再让 agent 直读
    /vault 全仓：任务创建时把待整理文件**正文内联进 prompt**（先过 P1
    的密码扫描），agent 输出移动/归档指令，由宿主程序落盘执行。
@@ -115,9 +117,11 @@ P3 观望底座。各项互不阻塞，P0 做完前 P1/P2 已能显著降低暴�
   总量 6 万字符截断，先过 `redact_secrets`）；Agent 只输出 ```ru41-organize JSON 指令
   （moves/deletes/todos/skipped），宿主经 Vault 落盘（重试轮幂等）、待办入库（同标题去重）。
   Agent 侧 vault 全文与文件系统不可见。SKILL.md 同步改写，需镜像部署生效。
-- [x] **P0.1 config redact**：`ru41 config redact --out <路径>` 剔除 `sources` 段生成
-  worker 专用配置；compose worker 已改为挂载裁剪配置；生产 worker 容器的一次性重建
-  （摘全量 /etc/ru41 与 /vault）在部署批次执行。
+- [x] **P0.1 配置隔离（2026-11-17 改为「一份配置」）**：原先靠 `ru41 config redact` 剔除
+  `sources` 段给 worker 生成裁剪副本；现在所有插件配置都搬进 `plugins.d/<插件>/config.toml`，
+  插件凭证一律走环境变量、只注入需要登录的插件容器，主配置里不再有任何插件密钥 →
+  裁剪副本无意义，**`ru41-worker.toml` 已退休，所有容器（含 worker）共用 `ru41.toml`**。
+  worker 额外挂 `plugins.d`（只读）以便读到插件的非敏感配置。
 - [ ] **P2 出站审计**：已拆除（2026-11-04，见上节，代码留 git 历史）。
 - [x] **P3 沙箱收窄**：已实施（配置开关默认 bypass，细节见下）。
 

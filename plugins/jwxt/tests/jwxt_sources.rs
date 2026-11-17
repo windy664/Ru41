@@ -526,8 +526,8 @@ async fn remind_and_describe_use_clock_times_and_markdown() {
     assert!(fallback.contains("- **3-4节** 大学英语"), "{fallback}");
 }
 
-/// worker 用的是裁剪配置（`config redact` 删掉整个 sources 段），agent 在
-/// worker 里查课表读不到 semester_start → 只能报「缺少学期配置」。
+/// 读路径可能跑在读不到插件配置的容器里（配置缺失、plugins.d 没挂上），
+/// 那时查课表只能报「缺少学期配置」。
 /// 同步侧把读者元数据写进缓存后，读路径必须能自己把课查出来
 /// （2026-11-17 生产事故：用户在 QQ 问课表，agent 只会读到报错）。
 #[tokio::test]
@@ -560,7 +560,7 @@ async fn timetable_query_falls_back_to_cached_reader_meta() {
         serde_json::Value::String(monday.to_string())
     );
 
-    // 裁剪配置：没有 semester_start、没有 section_times。
+    // 配置缺失（没有 semester_start、没有 section_times）时靠缓存兜底。
     let section = ru41_plugin_jwxt::JwxtSection::default();
     let target = (monday + chrono::Duration::days(9))
         .format("%Y-%m-%d")

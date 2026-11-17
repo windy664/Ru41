@@ -155,9 +155,9 @@ impl JwxtTracker {
 
     /// 把「读者需要的课表元数据」写进缓存：学期第一周周一 + 作息表。
     ///
-    /// worker 的配置是裁剪过的（`config redact` 删掉整个 `sources` 段），
-    /// agent 在 worker 里跑 `ru41 jwxt classes` 读不到这些字段 → 只能报
-    /// 「缺少学期配置」。同步侧有完整配置，把它们随快照存下来，读路径即可自足。
+    /// 读路径可能跑在读不到插件配置的容器里（配置缺失、plugins.d 没挂上），
+    /// 那时 `ru41 jwxt classes` 只能报「缺少学期配置」。同步侧有完整配置，
+    /// 把它们随快照存下来，读路径即可自足。
     fn write_reader_meta(&self, term_key: &str) -> Result<()> {
         let revision = self
             .store

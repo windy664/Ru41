@@ -12,10 +12,9 @@ pub const META_ID: &str = "reader";
 
 /// 读路径的学期起始日：优先用配置；配置缺失时回落到同步侧写进缓存的元数据。
 ///
-/// worker 的配置是裁剪过的（`config redact` 会删掉整个 `sources` 段），
-/// agent 在 worker 里按 skill 跑 `ru41 jwxt classes` 时读不到 semester_start，
-/// 只能报「缺少学期配置」（2026-11-17 实测）。同步侧有完整配置，把这份
-/// 元数据随快照一起存下来，读路径就自足了。
+/// 读路径可能跑在读不到插件配置的容器里（配置缺失、plugins.d 没挂上），
+/// 那时只能报「缺少学期配置」。同步侧有完整配置，把这份元数据随快照
+/// 一起存下来，读路径就自足了。
 pub fn resolve_semester_start(store: &dyn TaskStore, section: &JwxtSection) -> Option<NaiveDate> {
     if let Some(raw) = section.semester_start.as_deref()
         && let Some(date) = chrono::NaiveDate::parse_from_str(raw.trim(), "%Y-%m-%d").ok()

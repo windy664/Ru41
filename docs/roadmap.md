@@ -62,7 +62,7 @@
 
 ## P1 隐私边界与自愈（设计已定，docs/privacy-llm-boundary.md / self-healing.md）
 
-- [ ] worker 容器摘除 `/etc/ru41` 挂载，改用剔除 sources 账密的裁剪配置
+- [x] 插件配置归 `plugins.d/<插件>/config.toml`、凭证只走环境变量 → `ru41-worker.toml` 退休，所有容器共用一份 `ru41.toml`（2026-11-17：`config redact` 无可裁，`[sources.*]` 已从主配置搬空）
 - [ ] obsidian 整理任务改「快照收件箱」：正文内联进 prompt（过密码扫描），agent 不再直读 /vault 全仓
 - [ ] vault 明文密码一次性扫描迁移 + cron 周扫防回潮
 - [ ] RandomSanitizer 扩规则：password/token/Bearer/JWT/学号形态

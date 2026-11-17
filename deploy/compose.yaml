@@ -16,16 +16,17 @@ x-ru41-volumes: &ru41-volumes
   - ../.ru41:/data
   # 动态插件目录（plugins-build-all.sh 的产物或自建 .so 放这里；空目录=无插件）
   - ../.ru41/plugins:/etc/ru41/plugins:ro
-  # 插件自有配置（plugins.d/<插件>/config.toml；worker 不挂载，避免绕过裁剪配置）
+  # 插件自有配置（plugins.d/<插件>/config.toml）。凭证一律走环境变量，
+  # 不写在这里——这个目录对 agent 是可读的。
   - ../plugins.d:/etc/ru41/plugins.d:ro
 
 services:
   worker:
     <<: *ru41-common
     volumes:
-      # 裁剪配置（sources 账密已剔除，agent 视野里没有各数据源凭证）：
-      # 部署时先生成：ru41 --config ../ru41.toml config redact --out ../.ru41/ru41-worker.toml
-      - ../.ru41/ru41-worker.toml:/etc/ru41/ru41.toml:ro
+      # 主配置：插件配置已全部搬到 plugins.d，凭证只走环境变量，
+      # 所以这里没有任何插件密钥，agent 直接挂主配置即可（不再有第二份裁剪副本）。
+      - ../ru41.toml:/etc/ru41/ru41.toml:ro
       # 插件自有配置（非敏感部分：作息表、路径、阈值等）。凭证一律走环境变量，
       # 不写在这里——这个目录对 agent 是可读的。
       - ../plugins.d:/etc/ru41/plugins.d:ro
