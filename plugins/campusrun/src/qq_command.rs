@@ -91,7 +91,7 @@ impl SimpleCommand for CampusrunQqCommand {
                 Ok(Some(Reply::text(text)))
             }
             Action::Rules => {
-                let text = crate::service::fetch_rules(&client, &section)
+                let text = crate::service::fetch_rules(&client)
                     .await
                     .map_err(|error| anyhow::anyhow!("{error}"))?;
                 Ok(Some(Reply::text(text)))

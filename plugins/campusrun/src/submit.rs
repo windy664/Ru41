@@ -80,35 +80,9 @@ pub fn plan_params(section: &CampusrunSection, intent: &RunIntent) -> Result<Run
     // 时长自动：距离 × 配速区间中值（与控制台 autoDur 同口径，取中值可复现）。
     let duration_min = distance_km * (pace_lo + pace_hi) / 2.0;
 
-    let min_distance_m = section.min_distance_m();
-    if distance_km * 1000.0 < min_distance_m {
-        let hint = match laps {
-            Some(laps) => {
-                let need = (min_distance_m / lap_length_m(lane)).ceil();
-                format!("—— {laps} 圈只有 {:.2} km，最少 {need} 圈", distance_km)
-            }
-            None => String::new(),
-        };
-        bail!(
-            "校园跑单次至少要 {:.2} km（服务端最小里程），现在 {:.2} km{hint}",
-            min_distance_m / 1000.0,
-            distance_km
-        );
-    }
-    let min_duration_sec = section.min_duration_sec();
-    if duration_min * 60.0 < min_duration_sec as f64 {
-        bail!(
-            "校园跑单次至少要 {}，现在只有 {}",
-            crate::render::fmt_duration(min_duration_sec as f64),
-            crate::render::fmt_duration(duration_min * 60.0)
-        );
-    }
-    if distance_km > 42.0 {
-        bail!("距离要在 0~42 公里之间，收到 {distance_km:.2}");
-    }
-    if duration_min > 120.0 {
-        bail!("时长要在 0~120 分钟之间，收到 {duration_min:.1}");
-    }
+    // 门槛**不在这儿判**：距离门槛由服务端 policy.minDistance 给（service 里读），
+    // 时长/配速/点位全由 pace-forge 的 plan + preflight 判。插件只负责把
+    // 用户的话换算成参数，别在这儿重造一套规则。
     Ok(RunParams {
         distance_km,
         duration_min,
@@ -194,29 +168,15 @@ mod tests {
         assert!((5.5..=6.6).contains(&pace), "配速 {pace}");
     }
 
+    /// 换算只管换算：**门槛不在这儿判**（服务端 policy + 工具 preflight 判）。
+    /// 1 圈 = 400 m；距离不够也不拦，由服务端门槛拦（见 service 层）。
     #[test]
-    fn one_lap_is_rejected_by_the_min_distance_gate() {
-        let error = plan_params(&section(), &RunIntent::Laps { laps: 1.0, lane: 1 })
-            .unwrap_err()
-            .to_string();
-        assert!(error.contains("至少要"), "{error}");
-        assert!(error.contains("3 圈"), "要说清最少几圈：{error}");
-    }
-
-    #[test]
-    fn distance_below_one_km_is_rejected() {
-        let error = plan_params(&section(), &RunIntent::DistanceKm { km: 0.8 })
-            .unwrap_err()
-            .to_string();
-        assert!(error.contains("1.00 km"), "{error}");
-    }
-
-    #[test]
-    fn distance_above_limit_is_rejected() {
-        assert!(
-            plan_params(&section(), &RunIntent::DistanceKm { km: 50.0 }).is_err(),
-            "超过 42 公里要拒"
-        );
+    fn conversion_only_never_invents_gates() {
+        let one = plan_params(&section(), &RunIntent::Laps { laps: 1.0, lane: 1 }).unwrap();
+        assert!((one.distance_km - 0.4).abs() < 0.001, "{one:?}");
+        assert_eq!(one.laps, Some(1.0));
+        let short = plan_params(&section(), &RunIntent::DistanceKm { km: 0.8 }).unwrap();
+        assert!((short.distance_km - 0.8).abs() < 0.001);
     }
 
     #[test]

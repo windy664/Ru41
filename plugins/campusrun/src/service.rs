@@ -109,24 +109,27 @@ impl ru41::ingress::schedule::SimplePollJob for CampusrunTracker {
 
 // ── 规则面 / 预演 / 提交 ─────────────────────────────────────────────
 
-/// 规则面：补跑窗口、必过点、围栏、单次门槛。
-pub async fn fetch_rules(
-    client: &CampusrunClient,
-    section: &CampusrunSection,
-) -> Result<String, CampusrunError> {
+/// 规则面：补跑窗口、必过点、围栏 + **服务端自己的门槛与上次判定**。
+///
+/// 门槛各门课不一样（实测有「最少1.00公里/跑7分钟以上」，也有「最少1.50公里/
+/// 跑6分钟以上」），所以一律从服务端读，插件不写死。
+pub async fn fetch_rules(client: &CampusrunClient) -> Result<String, CampusrunError> {
     let start_times = client.start_times().await?;
     let points = client.points().await?;
     let fences = client.fences().await?;
-    Ok(crate::render::render_rules(
-        &start_times,
-        &points,
-        &fences,
-        section.min_distance_m(),
-        section.min_duration_sec(),
-    ))
+    let verdict = client.last_verdict().await.ok().flatten();
+    let mut text = crate::render::render_rules(&start_times, &points, &fences, verdict.as_ref());
+    if let Some(verdict) = &verdict {
+        text.push_str("\n\n");
+        text.push_str(&crate::render::render_verdict(verdict));
+    }
+    Ok(text)
 }
 
-/// 预演：换算 → 门槛校验 → `POST /api/plan`（**不提交**）。
+/// 预演：换算 → `POST /api/plan`（**不提交**）。
+///
+/// 结论一律用工具自己的口径（`data.ok` / `error` / `issueSummary`）：
+/// 插件不另造一套判定，也不自己写死门槛——距离门槛取服务端 `policy.minDistance`。
 pub async fn fetch_plan(
     client: &CampusrunClient,
     section: &CampusrunSection,
@@ -136,7 +139,41 @@ pub async fn fetch_plan(
         .map_err(|error| CampusrunError::Invalid(format!("{error:#}")))?;
     let request = PlanRequest::campusrun(params.distance_km, params.duration_min);
     let plan = client.plan(&request).await?;
-    let text = crate::render::render_plan(&plan, params.distance_km, params.duration_min);
+    // 工具自己说不行，就照它的话报错。
+    if plan.ok == Some(false) {
+        let reason = plan
+            .error
+            .clone()
+            .unwrap_or_else(|| plan.issue_summary.clone().unwrap_or_default());
+        return Err(CampusrunError::Invalid(format!("工具预演没通过：{reason}")));
+    }
+    // 距离门槛用服务端当前规则（policy.minDistance），不写死数值。
+    if let Some(min) = plan.policy.as_ref().and_then(|item| item.min_distance)
+        && params.distance_km * 1000.0 < min
+    {
+        let hint = match params.laps {
+            Some(laps) => {
+                let need = (min / crate::submit::lap_length_m(params.lane)).ceil();
+                format!(
+                    "—— {laps} 圈只有 {:.2} km，最少 {need} 圈",
+                    params.distance_km
+                )
+            }
+            None => String::new(),
+        };
+        return Err(CampusrunError::Invalid(format!(
+            "服务端要求单次至少 {}，现在 {:.2} km{hint}",
+            crate::render::fmt_goal_distance(min),
+            params.distance_km
+        )));
+    }
+    let verdict = client.last_verdict().await.ok().flatten();
+    let text = crate::render::render_plan(
+        &plan,
+        params.distance_km,
+        params.duration_min,
+        verdict.as_ref(),
+    );
     Ok((text, plan))
 }
 
@@ -231,20 +268,14 @@ pub async fn confirm_and_submit(
     let request = PlanRequest::campusrun(pending.distance_km, pending.duration_min);
     match client.run(&request).await {
         Ok(run) => {
-            if run.blocked == Some(true) {
+            // 工具返回 submitted=false 就是没提交成（自检没过），照它的话报。
+            if run.submitted == Some(false) {
                 pending.state = "failed".to_owned();
-                pending.error = Some(
-                    run.issue_summary
-                        .clone()
-                        .unwrap_or_else(|| "服务端自检拦下".to_owned()),
-                );
+                pending.error = Some("工具自检没过，没有提交".to_owned());
                 save_pending(store, &pending)?;
-                anyhow::bail!(
-                    "提交被服务端自检拦下：{}",
-                    pending.error.as_deref().unwrap_or("")
-                );
+                anyhow::bail!("提交没成功：工具自检没过（详见预演日志）");
             }
-            let rrid = run.record_id.or(run.rrid);
+            let rrid = run.record_id;
             pending.state = "accepted".to_owned();
             pending.rrid = rrid;
             pending.error = None;

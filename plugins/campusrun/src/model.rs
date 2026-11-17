@@ -159,17 +159,74 @@ pub struct RunRecord {
     pub distance_km: Option<f64>,
 }
 
+/// 服务端给的**逐条规则判定**（记录详情里的 reasonList）——权威口径。
+///
+/// 每条规则带 complete（这条过没过）与 completeStatus。规则**每门课不同**：
+/// 实测 2026-11-16 有过「最少要跑1.00公里 / 跑7分钟以上」，也有过
+/// 「最少要跑1.50公里 / 跑6分钟以上」——所以门槛不能写死，要从这里读。
+#[derive(Debug, Clone, Deserialize)]
+pub struct ReasonItem {
+    /// 这条规则是否通过。
+    #[serde(default)]
+    pub complete: Option<bool>,
+    /// 服务端的状态码（1 = 通过）。
+    #[serde(default)]
+    pub complete_status: Option<i64>,
+    /// 规则文本，如「按顺序通过所有点位」「跑7分钟以上」。
+    #[serde(default)]
+    pub reason: Option<String>,
+    /// 规则类型。
+    #[serde(default, rename = "type")]
+    pub kind: Option<i64>,
+}
+
+/// 上次提交的判定（记录详情 + 服务端逐条规则）。
+#[derive(Debug, Clone)]
+pub struct Verdict {
+    /// 记录 id。
+    pub rrid: i64,
+    /// 原文件名。
+    pub filename: Option<String>,
+    /// 逐条规则判定。
+    pub rules: Vec<ReasonItem>,
+    /// 服务端给的人话结论。
+    pub status_info: Option<String>,
+    /// 这条记录用的最小里程（km，selDistance）。
+    pub min_distance_km: Option<f64>,
+    /// 配速区间（分/km）：(上界, 下界)。
+    pub pace_range: Option<(f64, f64)>,
+}
+
+impl ReasonItem {
+    /// 这条规则过没过。
+    pub fn passed(&self) -> bool {
+        self.complete.unwrap_or(false) || self.complete_status == Some(1)
+    }
+}
+
 /// 一条跑步记录的详情（`/api/record/{rrid}`）。
 #[derive(Debug, Clone, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct RunRecordDetail {
     pub rrid: i64,
+    /// 逐条规则判定。
+    #[serde(default)]
+    pub reason_list: Option<Vec<ReasonItem>>,
+    /// 服务端给的人话结论。
+    #[serde(default)]
+    pub status_info: Option<String>,
     /// 点位配速（min/km，不是 km/h）。
     #[serde(default)]
     pub speed: Option<f64>,
-    /// 规则要求的最小单次里程（km）。
+    /// 规则要求的最小单次里程（km）——服务端这条记录用的门槛。
     #[serde(default)]
     pub sel_distance: Option<f64>,
+    /// 配速上界（分/km）。
+    #[serde(default)]
+    pub speed_top: Option<f64>,
+    /// 配速下界（分/km）。
+    #[serde(default)]
+    pub speed_bottom: Option<f64>,
     #[serde(default)]
     pub total_dis: Option<f64>,
     #[serde(default)]
@@ -436,25 +493,28 @@ pub struct PlanPolicy {
     pub valid_time: Option<f64>,
 }
 
-/// `POST /api/run` 的 data：提交结果。
+/// `POST /api/run` 的 data：提交结果（形状与 Web 控制台一致）。
 #[derive(Debug, Clone, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct RunData {
+    /// 是否真的提交了（false = 自检没过，服务端没收）。
+    #[serde(default)]
+    pub submitted: Option<bool>,
     /// 记录 id（rrid）。
     #[serde(default)]
     pub record_id: Option<i64>,
+    /// 上报的里程（米）。
     #[serde(default)]
-    pub rrid: Option<i64>,
-    /// 是否真的提交了。
+    pub distance: Option<f64>,
     #[serde(default)]
-    pub submitted: Option<bool>,
-    /// 自检摘要。
+    pub steps: Option<i64>,
+    /// 平均步频（步/分）。
     #[serde(default)]
-    pub issue_summary: Option<String>,
+    pub cadence: Option<f64>,
+    /// 已上传的明细条数。
     #[serde(default)]
-    pub blocked: Option<bool>,
-    #[serde(default)]
-    pub error: Option<String>,
+    pub obs_keys: Option<i64>,
+    /// 流程日志。
     #[serde(default)]
     pub logs: Vec<String>,
 }

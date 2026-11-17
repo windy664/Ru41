@@ -101,14 +101,16 @@ compose 里本来就是明文，再抄一份到 gitignore 的 `plugins.d/campusr
 
 - 绝大多数容器把整个 `~/ru41-mimo-smoke` 挂在 `/etc/ru41` → 天然能读到
   `/etc/ru41/plugins.d/<插件>/config.toml`；
-- **`ru41-mimo-worker` 只挂了 `ru41-worker.toml` 一个文件**（它和 `ru41.toml` 是两份
-  配置，worker 读前者）→ 容器里没有 `/etc/ru41/plugins.d`，插件配置**读不到**。
+- **`ru41-mimo-worker` 也要挂 `plugins.d`**（`compose.yaml` 已补：
+  `-v ../plugins.d:/etc/ru41/plugins.d:ro`），否则 worker 里的插件配置读不到。
 
 后果很隐蔽：QQ 命令正常，**agent 在 worker 里跑 `ru41 campusrun status` 却报
 「没有 pace-forge 控制台令牌」**——2026-11-17 用户在 Telegram 问「我校园跑跑了多少
 公里」没得到答案，根因就是这个（agent 甚至自己翻了 8 条托管凭据去试令牌）。
 
-修法：给 worker 容器补一个挂载 `-v ~/ru41-mimo-smoke/plugins.d:/etc/ru41/plugins.d:ro`。
+修法：给 worker 容器补一个挂载 `-v ~/ru41-mimo-smoke/plugins.d:/etc/ru41/plugins.d:ro`
+（**已于 2026-11-17 落地并验证**：worker 里 `ru41 campusrun status` 与
+`ru41 jwxt classes` 均能正常读到插件配置）。
 重建容器照抄 `deploy/roll.sh` 的「从 docker inspect 逐字段恢复」逻辑（env/挂载/网络/
 重启策略都保留）；roll.sh 之后也会照原样带上这个挂载。
 
@@ -167,14 +169,18 @@ ru41 campusrun confirm <token> # 确认并提交（**写操作**）
 | 经纬度 | 留空 = 用围栏 | 不传 `locBody` → 工具取围栏中心 |
 | 海拔 | 15~45 m | `altMin`/`altMax`（写死 150±8 会在高原场景露馅） |
 
-**两条硬门槛**（服务端 `minDistance` / `minRunTime`）：单次里程 ≥ 1.00 km、时长 ≥ 5 分钟。
-所以「跑一圈」（0.4 km）两条都不满足 → **圈数下限实际是 3 圈**（1.2 km）。
+**门槛以服务端为准，插件不自己写死**（2026-11-16 改）：
+- **距离门槛**取 `POST /api/plan` 返回的 `policy.minDistance`（当前 1.00 km）；
+- **时长/配速/点位**由 pace-forge 自己的 preflight 判，结论原样转述；
+- **上次提交的逐条规则判定**从记录详情的 `reasonList` 读（门槛各门课不同：
+  实测有「最少1.00公里 / 跑7分钟以上」，也有「最少1.50公里 / 跑6分钟以上」）。
+  所以「跑一圈」（0.4 km）会被服务端门槛拒，插件照服务端的话转述。
 
 ### 闸（缺一不可）
 
 1. **意图闸**：只在用户明确要求时；定时任务永不提交。
-2. **门槛闸**：距离 < 1.0 km / 时长 < 5 分钟 → 直接拒并说清差多少。
-3. **预演闸**：`POST /api/plan` 的 `blocked` 必须为 false，否则停在预演。
+2. **服务端门槛**：距离 < 服务端 `policy.minDistance` → 拒（数值取服务端，不写死）。
+3. **预演闸**：`POST /api/plan` 的 `data.ok` 为 false → 停在预演，原样转述工具给的原因。
 4. **确认闸**：`run` 只登记待确认（返回口令），`confirm <口令>` 才提交；口令有有效期。
 5. **静默窗口**：提交后 600 秒内拒绝任何跑步请求（工具 `flow::SILENCE_SEC`，插件也拦）。
 6. **台账三态**：`planned → submitting → accepted(rrid) / rejected / failed / unknown`。
