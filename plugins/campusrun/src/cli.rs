@@ -250,6 +250,26 @@ mod tests {
                 }),
             )
             .route(
+                "/api/accounts",
+                get(|| async {
+                    // 服务端自己记的上次提交时刻（插件的静默窗口读它）。
+                    Json(json!({
+                        "ok": true,
+                        "data": {
+                            "count": 1,
+                            "current": "17846942",
+                            "accounts": [{
+                                "id": "17846942",
+                                "loggedIn": true,
+                                "enabled": true,
+                                "current": true,
+                                "lastSubmitMs": 1_794_870_883_099i64
+                            }]
+                        }
+                    }))
+                }),
+            )
+            .route(
                 "/api/records",
                 get(|| async {
                     Json(json!({

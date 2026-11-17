@@ -298,6 +298,41 @@ pub struct AccountInfo {
     pub logged_in: Option<bool>,
 }
 
+/// `/api/accounts` 的 data：账号列表。
+#[derive(Debug, Clone, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct AccountsData {
+    /// 当前账号的 id（顶层那个字符串）。
+    #[serde(default)]
+    pub current: Option<String>,
+    /// 账号列表。
+    #[serde(default)]
+    pub accounts: Vec<AccountSummary>,
+}
+
+/// 账号摘要。
+///
+/// ⚠️ 服务端原始响应里还有姓名与手机号，**这里不建模**（渲染时也不回显）。
+#[derive(Debug, Clone, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct AccountSummary {
+    /// 账号 id。
+    #[serde(default)]
+    pub id: Option<String>,
+    /// 是否处于登录态。
+    #[serde(default)]
+    pub logged_in: Option<bool>,
+    /// **服务端记的**上次提交时刻（毫秒）。
+    ///
+    /// 这是服务端的台账：从 Web 控制台交的那次，这里也有。
+    /// 插件不自己另记一本（自己记的会漏掉控制台那次提交）。
+    #[serde(default)]
+    pub last_submit_ms: Option<i64>,
+    /// 是否是当前账号。
+    #[serde(default)]
+    pub current: Option<bool>,
+}
+
 /// `/api/starttimes` 的 data：补跑窗口与限制。
 #[derive(Debug, Clone, Deserialize)]
 #[serde(rename_all = "camelCase")]

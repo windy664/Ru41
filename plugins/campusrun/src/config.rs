@@ -46,7 +46,11 @@ pub struct CampusrunSection {
     /// 随机**小时**窗口由服务端 `/api/starttimes` 的 limits 给，插件不配——
     /// 服务端才是那个说了算的（控制台也是这么调的）。
     pub days_ago: Option<i64>,
-    /// 提交后的静默窗口（秒），默认 600（工具 `flow::SILENCE_SEC`）。
+    /// 提交后的静默窗口（秒），默认 600。
+    ///
+    /// 「上次提交」的时刻读**服务端**的 `lastSubmitMs`（`/api/accounts`），
+    /// 从 Web 控制台交的那次也算数。这里配的只是**间隔多长**——
+    /// 服务端的间隔阈值没在 API 里暴露，所以取一个保守值，不是服务端说的数。
     pub silence_secs: Option<i64>,
     /// 待确认提交的有效期（秒），默认 900。
     pub confirm_ttl_secs: Option<i64>,
@@ -60,7 +64,7 @@ impl CampusrunSection {
     pub const DEFAULT_PACE_MIN: f64 = 5.5;
     /// 配速区间上限（分/km）。
     pub const DEFAULT_PACE_MAX: f64 = 6.6;
-    /// 提交后的静默窗口（秒）——工具 `flow::SILENCE_SEC`。
+    /// 提交后的静默窗口（秒）——插件自己的防重提交闸（保守值，服务端阈值没暴露）。
     pub const DEFAULT_SILENCE_SECS: i64 = 600;
     /// 待确认提交的有效期（秒）。
     pub const DEFAULT_CONFIRM_TTL_SECS: i64 = 900;

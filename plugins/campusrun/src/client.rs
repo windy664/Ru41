@@ -6,8 +6,8 @@
 
 use crate::config::CampusrunSection;
 use crate::model::{
-    AccountInfo, CheatStatus, Envelope, FencesData, PlanData, PointsData, RecordsData, RunData,
-    RunRecord, RunRecordDetail, SemesterInfo, StartTimes, Verdict,
+    AccountInfo, AccountsData, CheatStatus, Envelope, FencesData, PlanData, PointsData, RecordsData,
+    RunData, RunRecord, RunRecordDetail, SemesterInfo, StartTimes, Verdict,
 };
 use serde::de::DeserializeOwned;
 use std::fmt;
@@ -237,6 +237,14 @@ impl CampusrunClient {
             format!("/api/starttimes?{query}")
         };
         self.get(&path).await
+    }
+
+    /// 账号列表（服务端自己的「上次提交时刻」在这里）。
+    ///
+    /// 服务端记着每个账号的上次提交时刻——插件用它判断静默窗口，
+    /// 不自己另记一本（自己记的会漏掉从 Web 控制台交的那次）。
+    pub async fn accounts(&self) -> Result<AccountsData> {
+        self.get("/api/accounts").await
     }
 
     /// 必到点（打卡点）。

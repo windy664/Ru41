@@ -181,16 +181,32 @@ pub async fn fetch_plan(
     let params = prepare_params(client, section, intent).await?;
     let request = PlanRequest::campusrun(&params);
     let plan = client.plan(&request).await?;
-    // 工具自己说不行，就照它的话报错。
+    // 服务端要求的最小里程（结构化字段优先，失败时从工具自己的策略日志读）。
+    let min_distance = crate::render::policy_min_distance(&plan);
+    // 工具自己说不行，就照它的话报错——并把它的致命/警告行原样带上。
     if plan.ok == Some(false) {
         let reason = plan
             .error
             .clone()
             .unwrap_or_else(|| plan.issue_summary.clone().unwrap_or_default());
-        return Err(CampusrunError::Invalid(format!("工具预演没通过：{reason}")));
+        let mut message = format!("工具预演没通过：{reason}");
+        for line in crate::render::tool_verdict_lines(&plan) {
+            message.push_str(&format!("\n- {line}"));
+        }
+        // 服务端那条最小里程要求顺带说清楚（数值还是服务端的）。
+        if let Some(min) = min_distance
+            && params.distance_km * 1000.0 < min
+        {
+            message.push_str(&format!(
+                "\n（服务端还要求单次至少 {}，现在 {:.2} km）",
+                crate::render::fmt_goal_distance(min),
+                params.distance_km
+            ));
+        }
+        return Err(CampusrunError::Invalid(message));
     }
     // 距离门槛用服务端当前规则（policy.minDistance），不写死数值。
-    if let Some(min) = plan.policy.as_ref().and_then(|item| item.min_distance)
+    if let Some(min) = min_distance
         && params.distance_km * 1000.0 < min
     {
         let hint = match params.laps {
@@ -247,18 +263,51 @@ pub fn register_pending(
 }
 
 /// 静默窗口还剩多少秒（0 = 不在窗口里）。
-pub fn silence_left(
+///
+/// 「上次提交」优先用**服务端记的** `lastSubmitMs`（`/api/accounts`）——
+/// 你从 Web 控制台交的那次，插件自己是不知道的，自己记账就会漏掉那次。
+/// 服务端读不到时才退回本地那条（兜底，防重复提交）。
+///
+/// 间隔多长由配置 `silence_secs` 定：服务端的间隔阈值**没有在 API 里暴露**，
+/// 所以这里取一个保守值，不是服务端说的数。
+pub async fn silence_left(
     store: &Arc<dyn TaskStore>,
+    client: &CampusrunClient,
     section: &CampusrunSection,
     now: i64,
-) -> anyhow::Result<i64> {
-    let last = store
-        .document(crate::submit::SUBMIT_KIND, crate::submit::LAST_SUBMIT_ID)?
-        .and_then(|doc| serde_json::from_value::<LastSubmit>(doc.value).ok());
+) -> Result<i64, CampusrunError> {
+    let local = store
+        .document(crate::submit::SUBMIT_KIND, crate::submit::LAST_SUBMIT_ID)
+        .ok()
+        .flatten()
+        .and_then(|doc| serde_json::from_value::<LastSubmit>(doc.value).ok())
+        .map(|last| last.last_submit_at);
+    let server = client.accounts().await.ok().and_then(|data| {
+        let current = data
+            .accounts
+            .iter()
+            .find(|item| item.current.unwrap_or(false))
+            .or_else(|| {
+                data.accounts
+                    .iter()
+                    .find(|item| Some(item.id.as_deref().unwrap_or_default()) == data.current.as_deref())
+            })?;
+        item_last_submit_ms(current)
+    });
+    let last = match (server, local) {
+        (Some(server), Some(local)) => Some(server.max(local)),
+        (Some(server), None) => Some(server),
+        (None, local) => local,
+    };
     Ok(match last {
-        Some(last) => (section.silence_secs() - (now - last.last_submit_at)).max(0),
+        Some(last) => (section.silence_secs() - (now - last)).max(0),
         None => 0,
     })
+}
+
+/// 服务端记的上次提交时刻（毫秒 → 秒）。
+fn item_last_submit_ms(account: &crate::model::AccountSummary) -> Option<i64> {
+    account.last_submit_ms.map(|ms| ms / 1000)
 }
 
 /// 确认并提交一条记录（**写操作！**）。
@@ -294,10 +343,10 @@ pub async fn confirm_and_submit(
     if !section.allow_submit() {
         anyhow::bail!("提交功能没开：[sources.campusrun] 里 allow_submit = true 才会真提交");
     }
-    let left = silence_left(store, section, now)?;
+    let left = silence_left(store, client, section, now).await?;
     if left > 0 {
         anyhow::bail!(
-            "上一次提交后 {silence} 秒内不能再发跑步请求，还剩 {left} 秒",
+            "上一次提交（服务端记录的）后 {silence} 秒内不再发跑步请求，还剩 {left} 秒",
             silence = section.silence_secs()
         );
     }
@@ -328,6 +377,8 @@ pub async fn confirm_and_submit(
             pending.rrid = rrid;
             pending.error = None;
             save_pending(store, &pending)?;
+            // 本地留一条**兜底**记录：服务端读不到 lastSubmitMs 时用得上。
+            // 权威值在服务端（/api/accounts），这里不另造台账语义。
             store.put_document(
                 crate::submit::SUBMIT_KIND,
                 crate::submit::LAST_SUBMIT_ID,
