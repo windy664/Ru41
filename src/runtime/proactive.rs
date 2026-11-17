@@ -223,11 +223,7 @@ mod tests {
             })
             .collect();
         (
-            ProactiveDispatcher::new(
-                store,
-                channels,
-                vec!["telegram".to_owned()],
-            ),
+            ProactiveDispatcher::new(store, channels, vec!["telegram".to_owned()]),
             dir,
         )
     }
@@ -244,7 +240,10 @@ mod tests {
     async fn delivers_to_primary_and_fanout_channels() {
         let recorder = Arc::new(Recorder::default());
         let (dispatcher, _dir) = dispatcher(&recorder, vec!["qq", "telegram"], vec![]);
-        let delivered = dispatcher.deliver(&route(), "event:100", "课程提醒").await.unwrap();
+        let delivered = dispatcher
+            .deliver(&route(), "event:100", "课程提醒")
+            .await
+            .unwrap();
         assert!(delivered);
         assert_eq!(recorder.count("qq"), 1);
         assert_eq!(recorder.count("telegram"), 1);
@@ -272,7 +271,10 @@ mod tests {
             .put_document("delivery", id, Some(doc.revision), &value)
             .unwrap();
 
-        let delivered = dispatcher.deliver(&route(), "event:200", "课程提醒").await.unwrap();
+        let delivered = dispatcher
+            .deliver(&route(), "event:200", "课程提醒")
+            .await
+            .unwrap();
         assert!(delivered);
         assert_eq!(recorder.count("qq"), 1, "已送达的渠道不该重发");
         assert_eq!(recorder.count("telegram"), 1);
@@ -282,9 +284,19 @@ mod tests {
     async fn same_delivery_id_is_not_sent_twice() {
         let recorder = Arc::new(Recorder::default());
         let (dispatcher, _dir) = dispatcher(&recorder, vec!["qq", "telegram"], vec![]);
-        assert!(dispatcher.deliver(&route(), "event:300", "x").await.unwrap());
+        assert!(
+            dispatcher
+                .deliver(&route(), "event:300", "x")
+                .await
+                .unwrap()
+        );
         // 同一 id 再来一次（例如下一轮循环）：已送达，不再重发。
-        assert!(dispatcher.deliver(&route(), "event:300", "x").await.unwrap());
+        assert!(
+            dispatcher
+                .deliver(&route(), "event:300", "x")
+                .await
+                .unwrap()
+        );
         assert_eq!(recorder.count("qq"), 1);
         assert_eq!(recorder.count("telegram"), 1);
     }

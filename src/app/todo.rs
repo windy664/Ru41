@@ -32,7 +32,11 @@ pub async fn send_due_reminders(
         return Ok(serde_json::json!({"due": 0, "sent": false}));
     }
     // 投递 id：这一轮最早那条的提醒时间（同一轮重试 id 不变，跨轮各条分开）。
-    let anchor = due.iter().filter_map(|item| item.remind_at).min().unwrap_or(now);
+    let anchor = due
+        .iter()
+        .filter_map(|item| item.remind_at)
+        .min()
+        .unwrap_or(now);
     deliverer
         .deliver(
             route,
