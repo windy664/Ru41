@@ -479,6 +479,53 @@ mod tests {
     use super::*;
     use crate::model::{SemesterGoal, SemesterGoalRaw, SemesterSummary};
 
+    /// 服务端把起跑时段**收窄**过时要转述给用户（控制台这时会弹窗确认）。
+    #[test]
+    fn plan_reports_server_side_clamping() {
+        let plan: PlanData =
+            serde_json::from_str(r#"{"ok":true,"actualLength":2000,"checkpointPassed":5,"checkpointTotal":5}"#)
+                .unwrap();
+        let base = crate::submit::base_params(
+            &crate::config::CampusrunSection::default(),
+            &crate::submit::RunIntent::DistanceKm { km: 2.0 },
+            None,
+        )
+        .unwrap();
+        let params = crate::submit::plan_params(
+            base,
+            crate::submit::StartAt {
+                at_ms: Some(1_794_890_000_000),
+                clamped: true,
+            },
+        );
+        let text = render_plan(&plan, &params, None);
+        assert!(text.contains("起跑："), "{text}");
+        assert!(text.contains("服务端把这个时段收窄过"), "{text}");
+    }
+
+    /// 没被收窄时**不要**出现收窄提示（别制造没发生过的事）。
+    #[test]
+    fn plan_does_not_invent_clamping() {
+        let plan: PlanData =
+            serde_json::from_str(r#"{"ok":true,"actualLength":2000,"checkpointPassed":5,"checkpointTotal":5}"#)
+                .unwrap();
+        let base = crate::submit::base_params(
+            &crate::config::CampusrunSection::default(),
+            &crate::submit::RunIntent::DistanceKm { km: 2.0 },
+            None,
+        )
+        .unwrap();
+        let params = crate::submit::plan_params(
+            base,
+            crate::submit::StartAt {
+                at_ms: Some(1_794_890_000_000),
+                clamped: false,
+            },
+        );
+        let text = render_plan(&plan, &params, None);
+        assert!(!text.contains("收窄"), "{text}");
+    }
+
     fn summary() -> SemesterSummary {
         SemesterSummary {
             semester_dis: Some(7511.0),
