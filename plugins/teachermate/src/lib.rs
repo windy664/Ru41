@@ -15,9 +15,9 @@ pub use source::{
     TeachermateClient, homework_status_label, homework_status_open, sign_response_ok,
 };
 
+use anyhow::Result;
 use ru41::bootstrap::config::Config;
 use ru41::ports::storage::TaskStore;
-use anyhow::Result;
 use std::sync::Arc;
 
 /// 签到 tracker 的具体类型构造：DEF 注册表与 main.rs 的 bind 分支共用。
@@ -114,8 +114,9 @@ fn teachermate_cli(
     config: &ru41::bootstrap::config::Config,
     store: std::sync::Arc<dyn ru41::ports::storage::TaskStore>,
     args: &[String],
-) -> std::pin::Pin<Box<dyn std::future::Future<Output = anyhow::Result<Option<serde_json::Value>>> + Send>>
-{
+) -> std::pin::Pin<
+    Box<dyn std::future::Future<Output = anyhow::Result<Option<serde_json::Value>>> + Send>,
+> {
     use anyhow::Context as _;
     enum Job {
         Work(TeachermateWorkTracker),
@@ -173,7 +174,9 @@ fn teachermate_cli(
                     lon,
                 ))
             }
-            _ => anyhow::bail!("用法: ru41 teachermate work|bind <链接>|sign <id> [--lat x --lon y]"),
+            _ => {
+                anyhow::bail!("用法: ru41 teachermate work|bind <链接>|sign <id> [--lat x --lon y]")
+            }
         }
     })();
     Box::pin(ru41::plugins::bridge(async move {

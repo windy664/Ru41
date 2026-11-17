@@ -1,6 +1,6 @@
 //! 课堂录音附属配置：`[sources.lecture]`。
 //! ASR 走 OpenAI 兼容 `/audio/transcriptions`（默认智谱 GLM-ASR），
-//! key 优先取 `api_key` 明文，缺省回退 `api_key_env` 环境变量。
+//! key 优先取 `api_key_env` 环境变量，配置里的明文 `api_key` 只作兜底。
 
 use anyhow::{Context, Result};
 use serde::Deserialize;
@@ -99,17 +99,24 @@ impl LectureSection {
     }
 
     pub fn resolved(&self) -> Result<LectureConfig> {
-        let api_key = match &self.api_key {
-            Some(k) if !k.trim().is_empty() => k.trim().to_owned(),
-            _ => {
-                let name = self
-                    .api_key_env
-                    .clone()
-                    .unwrap_or_else(|| Self::DEFAULT_API_KEY_ENV.into());
-                std::env::var(&name)
-                    .ok()
-                    .filter(|v| !v.trim().is_empty())
-                    .with_context(|| format!("sources.lecture 缺 ASR key（api_key 或 {name}）"))?
+        // ASR key：**环境变量优先**，配置里的明文 `api_key` 只作兜底。
+        // 配置文件会挂进 worker（有 agent 的容器），明文 key 放文件里等于交给 agent 读。
+        let api_key = {
+            let name = self
+                .api_key_env
+                .clone()
+                .unwrap_or_else(|| Self::DEFAULT_API_KEY_ENV.into());
+            match std::env::var(&name) {
+                Ok(value) if !value.trim().is_empty() => value.trim().to_owned(),
+                _ => self
+                    .api_key
+                    .as_deref()
+                    .map(str::trim)
+                    .filter(|value| !value.is_empty())
+                    .map(str::to_owned)
+                    .with_context(|| {
+                        format!("sources.lecture 缺 ASR key（环境变量 {name} 或 api_key）")
+                    })?,
             }
         };
         let workspace = self

@@ -11,8 +11,10 @@ use crate::source::{JwxtClient, JwxtError};
 /// 教务课表监控配置（对应配置文件的 [sources.jwxt]）。
 #[derive(Debug, Clone)]
 pub struct JwxtConfig {
-    pub username: String,
-    pub password: String,
+    /// 统一身份认证账号；None = 本容器不负责登录（读缓存即可）。
+    pub username: Option<String>,
+    /// 统一身份认证密码；None = 本容器不负责登录（读缓存即可）。
+    pub password: Option<String>,
     pub cas_base: String,
     pub cas_modulus: String,
     pub cas_exponent: String,
@@ -48,8 +50,8 @@ impl Default for JwxtConfig {
     /// 语义默认值与 JwxtSection::resolved 对齐；测试构造只需写关心的字段。
     fn default() -> Self {
         Self {
-            username: String::new(),
-            password: String::new(),
+            username: None,
+            password: None,
             cas_base: String::new(),
             cas_modulus: String::new(),
             cas_exponent: String::new(),
@@ -819,8 +821,8 @@ mod tests {
 
     fn test_tracker(store: Arc<dyn TaskStore>, dir: &std::path::Path) -> JwxtTracker {
         let client = crate::source::JwxtClient::new(
-            "u",
-            "p",
+            Some("u".to_owned()),
+            Some("p".to_owned()),
             "http://127.0.0.1:1".into(),
             "m".into(),
             "e".into(),

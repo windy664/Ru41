@@ -5,10 +5,10 @@
 
 use crate::config::TeachermateConfig;
 use crate::source::{CourseHomework, Homework, TeachermateClient, homework_status_open};
+use anyhow::Result;
 use ru41::app::homework_work::{self as work_common, WorkNoteItem};
 use ru41::app::todo::TodoService;
 use ru41::ports::{channel::NotifyChannel, storage::TaskStore, vault::Vault};
-use anyhow::Result;
 use serde::Serialize;
 use std::sync::Arc;
 

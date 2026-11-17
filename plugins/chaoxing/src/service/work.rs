@@ -307,7 +307,11 @@ impl ChaoxingWorkTracker {
                                 }
                                 // 临期确认卡片同步收口，不再追发。
                                 let _ = work_common::close_reminder(
-                                    &self.store, "chaoxing", "cx", &key, now,
+                                    &self.store,
+                                    "chaoxing",
+                                    "cx",
+                                    &key,
+                                    now,
                                 );
                             }
                         } else if open {

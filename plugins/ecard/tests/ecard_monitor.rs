@@ -104,7 +104,7 @@ fn make_tracker(
                 building_no: "1859".into(),
                 room_num: "2158".into(),
             },
-            token: "test-token".into(),
+            token: Some("test-token".to_owned()),
             power_threshold,
             notify_target: "default".into(),
             ..Default::default()
@@ -180,6 +180,7 @@ async fn daily_report_sends_once_per_day_when_enabled() {
         EcardConfig {
             notify_target: "default".into(),
             daily_report: true,
+            token: Some("test-token".to_owned()),
             ..Default::default()
         },
     );
@@ -210,6 +211,7 @@ async fn daily_report_sends_once_per_day_when_enabled() {
         Some(Arc::new(MockChannel::default())),
         EcardConfig {
             notify_target: "default".into(),
+            token: Some("test-token".to_owned()),
             ..Default::default()
         },
     );

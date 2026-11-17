@@ -1,11 +1,12 @@
-use anyhow::{Context, Result};
+use anyhow::Result;
 use serde::Deserialize;
 
 /// 微助教签到监控运行时配置（由 TeachermateSection::resolved 解析产出）。
 #[derive(Debug, Clone)]
 pub struct TeachermateConfig {
     /// 微信服务号网页 openid（32 位串）；学生侧唯一凭证，人工从服务号链接提取。
-    pub openid: String,
+    /// None = 本容器不访问平台（只读快照）。
+    pub openid: Option<String>,
     /// openid 持久化路径（bind 命令写入）；环境变量与配置文件优先于文件。
     pub openid_path: std::path::PathBuf,
     pub interval_secs: u64,
@@ -105,10 +106,8 @@ impl TeachermateSection {
 
     /// 由 [sources.teachermate] 解析出运行时配置；默认值与凭证兜底只定义在这里。
     pub fn resolved(&self, notify_target: String) -> Result<TeachermateConfig> {
-        let openid = self.openid_from_all().with_context(|| {
-            "teachermate openid required: `teachermate bind <链接>` 落盘、\
-             或 RU41_WZJ_OPENID / sources.teachermate.openid"
-        })?;
+        // 凭证不在配置解析阶段强制：只有要访问平台的容器才需要 openid。
+        let openid = self.openid_from_all();
         Ok(TeachermateConfig {
             openid,
             openid_path: self.openid_path_or_default(),

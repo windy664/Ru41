@@ -135,8 +135,8 @@ struct PersistedCookie {
 pub struct ChaoxingClient {
     jar: std::sync::Arc<CookieJar>,
     http: reqwest::Client,
-    phone: String,
-    password: String,
+    phone: Option<String>,
+    password: Option<String>,
     cookie_path: PathBuf,
     /// 五个域的基址；测试注入本地 fixture 服务，生产用官方域名。
     passport_base: String,
@@ -150,11 +150,7 @@ pub struct ChaoxingClient {
 }
 
 impl ChaoxingClient {
-    pub fn new(
-        phone: impl Into<String>,
-        password: impl Into<String>,
-        cookie_path: PathBuf,
-    ) -> Self {
+    pub fn new(phone: Option<String>, password: Option<String>, cookie_path: PathBuf) -> Self {
         Self::with_base_urls(
             phone,
             password,
@@ -171,8 +167,8 @@ impl ChaoxingClient {
     /// 测试用：六个域基址可指向本地 fixture 服务。
     #[allow(clippy::too_many_arguments)]
     pub fn with_base_urls(
-        phone: impl Into<String>,
-        password: impl Into<String>,
+        phone: Option<String>,
+        password: Option<String>,
         cookie_path: PathBuf,
         passport_base: String,
         mooc_base: String,
@@ -189,8 +185,8 @@ impl ChaoxingClient {
         Self {
             jar,
             http,
-            phone: phone.into(),
-            password: password.into(),
+            phone,
+            password,
             cookie_path,
             passport_base,
             mooc_base,
@@ -239,13 +235,21 @@ impl ChaoxingClient {
 
     /// 账密登录；成功后 cookie 持久化。
     pub async fn login(&self) -> Result<()> {
+        // 凭证到这里才校验：只读缓存的容器不需要账号密码。
+        let phone = self
+            .phone
+            .as_deref()
+            .context("chaoxing phone required: RU41_XXT_PHONE or sources.chaoxing.phone")?;
+        let password = self.password.as_deref().context(
+            "chaoxing password required: RU41_XXT_PASSWORD or sources.chaoxing.password",
+        )?;
         let response: LoginResponse = self
             .http
             .post(format!("{}{LOGIN_PATH}", self.passport_base))
             .form(&[
                 ("fid", "-1"),
-                ("uname", &cx_encrypt(&self.phone)),
-                ("password", &cx_encrypt(&self.password)),
+                ("uname", &cx_encrypt(phone)),
+                ("password", &cx_encrypt(password)),
                 ("refer", "https%3A%2F%2Fi.chaoxing.com"),
                 ("t", "true"),
                 ("forbidotherlogin", "0"),

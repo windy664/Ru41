@@ -1,11 +1,13 @@
-use anyhow::{Context, Result};
+use anyhow::Result;
 use serde::Deserialize;
 
 /// 学习通签到监控运行时配置（由 ChaoxingSection::resolved 解析产出）。
 #[derive(Debug, Clone)]
 pub struct ChaoxingConfig {
-    pub phone: String,
-    pub password: String,
+    /// 登录手机号；None = 本容器不登录（只读缓存）。
+    pub phone: Option<String>,
+    /// 登录密码；None = 本容器不登录（只读缓存）。
+    pub password: Option<String>,
     /// 会话 cookie 持久化路径。
     pub cookie_path: std::path::PathBuf,
     pub interval_secs: u64,
@@ -106,18 +108,16 @@ impl ChaoxingSection {
 
     /// 由 [sources.chaoxing] 解析出运行时配置；默认值与凭证兜底只定义在这里。
     pub fn resolved(&self, notify_target: String) -> Result<ChaoxingConfig> {
+        // 凭证不在配置解析阶段强制：只有要登录学习通的容器才需要它们；
+        // 只读作业缓存的容器（worker）没有凭证也能加载插件。
         let phone = std::env::var("RU41_XXT_PHONE")
             .ok()
             .or_else(|| self.phone.clone())
-            .filter(|v| !v.trim().is_empty())
-            .context("chaoxing phone required: RU41_XXT_PHONE or sources.chaoxing.phone")?;
+            .filter(|v| !v.trim().is_empty());
         let password = std::env::var("RU41_XXT_PASSWORD")
             .ok()
             .or_else(|| self.password.clone())
-            .filter(|v| !v.trim().is_empty())
-            .context(
-                "chaoxing password required: RU41_XXT_PASSWORD or sources.chaoxing.password",
-            )?;
+            .filter(|v| !v.trim().is_empty());
         Ok(ChaoxingConfig {
             phone,
             password,

@@ -38,11 +38,12 @@ impl EcardSection {
 
     /// 由 [sources.ecard] 解析出运行时配置；默认值与 RU41_ECARD_TOKEN 兜底只定义在这里。
     pub fn resolved(&self, notify_target: String) -> Result<EcardConfig> {
+        // 凭证不在配置解析阶段强制：只有要查余额的容器才需要它；
+        // 只读快照的容器没有 token 也能加载插件。
         let token = std::env::var("RU41_ECARD_TOKEN")
             .ok()
             .or_else(|| self.token.clone())
-            .filter(|t| !t.trim().is_empty())
-            .context("ecard token required: RU41_ECARD_TOKEN or sources.ecard.token")?;
+            .filter(|t| !t.trim().is_empty());
         let room = EcardRoom {
             impl_type: self
                 .impl_type

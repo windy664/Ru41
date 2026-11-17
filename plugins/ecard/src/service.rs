@@ -1,4 +1,4 @@
-use anyhow::Result;
+use anyhow::{Context, Result};
 use ru41::{ports::channel::NotifyChannel, ports::storage::TaskStore};
 use serde::Serialize;
 use std::sync::Arc;
@@ -9,7 +9,8 @@ use crate::source::{EcardClient, EcardRoom};
 #[derive(Debug, Clone)]
 pub struct EcardConfig {
     pub room: EcardRoom,
-    pub token: String,
+    /// 查询 token；None = 本容器不查余额（只读快照）。
+    pub token: Option<String>,
     /// 电量低余额阈值（度）。
     pub power_threshold: f64,
     /// 水量低余额阈值（吨）。
@@ -26,7 +27,7 @@ impl Default for EcardConfig {
     fn default() -> Self {
         Self {
             room: crate::source::EcardRoom::default(),
-            token: String::new(),
+            token: None,
             power_threshold: 10.0,
             water_threshold: 1.0,
             interval_secs: 86_400,
@@ -75,10 +76,12 @@ impl EcardTracker {
     }
 
     pub async fn poll_once(&self) -> Result<EcardReport> {
-        let balance = self
-            .client
-            .get_balance(&self.config.room, &self.config.token)
-            .await?;
+        let token = self
+            .config
+            .token
+            .as_deref()
+            .context("ecard token required: RU41_ECARD_TOKEN or sources.ecard.token")?;
+        let balance = self.client.get_balance(&self.config.room, token).await?;
         let now = ru41::util::now();
         let today = ru41::util::today_utc(now);
         let power = balance.power_value();

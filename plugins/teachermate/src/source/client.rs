@@ -28,7 +28,7 @@ fn is_expired(status: StatusCode, text: &str) -> bool {
 /// 微助教协议客户端。凭证是人工投喂的 openid（Header 传递，非 cookie）。
 #[derive(Clone)]
 pub struct TeachermateClient {
-    openid: String,
+    openid: Option<String>,
     /// openid 文件（可选）：存在且非空时**每请求热加载**，优先于构造时字符串。
     /// 换绑入口（QQ 粘贴链接 / bind 命令）只写文件，无需重启容器。
     openid_file: Option<std::path::PathBuf>,
@@ -38,15 +38,15 @@ pub struct TeachermateClient {
 }
 
 impl TeachermateClient {
-    pub fn new(openid: impl Into<String>) -> Self {
+    pub fn new(openid: Option<String>) -> Self {
         Self::with_api_base(openid, DEFAULT_API_BASE.into())
     }
 
     /// 测试用：基址可指向本地 fixture 服务。
-    pub fn with_api_base(openid: impl Into<String>, api_base: String) -> Self {
+    pub fn with_api_base(openid: Option<String>, api_base: String) -> Self {
         let http = ru41::util::http_client();
         Self {
-            openid: openid.into(),
+            openid,
             openid_file: None,
             http,
             api_base,
@@ -61,18 +61,28 @@ impl TeachermateClient {
 
     /// 每请求解析凭证：文件 > 构造字符串。文件是换绑入口，永远代表最新意图；
     /// 与 openid_from_all 的「配置 > 文件」顺序刻意不同——运行期以热更新为准。
-    fn current_openid(&self) -> String {
+    fn current_openid(&self) -> Result<String> {
         self.openid_file
             .as_deref()
             .and_then(|p| std::fs::read_to_string(p).ok())
             .map(|t| t.trim().to_owned())
             .filter(|v| !v.is_empty())
-            .unwrap_or_else(|| self.openid.clone())
+            .or_else(|| self.openid.clone())
+            .ok_or_else(|| {
+                anyhow::anyhow!(
+                    "teachermate openid required: `teachermate bind <链接>` 落盘、\
+                     或 RU41_WZJ_OPENID / sources.teachermate.openid"
+                )
+            })
     }
 
     /// 平台按 Referer 区分入口页；对齐社区实现，指向学生签到页。
-    fn referer(&self, path: &str) -> String {
-        format!("{}{path}openid={}", self.api_base, self.openid)
+    fn referer(&self, path: &str) -> Result<String> {
+        Ok(format!(
+            "{}{path}openid={}",
+            self.api_base,
+            self.current_openid()?
+        ))
     }
 
     /// GET + 网络抖动重试：windy2 实测到 v18 偶发连接失败（HTTP 000），
@@ -92,8 +102,8 @@ impl TeachermateClient {
                 let response = self
                     .http
                     .get(&url)
-                    .header("Openid", self.current_openid())
-                    .header("Referer", self.referer(referer_path))
+                    .header("Openid", self.current_openid()?)
+                    .header("Referer", self.referer(referer_path)?)
                     .send()
                     .await
                     .with_context(|| format!("{what}请求失败"))?;
@@ -143,8 +153,8 @@ impl TeachermateClient {
         let response = self
             .http
             .post(format!("{}{SIGN_IN_PATH}", self.api_base))
-            .header("Openid", self.current_openid())
-            .header("Referer", self.referer("/wechat-pro-ssr/student/sign?"))
+            .header("Openid", self.current_openid()?)
+            .header("Referer", self.referer("/wechat-pro-ssr/student/sign?")?)
             .json(&body)
             .send()
             .await

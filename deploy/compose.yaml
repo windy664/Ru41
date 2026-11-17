@@ -26,6 +26,9 @@ services:
       # 裁剪配置（sources 账密已剔除，agent 视野里没有各数据源凭证）：
       # 部署时先生成：ru41 --config ../ru41.toml config redact --out ../.ru41/ru41-worker.toml
       - ../.ru41/ru41-worker.toml:/etc/ru41/ru41.toml:ro
+      # 插件自有配置（非敏感部分：作息表、路径、阈值等）。凭证一律走环境变量，
+      # 不写在这里——这个目录对 agent 是可读的。
+      - ../plugins.d:/etc/ru41/plugins.d:ro
       - ../.ru41:/data
       - ../.ru41/plugins:/etc/ru41/plugins:ro
       - ${RU41_CODEX_HOME:-../.ru41/codex-home}:/home/node/.codex
