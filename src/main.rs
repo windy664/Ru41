@@ -3,9 +3,8 @@ use clap::Parser;
 use ru41::bootstrap::agents::{AgentOverrides, registry};
 use ru41::bootstrap::assembly::{
     channel_command_handlers, default_notifier, default_notify_route, knowledge_service,
-    notify_channels, qq_api, qq_image_consumers, scheduled_jobs,
-    telegram_allowed_user_ids, telegram_api, telegram_bind_secret, telegram_token,
-    todo_notify_route, tracker_job,
+    notify_channels, qq_api, qq_image_consumers, scheduled_jobs, telegram_allowed_user_ids,
+    telegram_api, telegram_bind_secret, telegram_token, todo_notify_route, tracker_job,
 };
 use ru41::bootstrap::store::{open_store, resolve as resolve_store};
 use ru41::{
@@ -506,18 +505,12 @@ async fn main() -> Result<()> {
                             service.store().clone(),
                         )?;
                         let report = ru41::app::todo::send_due_reminders(
-                            &service,
-                            &deliverer,
-                            &route,
-                            options,
+                            &service, &deliverer, &route, options,
                         )
                         .await?;
                         let events = ScheduleService::new(service.store().clone(), options);
                         ru41::app::schedule::send_event_reminders(
-                            &events,
-                            &deliverer,
-                            &route,
-                            options,
+                            &events, &deliverer, &route, options,
                         )
                         .await?;
                         println!("{}", serde_json::to_string_pretty(&report)?);
@@ -874,13 +867,8 @@ async fn run_todo_remind_loop(
     // 启动补发：进程停机期间错过的课程提醒，合并成一条消息发出。
     {
         let events = ScheduleService::new(service.store().clone(), options);
-        match ru41::app::schedule::send_missed_class_reminders(
-            &events,
-            &deliverer,
-            &route,
-            options,
-        )
-        .await
+        match ru41::app::schedule::send_missed_class_reminders(&events, &deliverer, &route, options)
+            .await
         {
             Ok((count, sent)) if sent => {
                 println!(
@@ -904,13 +892,9 @@ async fn run_todo_remind_loop(
             let deliverer = deliverer_ref.clone();
             let route = route.clone();
             async move {
-                let todo_report = ru41::app::todo::send_due_reminders(
-                    service,
-                    &deliverer,
-                    &route,
-                    options,
-                )
-                .await?;
+                let todo_report =
+                    ru41::app::todo::send_due_reminders(service, &deliverer, &route, options)
+                        .await?;
                 Ok(serde_json::json!({"todo": todo_report}))
             }
         },
