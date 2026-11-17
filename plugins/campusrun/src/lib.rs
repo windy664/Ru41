@@ -12,12 +12,14 @@ pub mod model;
 pub mod qq_command;
 pub mod render;
 pub mod service;
+pub mod submit;
 
 pub use cli::{MODULE_NAME, campusrun_cli};
 pub use client::{CampusrunClient, CampusrunError};
 pub use config::CampusrunSection;
 pub use qq_command::CampusrunQqCommand;
 pub use service::CampusrunTracker;
+pub use submit::{PendingSubmit, RunIntent, RunParams};
 
 /// 注册表定义：调度清单、只读 tracker、QQ 命令、专属 CLI。
 pub static DEF: ru41::modules::ModuleDef = ru41::modules::ModuleDef {
@@ -51,7 +53,12 @@ pub static DEF: ru41::modules::ModuleDef = ru41::modules::ModuleDef {
         let section = config
             .sources
             .get_or_default::<CampusrunSection>(MODULE_NAME);
-        Ok(vec![std::sync::Arc::new(CampusrunQqCommand::new(section))])
+        // 通知通道：后台提交完成后把结果发回原会话（插件不直连渠道 API，
+        // 走宿主装配的 NotifyChannel）。
+        let (notifier, _target) = ru41::bootstrap::assembly::notify_pair(config, Some(true))?;
+        Ok(vec![std::sync::Arc::new(CampusrunQqCommand::new(
+            section, notifier,
+        ))])
     },
     image_consumers: ru41::modules::no_image_consumers,
     cli: campusrun_cli,
