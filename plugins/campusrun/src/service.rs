@@ -140,7 +140,8 @@ pub async fn prepare_params(
 ) -> Result<RunParams, CampusrunError> {
     let verdict = client.last_verdict().await.ok().flatten();
     let rule_min = verdict.as_ref().and_then(crate::render::rule_min_minutes);
-    let base = crate::submit::base_params(section, intent, rule_min)
+    let now_ms = ru41::util::now() * 1000;
+    let base = crate::submit::base_params(section, intent, rule_min, now_ms)
         .map_err(|error| CampusrunError::Invalid(format!("{error:#}")))?;
     let start = fetch_start(client, section, base.duration_min).await?;
     Ok(crate::submit::plan_params(base, start))

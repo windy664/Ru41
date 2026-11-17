@@ -516,6 +516,7 @@ mod tests {
             &crate::config::CampusrunSection::default(),
             &crate::submit::RunIntent::DistanceKm { km: 2.0 },
             None,
+            1_794_890_000_000,
         )
         .unwrap();
         let params = crate::submit::plan_params(
@@ -540,6 +541,7 @@ mod tests {
             &crate::config::CampusrunSection::default(),
             &crate::submit::RunIntent::DistanceKm { km: 2.0 },
             None,
+            1_794_890_000_000,
         )
         .unwrap();
         let params = crate::submit::plan_params(
