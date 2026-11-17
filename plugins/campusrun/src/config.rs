@@ -56,12 +56,6 @@ pub struct CampusrunSection {
     pub silence_secs: Option<i64>,
     /// 待确认提交的有效期（秒），默认 900。
     pub confirm_ttl_secs: Option<i64>,
-    /// 时长不足服务端要求时（「跑N分钟以上」），要不要**抬**到要求值。
-    ///
-    /// 这是插件自己加的一层（控制台没有）：服务端各门课要求不同，
-    /// 抬上去才计学期成绩（11-16 那条就是栽在这儿）。默认开。
-    /// 关掉 = 纯照抄控制台的 autoDur，不做任何抬升。
-    pub lift_to_rule_min: Option<bool>,
 }
 
 impl CampusrunSection {
@@ -76,8 +70,6 @@ impl CampusrunSection {
     pub const DEFAULT_SILENCE_SECS: i64 = 600;
     /// 待确认提交的有效期（秒）。
     pub const DEFAULT_CONFIRM_TTL_SECS: i64 = 900;
-    /// 时长不足服务端要求时抬到要求值（默认开）。
-    pub const DEFAULT_LIFT_TO_RULE_MIN: bool = true;
     /// 何时跑：默认「当天随机」（2026-11-16 用户给的推荐参数）。
     pub const DEFAULT_START_MODE: &str = "rand";
     /// 随机时刻只找当天。
@@ -192,11 +184,6 @@ impl CampusrunSection {
     pub fn confirm_ttl_secs(&self) -> i64 {
         self.confirm_ttl_secs
             .unwrap_or(Self::DEFAULT_CONFIRM_TTL_SECS)
-    }
-
-    /// 时长不足服务端要求时要不要抬到要求值（默认开）。
-    pub fn lift_to_rule_min(&self) -> bool {
-        self.lift_to_rule_min.unwrap_or(Self::DEFAULT_LIFT_TO_RULE_MIN)
     }
 
     /// 能不能用：没令牌就没什么可查的（schedule 里据此显示未就绪原因）。

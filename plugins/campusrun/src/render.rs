@@ -295,23 +295,6 @@ pub fn rule_passed(verdict: &Verdict, keyword: &str) -> Option<bool> {
         .map(|item| item.passed())
 }
 
-/// 服务端规则里的时长下限：「跑7分钟以上」→ **7（分钟）**。
-///
-/// 各门课要求不同（实测有 6 分钟也有 7 分钟），所以从 reasonList 里读，不写死。
-/// 单位是**分钟**（与 `RunParams::duration_min` 一致）。
-pub fn rule_min_minutes(verdict: &Verdict) -> Option<f64> {
-    verdict.rules.iter().find_map(|item| {
-        let text = item.reason.as_deref()?;
-        let rest = text.strip_prefix('跑')?;
-        let end = rest.find("分钟")?;
-        let digits: String = rest[..end]
-            .chars()
-            .take_while(char::is_ascii_digit)
-            .collect();
-        digits.parse::<f64>().ok()
-    })
-}
-
 /// 校园跑规则面：补跑窗口、必过点、围栏、服务端当前门槛、上次判定。
 pub fn render_rules(
     start_times: &StartTimes,
@@ -521,7 +504,6 @@ mod tests {
         let base = crate::submit::base_params(
             &crate::config::CampusrunSection::default(),
             &crate::submit::RunIntent::DistanceKm { km: 2.0 },
-            None,
             1_794_890_000_000,
         )
         .unwrap();
@@ -546,7 +528,6 @@ mod tests {
         let base = crate::submit::base_params(
             &crate::config::CampusrunSection::default(),
             &crate::submit::RunIntent::DistanceKm { km: 2.0 },
-            None,
             1_794_890_000_000,
         )
         .unwrap();
@@ -764,9 +745,9 @@ mod rule_tests {
         }
     }
 
-    /// 「跑7分钟以上」→ 7 分钟（**单位是分钟**，别跟秒混）。
+    /// 「跑7分钟以上」这条规则本身照原样转述（不解析、不换算、不改判）。
     #[test]
-    fn rule_min_minutes_is_in_minutes() {
+    fn rule_lines_are_relayed_verbatim() {
         let verdict = Verdict {
             rrid: 1,
             filename: None,
@@ -779,20 +760,9 @@ mod rule_tests {
             min_distance_km: Some(1.0),
             pace_range: Some((2.17, 10.0)),
         };
-        assert_eq!(rule_min_minutes(&verdict), Some(7.0));
-    }
-
-    /// 「跑6分钟以上」是另一门课的要求——各门课不同，不能写死。
-    #[test]
-    fn rule_min_minutes_reads_whatever_the_server_said() {
-        let verdict = Verdict {
-            rrid: 2,
-            filename: None,
-            rules: vec![item("跑6分钟以上", true)],
-            status_info: None,
-            min_distance_km: Some(1.5),
-            pace_range: Some((2.17, 10.0)),
-        };
-        assert_eq!(rule_min_minutes(&verdict), Some(6.0));
+        assert_eq!(rule_passed(&verdict, "跑7分钟以上"), Some(true));
+        let text = render_verdict(&verdict);
+        assert!(text.contains("跑7分钟以上"), "{text}");
+        assert!(text.contains("✅"), "{text}");
     }
 }

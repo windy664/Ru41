@@ -130,18 +130,17 @@ pub async fn fetch_rules(client: &CampusrunClient) -> Result<String, CampusrunEr
 ///
 /// 三个来源分清：
 /// - **配置**：配速区间、海拔区间、起跑方式（now/rand/at/ago）；
-/// - **服务端**：时长下限（上次记录的 reasonList「跑N分钟以上」）、
-///   **起跑时刻**（`/api/starttimes`，控制台 `resolveStartAt()` 走的就是它）；
+/// - **服务端**：**起跑时刻**（`/api/starttimes`，控制台 `resolveStartAt()` 走的就是它）；
 /// - **用户**：圈数或公里数。
+///
+/// 其余一概不碰：能不能跑、跑多久够不够、配速行不行，全由工具的 preflight 判。
 pub async fn prepare_params(
     client: &CampusrunClient,
     section: &CampusrunSection,
     intent: &RunIntent,
 ) -> Result<RunParams, CampusrunError> {
-    let verdict = client.last_verdict().await.ok().flatten();
-    let rule_min = verdict.as_ref().and_then(crate::render::rule_min_minutes);
     let now_ms = ru41::util::now() * 1000;
-    let base = crate::submit::base_params(section, intent, rule_min, now_ms)
+    let base = crate::submit::base_params(section, intent, now_ms)
         .map_err(|error| CampusrunError::Invalid(format!("{error:#}")))?;
     let start = fetch_start(client, section, base.duration_min).await?;
     Ok(crate::submit::plan_params(base, start))
