@@ -120,7 +120,7 @@ impl SimpleCommand for CampusrunQqCommand {
                          刚才只做了预演，没有提交任何记录。"
                     ))));
                 }
-                let (summary, plan, _params) =
+                let (summary, plan, params) =
                     crate::service::fetch_plan(&client, &section, &intent)
                         .await
                         .map_err(|error| anyhow::anyhow!("{error}"))?;
@@ -130,9 +130,8 @@ impl SimpleCommand for CampusrunQqCommand {
                         plan.issue_summary.unwrap_or_default()
                     ))));
                 }
-                let params = crate::service::prepare_params(&client, &section, &intent)
-                    .await
-                    .map_err(|error| anyhow::anyhow!("{error}"))?;
+                // 用**预演那一套**参数登记：服务端每次请求都会重新随机起跑时刻，
+                // 再取一次参数，用户看到的起跑时刻就会和真交上去的那条对不上。
                 let now = ru41::util::now();
                 let token = make_token(ctx.msg_id, now);
                 crate::service::register_pending(
