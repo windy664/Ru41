@@ -270,7 +270,13 @@ async fn callback_button_answers_query_and_runs_its_command() {
     let task_id = store.list(50).unwrap()[0].id;
 
     bot.handle_update(&callback_update(
-        2, "cb-1", 12345, "private", 678, 42, "/tasks",
+        2,
+        "cb-1",
+        12345,
+        "private",
+        678,
+        42,
+        "/tasks",
     ))
     .await;
 
@@ -330,10 +336,8 @@ async fn same_message_id_in_different_chats_does_not_collide() {
     let (_dir, store) = store();
     let bot = bot(&mock, store.clone(), Vec::new());
 
-    bot.handle_update(&message_update(1, 7, 12345, 678, "私聊的一条"))
-        .await;
-    bot.handle_update(&message_update(2, 7, 999, 678, "群里的另一条"))
-        .await;
+    bot.handle_update(&message_update(1, 7, 12345, 678, "私聊的一条")).await;
+    bot.handle_update(&message_update(2, 7, 999, 678, "群里的另一条")).await;
 
     let tasks = store.list(50).unwrap();
     assert_eq!(tasks.len(), 2, "两个会话的同号消息互相吞了");
@@ -363,10 +367,7 @@ async fn start_payload_runs_the_encoded_command() {
         .iter()
         .find(|body| body.contains(r#""chat_id":"12345""#))
         .expect("深链命令没有产生回复");
-    assert!(
-        reply.contains("任务列表") || reply.contains("最近任务"),
-        "{reply}"
-    );
+    assert!(reply.contains("任务列表") || reply.contains("最近任务"), "{reply}");
     // 那条 `/start` 机器消息要被删掉（不留痕）。
     // mock 只记录请求体（方法名在 URL 路径里），所以按 body 特征找。
     let deleted = sent
@@ -421,14 +422,17 @@ async fn callback_in_group_chat_cannot_reach_private_task() {
         .into_iter()
         .find(|body| body.contains(r#""chat_id":"12345""#))
         .expect("私聊按钮没有回复");
-    assert!(
-        private_reply.contains(&format!("#{task_id}")),
-        "{private_reply}"
-    );
+    assert!(private_reply.contains(&format!("#{task_id}")), "{private_reply}");
 
     // 群里点按钮：同一条任务不可见。
     bot.handle_update(&callback_update(
-        3, "cb-group", 999, "group", 678, 43, "/tasks",
+        3,
+        "cb-group",
+        999,
+        "group",
+        678,
+        43,
+        "/tasks",
     ))
     .await;
     let group_reply = mock
@@ -450,7 +454,13 @@ async fn callback_from_non_whitelisted_user_is_ignored() {
     let bot = bot(&mock, store.clone(), vec![111]);
 
     bot.handle_update(&callback_update(
-        1, "cb-out", 12345, "private", 222, 42, "/tasks",
+        1,
+        "cb-out",
+        12345,
+        "private",
+        222,
+        42,
+        "/tasks",
     ))
     .await;
 

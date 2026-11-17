@@ -42,7 +42,7 @@ async fn mock_console() -> (String, Arc<Mutex<Vec<String>>>) {
                                 "sid": 9828,
                                 "startDate": 1793376000000i64,
                                 "endDate": 1798819199000i64,
-                                "semesterGoal": 1,
+                                "semesterGoal": 1.0,
                                 "semesterValid": 0,
                                 "goalMethod": 2
                             },
@@ -122,6 +122,7 @@ fn section(base_url: &str) -> CampusrunSection {
         token_env: Some("CAMPUSRUN_TEST_TOKEN".into()),
         token: Some("secret-token".into()),
         timeout_secs: Some(5),
+        ..Default::default()
     }
 }
 
@@ -164,11 +165,11 @@ async fn fetches_semester_records_and_cheat() {
         Some("2026-2027-1体能训练Ⅰ")
     );
     assert_eq!(info.summary_raw.semester_valid_dis, Some(6295.0));
-    // 目标次数来自 goalRaw（1 次），不是 pace-forge CLI 打出来的 0。
+    // semesterGoal 是**目标里程（米）**，不是次数（2026-11-16 修正）。
     assert_eq!(
         info.goal_raw.as_ref().unwrap().semester_goal,
-        Some(1),
-        "学期目标次数应来自 goalRaw"
+        Some(1.0),
+        "学期目标里程应来自 goalRaw 的 semesterGoal（米）"
     );
 
     let records = client.records().await.unwrap();
@@ -194,7 +195,12 @@ async fn renders_markdown_for_each_view() {
         .await
         .unwrap();
     assert!(status.contains("## 校园跑进度"), "{status}");
-    assert!(status.contains("学期目标：1 次"), "{status}");
+    // semesterGoal 是目标里程（米），不是次数。
+    assert!(status.contains("学期目标里程：1 m"), "{status}");
+    assert!(
+        status.contains("达标判定：有效 6.29 km ≥ 目标 1 m → 已达标"),
+        "{status}"
+    );
     assert!(status.contains("有效里程：6.29 km"), "{status}");
     assert!(status.contains("学期剩余：45 天"), "{status}");
 

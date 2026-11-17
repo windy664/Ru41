@@ -331,11 +331,7 @@ pub async fn send_missed_class_reminders(
     if missed.is_empty() {
         return Ok((0, false));
     }
-    let anchor = missed
-        .iter()
-        .map(|item| item.starts_at)
-        .min()
-        .unwrap_or(now);
+    let anchor = missed.iter().map(|item| item.starts_at).min().unwrap_or(now);
     deliverer
         .deliver(
             route,

@@ -2,7 +2,9 @@
 //!
 //! 纯函数，不触网，方便单测锁住「用户到底会看到什么」。
 
-use crate::model::{CheatStatus, RunRecord, SemesterInfo};
+use crate::model::{
+    CheatStatus, FencesData, PlanData, PointsData, RunRecord, SemesterInfo, StartTimes,
+};
 use chrono::{Local, TimeZone};
 
 /// 学期进度。
@@ -36,30 +38,36 @@ pub fn render_status(info: &SemesterInfo) -> String {
         "- 有效次数：{valid_count} 次（共 {total_count} 次）"
     ));
 
-    // 目标：次数与距离分列，别把「最小单次里程」当成学期总里程。
-    let goal_count = info
-        .goal_raw
-        .as_ref()
-        .and_then(|g| g.semester_goal)
-        .filter(|n| *n > 0);
-    let done_count = info
-        .goal_raw
-        .as_ref()
-        .and_then(|g| g.semester_valid)
-        .unwrap_or(valid_count);
-    if let Some(target) = goal_count {
-        let reached = done_count >= target;
-        let tail = if reached {
-            "已达标".to_owned()
-        } else {
-            format!("还差 {} 次，未达标", target - done_count)
-        };
-        lines.push(format!(
-            "- 学期目标：{target} 次（已完成 {done_count} 次）→ {tail}"
-        ));
-    }
-    if let Some(distance) = info.goal.as_ref().and_then(|g| g.target_dis) {
-        lines.push(format!("- 目标距离：{:.2} km", distance));
+    // 目标：**semesterGoal 是目标里程（米），不是次数**
+    // （pace-forge 源码 api/semester.rs 的 parse_goal：target_dis = semesterGoal，
+    //  goalMethod=2 = 按里程；目标次数在 targetCount，0 = 不计次）。
+    // 之前按「次数」渲染、还把米当公里——2026-11-16 修正。
+    let goal_m = info.goal_raw.as_ref().and_then(|g| g.semester_goal);
+    match goal_m {
+        Some(goal_m) => {
+            lines.push(format!(
+                "- 学期目标里程：{}（服务端 semesterGoal，按里程口径）",
+                fmt_goal_distance(goal_m)
+            ));
+            if let Some(count) = info.goal.as_ref().and_then(|g| g.target_count) {
+                lines.push(format!(
+                    "- 学期目标次数：{count}{}",
+                    if count == 0 { "（不计次）" } else { "" }
+                ));
+            }
+            let valid = summary.semester_valid_dis.unwrap_or_default();
+            lines.push(format!(
+                "- 达标判定：有效 {} ≥ 目标 {} → {}",
+                fmt_distance(valid),
+                fmt_goal_distance(goal_m),
+                if valid >= goal_m {
+                    "已达标"
+                } else {
+                    "未达标"
+                }
+            ));
+        }
+        None => lines.push("- 学期目标：服务端未提供".to_owned()),
     }
     if let Some(days) = info.goal.as_ref().and_then(|g| g.days_left) {
         lines.push(format!("- 学期剩余：{days} 天"));
@@ -195,6 +203,15 @@ pub fn fmt_distance(meters: f64) -> String {
     format!("{:.2} km", meters / 1000.0)
 }
 
+/// 目标里程（米）：小于 1 公里按米显示，免得「0.00 km」看不出是什么。
+pub fn fmt_goal_distance(meters: f64) -> String {
+    if meters >= 1000.0 {
+        fmt_distance(meters)
+    } else {
+        format!("{:.0} m", meters)
+    }
+}
+
 /// 秒 → 配速（min/km）。
 pub fn pace_per_km(distance_m: f64, seconds: f64) -> Option<String> {
     if distance_m <= 0.0 || seconds <= 0.0 {
@@ -236,6 +253,118 @@ pub fn fmt_date(ms: Option<i64>) -> String {
     }
 }
 
+/// 校园跑规则面：补跑窗口、必过点、围栏、单次门槛。
+pub fn render_rules(
+    start_times: &StartTimes,
+    points: &PointsData,
+    fences: &FencesData,
+    min_distance_m: f64,
+    min_duration_sec: i64,
+) -> String {
+    let mut lines = vec!["## 校园跑规则".to_owned()];
+    lines.push(format!(
+        "- 单次门槛：里程 ≥ {}、时长 ≥ {}（服务端 minDistance / minRunTime）",
+        fmt_goal_distance(min_distance_m),
+        fmt_duration(min_duration_sec as f64)
+    ));
+    if let Some(limits) = &start_times.limits {
+        let mut bits = Vec::new();
+        if let Some(days) = limits.max_days_ago {
+            bits.push(format!("最多往前补 {days} 天"));
+        }
+        if let Some(lo) = limits.rand_hour_lo
+            && let Some(hi) = limits.rand_hour_hi
+        {
+            bits.push(format!("随机时刻 {lo:02}:00~{hi:02}:00"));
+        }
+        if !bits.is_empty() {
+            lines.push(format!("- 补跑限制：{}", bits.join("、")));
+        }
+    }
+    if let (Some(start), Some(stop)) = (&start_times.start_text, &start_times.stop_text) {
+        lines.push(format!("- 当前窗口：{start} ~ {stop}"));
+    }
+    let total = points.count.unwrap_or(points.points.len());
+    if total == 0 {
+        lines.push("- 必过点：服务端没给".to_owned());
+    } else {
+        lines.push(format!("- 必过点（{total} 个，全部要按顺序经过）："));
+        for point in &points.points {
+            let name = point.name.as_deref().unwrap_or("(未命名)");
+            let fixed = if point.is_fixed.unwrap_or(0) == 1 {
+                "（固定打卡点）"
+            } else {
+                ""
+            };
+            lines.push(format!("  - {name}{fixed}"));
+        }
+    }
+    let fence_count = fences.count.unwrap_or(fences.fences.len());
+    if fence_count == 0 {
+        lines.push("- 围栏：服务端没给".to_owned());
+    } else {
+        for fence in &fences.fences {
+            lines.push(format!(
+                "- 围栏：{}（{} 个顶点，轨迹必须落在里面）",
+                fence.name.as_deref().unwrap_or("(未命名)"),
+                fence.ring.len()
+            ));
+        }
+    }
+    lines.join("\n")
+}
+
+/// 预演结论（未提交）。
+pub fn render_plan(plan: &PlanData, distance_km: f64, duration_min: f64) -> String {
+    let mut lines = vec!["## 校园跑预演（未提交）".to_owned()];
+    let pace =
+        pace_per_km(distance_km * 1000.0, duration_min * 60.0).unwrap_or_else(|| "—".to_owned());
+    lines.push(format!(
+        "- 参数：{distance_km:.2} km / {duration_min:.1} 分钟（配速 {pace}/km）"
+    ));
+    let actual = plan.actual_length.unwrap_or_default();
+    lines.push(format!(
+        "- 实际里程：{} · 轨迹点 {} · 步数 {} · 平均步频 {}",
+        fmt_distance(actual),
+        plan.point_count
+            .map(|n| n.to_string())
+            .unwrap_or_else(|| "—".into()),
+        plan.steps
+            .map(|n| n.to_string())
+            .unwrap_or_else(|| "—".into()),
+        plan.avg_cadence
+            .map(|n| format!("{n:.1} 步/分"))
+            .unwrap_or_else(|| "—".into()),
+    ));
+    lines.push(format!(
+        "- 打卡点：{}/{} 全过",
+        plan.checkpoint_passed.unwrap_or(0),
+        plan.checkpoint_total.or(plan.checkpoint_total).unwrap_or(0)
+    ));
+    let blocked = plan.blocked.unwrap_or(false);
+    lines.push(format!(
+        "- 自检：{}{}",
+        plan.issue_summary.clone().unwrap_or_else(|| "未知".into()),
+        if blocked {
+            "（**被拦下，不能提交**）"
+        } else {
+            "（未拦截）"
+        }
+    ));
+    if let Some(mode) = &plan.track_mode {
+        lines.push(format!("- 轨迹模式：{mode}"));
+    }
+    if let Some(policy) = &plan.policy
+        && let Some(min) = policy.min_distance
+    {
+        lines.push(format!("- 服务端最小里程：{}", fmt_goal_distance(min)));
+    }
+    for line in &plan.logs {
+        lines.push(format!("  {line}"));
+    }
+    lines.join("\n")
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -257,8 +386,9 @@ mod tests {
         SemesterInfo {
             summary_raw: summary(),
             goal_raw: Some(SemesterGoalRaw {
-                semester_goal: Some(1),
-                semester_valid: Some(0),
+                // semesterGoal 是**目标里程（米）**：1 米 = 实质没有门槛。
+                semester_goal: Some(1.0),
+                semester_valid: Some(0.0),
                 goal_method: Some(2),
                 start_date: Some(1_793_376_000_000),
                 end_date: Some(1_798_819_199_000),
@@ -274,17 +404,16 @@ mod tests {
     }
 
     #[test]
-    fn status_shows_goal_count_not_cli_zero() {
+    fn status_reads_goal_as_distance_not_count() {
         let text = render_status(&info());
-        // 目标次数来自 goalRaw（1 次），不是 pace-forge CLI 打出来的 0 次。
-        assert!(text.contains("学期目标：1 次"), "{text}");
-        assert!(text.contains("还差 1 次，未达标"), "{text}");
-        assert!(text.contains("有效里程：6.29 km"), "{text}");
-        assert!(text.contains("共 7.51 km"), "{text}");
-        assert!(text.contains("目标距离：1.00 km"), "{text}");
+        // semesterGoal 是目标里程（米），不是次数；也不能当公里。
+        assert!(text.contains("学期目标里程：1 m"), "{text}");
+        assert!(text.contains("学期目标次数：0（不计次）"), "{text}");
+        assert!(text.contains("有效 6.29 km ≥ 目标 1 m → 已达标"), "{text}");
         assert!(text.contains("学期剩余：45 天"), "{text}");
-        // 服务端那句自拼摘要不直接照抄（它可能和目标字段打架）。
-        assert!(!text.contains("服务端自己拼的那句话"), "{text}");
+        // 旧措辞（「学期目标：1 次」「还差 1 次」「目标距离：1.00 km」）是错的。
+        assert!(!text.contains("还差"), "{text}");
+        assert!(!text.contains("目标距离"), "{text}");
     }
 
     #[test]

@@ -65,13 +65,13 @@ pub struct SemesterSummary {
 #[derive(Debug, Clone, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct SemesterGoalRaw {
-    /// 学期目标次数（1 = 要求跑够 1 次）。
+    /// 目标里程（**米**，不是次数）。
     #[serde(default)]
-    pub semester_goal: Option<i64>,
-    /// 已完成的有效次数。
+    pub semester_goal: Option<f64>,
+    /// 已完成里程（米，服务端口径）。
     #[serde(default)]
-    pub semester_valid: Option<i64>,
-    /// 达标口径（2 = 按次数/距离口径，厂商定义）。
+    pub semester_valid: Option<f64>,
+    /// 达标口径（2 = 按里程，厂商定义）。
     #[serde(default)]
     pub goal_method: Option<i64>,
     /// 学期开始时间（毫秒）。
@@ -239,4 +239,216 @@ pub struct AccountInfo {
     /// 是否处于登录态。
     #[serde(default)]
     pub logged_in: Option<bool>,
+}
+
+/// `/api/starttimes` 的 data：补跑窗口与限制。
+#[derive(Debug, Clone, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct StartTimes {
+    /// 当前窗口模式（now = 现在起算）。
+    #[serde(default)]
+    pub mode: Option<String>,
+    /// 窗口起（毫秒）。
+    #[serde(default)]
+    pub start_ms: Option<i64>,
+    /// 窗口止（毫秒）。
+    #[serde(default)]
+    pub stop_ms: Option<i64>,
+    /// 窗口起（可读文本）。
+    #[serde(default)]
+    pub start_text: Option<String>,
+    /// 窗口止（可读文本）。
+    #[serde(default)]
+    pub stop_text: Option<String>,
+    /// 本次时长（秒）。
+    #[serde(default)]
+    pub duration_sec: Option<i64>,
+    /// 补跑限制。
+    #[serde(default)]
+    pub limits: Option<StartLimits>,
+}
+
+/// 补跑窗口的限制。
+#[derive(Debug, Clone, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct StartLimits {
+    /// 最多往前补几天。
+    #[serde(default)]
+    pub max_days_ago: Option<i64>,
+    /// 最多往前补多少分钟。
+    #[serde(default)]
+    pub max_ago_min: Option<i64>,
+    /// 随机时刻的下限（点）。
+    #[serde(default)]
+    pub rand_hour_lo: Option<u64>,
+    /// 随机时刻的上限（点）。
+    #[serde(default)]
+    pub rand_hour_hi: Option<u64>,
+}
+
+/// `/api/points` 的 data：必到点（打卡点）。
+#[derive(Debug, Clone, Deserialize)]
+pub struct PointsData {
+    #[serde(default)]
+    pub count: Option<usize>,
+    #[serde(default)]
+    pub points: Vec<Checkpoint>,
+}
+
+/// 一个打卡点。
+#[derive(Debug, Clone, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct Checkpoint {
+    #[serde(default)]
+    pub index: Option<i64>,
+    #[serde(default)]
+    pub lat: Option<f64>,
+    #[serde(default)]
+    pub lng: Option<f64>,
+    #[serde(default)]
+    pub name: Option<String>,
+    /// 是否固定打卡点（服务端标记）。
+    #[serde(default)]
+    pub is_fixed: Option<i64>,
+}
+
+/// `/api/fences` 的 data：围栏多边形。
+#[derive(Debug, Clone, Deserialize)]
+pub struct FencesData {
+    #[serde(default)]
+    pub count: Option<usize>,
+    #[serde(default)]
+    pub fences: Vec<Fence>,
+}
+
+/// 一个围栏。
+#[derive(Debug, Clone, Deserialize)]
+pub struct Fence {
+    #[serde(default)]
+    pub id: Option<i64>,
+    #[serde(default)]
+    pub name: Option<String>,
+    /// 环（BD-09）。
+    #[serde(default)]
+    pub ring: Vec<(f64, f64)>,
+}
+
+/// `POST /api/plan` 与 `POST /api/run` 的 data。
+#[derive(Debug, Clone, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct PlanData {
+    /// 是否连上了服务端（true = 围栏与打卡点是真实数据）。
+    #[serde(default)]
+    pub online: Option<bool>,
+    #[serde(default)]
+    pub distance: Option<f64>,
+    #[serde(default)]
+    pub duration: Option<f64>,
+    /// 实际里程（米）。
+    #[serde(default)]
+    pub actual_length: Option<f64>,
+    #[serde(default)]
+    pub steps: Option<i64>,
+    /// 平均步频（步/分）。
+    #[serde(default)]
+    pub avg_cadence: Option<f64>,
+    #[serde(default)]
+    pub point_count: Option<usize>,
+    #[serde(default)]
+    pub bucket_count: Option<usize>,
+    /// 是否被致命项拦下（true = 不能提交）。
+    #[serde(default)]
+    pub blocked: Option<bool>,
+    /// 自检摘要，如「全部通过」。
+    #[serde(default)]
+    pub issue_summary: Option<String>,
+    /// 明细问题（每条一个）。
+    #[serde(default)]
+    pub issues: Vec<String>,
+    /// 围栏信息。
+    #[serde(default)]
+    pub fence: Option<PlanFence>,
+    /// 打卡点命中情况。
+    #[serde(default)]
+    pub checkpoints: Vec<PlanCheckpoint>,
+    #[serde(default)]
+    pub checkpoint_total: Option<usize>,
+    #[serde(default)]
+    pub checkpoint_passed: Option<usize>,
+    /// 实际用的轨迹模式（stadium = 操场绕圈，free = 自由路线）。
+    #[serde(default)]
+    pub track_mode: Option<String>,
+    /// 是不是从自由路线退回了操场。
+    #[serde(default)]
+    pub stadium_fallback: Option<bool>,
+    /// 规则：最小里程（米）、时长限制。
+    #[serde(default)]
+    pub policy: Option<PlanPolicy>,
+    /// 逐步日志（√/× 结论）。
+    #[serde(default)]
+    pub logs: Vec<String>,
+    /// 备注（如「已连服务端：围栏与打卡点为真实数据，未提交」）。
+    #[serde(default)]
+    pub note: Option<String>,
+}
+
+/// 预演里的围栏信息。
+#[derive(Debug, Clone, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct PlanFence {
+    #[serde(default)]
+    pub name: Option<String>,
+    #[serde(default)]
+    pub run_area_id: Option<i64>,
+    /// 围栏回退（选了别的围栏）。
+    #[serde(default)]
+    pub fallback: Option<bool>,
+}
+
+/// 预演里的单个打卡点。
+#[derive(Debug, Clone, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct PlanCheckpoint {
+    #[serde(default)]
+    pub index: Option<i64>,
+    #[serde(default)]
+    pub name: Option<String>,
+    /// 轨迹是否经过了它。
+    #[serde(default)]
+    pub passed: Option<bool>,
+}
+
+/// 提交时用的规则。
+#[derive(Debug, Clone, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct PlanPolicy {
+    /// 单次最小里程（米）——校园跑的硬门槛。
+    #[serde(default)]
+    pub min_distance: Option<f64>,
+    /// 时长限制。
+    #[serde(default)]
+    pub valid_time: Option<f64>,
+}
+
+/// `POST /api/run` 的 data：提交结果。
+#[derive(Debug, Clone, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct RunData {
+    /// 记录 id（rrid）。
+    #[serde(default)]
+    pub record_id: Option<i64>,
+    #[serde(default)]
+    pub rrid: Option<i64>,
+    /// 是否真的提交了。
+    #[serde(default)]
+    pub submitted: Option<bool>,
+    /// 自检摘要。
+    #[serde(default)]
+    pub issue_summary: Option<String>,
+    #[serde(default)]
+    pub blocked: Option<bool>,
+    #[serde(default)]
+    pub error: Option<String>,
+    #[serde(default)]
+    pub logs: Vec<String>,
 }

@@ -2,10 +2,7 @@
 
 use super::{OpsOutcome, check};
 use crate::{
-    bootstrap::{
-        assembly::{telegram_api, telegram_token},
-        config::Config,
-    },
+    bootstrap::{assembly::{telegram_api, telegram_token}, config::Config},
     ingress::cli::Cli,
 };
 use serde_json::json;
