@@ -1,1 +1,0 @@
-cargo:rustc-env=MIME_TYPES_GENERATED_PATH=/build/plugins/.target-docker-shared/release/build/mime_guess-5d51187d856c89c5/out/mime_types_generated.rs
