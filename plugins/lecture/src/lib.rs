@@ -44,7 +44,14 @@ pub static DEF: ModuleDef = ModuleDef {
     },
     qq_handlers: |config, _| {
         let lecture = config.sources.get_or_default::<LectureSection>("lecture");
-        if !lecture.is_ready() {
+        // 只看「有没有启用」——**不要**拿 ASR key 当注册条件。
+        //
+        // 网关这一侧（QQ/Telegram）只负责「下载 + 登记待办」，转写发生在
+        // ru41-lecture 容器里（那边才带 ASR key）。之前用 is_ready() 门控 →
+        // 所有网关都不注册 handler → 录音没人接管，消息掉给 agent，
+        // agent 回「请补充具体处理要求」而不是自动转写（2026-11-17 踩过）。
+        // ASR key 缺不缺是 worker 的事，由 schedule list 的 not_ready_reason 报。
+        if !lecture.is_enabled() {
             return Ok(Vec::new());
         }
         let handler = LectureHandler::new(lecture.resolved()?, config.todo.options()?);
