@@ -14,6 +14,13 @@ use ru41_plugin_api::interactive::{cmd_tokens, has_cmd_token};
 
 /// 把中性排版渲染成 QQ 版式。
 pub fn qq_render(text: &str) -> String {
+    // 有没有一级标题，决定栏目标题怎么处理：
+    // - **长文推送**（`#` 大标题 + `##` 小节 + 正文）：按原层级渲染。
+    //   标题最大号、小节居中、正文普通，层次才分得开；全拍平成一级标题的话，
+    //   六个小节标题跟文档标题一样大，正文夹在中间很违和。
+    // - **待办清单**（只有一个 `##` 栏目标题 + 一堆可点条目）：提升成一级标题 +
+    //   加粗，条目走三级标题——待办视图要的就是「标题最大」。
+    let has_h1 = text.lines().any(|line| heading_level(line) == Some(1));
     let mut out = String::with_capacity(text.len());
     for (index, line) in text.lines().enumerate() {
         if index > 0 {
@@ -27,10 +34,20 @@ pub fn qq_render(text: &str) -> String {
             out.push_str("### ");
             out.push_str(expanded.trim_start_matches("- "));
         } else if let Some(title) = heading_text(&expanded) {
-            // 栏目标题：一级标题（最大号）+ 显式加粗（移动端渲染双保险）。
-            out.push_str("# **");
-            out.push_str(title);
-            out.push_str("**");
+            match heading_level(&expanded) {
+                Some(level) if has_h1 => {
+                    // 长文：保留原层级，标题层级本身就是字号。
+                    out.push_str(&"#".repeat(level));
+                    out.push(' ');
+                    out.push_str(title);
+                }
+                _ => {
+                    // 待办式：栏目标题提升成一级标题（最大号）+ 显式加粗（移动端渲染双保险）。
+                    out.push_str("# **");
+                    out.push_str(title);
+                    out.push_str("**");
+                }
+            }
         } else {
             out.push_str(&expanded);
         }
@@ -80,15 +97,30 @@ fn url_encode(text: &str) -> String {
 
 /// 标题行 → 标题文本（去掉 `#` 前缀与可能的加粗）。
 fn heading_text(line: &str) -> Option<&str> {
+    let hashes = heading_level(line)?;
+    let trimmed = line.trim_start();
+    let rest = &trimmed[hashes..];
+    let rest = rest.strip_prefix(' ').unwrap_or(rest);
+    let rest = rest.strip_prefix("**").unwrap_or(rest);
+    Some(rest.strip_suffix("**").unwrap_or(rest))
+}
+
+/// 标题层级（1..=6）；不是标题行返回 None。
+///
+/// ATX 标题要求 `#` 后面跟空格——和通用渲染器（`channels::markdown`）的判定一致。
+/// 「#板子焊接」是待办标题**文本**（用户用 `#` 立项），不是标题行；
+/// 当成标题处理会让整条待办消息误判成长文，待办标题反而变小。
+fn heading_level(line: &str) -> Option<usize> {
     let trimmed = line.trim_start();
     let hashes = trimmed.len() - trimmed.trim_start_matches('#').len();
     if hashes == 0 {
         return None;
     }
     let rest = &trimmed[hashes..];
-    let rest = rest.strip_prefix(' ').unwrap_or(rest);
-    let rest = rest.strip_prefix("**").unwrap_or(rest);
-    Some(rest.strip_suffix("**").unwrap_or(rest))
+    if !rest.is_empty() && !rest.starts_with(' ') {
+        return None;
+    }
+    Some(hashes)
 }
 
 #[cfg(test)]
@@ -111,6 +143,31 @@ mod tests {
     fn section_title_becomes_h1_bold() {
         let rendered = qq_render("## 待办（3）");
         assert_eq!(rendered, "# **待办（3）**");
+    }
+
+    #[test]
+    fn long_form_keeps_heading_levels() {
+        // 长文推送：文档标题最大、小节居中、正文普通——层次要分得开。
+        let text = "# 近期 CTF / 网络安全竞赛\n## 一、当前正在报名\nCISCN 创新实践能力赛";
+        let rendered = qq_render(text);
+        assert_eq!(
+            rendered,
+            "# 近期 CTF / 网络安全竞赛\n## 一、当前正在报名\nCISCN 创新实践能力赛"
+        );
+    }
+
+    #[test]
+    fn hash_prefixed_task_title_is_not_a_heading() {
+        // 「#板子焊接」是待办标题文本，不是 markdown 标题：不能当成标题，
+        // 更不能因为它让整条消息误判成长文。
+        let rendered = qq_render("## 待办（2）\n- #板子焊接");
+        assert_eq!(rendered, "# **待办（2）**\n- #板子焊接");
+    }
+
+    #[test]
+    fn long_form_keeps_deeper_levels_too() {
+        let rendered = qq_render("# 标题\n### 更深一层");
+        assert_eq!(rendered, "# 标题\n### 更深一层");
     }
 
     #[test]
