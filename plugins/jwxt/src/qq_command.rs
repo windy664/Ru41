@@ -21,7 +21,7 @@ impl JwxtQqCommand {
     }
 
     /// 学期起始日：配置优先，缺失时回落到同步写进缓存的元数据
-    /// （裁剪配置的环境没有 sources 段，见 config::resolve_semester_start）。
+    /// （读不到插件配置时靠缓存兜底，见 config::resolve_semester_start）。
     fn resolved_semester_start(&self, ctx: &CommandContext<'_>) -> Option<NaiveDate> {
         self.semester_start
             .or_else(|| crate::config::meta_semester_start(ctx.store.as_ref()))

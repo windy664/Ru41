@@ -12,7 +12,7 @@ mkdir -p .ru41/codex .ru41/backups plugins.d
 docker build -t ru41:local .
 ```
 
-按需要编辑 `ru41.toml`：Codex/Pi、QQ/飞书、通知出口和各 sources 配置仍与非 Docker 部署相同。插件配置也可以拆到 `plugins.d/<插件>/config.toml`（附属容器只读挂载；worker 不挂载，防止绕过裁剪配置）。真实配置、数据库、插件本地配置和认证目录都被 `.gitignore` 与 `.dockerignore` 排除，不会进入镜像。
+按需要编辑 `ru41.toml`：Codex/Pi、QQ/飞书、通知出口和各核心配置仍与非 Docker 部署相同。插件配置拆到 `plugins.d/<插件>/config.toml`（所有容器只读挂载），插件凭证只走环境变量、不写进配置目录。真实配置、数据库、插件本地配置和认证目录都被 `.gitignore` 与 `.dockerignore` 排除，不会进入镜像。
 
 裸机部署可以设置 `RU41_HOME` 统一布局：`$RU41_HOME/ru41.toml`、`$RU41_HOME/plugins.d/`、`$RU41_HOME/data/`。Docker 容器内仍以 `/etc/ru41` 与 `/data` 为准，`RU41_HOME` 不是必需项。
 
@@ -29,12 +29,20 @@ docker build -t ru41:local .
 
 ## 2. 配置 Codex 并启动 Worker
 
-Worker 挂载的是**裁剪配置**（`sources` 段账密已剔除——Agent 底座在容器里全量可读挂载文件，
-不应看到各数据源凭证）。每次改完 `ru41.toml` 后重新生成一次：
+Worker 与其他容器**共用同一份 `ru41.toml`**：插件配置已全部搬到 `plugins.d/<插件>/config.toml`，
+凭证只经环境变量注入插件自己的容器，因此主配置里没有任何插件密钥，agent 直接挂主配置即可
+（2026-11-17 起不再生成 `ru41-worker.toml` 裁剪副本）。
+
+插件的非敏感配置放 `plugins.d/`，凭证放环境变量：
 
 ```bash
-docker run --rm -v "$PWD:/host" -w /host ru41:local \
-  config redact --config /host/ru41.toml --out /host/.ru41/ru41-worker.toml
+# 插件配置示例（plugins.d/jwxt/config.toml，段名 = 插件配置键）
+# [jwxt]
+# semester_start = "2026-08-31"
+# section_times = ["09:00", "09:40", ...]
+
+# 凭证只走环境变量，注入真正需要登录的插件容器
+docker run --rm -e RU41_JWXT_USERNAME -e RU41_JWXT_PASSWORD ...
 ```
 
 复用宿主机已有的 Codex 登录：

@@ -283,7 +283,7 @@ $RU41_HOME/
     └── runs/
 ```
 
-插件配置可拆到主配置旁的 `plugins.d/<插件名>/config.toml`，文件顶层直接写该插件的配置段名；例如 RSS 写在 `plugins.d/rss/config.toml` 的 `[rss]` 段。`config.local.toml` 用于设备本地覆盖，真实配置文件不进 git。每个配置型插件在 `plugins/<插件>/config.example.toml` 提供模板（papers 的历史段名是 `[arxiv]`）。Docker 部署时附属容器只读挂载 `plugins.d`，worker 不挂载——worker 仍只看 `config redact` 生成的裁剪配置，避免插件密钥绕过隐私边界。
+插件配置在主配置旁的 `plugins.d/<插件名>/config.toml`，文件顶层直接写该插件的配置段名；例如 RSS 写在 `plugins.d/rss/config.toml` 的 `[rss]` 段。`config.local.toml` 用于设备本地覆盖，真实配置文件不进 git。每个配置型插件在 `plugins/<插件>/config.example.toml` 提供模板（papers 的历史段名是 `[arxiv]`）。**插件凭证一律走环境变量**（`RU41_*`），只注入真正需要登录的插件容器；`plugins.d` 目录对 agent 可读，里面不放任何密钥。2026-11-17 起所有插件配置都搬进了 `plugins.d/`，主配置只剩核心段，所有容器（含 worker）共用同一份 `ru41.toml`。
 
 `config export --out <新目录>` 生成换机迁移包：包含剔除密钥的主配置和插件配置、插件清单、版本信息及 SQLite 在线快照；密码管理器的凭据记录也会排除。`config restore --from <迁移包> --target <新 RU41_HOME>` 默认只预检并列出缺失环境变量，追加 `--apply` 才恢复。目标目录必须尚不存在，避免覆盖现有数据。完整目录、保密要求和不包含的外部依赖见 [Docker 部署指南的迁移章节](../deploy/README.md#4-备份换机迁移与恢复)。
 

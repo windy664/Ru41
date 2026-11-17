@@ -17,7 +17,7 @@ pub fn classes_json(
 ) -> Result<serde_json::Value> {
     use chrono::Datelike;
     // 学期起始日与作息表：配置优先，缺失时回落到同步写进缓存的元数据
-    //（worker 用的是裁剪配置，没有 sources 段，见 config::resolve_semester_start）。
+    //（读不到插件配置时靠缓存兜底，见 config::resolve_semester_start）。
     let semester_start = crate::config::resolve_semester_start(store.as_ref(), section);
     let clock = crate::config::resolve_section_clock(store.as_ref(), section);
     let today = chrono::Local::now().date_naive();

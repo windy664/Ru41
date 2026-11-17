@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""底座统一到 pi + 后台来源静默：改生产机的 ru41.toml / ru41-worker.toml。
+"""底座统一到 pi + 后台来源静默：改生产机的 ru41.toml（插件配置在 plugins.d）。
 
 做三件事：
 1. 写入统一入口 [agent] default_backend = "pi"（放在 [agent.*] 子表之前）。
