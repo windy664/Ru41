@@ -2,7 +2,7 @@
 //! ASR 走 OpenAI 兼容 `/audio/transcriptions`（默认智谱 GLM-ASR），
 //! key 优先取 `api_key_env` 环境变量，配置里的明文 `api_key` 只作兜底。
 
-use anyhow::{Context, Result};
+use anyhow::Result;
 use serde::Deserialize;
 
 /// `[sources.lecture]` 配置段；解析出的运行时配置只在 `resolved()` 里给默认值。
@@ -101,6 +101,12 @@ impl LectureSection {
     pub fn resolved(&self) -> Result<LectureConfig> {
         // ASR key：**环境变量优先**，配置里的明文 `api_key` 只作兜底。
         // 配置文件会挂进 worker（有 agent 的容器），明文 key 放文件里等于交给 agent 读。
+        //
+        // ⚠️ 缺 key **不报错**，解析成空串：ASR key 只有转写那一步要，
+        // 而网关侧（QQ/Telegram）只负责「下载 + 登记待办」，压根不调 ASR。
+        // 之前在这里直接报错 → 网关连 handler 都注册不上 → 录音没人接管，
+        // 消息掉给 agent，agent 回「请补充具体处理要求」而不是自动转写
+        // （2026-11-17 踩过）。worker 侧的真就绪由 tracker 的 ensure!(is_ready()) 管。
         let api_key = {
             let name = self
                 .api_key_env
@@ -113,10 +119,8 @@ impl LectureSection {
                     .as_deref()
                     .map(str::trim)
                     .filter(|value| !value.is_empty())
-                    .map(str::to_owned)
-                    .with_context(|| {
-                        format!("sources.lecture 缺 ASR key（环境变量 {name} 或 api_key）")
-                    })?,
+                    .unwrap_or_default()
+                    .to_owned(),
             }
         };
         let workspace = self
@@ -198,4 +202,35 @@ pub struct LectureConfig {
     /// 原始录音保留天数：切片立刻删（它是磁盘大头），原始音频留一段时间，
     /// 这样转写有疑问还能重新跑 ASR。0 表示转写完立刻删原始音频。
     pub retain_audio_days: u64,
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// 网关侧（QQ/Telegram）**没有** ASR key 也得能解析出配置：
+    /// 那边的 handler 只负责「下载 + 登记待办」，不调 ASR。
+    ///
+    /// 之前这里缺 key 直接报错 → 网关的 handler 注册不上 → 录音没人接管，
+    /// 消息掉给 agent（2026-11-17 踩过）。
+    #[test]
+    fn resolves_without_the_asr_key() {
+        let mut section = LectureSection::default();
+        section.api_key = None;
+        // 用一个几乎不可能存在的环境变量名，确保解析时取不到 key。
+        section.api_key_env = Some("RU41_LECTURE_ASR_KEY_THAT_DOES_NOT_EXIST".to_owned());
+        let config = section.resolved().expect("网关侧不该因为缺 ASR key 而失败");
+        assert!(config.api_key.is_empty(), "{}", config.api_key);
+    }
+
+    /// key 在环境里时照常取到（转写那一步要的就是它）。
+    #[test]
+    fn picks_the_asr_key_from_the_environment() {
+        let mut section = LectureSection::default();
+        section.api_key = None;
+        section.api_key_env = Some("RU41_LECTURE_ASR_KEY".to_owned());
+        // 没设这个变量时不该崩；设了就能取到（这里只验证不报错 + 空值兜底）。
+        let config = section.resolved().expect("解析不应失败");
+        assert!(!config.api_key.contains('\n'));
+    }
 }
