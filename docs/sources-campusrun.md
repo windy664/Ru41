@@ -74,7 +74,16 @@
 base_url = "http://172.20.0.1:9999"   # 宿主在 ru41-net 上的网关
 token_env = "PACE_FORGE_TOKEN"          # 令牌走环境变量，勿写进仓库
 timeout_secs = 15
+allow_submit = false                    # 是否允许真提交；默认关
+# pace_min = 5.5                       # 配速区间（分/km），默认 5.5~6.6
+# pace_max = 6.6
+# silence_secs = 600                   # 提交后的静默窗口
+# confirm_ttl_secs = 900               # 待确认有效期
 ```
+
+> **门槛不在配置里**：距离/时长/配速/点位的判定都在服务端（`policy.minDistance`、
+> pace-forge 的 preflight、记录详情的 `reasonList`），各门课要求不同，写死会误判。
+> 模板全文见 `plugins/campusrun/config.example.toml`。
 
 生产实况：宿主 `~/ru41-mimo-smoke/plugins.d/campusrun/config.toml`（0600，
 令牌内联）。**不要塞进主 toml**——worker 与其他容器用的不是同一份配置文件，
