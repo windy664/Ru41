@@ -223,6 +223,14 @@ mod tests {
     ///
     /// ⚠️ 这里**不会**打到真的 pace-forge：提交路径只在 mock 上验证。
     async fn mock_console() -> (String, Arc<Mutex<Vec<(String, serde_json::Value)>>>) {
+        // 默认「上次提交」是很久以前 → 静默窗口不拦。
+        mock_console_with_last_submit(1_794_870_883_099).await
+    }
+
+    /// 同上，但指定服务端记的「上次提交时刻」（毫秒）。
+    async fn mock_console_with_last_submit(
+        last_submit_ms: i64,
+    ) -> (String, Arc<Mutex<Vec<(String, serde_json::Value)>>>) {
         let seen: Arc<Mutex<Vec<(String, serde_json::Value)>>> = Arc::new(Mutex::new(Vec::new()));
         let recorder = seen.clone();
         let plan_recorder = recorder.clone();
@@ -251,22 +259,25 @@ mod tests {
             )
             .route(
                 "/api/accounts",
-                get(|| async {
-                    // 服务端自己记的上次提交时刻（插件的静默窗口读它）。
-                    Json(json!({
-                        "ok": true,
-                        "data": {
-                            "count": 1,
-                            "current": "17846942",
-                            "accounts": [{
-                                "id": "17846942",
-                                "loggedIn": true,
-                                "enabled": true,
-                                "current": true,
-                                "lastSubmitMs": 1_794_870_883_099i64
-                            }]
-                        }
-                    }))
+                get(move || {
+                    let last_submit_ms = last_submit_ms;
+                    async move {
+                        // 服务端自己记的上次提交时刻（插件的静默窗口读它）。
+                        Json(json!({
+                            "ok": true,
+                            "data": {
+                                "count": 1,
+                                "current": "17846942",
+                                "accounts": [{
+                                    "id": "17846942",
+                                    "loggedIn": true,
+                                    "enabled": true,
+                                    "current": true,
+                                    "lastSubmitMs": last_submit_ms
+                                }]
+                            }
+                        }))
+                    }
                 }),
             )
             .route(
@@ -524,6 +535,41 @@ mod tests {
             calls.iter().filter(|(path, _)| path == "/api/run").count(),
             1,
             "同一口令只能提交一次：{calls:?}"
+        );
+    }
+
+    /// 静默窗口读**服务端**记的上次提交时刻：
+    /// 服务端说「刚交过」，确认就得被拦下，且一次提交请求都不该发。
+    #[tokio::test]
+    async fn confirm_is_blocked_by_the_servers_last_submit() {
+        let now_ms = ru41::util::now() * 1000;
+        let (base_url, seen) = mock_console_with_last_submit(now_ms).await;
+        let section = section_with(&base_url, true);
+        let store = store().await;
+        let args = vec!["submit".to_owned(), "--laps".to_owned(), "3".to_owned()];
+        let text = dispatch(&section, &store, &args)
+            .await
+            .unwrap()
+            .as_str()
+            .unwrap()
+            .to_owned();
+        let token = text
+            .split("confirm ")
+            .nth(1)
+            .and_then(|rest| rest.split_whitespace().next())
+            .map(|token| token.trim_matches('`').to_owned())
+            .unwrap();
+        let confirm = vec!["confirm".to_owned(), token];
+        let error = dispatch(&section, &store, &confirm)
+            .await
+            .unwrap_err()
+            .to_string();
+        assert!(error.contains("上一次提交"), "{error}");
+        let calls = seen.lock().await;
+        assert_eq!(
+            calls.iter().filter(|(path, _)| path == "/api/run").count(),
+            0,
+            "静默窗口内不该发提交请求：{calls:?}"
         );
     }
 }
