@@ -131,26 +131,42 @@ pub async fn fetch_rules(client: &CampusrunClient) -> Result<String, CampusrunEr
 /// 三个来源分清：
 /// - **配置**：配速区间、海拔区间、起跑方式（now/rand/at/ago）；
 /// - **服务端**：时长下限（上次记录的 reasonList「跑N分钟以上」）、
-///   随机时刻窗口（`/api/starttimes` 的 limits）；
+///   **起跑时刻**（`/api/starttimes`，控制台 `resolveStartAt()` 走的就是它）；
 /// - **用户**：圈数或公里数。
 pub async fn prepare_params(
     client: &CampusrunClient,
     section: &CampusrunSection,
     intent: &RunIntent,
 ) -> Result<RunParams, CampusrunError> {
-    let start_times = client.start_times().await?;
     let verdict = client.last_verdict().await.ok().flatten();
     let rule_min = verdict.as_ref().and_then(crate::render::rule_min_minutes);
-    let limits = start_times.limits.as_ref();
-    let rand_hours = section.rand_hours().unwrap_or_else(|| {
-        (
-            limits.and_then(|item| item.rand_hour_lo).unwrap_or(7),
-            limits.and_then(|item| item.rand_hour_hi).unwrap_or(20),
-        )
-    });
-    let now_ms = ru41::util::now() * 1000;
-    crate::submit::plan_params(section, intent, rule_min, rand_hours, now_ms)
-        .map_err(|error| CampusrunError::Invalid(format!("{error:#}")))
+    let base = crate::submit::base_params(section, intent, rule_min)
+        .map_err(|error| CampusrunError::Invalid(format!("{error:#}")))?;
+    let start = fetch_start(client, section, base.duration_min).await?;
+    Ok(crate::submit::plan_params(base, start))
+}
+
+/// 起跑时刻：**问服务端要**，不自己算。
+///
+/// 服务端 `/api/starttimes` 会照它的 limits（maxDaysAgo、随机小时窗口）
+/// 算出合法起点，必要时还会把时段**收窄**（clamped）——控制台遇到收窄会弹窗
+/// 让用户确认，插件只转述。越界（比如往前补 5 天）也是服务端报错。
+async fn fetch_start(
+    client: &CampusrunClient,
+    section: &CampusrunSection,
+    duration_min: f64,
+) -> Result<crate::submit::StartAt, CampusrunError> {
+    let query = crate::submit::start_query(section, duration_min)
+        .map_err(|error| CampusrunError::Invalid(format!("{error:#}")))?;
+    let Some(query) = query else {
+        // now 模式：不发 startAtMs（跟控制台一致）。
+        return Ok(crate::submit::StartAt::default());
+    };
+    let times = client.start_times_query(&query).await?;
+    Ok(crate::submit::StartAt {
+        at_ms: times.start_ms,
+        clamped: times.clamped.unwrap_or(false),
+    })
 }
 
 /// 预演：换算 → `POST /api/plan`（**不提交**）。
@@ -213,6 +229,7 @@ pub fn register_pending(
         lane: params.lane,
         laps: params.laps,
         start_at_ms: params.start_at_ms,
+        start_clamped: params.start_clamped,
         alt_range: params.alt_range,
         state: "planned".to_owned(),
         created_at: now,
@@ -294,6 +311,7 @@ pub async fn confirm_and_submit(
         lane: pending.lane,
         laps: pending.laps,
         start_at_ms: pending.start_at_ms,
+        start_clamped: pending.start_clamped,
         alt_range: pending.alt_range,
     });
     match client.run(&request).await {
