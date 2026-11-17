@@ -153,15 +153,26 @@ pub fn auto_duration_min(section: &CampusrunSection, distance_km: f64, now_ms: i
     minutes.max(3.0)
 }
 
-/// 伪随机数（0.0~1.0）：种子取当前时刻。
+/// 伪随机数（0.0~1.0）。
 ///
-/// 控制台用 `Math.random()`，插件这边不引随机数依赖，用同样的 xorshift 近似。
+/// 控制台用 `Math.random()`，插件这边不引随机数依赖，用 splitmix64 的 finalizer
+/// 近似——**注意别用 xorshift**：它的低位变化传不到高位，取高 53 位当随机数会
+/// 几乎不变（踩过：配速恒定在 6'00"）。
+///
+/// 种子 = 当前时刻 + 进程内自增计数：同一秒内连着调用也要给出不同的值
+/// （`ru41::util::now()` 只到秒，光靠它同一秒内是同一个数）。
 fn pseudo_random_unit(seed_source: i64) -> f64 {
-    let mut seed = seed_source as u64 ^ 0x9e37_79b9_7f4a_7c15;
-    seed ^= seed << 13;
-    seed ^= seed >> 7;
-    seed ^= seed << 17;
-    (seed >> 11) as f64 / (1u64 << 53) as f64
+    use std::sync::atomic::{AtomicU64, Ordering};
+    static COUNTER: AtomicU64 = AtomicU64::new(0);
+    let counter = COUNTER.fetch_add(1, Ordering::Relaxed);
+    let mut z = (seed_source as u64)
+        .wrapping_mul(0x9e37_79b9_7f4a_7c15)
+        .wrapping_add(counter.wrapping_mul(0xbf58_476d_1ce4_e5b9));
+    // splitmix64 finalizer
+    z = (z ^ (z >> 30)).wrapping_mul(0xbf58_476d_1ce4_e5b9);
+    z = (z ^ (z >> 27)).wrapping_mul(0x94d0_49bb_1331_11eb);
+    z ^= z >> 31;
+    (z >> 11) as f64 / (1u64 << 53) as f64
 }
 
 /// 起跑方式 → 服务端 `/api/starttimes` 的查询串。
@@ -338,6 +349,26 @@ mod tests {
         }
         // 下限 3 分钟：0.4 km × 5.5 = 2.2 分钟 → 抬到 3 分钟（控制台的 max(3, …)）。
         assert_eq!(auto_duration_min(&section, 0.4, 1_794_890_000_000), 3.0);
+    }
+
+    /// 随机数要**真的散开**：同一秒内连着调用也得给出不同的配速。
+    ///
+    /// （踩过的坑：xorshift 的低位变化传不到高位，取高 53 位当随机数 →
+    /// 配速恒定在 6'00"，同一个区间里只有「区间中值」一种结果。）
+    #[test]
+    fn random_pace_actually_varies() {
+        let section = section();
+        let now = 1_794_890_000_000;
+        let mut seen = std::collections::HashSet::new();
+        for _ in 0..30 {
+            let duration = auto_duration_min(&section, 1.2, now);
+            seen.insert((duration * 100.0) as i64);
+        }
+        assert!(
+            seen.len() >= 5,
+            "同一时刻连调 30 次只出了 {} 种时长：{seen:?}",
+            seen.len()
+        );
     }
 
     /// **用户给的配速原样用**：插件不夹范围、不回落默认。
