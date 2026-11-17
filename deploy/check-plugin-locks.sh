@@ -1,37 +1,42 @@
 #!/usr/bin/env bash
-# 插件锁文件守卫：各插件的 Cargo.lock 必须与 crates/ru41-plugin-api 的版本一致。
+# 插件边界守卫：根 Cargo.lock 里的 ru41-plugin-api 版本必须与 crate 版本一致。
 #
-# 为什么必须有：插件是 cdylib，按 api crate 的公开类型布局编译。api 升版后
-# 插件若还锁着旧版本，.so 就按旧布局编出来——宿主握手会拒绝加载（指纹硬门），
-# 表现为「24 个插件全部被跳过」，而不是编译期报错（2026-11-16 生产事故）。
+# 为什么守这条：插件是 cdylib，按 api crate 的公开类型布局编译。镜像构建
+# （Dockerfile 的 plugins 阶段）会把**根 Cargo.lock** 复制进每个插件目录再编译，
+# 所以「根 lock 与 crate 版本一致」才是真正决定 .so 边界布局的东西。
+# 根 lock 落后于 crate → 插件按旧布局编出来 → 宿主握手指纹不匹配 →
+# 整批插件被跳过（2026-11-16 生产事故：24 个插件全部「magic 不匹配」）。
 #
-# 用法：bash deploy/check-plugin-locks.sh
+# 各插件自己的 Cargo.lock 只是构建产物（每次构建都会被根 lock 覆盖），
+# 版本天然会漂移，这里只提示、不拦截。
 set -euo pipefail
 cd "$(dirname "$0")/.."
 
-api_version="$(grep -m1 '^version' crates/ru41-plugin-api/Cargo.toml | cut -d'"' -f2)"
-if [[ -z "$api_version" ]]; then
+crate_version="$(grep -m1 '^version' crates/ru41-plugin-api/Cargo.toml | cut -d'"' -f2)"
+if [[ -z "$crate_version" ]]; then
   echo "读不到 crates/ru41-plugin-api 的版本"
   exit 1
 fi
 
-failed=0
-checked=0
+lock_version="$(grep -A2 'name = "ru41-plugin-api"' Cargo.lock | grep -m1 '^version' | cut -d'"' -f2)"
+if [[ "$lock_version" != "$crate_version" ]]; then
+  echo "根 Cargo.lock 的 ru41-plugin-api 版本落后于 crate："
+  echo "  Cargo.lock = $lock_version，crates/ru41-plugin-api = $crate_version"
+  echo "  镜像构建会把根 lock 复制进各插件目录 → 插件会按旧边界布局编译。"
+  echo "  修复：cargo update -p ru41-plugin-api --offline"
+  exit 1
+fi
+
+drifted=0
 for manifest in plugins/*/Cargo.toml; do
   dir="$(dirname "$manifest")"
   lock="$dir/Cargo.lock"
-  [[ -f "$lock" ]] || { echo "缺锁文件: $dir"; failed=1; continue; }
+  [[ -f "$lock" ]] || continue
   locked="$(grep -A2 'name = "ru41-plugin-api"' "$lock" | grep -m1 '^version' | cut -d'"' -f2)"
-  checked=$((checked + 1))
-  if [[ "$locked" != "$api_version" ]]; then
-    echo "锁文件版本不符: $dir -> $locked（应为 $api_version）"
-    failed=1
+  if [[ "$locked" != "$crate_version" ]]; then
+    echo "提示：$dir 的锁文件是 $locked（构建时会被根 lock 覆盖，不影响镜像）"
+    drifted=$((drifted + 1))
   fi
 done
 
-if [[ "$failed" != 0 ]]; then
-  echo
-  echo "修复：在各插件目录执行 cargo update -p ru41-plugin-api --offline 后提交锁文件。"
-  exit 1
-fi
-echo "插件锁文件版本一致: ru41-plugin-api $api_version（$checked 个插件）"
+echo "根锁文件与 plugin-api 版本一致: $crate_version（$drifted 个插件锁文件待构建时刷新）"

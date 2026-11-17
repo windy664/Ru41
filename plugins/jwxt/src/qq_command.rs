@@ -19,6 +19,20 @@ impl JwxtQqCommand {
             clock,
         }
     }
+
+    /// 学期起始日：配置优先，缺失时回落到同步写进缓存的元数据
+    /// （裁剪配置的环境没有 sources 段，见 config::resolve_semester_start）。
+    fn resolved_semester_start(&self, ctx: &CommandContext<'_>) -> Option<NaiveDate> {
+        self.semester_start
+            .or_else(|| crate::config::meta_semester_start(ctx.store.as_ref()))
+    }
+
+    /// 作息表：同上，配置优先、缓存兜底。
+    fn resolved_clock(&self, ctx: &CommandContext<'_>) -> Option<SectionClock> {
+        self.clock
+            .clone()
+            .or_else(|| crate::config::meta_section_clock(ctx.store.as_ref()))
+    }
 }
 
 impl SimpleCommand for JwxtQqCommand {
@@ -63,8 +77,8 @@ impl SimpleCommand for JwxtQqCommand {
         Ok(Some(
             ru41::domain::timetable::describe_day_from_store(
                 ctx.store,
-                self.semester_start,
-                self.clock.as_ref(),
+                self.resolved_semester_start(ctx),
+                self.resolved_clock(ctx).as_ref(),
                 date,
             )?
             .into(),
@@ -102,8 +116,8 @@ impl JwxtQqCommand {
                 let day = today + Duration::days(offset);
                 let text = ru41::domain::timetable::describe_day_from_store(
                     ctx.store,
-                    self.semester_start,
-                    self.clock.as_ref(),
+                    self.resolved_semester_start(ctx),
+                    self.resolved_clock(ctx).as_ref(),
                     day,
                 )?;
                 lines.push(format!(
@@ -121,8 +135,8 @@ impl JwxtQqCommand {
         Ok(Some(
             ru41::domain::timetable::describe_day_from_store(
                 ctx.store,
-                self.semester_start,
-                self.clock.as_ref(),
+                self.resolved_semester_start(ctx),
+                self.resolved_clock(ctx).as_ref(),
                 date,
             )?
             .into(),

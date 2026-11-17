@@ -4,6 +4,71 @@ use serde::Deserialize;
 
 use crate::service::JwxtConfig;
 use ru41::domain::timetable::SectionClock;
+use ru41::ports::storage::TaskStore;
+
+/// 缓存里的课表读者元数据（同步侧写、读侧用）。
+pub const META_KIND: &str = "jwxt_meta";
+pub const META_ID: &str = "reader";
+
+/// 读路径的学期起始日：优先用配置；配置缺失时回落到同步侧写进缓存的元数据。
+///
+/// worker 的配置是裁剪过的（`config redact` 会删掉整个 `sources` 段），
+/// agent 在 worker 里按 skill 跑 `ru41 jwxt classes` 时读不到 semester_start，
+/// 只能报「缺少学期配置」（2026-11-17 实测）。同步侧有完整配置，把这份
+/// 元数据随快照一起存下来，读路径就自足了。
+pub fn resolve_semester_start(store: &dyn TaskStore, section: &JwxtSection) -> Option<NaiveDate> {
+    if let Some(raw) = section.semester_start.as_deref()
+        && let Some(date) = chrono::NaiveDate::parse_from_str(raw.trim(), "%Y-%m-%d").ok()
+    {
+        return Some(date);
+    }
+    meta_semester_start(store)
+}
+
+/// 读路径的作息表：优先用配置，缺失时回落到缓存里的元数据。
+pub fn resolve_section_clock(store: &dyn TaskStore, section: &JwxtSection) -> Option<SectionClock> {
+    if let Ok(Some(clock)) = section.section_clock() {
+        return Some(clock);
+    }
+    meta_section_clock(store)
+}
+
+/// 缓存里的学期起始日。
+pub fn meta_semester_start(store: &dyn TaskStore) -> Option<NaiveDate> {
+    let value = meta_document(store)?;
+    chrono::NaiveDate::parse_from_str(value.get("semester_start")?.as_str()?.trim(), "%Y-%m-%d")
+        .ok()
+}
+
+/// 缓存里的作息表（节次时刻 + 单节时长）。
+pub fn meta_section_clock(store: &dyn TaskStore) -> Option<SectionClock> {
+    let value = meta_document(store)?;
+    let times: Vec<chrono::NaiveTime> = value
+        .get("section_times")?
+        .as_array()?
+        .iter()
+        .filter_map(|item| item.as_str())
+        .filter_map(|raw| chrono::NaiveTime::parse_from_str(raw.trim(), "%H:%M").ok())
+        .collect();
+    if times.is_empty() {
+        return None;
+    }
+    Some(SectionClock {
+        times,
+        duration_mins: value
+            .get("class_duration_mins")
+            .and_then(|item| item.as_u64())
+            .unwrap_or(JwxtSection::DEFAULT_CLASS_DURATION_MINS),
+    })
+}
+
+fn meta_document(store: &dyn TaskStore) -> Option<serde_json::Value> {
+    store
+        .document(META_KIND, META_ID)
+        .ok()
+        .flatten()
+        .map(|doc| doc.value)
+}
 
 /// 教务课表监控配置；jwxt poll/run/login 使用。协议见 docs/jwxt-recon.md。
 #[derive(Debug, Default, Deserialize)]
