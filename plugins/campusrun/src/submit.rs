@@ -94,12 +94,11 @@ pub struct StartAt {
 
 /// 把意图换算成距离/时长（**不含**起跑时刻）。
 ///
-/// 只做换算，不判门槛：距离门槛由服务端 `policy.minDistance` 给，
-/// 时长/配速/点位全由 pace-forge 的 plan + preflight 判。
+/// 只做换算，不判门槛：时长/配速/点位全由 pace-forge 的 plan + preflight 判，
+/// 插件**不加任何自己的规则**——和 Web 端完全等价。
 pub fn base_params(
     section: &CampusrunSection,
     intent: &RunIntent,
-    rule_min_minutes: Option<f64>,
     now_ms: i64,
 ) -> Result<BaseParams> {
     let (distance_km, laps, lane) = match *intent {
@@ -113,16 +112,7 @@ pub fn base_params(
         bail!("距离不对：{distance_km} km");
     }
     // 时长自动：**照抄控制台的 autoDur(dist)**（见 auto_duration_min）。
-    let mut duration_min = auto_duration_min(section, distance_km, now_ms);
-    // 「抬到服务端要求的分钟数」是插件自己加的一层（控制台没有）：
-    // 服务端各门课要求不同（「跑N分钟以上」），抬上去才计学期成绩。
-    // 开关在配置里（lift_to_rule_min），关掉就纯照抄控制台。
-    if section.lift_to_rule_min()
-        && let Some(min_minutes) = rule_min_minutes
-        && duration_min < min_minutes
-    {
-        duration_min = min_minutes;
-    }
+    let duration_min = auto_duration_min(section, distance_km, now_ms);
     Ok(BaseParams {
         distance_km,
         duration_min,
@@ -319,7 +309,6 @@ mod tests {
             base_params(
                 &section(),
                 &RunIntent::Laps { laps: 3.0, lane: 1 },
-                None,
                 1_794_890_000_000,
             )
             .unwrap(),
@@ -385,41 +374,14 @@ mod tests {
         }
     }
 
-    /// 「抬到服务端要求的分钟数」是插件加的一层，可以关掉（关掉 = 纯照抄控制台）。
-    #[test]
-    fn lifting_to_the_rule_minimum_is_optional() {
-        let mut section = section();
-        let distance = 0.4;
-        // 开：抬到服务端要求的 7 分钟。
-        let lifted = base_params(
-            &section,
-            &RunIntent::DistanceKm { km: distance },
-            Some(7.0),
-            1_794_890_000_000,
-        )
-        .unwrap();
-        assert_eq!(lifted.duration_min, 7.0, "{lifted:?}");
-        // 关：不管服务端要求，照 autoDur 算。
-        section.lift_to_rule_min = Some(false);
-        let plain = base_params(
-            &section,
-            &RunIntent::DistanceKm { km: distance },
-            Some(7.0),
-            1_794_890_000_000,
-        )
-        .unwrap();
-        assert_eq!(plain.duration_min, 3.0, "{plain:?}");
-    }
-
-    /// 换算只管换算：**门槛不在这儿判**（服务端 policy + 工具 preflight 判）。
-    /// 1 圈 = 400 m；距离不够也不拦，由服务端门槛拦（见 service 层）。
+    /// 换算只管换算：**门槛不在这儿判**（工具的 preflight 判）。
+    /// 1 圈 = 400 m；距离不够插件也不拦（Web 端同样不拦）。
     #[test]
     fn conversion_only_never_invents_gates() {
         let one = plan_params(
             base_params(
                 &section(),
                 &RunIntent::Laps { laps: 1.0, lane: 1 },
-                None,
                 1_794_890_000_000,
             )
             .unwrap(),
@@ -431,26 +393,12 @@ mod tests {
             base_params(
                 &section(),
                 &RunIntent::DistanceKm { km: 0.8 },
-                None,
                 1_794_890_000_000,
             )
             .unwrap(),
             StartAt::default(),
         );
         assert!((short.distance_km - 0.8).abs() < 0.001);
-    }
-
-    /// 服务端规则的时长下限是**分钟**（「跑7分钟以上」= 7 分钟，不是 420 秒）。
-    #[test]
-    fn rule_min_lifts_duration_in_minutes() {
-        let base = base_params(
-            &section(),
-            &RunIntent::DistanceKm { km: 0.4 },
-            Some(7.0),
-            1_794_890_000_000,
-        )
-        .unwrap();
-        assert!((base.duration_min - 7.0).abs() < 0.001, "{base:?}");
     }
 
     /// 起跑时刻**交给服务端**：插件只把参数拼成查询串，不自己算随机点。
