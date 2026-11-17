@@ -16,11 +16,10 @@ pub fn classes_json(
     when: &str,
 ) -> Result<serde_json::Value> {
     use chrono::Datelike;
-    let semester_start = section
-        .semester_start
-        .as_deref()
-        .and_then(|raw| chrono::NaiveDate::parse_from_str(raw.trim(), "%Y-%m-%d").ok());
-    let clock = section.section_clock()?;
+    // 学期起始日与作息表：配置优先，缺失时回落到同步写进缓存的元数据
+    //（worker 用的是裁剪配置，没有 sources 段，见 config::resolve_semester_start）。
+    let semester_start = crate::config::resolve_semester_start(store.as_ref(), section);
+    let clock = crate::config::resolve_section_clock(store.as_ref(), section);
     let today = chrono::Local::now().date_naive();
     let when = when.trim();
     if when == "week" || when.contains('周') {

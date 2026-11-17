@@ -151,6 +151,36 @@ impl JwxtTracker {
         &self.client
     }
 
+    /// 把「读者需要的课表元数据」写进缓存：学期第一周周一 + 作息表。
+    ///
+    /// worker 的配置是裁剪过的（`config redact` 删掉整个 `sources` 段），
+    /// agent 在 worker 里跑 `ru41 jwxt classes` 读不到这些字段 → 只能报
+    /// 「缺少学期配置」。同步侧有完整配置，把它们随快照存下来，读路径即可自足。
+    fn write_reader_meta(&self, term_key: &str) -> Result<()> {
+        let revision = self
+            .store
+            .document(crate::config::META_KIND, crate::config::META_ID)?
+            .map(|doc| doc.revision);
+        let clock = self.config.clock.as_ref();
+        self.store.put_document(
+            crate::config::META_KIND,
+            crate::config::META_ID,
+            revision,
+            &serde_json::json!({
+                "semester_start": self.config.semester_start.map(|date| date.to_string()),
+                "section_times": clock.map(|clock| clock
+                    .times
+                    .iter()
+                    .map(|time| time.format("%H:%M").to_string())
+                    .collect::<Vec<_>>()),
+                "class_duration_mins": clock.map(|clock| clock.duration_mins),
+                "term": term_key,
+                "updated_at": ru41::util::now(),
+            }),
+        )?;
+        Ok(())
+    }
+
     /// 登录失效提醒：课表是学期级快照、每日刷新即可，单日故障不值得打扰——
     /// 只有「当前学期完全没有课表缓存」（从未成功过）或「连续失败 ≥3 天」
     /// （数据开始变陈）才提醒，且同日去重（jwxt_alert key = login:{date}）。
@@ -638,6 +668,7 @@ impl JwxtTracker {
         };
 
         let changes = self.diff_and_store(&xnm, &xqm, &meetings).await?;
+        self.write_reader_meta(&term_key)?;
         self.mark_login_state(false).await?;
         if !changes.is_empty()
             && let Some(notifier) = &self.notifier

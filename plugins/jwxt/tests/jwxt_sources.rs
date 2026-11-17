@@ -526,6 +526,51 @@ async fn remind_and_describe_use_clock_times_and_markdown() {
     assert!(fallback.contains("- **3-4节** 大学英语"), "{fallback}");
 }
 
+/// worker 用的是裁剪配置（`config redact` 删掉整个 sources 段），agent 在
+/// worker 里查课表读不到 semester_start → 只能报「缺少学期配置」。
+/// 同步侧把读者元数据写进缓存后，读路径必须能自己把课查出来
+/// （2026-11-17 生产事故：用户在 QQ 问课表，agent 只会读到报错）。
+#[tokio::test]
+async fn timetable_query_falls_back_to_cached_reader_meta() {
+    let state = Arc::new(FixtureState::new(timetable_json("A101")));
+    let addr = spawn_fixture(state).await;
+    let dir = tempfile::tempdir().unwrap();
+    let store = Arc::new(SqliteTaskStore::open(&dir.path().join("state.db")).unwrap());
+    let today = chrono::Local::now().date_naive();
+    let monday = today - chrono::Duration::days(today.weekday().num_days_from_monday() as i64);
+    let base = format!("http://{addr}");
+    let session_path = dir.path().join("session.json");
+    pre_login(&base, &session_path).await;
+    let tracker = make_tracker_full(
+        store.clone(),
+        &base,
+        session_path,
+        None,
+        monday,
+        false,
+        false,
+        Some(section_times_16()),
+    );
+    tracker.poll_once().await.unwrap();
+
+    // 同步侧把读者元数据写进了缓存。
+    let meta = store.document("jwxt_meta", "reader").unwrap().unwrap();
+    assert_eq!(
+        meta.value["semester_start"],
+        serde_json::Value::String(monday.to_string())
+    );
+
+    // 裁剪配置：没有 semester_start、没有 section_times。
+    let section = ru41_plugin_jwxt::JwxtSection::default();
+    let target = (monday + chrono::Duration::days(9))
+        .format("%Y-%m-%d")
+        .to_string();
+    let out = ru41_plugin_jwxt::cli::classes_json(store.clone(), &section, &target).unwrap();
+    let text = out.as_str().unwrap_or_default();
+    assert!(!text.contains("缺少学期配置"), "{text}");
+    assert!(text.contains("大学英语"), "{text}");
+}
+
 /// 真实作息：8 大节 × 2 小节 × 40 分钟。
 fn section_times_16() -> Vec<chrono::NaiveTime> {
     [

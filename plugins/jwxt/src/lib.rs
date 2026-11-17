@@ -115,7 +115,8 @@ pub static DEF: ru41::modules::ModuleDef = ru41::modules::ModuleDef {
                     "class-remind requires a default notify route ([notify] or --target)",
                 )?;
                 // 主动推送投递器：主渠道 + fanout 渠道（课程提醒也要双投）。
-                let deliverer = ru41::bootstrap::assembly::proactive_dispatcher(config, store.clone())?;
+                let deliverer =
+                    ru41::bootstrap::assembly::proactive_dispatcher(config, store.clone())?;
                 Ok(Some(Box::new(
                     ru41::app::schedule::ClassRemindTracker::new(
                         store,
