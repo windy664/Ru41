@@ -320,7 +320,7 @@ pub fn render_plan(plan: &PlanData, distance_km: f64, duration_min: f64) -> Stri
     let pace =
         pace_per_km(distance_km * 1000.0, duration_min * 60.0).unwrap_or_else(|| "—".to_owned());
     lines.push(format!(
-        "- 参数：{distance_km:.2} km / {duration_min:.1} 分钟（配速 {pace}/km）"
+        "- 参数：{distance_km:.2} km / {duration_min:.1} 分钟（配速 {pace}）"
     ));
     let actual = plan.actual_length.unwrap_or_default();
     lines.push(format!(
@@ -339,9 +339,10 @@ pub fn render_plan(plan: &PlanData, distance_km: f64, duration_min: f64) -> Stri
     lines.push(format!(
         "- 打卡点：{}/{} 全过",
         plan.checkpoint_passed.unwrap_or(0),
-        plan.checkpoint_total.or(plan.checkpoint_total).unwrap_or(0)
+        plan.checkpoint_total.unwrap_or(0)
     ));
-    let blocked = plan.blocked.unwrap_or(false);
+    // 被拦下的三种口径：data.ok=false、blocked=true、或者带 error。
+    let blocked = plan.blocked.unwrap_or(false) || plan.ok == Some(false);
     lines.push(format!(
         "- 自检：{}{}",
         plan.issue_summary.clone().unwrap_or_else(|| "未知".into()),
@@ -351,6 +352,24 @@ pub fn render_plan(plan: &PlanData, distance_km: f64, duration_min: f64) -> Stri
             "（未拦截）"
         }
     ));
+    if let Some(error) = plan.error.as_deref().filter(|text| !text.trim().is_empty()) {
+        lines.push(format!("- 原因：{error}"));
+    }
+    // 穿点顺序不符 → 服务端会判「按顺序通过所有点位」失败：单独拎出来说。
+    let order_warning: Vec<&String> = plan
+        .logs
+        .iter()
+        .filter(|line| line.contains("point-order"))
+        .collect();
+    if !order_warning.is_empty() {
+        lines.push(
+            "- ⚠️ 穿点顺序与服务端要求不一致，提交后可能被判「按顺序通过所有点位」失败："
+                .to_owned(),
+        );
+        for line in order_warning {
+            lines.push(format!("  {line}"));
+        }
+    }
     if let Some(mode) = &plan.track_mode {
         lines.push(format!("- 轨迹模式：{mode}"));
     }
