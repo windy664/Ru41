@@ -17,6 +17,8 @@ plugins/*/config.local.toml
 templates/*/target*/
 plugins/*/target*/
 plugins/target-plugins/
+# docker 插件构建的共享 target 目录（plugins/ 的直接子目录，不匹配上面的 plugins/*/target*/）
+plugins/.target-docker-shared/
 /.plugins-dist/
 
 # 本地协作契约：只在工作区保留，不进公开仓库（内容已沉淀到 docs/conventions.md）
