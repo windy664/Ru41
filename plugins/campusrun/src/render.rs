@@ -289,9 +289,10 @@ pub fn rule_passed(verdict: &Verdict, keyword: &str) -> Option<bool> {
         .map(|item| item.passed())
 }
 
-/// 服务端规则里的时长下限：「跑7分钟以上」→ 7 分钟。
+/// 服务端规则里的时长下限：「跑7分钟以上」→ **7（分钟）**。
 ///
 /// 各门课要求不同（实测有 6 分钟也有 7 分钟），所以从 reasonList 里读，不写死。
+/// 单位是**分钟**（与 `RunParams::duration_min` 一致）。
 pub fn rule_min_minutes(verdict: &Verdict) -> Option<f64> {
     verdict.rules.iter().find_map(|item| {
         let text = item.reason.as_deref()?;
@@ -301,7 +302,7 @@ pub fn rule_min_minutes(verdict: &Verdict) -> Option<f64> {
             .chars()
             .take_while(char::is_ascii_digit)
             .collect();
-        digits.parse::<f64>().ok().map(|value| value * 60.0)
+        digits.parse::<f64>().ok()
     })
 }
 
@@ -619,5 +620,52 @@ mod tests {
         );
         // 有效 < 总：两个数都显示，别让人误以为整条都算。
         assert!(text.contains("1.00 km/1.21 km"), "{text}");
+    }
+}
+
+#[cfg(test)]
+mod rule_tests {
+    use super::*;
+    use crate::model::ReasonItem;
+
+    fn item(reason: &str, complete: bool) -> ReasonItem {
+        ReasonItem {
+            complete: Some(complete),
+            complete_status: Some(if complete { 1 } else { 0 }),
+            reason: Some(reason.to_owned()),
+            kind: None,
+        }
+    }
+
+    /// 「跑7分钟以上」→ 7 分钟（**单位是分钟**，别跟秒混）。
+    #[test]
+    fn rule_min_minutes_is_in_minutes() {
+        let verdict = Verdict {
+            rrid: 1,
+            filename: None,
+            rules: vec![
+                item("按顺序通过所有点位", true),
+                item("最少要跑1.00公里", true),
+                item("跑7分钟以上", true),
+            ],
+            status_info: None,
+            min_distance_km: Some(1.0),
+            pace_range: Some((2.17, 10.0)),
+        };
+        assert_eq!(rule_min_minutes(&verdict), Some(7.0));
+    }
+
+    /// 「跑6分钟以上」是另一门课的要求——各门课不同，不能写死。
+    #[test]
+    fn rule_min_minutes_reads_whatever_the_server_said() {
+        let verdict = Verdict {
+            rrid: 2,
+            filename: None,
+            rules: vec![item("跑6分钟以上", true)],
+            status_info: None,
+            min_distance_km: Some(1.5),
+            pace_range: Some((2.17, 10.0)),
+        };
+        assert_eq!(rule_min_minutes(&verdict), Some(6.0));
     }
 }
