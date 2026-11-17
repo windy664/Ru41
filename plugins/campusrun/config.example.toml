@@ -1,13 +1,44 @@
 # 校园跑插件配置模板；复制到 plugins.d/campusrun/config.toml 后修改。
-# 令牌属密钥：用环境变量注入（容器 compose 里配 PACE_FORGE_TOKEN），别写进仓库。
+#
+# 这个文件在**主配置旁边**的 plugins.d/<插件名>/ 里（段名 = 插件配置键 = campusrun）。
+# 别塞进主 toml：worker 用的 ru41-worker.toml 和其他容器的 ru41.toml 不是同一份，
+# 塞主 toml 两边会对不上（2026-11-17 踩过）。
+#
+# 令牌属密钥：优先用环境变量注入（容器 compose 里配 PACE_FORGE_TOKEN）；
+# 实在要写在文件里就写 token = "..."（这个文件不进 git，权限给 600）。
 
 [campusrun]
 # pace-forge 控制台基址。两个容器不在同一个 compose 网络，
 # **容器名 pace-forge 解析不了**，用宿主地址：
-#   http://172.22.0.1:9999    宿主在 pace-forge 网络上的网关
+#   http://172.20.0.1:9999    宿主在 ru41-net 上的网关
 #   http://192.168.1.223:9999 宿主 LAN IP
-base_url = "http://172.22.0.1:9999"
-# 控制台令牌的环境变量名（默认 PACE_FORGE_TOKEN）。
+base_url = "http://172.20.0.1:9999"
+
+# 控制台令牌：环境变量名（默认 PACE_FORGE_TOKEN）；或直接写 token = "..."。
 token_env = "PACE_FORGE_TOKEN"
+# token = "2e1be851ea9d71e32a3b861b120e0d41"
+
 # 单次请求超时（秒），默认 15。
 timeout_secs = 15
+
+# 是否允许**真的提交**跑步记录（写操作）。默认 false。
+# 关着时 `campusrun submit` 只做预演、不会提交。
+# 打开后仍要两步：`submit` 登记待确认 → 用户明确同意 → `confirm <口令>` 才提交。
+allow_submit = false
+
+# 配速区间（分/km），默认 5.5~6.6（与 pace-forge Web 控制台的默认值一致）。
+# 时长 = 距离 × 配速区间中值（工具 autoDur 的同口径，取中值可复现）。
+# pace_min = 5.5
+# pace_max = 6.6
+
+# 提交后的静默窗口（秒），默认 600（工具 flow::SILENCE_SEC）。
+# silence_secs = 600
+
+# 待确认提交的有效期（秒），默认 900。
+# confirm_ttl_secs = 900
+
+# 注意：**门槛不在这儿配**。距离/时长/配速/点位的判定都在服务端：
+# - 距离门槛 ← plan 返回的 policy.minDistance
+# - 其余 ← pace-forge 的 preflight
+# - 上次过没过 ← 记录详情的 reasonList
+# 各门课要求不同（实测有 1.00km/7分钟，也有 1.50km/6分钟），写死会误判。
