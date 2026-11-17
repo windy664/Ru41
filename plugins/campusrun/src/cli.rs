@@ -420,20 +420,25 @@ mod tests {
         assert_eq!(body["startAtMs"], 1_794_890_000_000i64);
     }
 
-    /// 距离门槛用**服务端 policy.minDistance**（mock 返回 1000 m）：
-    /// 1 圈 = 0.4 km → 拒，并说清最少 3 圈。
+    /// 插件**不自己判**距离够不够：Web 端也没有这道闸（实测 0.9 km 工具照样放行）。
+    ///
+    /// 服务端的最小里程只在输出里**转述**（`服务端最小里程：1.00 km`），
+    /// 能不能跑由工具自己的 preflight 说了算。
     #[tokio::test]
-    async fn plan_below_server_min_distance_is_refused() {
+    async fn plan_relays_the_server_min_distance_instead_of_judging_it() {
         let (base_url, seen) = mock_console().await;
         let section = section_with(&base_url, true);
         let store = store().await;
         let args = vec!["plan".to_owned(), "--laps".to_owned(), "1".to_owned()];
-        let error = dispatch(&section, &store, &args)
+        let text = dispatch(&section, &store, &args)
             .await
-            .unwrap_err()
-            .to_string();
-        assert!(error.contains("1.00 km"), "{error}");
-        assert!(error.contains("3 圈"), "要说清最少几圈：{error}");
+            .unwrap()
+            .as_str()
+            .unwrap()
+            .to_owned();
+        // 服务端的数转述出来了，但插件没有替它拒绝。
+        assert!(text.contains("服务端最小里程：1.00 km"), "{text}");
+        assert!(text.contains("预演通过"), "{text}");
         let calls = seen.lock().await;
         assert!(
             calls.iter().all(|(path, _)| path == "/api/plan"),
