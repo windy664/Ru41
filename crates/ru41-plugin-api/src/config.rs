@@ -666,4 +666,34 @@ pub struct PiSection {
     /// 扩展要自己读环境变量时用这个：例如浏览器扩展读 `BU_CDP_WS`
     /// 找 CDP 端点。值只进子进程环境，不写进日志。
     pub extra_env: std::collections::BTreeMap<String, String>,
+    /// 额外供应方：fallback 链里写成 `供应方/模型` 的项从这里取端点与密钥。
+    ///
+    /// 每个供应方在 models.json 里是独立条目（各自的 baseUrl / api / apiKey），
+    /// 这样 fallback 才能跨供应方——主供应方限流时切到另一家的模型。
+    ///
+    /// ```toml
+    /// [agent.pi.providers.intern]
+    /// base_url = "https://discovery-api.intern-ai.org.cn"
+    /// api = "anthropic-messages"
+    /// api_key_env = "INTERN_API_KEY"
+    /// ```
+    ///
+    /// 密钥只写环境变量名，真值留在进程环境里。
+    #[serde(default)]
+    pub providers: std::collections::BTreeMap<String, PiProviderSection>,
+}
+
+/// Pi 的额外供应方：端点 + 密钥来源 + 输入模态。
+#[derive(Debug, Default, Deserialize)]
+#[serde(default, deny_unknown_fields)]
+pub struct PiProviderSection {
+    /// 兼容端点地址（Anthropic Messages / OpenAI 兼容端点）。
+    pub base_url: Option<String>,
+    /// 端点协议：anthropic-messages（默认）/ openai-completions / openai-responses。
+    pub api: Option<String>,
+    /// 密钥来源的环境变量名；值只注入 Pi 子进程环境。
+    pub api_key_env: Option<String>,
+    /// 模型输入模态（text/image）；缺省同主供应方。
+    #[serde(default = "default_input_modalities")]
+    pub input: Vec<String>,
 }

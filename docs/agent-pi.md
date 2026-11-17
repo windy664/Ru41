@@ -61,6 +61,24 @@ ru41 --config ru41.toml worker --once
   翻译成 Pi 原生 virtual model（`ru41/auto`）与 `models.json`，由同一个 Pi 进程在
   retry 时切换模型，不再由 Ru41 外层重启候选链。实际回答的物理模型从 assistant
   消息回写 attempts.model，用量据此分摊。
+- **跨供应方 fallback**：备用模型可以属于另一家供应方——在 `models.json` 里每个供应方
+  是独立条目（各自的 baseUrl / api / apiKey）。额外供应方这样配：
+
+  ```toml
+  [agent.pi]
+  fallback_models = ["intern/Sage-S2.1-Flash"]
+
+  [agent.pi.providers.intern]
+  base_url = "https://discovery-api.intern-ai.org.cn"
+  api = "anthropic-messages"
+  api_key_env = "INTERN_API_KEY"
+  ```
+
+  密钥只写环境变量名，真值留在进程环境里（和主供应方一个规矩）。fallback 引用了
+  没配的供应方会在配置阶段直接报错——不静默忽略，否则 Pi 那边只会报一句
+  "not in the catalog"，根本看不出是配置漏了。
+- **失败原因透传**：`stopReason` 不是 `stop` 时，错误信息带上 Pi 给的 `errorMessage`
+  （429 配额用尽、401 key 失效、协议中断……），不再一律显示「did not finish normally」。
 
 ## 测试覆盖
 

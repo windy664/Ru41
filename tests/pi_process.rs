@@ -1,10 +1,10 @@
 #![cfg(unix)]
 use ru41::{
-    adapters::agent::pi::PiAgent,
+    adapters::agent::pi::{PiAgent, PiProvider},
     domain::RunContract,
     ports::agent::{AgentBackend, AgentRequest},
 };
-use std::{os::unix::fs::PermissionsExt, path::Path, time::Duration};
+use std::{collections::BTreeMap, os::unix::fs::PermissionsExt, path::Path, time::Duration};
 use tokio::sync::Mutex;
 
 /// 该文件的用例都会拉起子进程并检查进程组回收；并行跑会互相干扰
@@ -440,10 +440,7 @@ printf '%s\n' '{"type":"agent_settled","aborted":false}'
         base_url: Some("https://api.minimaxi.chat/anthropic".into()),
         api: Some("anthropic-messages".into()),
         api_key_env: Some("RU41_TEST_PI_KEY".into()),
-        fallback_models: vec![
-            "minimax/MiniMax-M3.1-Flash".into(),
-            "deepseek/deepseek-chat".into(),
-        ],
+        fallback_models: vec!["minimax/MiniMax-M3.1-Flash".into()],
         ..Default::default()
     };
     // models.json 内容与写盘无关，直接断言结构：密钥只以环境变量引用出现。
@@ -457,7 +454,6 @@ printf '%s\n' '{"type":"agent_settled","aborted":false}'
     assert_eq!(provider["models"][0]["id"], "MiniMax-M3");
     assert_eq!(provider["models"][1]["id"], "MiniMax-M3.1-Flash");
     assert_eq!(provider["models"].as_array().unwrap().len(), 2);
-    assert!(models["providers"].get("deepseek").is_none());
     let raw = serde_json::to_string(&models).unwrap();
     assert!(!raw.contains("sk-"));
     // 端点协议不支持时直接报错。
@@ -469,6 +465,102 @@ printf '%s\n' '{"type":"agent_settled","aborted":false}'
         bad.models_json("minimax/MiniMax-M3", Some("minimax"))
             .is_err()
     );
+}
+
+#[test]
+fn cross_provider_fallback_gets_its_own_endpoint() {
+    // 跨供应方 fallback：InternAI 当 MiniMax 的备胎，两个供应方在 models.json 里
+    // 各是独立条目（各自的 baseUrl / api / apiKey）。
+    let agent = PiAgent {
+        model: Some("minimax/MiniMax-M3".into()),
+        provider: Some("minimax".into()),
+        base_url: Some("https://api.minimax.io/anthropic".into()),
+        api: Some("anthropic-messages".into()),
+        api_key_env: Some("MINIMAX_API_KEY".into()),
+        fallback_models: vec!["intern/Sage-S2.1-Flash".into()],
+        providers: BTreeMap::from([(
+            "intern".to_owned(),
+            PiProvider {
+                base_url: Some("https://discovery-api.intern-ai.org.cn".into()),
+                api: Some("anthropic-messages".into()),
+                api_key_env: Some("INTERN_API_KEY".into()),
+                input: vec!["text".to_owned(), "image".to_owned()],
+            },
+        )]),
+        ..Default::default()
+    };
+    let models = agent
+        .models_json("minimax/MiniMax-M3", Some("minimax"))
+        .unwrap();
+
+    let minimax = &models["providers"]["minimax"];
+    assert_eq!(minimax["baseUrl"], "https://api.minimax.io/anthropic");
+    assert_eq!(minimax["apiKey"], "$MINIMAX_API_KEY");
+    assert_eq!(minimax["models"][0]["id"], "MiniMax-M3");
+
+    let intern = &models["providers"]["intern"];
+    assert_eq!(intern["baseUrl"], "https://discovery-api.intern-ai.org.cn");
+    assert_eq!(intern["api"], "anthropic-messages");
+    assert_eq!(intern["apiKey"], "$INTERN_API_KEY");
+    assert_eq!(intern["models"][0]["id"], "Sage-S2.1-Flash");
+    assert_eq!(intern["models"][0]["input"][1], "image");
+
+    // 真值不进文件
+    let raw = serde_json::to_string(&models).unwrap();
+    assert!(!raw.contains("sk-"));
+    assert!(raw.contains("$INTERN_API_KEY"));
+}
+
+#[test]
+fn fallback_provider_without_config_is_a_clear_config_error() {
+    // 以前这种情况是「静默忽略」：fallback 写进去了，但 models.json 里没有那个
+    // 供应方 → pi 找不到模型 → 报一句看不懂的 "not in the catalog"。
+    // 现在配置阶段就报错，并说清去哪儿补。
+    let agent = PiAgent {
+        model: Some("minimax/MiniMax-M3".into()),
+        provider: Some("minimax".into()),
+        base_url: Some("https://api.minimax.io/anthropic".into()),
+        fallback_models: vec!["intern/Sage-S2.1-Flash".into()],
+        ..Default::default()
+    };
+    let error = agent
+        .models_json("minimax/MiniMax-M3", Some("minimax"))
+        .expect_err("未配置的供应方应该报错");
+    let text = format!("{error:#}");
+    assert!(text.contains("intern"), "{text}");
+    assert!(text.contains("agent.pi.providers.intern"), "{text}");
+}
+
+#[tokio::test]
+async fn stop_error_carries_the_real_reason() {
+    // 429 配额用尽这类错误以前被翻译成「did not finish normally」，
+    // 用户看不到原因；现在 Pi 给的 errorMessage 会原样带出来。
+    let _guard = SERIAL.lock().await;
+    let dir = tempfile::tempdir().unwrap();
+    let agent = PiAgent {
+        executable: executable(
+            dir.path(),
+            r#"
+printf '%s\n' '{"id":"ru41-prompt","type":"response","success":true,"data":{"disposition":"started"}}'
+printf '%s\n' '{"type":"message_end","message":{"role":"assistant","stopReason":"error","errorMessage":"429 rate_limit_error: Token Plan usage limit reached","content":[]}}'
+printf '%s\n' '{"type":"agent_settled","aborted":false}'
+"#,
+        ),
+        model: Some("test-model".into()),
+        provider: Some("test-provider".into()),
+        ..Default::default()
+    };
+    let error = match tokio::time::timeout(Duration::from_secs(10), agent.run(request(dir.path())))
+        .await
+        .unwrap()
+    {
+        Ok(_) => panic!("stopReason=error 应该失败"),
+        Err(error) => error,
+    };
+    let text = format!("{error:#}");
+    assert!(text.contains("429"), "{text}");
+    assert!(text.contains("Token Plan usage limit reached"), "{text}");
+    assert!(text.contains("did not finish normally"), "{text}");
 }
 
 #[tokio::test]
