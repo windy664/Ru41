@@ -22,11 +22,55 @@ fn extract_contract_json(text: &str) -> Option<(&str, String)> {
         if let Ok(value) = serde_json::from_str::<Value>(candidate)
             && let Some(summary) = value.get("summary").and_then(|v| v.as_str())
         {
-            return Some((candidate, summary.to_owned()));
+            return Some((candidate, unwrap_summary(summary)));
         }
         offset = end + 1;
     }
     None
+}
+
+/// 契约里的 summary 可能**又被包了一层** ```json 围栏
+/// （2026-11-18 课堂笔记实测：模型输出
+/// `{"summary": "```json\n{\"summary\": \"## 本次笔记要点…\"}\n```"}`）。
+/// 那时直接投递会把**原始 JSON** 发给用户（用户看到的是一坨带转义的 JSON）。
+/// 这里先剥围栏、再取内层的 summary。
+///
+/// 但要保守：围栏之外还有正经散文 → 那是报告里**引用**的代码片段，不能动。
+fn unwrap_summary(summary: &str) -> String {
+    let mut current = summary.trim().to_owned();
+    // 最多剥三层，防自我嵌套。
+    for _ in 0..3 {
+        let Some(json) = fenced_json(&current) else {
+            break;
+        };
+        // 围栏之外还剩下一堆正文 → 说明这是报告里引用的片段，别剥。
+        if current.replace(json, "").chars().count() > 20 {
+            break;
+        }
+        let Ok(value) = serde_json::from_str::<Value>(json) else {
+            break;
+        };
+        let Some(inner) = value.get("summary").and_then(|v| v.as_str()) else {
+            break;
+        };
+        let inner = inner.trim().to_owned();
+        if inner.is_empty() {
+            break;
+        }
+        current = inner;
+    }
+    current
+}
+
+/// 取 ```json … ``` 围栏里的 JSON 文本（语言标记 json/javascript 都认）。
+fn fenced_json(text: &str) -> Option<&str> {
+    let start = text.find("```")?;
+    let after = text[start + 3..].trim_start();
+    // 围栏的语言标记（json / javascript…）到第一个空白为止
+    let idx = after.find(char::is_whitespace)?;
+    let after = after[idx..].trim_start();
+    let end = after.find("```")?;
+    Some(after[..end].trim())
 }
 
 /// 从 `start`（一个 `{`）开始找配平的 `}`，返回它的位置。
@@ -332,6 +376,37 @@ fn guess_media_kind(source: &str) -> MediaKind {
 #[cfg(test)]
 mod tests {
     use super::{MediaKind, parse_agent_result, pick_full_report};
+
+    /// 契约里的 summary 又被包了一层 ```json 围栏时，要剥到内层，
+    /// 否则投递出去的是原始 JSON 而不是 Markdown（2026-11-18 课堂笔记实测）。
+    #[test]
+    fn unwraps_a_fenced_contract_inside_the_summary() {
+        let inner = "## 本次笔记要点\n\n- 费马引理\n- 罗尔定理";
+        // 模型的双层包裹：{"summary": "```json\n{\"summary\": \"## …\"}\n```"}
+        let fenced = format!(
+            "```json\n{}\n```",
+            serde_json::to_string(&serde_json::json!({ "summary": inner })).unwrap()
+        );
+        let text = serde_json::json!({ "summary": fenced }).to_string();
+        let result = parse_agent_result(&text).expect("应能解析出契约");
+        assert_eq!(result.summary, inner);
+        assert!(!result.summary.contains("```json"), "{}", result.summary);
+    }
+
+    /// 报告正文里**引用**的 JSON 代码片段不能被剥掉。
+    #[test]
+    fn keeps_a_json_snippet_that_is_part_of_a_report() {
+        let report =
+            "## 配置示例\n\n这段 JSON 要留着：\n\n```json\n{\"a\": 1}\n```\n\n后面还有说明。";
+        let text = serde_json::json!({ "summary": report }).to_string();
+        let result = parse_agent_result(&text).expect("应能解析出契约");
+        assert!(result.summary.contains("\"a\": 1"), "{}", result.summary);
+        assert!(
+            result.summary.contains("后面还有说明"),
+            "{}",
+            result.summary
+        );
+    }
 
     /// 模型先写完整报告、最后一条 JSON 只给压缩摘要时，交付完整报告。
     #[test]

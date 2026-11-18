@@ -77,6 +77,25 @@ ru41 --config ru41.toml worker --once
   密钥只写环境变量名，真值留在进程环境里（和主供应方一个规矩）。fallback 引用了
   没配的供应方会在配置阶段直接报错——不静默忽略，否则 Pi 那边只会报一句
   "not in the catalog"，根本看不出是配置漏了。
+
+## 契约解析：summary 里再套一层围栏（2026-11-18 课堂笔记踩到）
+
+模型有时把契约 JSON **又包一层** ` ```json ` 围栏塞进 summary：
+
+```json
+{"summary": "```json\n{\"summary\": \"## 本次笔记要点…\"}\n```"}
+```
+
+`extract_contract_json` 抓到的是**外层**那个对象 → 投递出去的是一坨带转义的
+原始 JSON，用户在 QQ 里看到的是 `{"summary": "```json…` 而不是 Markdown 笔记。
+
+修法：取到 summary 后再剥一层围栏（`unwrap_summary`），最多剥三层防自我嵌套。
+**但要保守**：围栏之外还剩下一堆正文 → 那是报告里**引用**的 JSON 代码片段，
+不能剥（否则报告里的代码示例会凭空消失）。
+
+另有一个坑：`extract_contract_json` 只认「能配平且能解析成 JSON」的对象，
+测试里手拼字符串很容易拼出**非法 JSON**（内层引号没转义）→ 契约直接认不出来，
+表现同样是「投递出去的是原文」。写这类用例一律用 `serde_json::json!` 构造。
 - **失败原因透传**：`stopReason` 不是 `stop` 时，错误信息带上 Pi 给的 `errorMessage`
   （429 配额用尽、401 key 失效、协议中断……），不再一律显示「did not finish normally」。
 
