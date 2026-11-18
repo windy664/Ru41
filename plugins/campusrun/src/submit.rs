@@ -168,21 +168,27 @@ fn pseudo_random_unit(seed_source: i64) -> f64 {
 /// 什么时候跑（**按次请求给**，不来自配置）。
 ///
 /// 谁定：由 **agent 从对话里读出来**再传进来——
-/// 「帮我跑」= 刚跑完；「补一下半小时前那次」= 半小时前；「今天早上九点那次」= 指定时刻。
+/// 「帮我跑」= 用默认；「补一下半小时前那次」= 半小时前；「今天早上九点那次」= 指定时刻。
 /// 插件自己不再猜、配置里也不再有「默认什么时候跑」。
-#[derive(Debug, Clone, Default, PartialEq)]
+#[derive(Debug, Clone, PartialEq)]
 pub enum StartIntent {
-    /// 刚跑完（默认）：不发 startAtMs，服务端按「刚跑完」记。
+    /// 刚跑完：不发 startAtMs，服务端按「刚跑完」记。
     ///
-    /// 也是 Web 端和工具 CLI（`pace-forge run 2`）的默认档。
-    #[default]
+    /// 也是 Web 端和工具 CLI（`pace-forge run 2`）的默认档，要它得显式 `--now`。
     Now,
+    /// 默认档：**用户给的推荐参数**——当天随机，几天前 0（2026-11-16 建议参数表）。
+    Rand { days: i64 },
     /// N 分钟前补跑。
     Ago { minutes: i64 },
     /// 指定时刻补跑（往前 `days` 天）。
     At { hhmm: String, days: i64 },
-    /// 当天（或往前 `days` 天）随机时刻补跑——**时刻由服务端算**。
-    Rand { days: i64 },
+}
+
+impl Default for StartIntent {
+    /// 默认 = 用户给的推荐参数：当天随机，几天前 0。
+    fn default() -> Self {
+        Self::Rand { days: 0 }
+    }
 }
 
 /// 起跑方式 → 服务端 `/api/starttimes` 的查询串。
@@ -437,11 +443,18 @@ mod tests {
         assert_eq!(query, "mode=ago&minutes=60&dur=438");
     }
 
-    /// 「刚跑完」不发 startAtMs（跟控制台 `mode === 'now'` 一致），也是默认档。
+    /// 「刚跑完」不发 startAtMs（跟控制台 `mode === 'now'` 一致），要它得显式 `--now`。
     #[test]
     fn start_intent_now_sends_no_start_at() {
         assert!(start_query(&StartIntent::Now, 438).unwrap().is_none());
-        assert_eq!(StartIntent::default(), StartIntent::Now);
+    }
+
+    /// 默认档 = 用户给的推荐参数：当天随机，几天前 0。
+    #[test]
+    fn default_start_intent_is_the_users_recommended_parameter() {
+        assert_eq!(StartIntent::default(), StartIntent::Rand { days: 0 });
+        let query = start_query(&StartIntent::default(), 438).unwrap().unwrap();
+        assert_eq!(query, "mode=rand&days=0&dur=438");
     }
 
     /// 时刻格式不对要报错，别默默用默认值。

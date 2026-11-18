@@ -145,6 +145,59 @@ error: cannot pull with rebase: You have unstaged changes.
 - 更深一层的根因找到了：**这台 i3-8130U（15W 规格）的 RAPL PL1 被设成了 25W**（`/sys/class/powercap/intel-rapl-mmio:0/constraint_0_power_limit_uw`）。散热按 15W 设计，功耗墙放到 25W，持续满载就是缓慢自杀——thermald 在跑也救不回来。修复脚本 `deploy/ru41-power-cap.sh`（钉回 15W + systemd 开机自恢复），在服务器上 `sudo bash ~/bin/ru41-power-cap.sh` 执行一次即可。
 - 采样器脚本本身已收进仓库 `deploy/ru41-power-watch.sh`，不再只活在服务器上。
 
+## 2026-11-18 追加：第五次断电，这次坏在**时钟**上
+
+断电后通电，机器「活着」但**时间是错的**：
+
+```
+真实启动时间   2026-11-18 10:35:23   （uptime -s，单调时钟说了算）
+系统时钟显示   2026-07-28 04:44       ← 早了 3 个月
+RTC            2019-04-17 00:06       ← CMOS 电池没了
+chrony         NTPSynchronized=no
+```
+
+**根因**：断电把 RTC 的时间弄丢了（电池失效），系统开机按 RTC 起算；chrony 本该把时间拉回来，
+但它连不上任何时间源——Ubuntu 默认的 NTS 池走**域名解析**，而这台机器的 DNS 被 mihomo 的
+fake-IP（`198.18.x.x`）劫持了，chrony 拿到假地址自然连不上 → 时钟永远错着。
+
+**症状全是时钟错的下游表现**，不是服务本身坏了：
+
+| 现象 | 真实原因 |
+| :--- | :--- |
+| QQ 网关 `certificate is not yet valid` | 系统时间早于证书生效时间，TLS 校验失败 |
+| Telegram `getUpdates` 反复 `unexpected EOF` | 同上（连的是 api.telegram.org） |
+| `docker ps` 显示容器「Up 3 months」 | 用错的时间减容器启动时间，算出来的假象（实际都是刚拉起来的） |
+| 一切写库的时间戳 | 早 3 个月（本次检查：错时钟那 9 分钟内**没有**写脏数据） |
+
+**修法**（宿主机没有免密 sudo，但账号在 `docker` 组里 → 特权容器 + `chroot` 进宿主 = root）：
+
+```bash
+# ① 按 IP 直连 NTP（域名被 fake-IP 劫持，UDP 123 按 IP 是通的：阿里云 45ms）
+python3 - <<'EOF'   # 取 NTP 时刻算 epoch
+...
+EOF
+docker run --rm --privileged --user 0:0 --entrypoint date ru41:local -s "@<epoch>"
+
+# ② 给 chrony 写按 IP 的源，绕开 DNS（长期有效）
+cat > /etc/chrony/sources.d/ntp-by-ip.sources <<'EOF'
+server 203.107.6.88 iburst   # ntp.aliyun.com
+server 162.159.200.1 iburst  # time.cloudflare.com
+EOF
+
+# ③ 重启 chronyd 并立刻 step
+docker run --rm --privileged --user 0:0 --pid=host -v /:/host --entrypoint chroot \
+  ru41:local /host /bin/sh -c "systemctl restart chronyd && chronyc makestep"
+```
+
+修完 `NTPSynchronized=yes` ✓，QQ/Telegram 的报错自动消失。
+
+**遗留**：CMOS 电池还是坏的（RTC 存不住时间）。现在有按 IP 的 NTP 源兜底，
+开机后一分钟内 chrony 会自己把时钟拉回来；但要根治还是得**换电池**，
+或者把 `rtc` 设成开机从 chrony 回写。
+
+**顺带修的**：`deploy/roll-set-env.sh` 在宿主上还是旧版，会把容器的环境变量全丢掉
+（见 `891d6a8`）——已用修好的版本替换；这次它也是我修 class-remind 的工具。
+
 ## 相关提交
 
 - `fc24788` fix(vault): 关掉 git 的后台自动维护，避免 merge 触发 repack 尖峰

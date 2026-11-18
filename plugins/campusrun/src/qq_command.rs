@@ -272,7 +272,8 @@ fn start_intent_from_text(text: &str) -> StartIntent {
             days: days_back(text),
         };
     }
-    StartIntent::Now
+    // 没说时间 → 用**用户给的推荐参数**：当天随机，几天前 0。
+    StartIntent::Rand { days: 0 }
 }
 
 /// 「N 分钟前 / N 小时前 / 半小时前」→ 多少分钟前。
@@ -449,7 +450,10 @@ mod tests {
     #[test]
     fn reads_when_to_run_from_the_text() {
         // 没提时间 → 刚跑完。
-        assert_eq!(start_intent_from_text("跑 3 圈"), StartIntent::Now);
+        assert_eq!(
+            start_intent_from_text("跑 3 圈"),
+            StartIntent::Rand { days: 0 }
+        );
         // 半小时前那次。
         assert_eq!(
             start_intent_from_text("补一下半小时前跑的那次 3 圈"),
