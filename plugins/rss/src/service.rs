@@ -428,6 +428,10 @@ fn digest_prompt(interests: &str, candidates: &[FeedItem]) -> String {
          数字纪律：金额、人数、日期、百分比等所有数字必须逐字取自材料；\n\
          材料写「未标注」就如实写「未标注」，材料没有的数字一律写「材料未给出」，\n\
          绝对禁止凭常识、经验或事件名称脑补任何数字（宁可不写，不可编造）。\n\
+         来源纪律：**同一事件有多个来源时，优先给原始出处**——研究机构/厂商/官方公告/\n\
+         CVE 官方条目的原文链接；中文转载、聚合站只作补充，不能只给转载链接。\n\
+         原始来源就在候选材料里时，链接必须用它（2026-11-18 实测踩坑：\n\
+         Java4Shell 的原始披露 calif.io 被预算截掉，日报只剩 IT之家转载的链接）。\n\
          舍弃纪律：不要逐条罗列舍弃理由或展开分析被舍弃的条目；\n\
          个别接近但不够格的条目至多一句话带过。\n\
          如果全部不值得关注，只回复一行：📭 今日无值得关注的机会。不要附加任何解释。\n\
@@ -436,7 +440,13 @@ fn digest_prompt(interests: &str, candidates: &[FeedItem]) -> String {
          == 候选条目（{} 条）==\n",
         candidates.len()
     );
-    for (i, item) in candidates.iter().enumerate() {
+    // 预算有限时**优先保最新的**：池子是插入顺序（老→新），按原顺序填、截尾丢的
+    // 恰好是最新采集的那批——2026-11-18 实测：Java4Shell（原始披露 calif.io）
+    // 在 11:05 那一轮采集到，却被「超出长度预算」截掉，日报里只剩 IT之家
+    // 的中文转载（链接也就只剩转载）。所以这里改成**新的在前**，
+    // 超预算时丢最旧的。
+    let ordered: Vec<&FeedItem> = candidates.iter().rev().collect();
+    for (i, item) in ordered.iter().enumerate() {
         let entry = format!(
             "\n---\n{}\n链接：{}\n发布：{}\n内容：{}\n",
             item.title,
@@ -446,7 +456,7 @@ fn digest_prompt(interests: &str, candidates: &[FeedItem]) -> String {
         );
         if prompt.len() + entry.len() > PROMPT_BUDGET {
             prompt.push_str(&format!(
-                "\n（其余 {} 条超出长度预算，本次略去）\n",
+                "\n（其余 {} 条较旧条目超出长度预算，本次略去）\n",
                 candidates.len() - i
             ));
             break;
@@ -575,6 +585,15 @@ mod tests {
         assert!(prompt.contains("不要逐条罗列舍弃理由"));
     }
 
+    /// 「优先原始出处」是**固定规则**（跟数字纪律同级），不靠 interests 里的自然语言提示。
+    #[test]
+    fn digest_prompt_requires_the_original_source_link() {
+        let prompt = super::digest_prompt("关注免费额度", &[item("a").1]);
+        assert!(prompt.contains("来源纪律"), "{prompt}");
+        assert!(prompt.contains("优先给原始出处"), "{prompt}");
+        assert!(prompt.contains("不能只给转载链接"), "{prompt}");
+    }
+
     #[test]
     fn digest_prompt_stays_within_enqueue_budget() {
         // 大量长摘要条目也不能顶破任务入队的 65536 字节上限
@@ -588,6 +607,30 @@ mod tests {
         let prompt = super::digest_prompt("i", &candidates);
         assert!(prompt.len() <= 65_536, "实际 {} 字节", prompt.len());
         assert!(prompt.contains("超出长度预算"));
+    }
+
+    /// 预算吃紧时**必须保住最新的条目**。
+    ///
+    /// 2026-11-18 实测踩坑：池子是插入顺序（老→新），按原顺序填 prompt、
+    /// 撞预算从尾部截断 → **被截掉的恰好是最新采集的那批**
+    /// （Java4Shell 的原始披露就在里面），日报里只剩二手转载。
+    #[test]
+    fn digest_prompt_keeps_the_newest_items_when_budget_is_tight() {
+        let mut big = Vec::new();
+        for i in 0..500 {
+            let (url, mut it) = item(&format!("n{i}"));
+            it.summary = "长".repeat(2000);
+            big.push((url, it));
+        }
+        let candidates: Vec<super::FeedItem> = big.into_iter().map(|(_, it)| it).collect();
+        let prompt = super::digest_prompt("i", &candidates);
+        // 池子最后一条 = 最新一条，必须在里面。
+        assert!(
+            prompt.contains("https://x/n499"),
+            "最新的条目被预算截掉了"
+        );
+        // 最老的那批才是被舍弃的。
+        assert!(!prompt.contains("https://x/n0"), "最旧的应被舍弃");
     }
 
     #[test]
