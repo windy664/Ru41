@@ -76,7 +76,42 @@ api_key = "占位值"          # 或 api_key_env = "MINIMAX_API_KEY"（默认）
 # fallback_course = "课堂录音"    # 课表匹配不到时归入的课程
 ```
 
-依赖：容器内有 `ffmpeg`；agent（codex 底座）在 mimo-worker 里可写 Vault（笔记由 agent 落盘，worker 本身不碰 Vault）。未配 ASR key 时模块静默缺席（handler 不拦截，schedule list 显示原因）。
+依赖：容器内有 `ffmpeg`；agent（codex 底座）在 mimo-worker 里可写 Vault（笔记由 agent 落盘，worker 本身不碰 Vault）。未配 ASR key 时**网关侧照样接管录音**（见下），worker 起不来时 schedule list 显示原因。
+
+## 2026-11-17 踩坑：网关侧没有 ASR key，录音就没人接管
+
+现象：QQ 发了录音，不进课堂笔记，只在 agent 那边收到一句
+「请补充具体处理要求（转写/总结/翻译/提取行动项）」。
+
+根因在插件注册的**门控**：
+
+```rust
+qq_handlers: |config, _| {
+    if !lecture.is_ready() { return Ok(Vec::new()); }   // ← 拿 ASR key 当注册条件
+```
+
+`is_ready()` 要求**当前进程**的 env 里有 ASR key。可 ASR key 只在
+`ru41-lecture`（真正跑转写的 worker）里，**三个网关（qq / telegram / mimo-worker）
+一个都没有** → 网关根本不注册 handler → 录音没人接管 → 消息掉给 agent。
+
+两个连带认知：
+
+- `schedule list` 里那句「缺 ASR key：…」是**网关视角的误报**，worker 其实一直就绪；
+- 网关侧只做「下载 + 登记待办」，**压根不调 ASR**，让它为一个用不上的 key 门控是搞反了。
+
+修法（`13687f9`）：
+
+1. `resolved()` 缺 ASR key **不再报错**，解析成空串；
+2. `qq_handlers` 只看 `is_enabled()`（模块有没有开），ASR key 缺不缺是 worker 的事，
+   仍由 `schedule list` 的 `not_ready_reason` 报。
+
+对照 `ecard` 等插件：qq_handlers 一律无条件注册，就绪状态在 schedule list 报。
+
+**这次那条录音的补救**：QQ 的下载链接当时还没过期（实测 28 MB 还能下），
+手动把文件放进 `workspace/<msg_id>/raw/` + 手工建一条 `lecture.pending`（status=pending），
+worker 下一轮就接手了 → 转写 3816 字、课程自动匹配「网络空间安全导论」、笔记写进 Vault。
+（`accept_recording` 建的待办长这样：`file`/`filename`/`msg_id`/`received_at`/`size`/
+`status`/`error`/`course`/`channel`/`target`。）
 
 ## 契约与边界
 

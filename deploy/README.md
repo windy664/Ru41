@@ -111,8 +111,17 @@ docker save ghcr.io/windy664/ru41:latest | ssh <server> 'docker load'
 #    把镜像里的插件 .so 和技能包同步到宿主挂载目录（关键：容器挂的是宿主目录，
 #    RU41_SYNC_PLUGINS=0 可关）。这两步不再需要手工做。
 ssh <server> 'RU41_IMAGE=ghcr.io/windy664/ru41:latest bash ~/ru41-roll.sh \
-  && bash ~/roll-set-env.sh <容器名> <KEY...>'
+  && bash ~/roll-set-env.sh <容器名> <参考容器名> <KEY...>'
 ```
+
+> ⚠️ `roll-set-env.sh` 的用法是 **三个参数**：`<目标容器> <参考容器> <KEY...>`——
+> 要补的变量值**从参考容器里抄**（不必把密钥写进命令行）。
+> 它会按 inspect 把目标容器**原有的环境变量全量恢复**，再追加补的那些。
+> 早期版本这里写错过（`select(startswith(...)) | not` 把非目标变量全过滤掉，
+> 加上 jq 少个右括号直接编译失败 → 进程替换里的失败不触发 `set -e` →
+> 重建出的容器只剩镜像默认环境，密钥/代理/bot token 全丢且**没有任何报错**，
+> 2026-11-17 夜里把 worker 和 telegram 弄挂过）。现在它会自查：
+> 备份里有 env、恢复出来却没有 → 直接中止，不重建（`891d6a8`）。
 
 插件同步漏掉时，日志里会出现"插件与宿主 git commit 不同（插件 xxx / 宿主 yyy）"
 的提示——那是 .so 比宿主旧，不是握手失败，行为上却等同于没升级。

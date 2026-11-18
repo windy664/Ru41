@@ -241,7 +241,11 @@ fn start_from_flags(flags: &HashMap<String, String>) -> Result<StartIntent> {
     if flags.contains_key("rand") || flags.contains_key("随机") {
         return Ok(StartIntent::Rand { days });
     }
-    Ok(StartIntent::Now)
+    if flags.contains_key("now") || flags.contains_key("刚跑完") {
+        return Ok(StartIntent::Now);
+    }
+    // 都没给 → 用**用户给的推荐参数**：当天随机，几天前 0（2026-11-16 的建议参数表）。
+    Ok(StartIntent::Rand { days })
 }
 
 #[cfg(test)]
@@ -437,8 +441,16 @@ mod tests {
             let owned: Vec<String> = args.iter().map(|s| (*s).to_owned()).collect();
             start_from_flags(&parse_flags(&owned))
         };
-        // 不带时间参数 → 刚跑完。
-        assert_eq!(parse(&["--laps", "3"]).unwrap(), StartIntent::Now);
+        // 不带时间参数 → 用户推荐参数：当天随机，几天前 0。
+        assert_eq!(
+            parse(&["--laps", "3"]).unwrap(),
+            StartIntent::Rand { days: 0 }
+        );
+        // 明确要「刚跑完」。
+        assert_eq!(
+            parse(&["--laps", "3", "--now"]).unwrap(),
+            StartIntent::Now
+        );
         // 半小时前那次。
         assert_eq!(
             parse(&["--laps", "3", "--ago", "30"]).unwrap(),
@@ -488,7 +500,25 @@ mod tests {
         assert_eq!(body["sportType"], 1);
         assert_eq!(body["mode"], "free");
         assert!((body["distance"].as_f64().unwrap() - 1.2).abs() < 0.01);
-        // 默认「刚跑完」：不发 startAtMs（跟控制台一致）。
+        // 默认档 = 用户推荐参数「当天随机，几天前 0」→ 起点由服务端给。
+        assert_eq!(body["startAtMs"], 1_794_890_000_000i64);
+    }
+
+    /// 显式「刚跑完」：不发 startAtMs（跟控制台 `mode === 'now'` 一致）。
+    #[tokio::test]
+    async fn plan_with_now_sends_no_start_at() {
+        let (base_url, seen) = mock_console().await;
+        let section = section_with(&base_url, true);
+        let store = store().await;
+        let args = vec![
+            "plan".to_owned(),
+            "--laps".to_owned(),
+            "3".to_owned(),
+            "--now".to_owned(),
+        ];
+        dispatch(&section, &store, &args).await.unwrap();
+        let calls = seen.lock().await;
+        let body = &calls[0].1;
         assert!(body["startAtMs"].is_null(), "{body}");
     }
 
