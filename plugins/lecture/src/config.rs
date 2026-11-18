@@ -215,10 +215,12 @@ mod tests {
     /// 消息掉给 agent（2026-11-17 踩过）。
     #[test]
     fn resolves_without_the_asr_key() {
-        let mut section = LectureSection::default();
-        section.api_key = None;
         // 用一个几乎不可能存在的环境变量名，确保解析时取不到 key。
-        section.api_key_env = Some("RU41_LECTURE_ASR_KEY_THAT_DOES_NOT_EXIST".to_owned());
+        let section = LectureSection {
+            api_key: None,
+            api_key_env: Some("RU41_LECTURE_ASR_KEY_THAT_DOES_NOT_EXIST".to_owned()),
+            ..Default::default()
+        };
         let config = section.resolved().expect("网关侧不该因为缺 ASR key 而失败");
         assert!(config.api_key.is_empty(), "{}", config.api_key);
     }
@@ -226,9 +228,11 @@ mod tests {
     /// key 在环境里时照常取到（转写那一步要的就是它）。
     #[test]
     fn picks_the_asr_key_from_the_environment() {
-        let mut section = LectureSection::default();
-        section.api_key = None;
-        section.api_key_env = Some("RU41_LECTURE_ASR_KEY".to_owned());
+        let section = LectureSection {
+            api_key: None,
+            api_key_env: Some("RU41_LECTURE_ASR_KEY".to_owned()),
+            ..Default::default()
+        };
         // 没设这个变量时不该崩；设了就能取到（这里只验证不报错 + 空值兜底）。
         let config = section.resolved().expect("解析不应失败");
         assert!(!config.api_key.contains('\n'));
