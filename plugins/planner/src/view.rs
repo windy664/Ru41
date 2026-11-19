@@ -15,6 +15,24 @@ pub(super) fn truncate_title(title: &str, max: usize) -> String {
     }
 }
 
+/// 未完成态的复选框：U+2610 ☐。
+///
+/// Unicode 18.0 的 emoji-data.txt 里**没有** U+2610——它不是 emoji 字符，
+/// 任何客户端都只会按纯文本字形渲染（细线方框），不会变彩色。
+pub(super) const UNCHECKED_MARK: &str = "\u{2610}";
+
+/// 已完成态的复选框：U+2611 ☑ **+ U+FE0E（VS15，强制文本呈现）**。
+///
+/// 为什么带 VS15：U+2611 **是** emoji 字符（`2611 ; Emoji`），客户端有 emoji 字体
+/// 就可能给它上彩色 emoji 呈现；而未勾选的 U+2610 永远是纯文本字形——
+/// 同一个清单里就会一个细线框、一个彩色勾框，看着像两种东西（2026-11-19 实测，
+/// Telegram 的字体和 emoji 支持比 QQ 全，问题在 TG 上最明显）。
+/// 追加 U+FE0E 变体选择符，明确要求按**文本**呈现，两个复选框就一致了。
+///
+/// ⚠️ VS15 是「请求」不是「强制」：个别客户端不认它时会退回 emoji 呈现。
+/// 真要绝对一致就换成 U+25A3 ▣（也不是 emoji 字符），代价是失去「框里打勾」的语义。
+pub(super) const CHECKED_MARK: &str = "\u{2611}\u{FE0E}";
+
 pub(super) fn format_items(
     title: &str,
     items: &[TodoItem],
@@ -73,7 +91,9 @@ const COMPLETED_SHOWN: usize = 5;
 
 /// 已完成条目：粗勾 + 标题划横线。
 ///
-/// 候选符号（想换回只改这一处）：`☑`（2026-11-09 用户选定）、`🗹`（前一版）、`✅`。
+/// 符号选型（2026-11-19 改）：`☑`+VS15（见 `CHECKED_MARK`）——
+/// 原先直接用 `☑` 是 emoji 字符，Telegram 上会渲染成彩色勾框，
+/// 和旁边纯文本的 `☐` 不是一个东西。
 /// 整个待办列表不用加粗（用户要求），已完成态也不再可点，所以不用 cmd-input 标签。
 pub(super) fn format_completed(item: &TodoItem) -> String {
     // 完成态：可点的恢复复选框 + 英文空格 + 划横线标题（点一下换回未完成）。
@@ -88,7 +108,7 @@ pub(super) fn format_completed(item: &TodoItem) -> String {
 
 /// 已完成条目的「恢复」复选框：点击 = 把待办换回未完成。
 fn restore_chip(item: &TodoItem) -> String {
-    ru41::interactive::cmd_token("☑", &format!("/恢复待办 {}", item.short_id()))
+    ru41::interactive::cmd_token(CHECKED_MARK, &format!("/恢复待办 {}", item.short_id()))
 }
 
 /// 近 7 天的已完成：判定在核心里（domain::todo::is_recent_completed），
@@ -124,7 +144,7 @@ pub(super) fn format_item(item: &TodoItem, now: i64, options: TodoOptions) -> St
     )
 }
 
-/// 待办「完成」复选框：`<qqbot-cmd-input show="囗">`，点击后指令填入输入框、
+/// 待办「完成」复选框：`<qqbot-cmd-input show="☐">`，点击后指令填入输入框、
 /// 再点发送即完成（两跳是官方能力的代价：cmd-enter 一跳但不支持自定义显示——
 /// 平台报错 40034108；mqqapi 链接能显示但新版客户端点击无响应）。
 /// 符号选型（2026-11-09）：条目内容本身是三级标题（自带大字），复选框不必再撑大——
@@ -133,11 +153,13 @@ pub(super) fn format_item(item: &TodoItem, now: i64, options: TodoOptions) -> St
 pub(super) fn done_chip(item: &TodoItem) -> String {
     // show 只有复选框：QQ 会在行内标签后自动插零宽空格，再往里塞英文空格会叠出两段间隙。
     // 可见的英文空格统一放在标签外面（见 format_item / format_completed），两态格式一致。
-    ru41::interactive::cmd_token("☐", &format!("/完成 {}", item.short_id()))
+    ru41::interactive::cmd_token(UNCHECKED_MARK, &format!("/完成 {}", item.short_id()))
 }
 
 pub(super) fn usage() -> String {
-    "## 待办\n\n- `#内容`：记入待办（开头带时间词自动排期，如 `#明天下午三点交报告`）\n- `#`：全部待办清单；点 `☐` 完成，点 `☑` 恢复\n\n## 日程\n\n- `/日程 [今天|明天|N天]`：今日起行程\n- `/记日程 <时间> <标题>`：如 `明天14:00-16:00 班会`、`每周二14:00-15:40 体育课`\n- `/取消日程 <日程ID>`".to_owned()
+    format!(
+        "## 待办\n\n- `#内容`：记入待办（开头带时间词自动排期，如 `#明天下午三点交报告`）\n- `#`：全部待办清单；点 `{UNCHECKED_MARK}` 完成，点 `{CHECKED_MARK}` 恢复\n\n## 日程\n\n- `/日程 [今天|明天|N天]`：今日起行程\n- `/记日程 <时间> <标题>`：如 `明天14:00-16:00 班会`、`每周二14:00-15:40 体育课`\n- `/取消日程 <日程ID>`"
+    )
 }
 
 #[cfg(test)]
@@ -182,8 +204,15 @@ mod tests {
         assert!(!text.contains("已完成"), "{text}");
         assert!(text.contains("~~写周报~~"), "{text}");
         // 完成项的复选框是可点的恢复按钮（指令藏在占位符里）。
-        assert!(text.contains("{{cmd:☑|/恢复待办 "), "{text}");
-        assert!(!text.contains("\n\n- ☑"), "{text}");
+        // 符号是 ☑+VS15（U+2611 U+FE0E）——emoji 字符必须带 VS15 才按文本呈现，
+        // 否则 Telegram 上会变成彩色勾框，和旁边纯文本的 ☐ 不像一套。
+        assert!(
+            text.contains("{{cmd:\u{2611}\u{FE0E}|/恢复待办 "),
+            "{text}"
+        );
+        assert!(!text.contains("\n\n- \u{2611}\u{FE0E}"), "{text}");
+        // 也不能出现「不带 VS15 的裸 ☑」——那正是要修掉的老样子。
+        assert!(!text.contains("\u{2611}|"), "{text}");
     }
 
     /// 用户标题里的占位符不得变成可点动作。
