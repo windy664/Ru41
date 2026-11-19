@@ -269,9 +269,10 @@ async fn todo_commands_add_list_and_complete_in_private_chat() {
     // 完成回执只给清单：完成的条目落到划横线区，不带「已完成」提示行。
     assert!(!completed.text.contains("已完成"), "{}", completed.text);
     // 完成项：可点的恢复复选框（中性占位符，QQ 侧由 qq::render 展开成 cmd-input）+ 划横线标题。
-    // 符号是 ☑（U+2611）——原样，2026-11-19 三轮选型的结论（见 view.rs 的 CHECKED_MARK）。
+    // 符号是 ▣（U+25A3）：不是 emoji 字符，跨客户端一致；
+    // 不用 U+2611 ☑（emoji 字符，Telegram 上会渲染成彩色大勾框）。
     assert!(
-        completed.text.contains("{{cmd:\u{2611}|/恢复待办 "),
+        completed.text.contains("{{cmd:\u{25A3}|/恢复待办 "),
         "{}",
         completed.text
     );
@@ -347,7 +348,7 @@ async fn quick_note_enters_todo_inbox_without_agent_or_schedule() {
     assert!(reply.text.contains("## 待办（1）"));
     // 行首复选框：中性占位符（QQ 侧展开成行内 cmd-input，点击把 /完成 <id> 填进输入框）。
     assert!(reply.text.contains("{{cmd:☐|/完成 "));
-    // 复选框符号是 ☐，与完成态的 ☑ 配成一套（2026-11-19 选型结论：维持原样）。
+    // 复选框符号是 ☐，与完成态的 ▣ 配成一套（两个都是非 emoji 的纯文本字形）。
     assert!(reply.text.contains("{{cmd:☐|"));
 
     let documents = fixture.store.documents("todo_item", 10).unwrap();
