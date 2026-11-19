@@ -177,6 +177,47 @@ HICP + 雅思 + 学 Rust            3       8    +1    ✗  ← 只差 1 块
 
 bug 7 是**中文文档必崩**级别的 —— 而且只有真的用中文写文档才会发现。
 
+### E6 · 接上 agent：拆解闭环跑通（2026-11-20）
+
+**这是第一次真的跑 LLM 的环节**（之前全是确定性代码）。
+
+**落点**：不是核心服务，是**核心领域模型 + planner 插件**：
+
+| 层 | 位置 | 职责 |
+|---|---|---|
+| 文档模型 | `src/domain/plan.rs`（核心） | 解析长期规划文档、写回 step 流、校验 agent 输出 |
+| 拆解闭环 | `plugins/planner/src/decompose*.rs` | 扫 Vault → 快照 prompt → 入队 agent 任务 → 轮询 → 写回 |
+| agent 说明书 | `plugins/planner/skills/plan-decompose/SKILL.md` | 告诉 agent 怎么拆、估多久、输出什么格式 |
+| 端到端 CLI | `examples/plan_decompose.rs` | 人写文档 + agent 输出 → 写回后的文档 |
+
+**安全模型沿用 obsidian-organize 的「快照协议」**：agent **没有文件系统与 git 权限**，
+文档内容由程序内联进 prompt，agent 只输出 ```ru41-plan-decompose JSON，**落盘由程序执行**。
+
+**校验项**（每条都挡住落盘）：围栏存在、JSON 合法、里程碑名对得上、无重复、steps 非空、
+时长为正、**待拆解里程碑全覆盖**。
+
+**接线**：planner 插件的 tracker 装 `plan-decompose`（`ru41 schedule list` 可见），
+配置段在 `plugins.d/planner/config.toml` 的 `[planner]`（plan_dir / interval_secs）；
+agent 底座取 `config.agent.default_backend()`。
+
+**端到端验证**（`tests/plan_roundtrip.rs`，用真实的 `docs/plans/rust-baseline-plan.md`）：
+人写文档 → agent 输出 → 校验 → 写回 → 再解析 → 断言目标/验收/停止条件/描述**一字未动**、
+写回幂等。
+
+#### 最有价值的发现：粗估系统性低估
+
+| | 时长 | 需求 |
+|---|---|---|
+| 手写粗估（里程碑级） | 24h | 17 块 |
+| **真实拆解（step 级）** | **32h** | **21 块** |
+
+**低估了 1/3**。而学期内容量只有 26h —— 也就是说：
+- 按粗估：Rust 基础学期内能做 92%（看起来可行）
+- 按真实拆解：**只能做到 81%，约到 M3 末**
+
+> **估时粒度直接决定可行性判定的准确性。** 这是"让 AI 拆解"这件事的硬价值：
+> 不是让它排得更细，而是让它**估得更准**，从而早点发现"这个目标这学期做不完"。
+
 ## 3. 尚未解决的研究问题
 
 按"能不能被实验回答"排序：

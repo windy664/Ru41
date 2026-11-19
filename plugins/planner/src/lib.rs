@@ -1,3 +1,5 @@
+mod decompose;
+mod decompose_service;
 mod parse;
 mod view;
 
@@ -5,6 +7,8 @@ pub mod qq_command;
 pub use qq_command::TodoQqCommand;
 
 /// 注册表定义：todo-remind 调度（CLI `todo remind` 驱动，无 schedule run 装配）与 # 待办入口。
+use anyhow::Context as _;
+
 pub static DEF: ru41::modules::ModuleDef = ru41::modules::ModuleDef {
     name: "planner",
     priority: ru41::modules::DEFAULT_PRIORITY,
@@ -29,7 +33,33 @@ pub static DEF: ru41::modules::ModuleDef = ru41::modules::ModuleDef {
             )
         }]
     },
-    tracker: |_, _, _| Ok(None),
+    tracker: |config, store, name| {
+        // 长期规划拆解：扫 Vault 规划目录 → 入队 agent 任务 → 轮询 → 写回。
+        if name != "plan-decompose" {
+            return Ok(None);
+        }
+        let section = config
+            .sources
+            .get::<decompose_service::PlannerSection>("planner")
+            .unwrap_or_default();
+        let Some(vault) = ru41::bootstrap::assembly::vault_if_ready(config, true)
+            .context("plan-decompose 需要 [obsidian] vault 已配置")?
+        else {
+            return Ok(None);
+        };
+        let service = decompose_service::PlanDecomposeService::new(
+            store,
+            vault,
+            decompose_service::DecomposeConfig {
+                plan_dir: section.plan_dir,
+                backend: config.agent.default_backend().to_owned(),
+                interval_secs: section.interval_secs,
+            },
+        );
+        Ok(Some(Box::new(
+            decompose_service::PlanDecomposeTracker::new(service),
+        )))
+    },
     qq_handlers: |config, _| {
         // /日程 的合并视图需要按周次过滤课表。只取 semester_start 一个字段，
         // 用本地最小 section 结构（serde 忽略未知键），不依赖 jwxt 的完整类型。
