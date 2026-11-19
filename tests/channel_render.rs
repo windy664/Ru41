@@ -6,11 +6,12 @@
 
 use ru41::channels::{builtin, markdown, qq::render::qq_render};
 
-/// 已勾选复选框：U+2611 ☑ + U+FE0E（VS15，强制文本呈现）。
+/// 已勾选复选框：U+25A3 ▣。
 ///
-/// U+2611 **是** emoji 字符，不带 VS15 会被客户端渲染成彩色勾框；
+/// U+2611 ☑ **是** emoji 字符，Telegram 会渲染成彩色大勾框；
 /// 而 U+2610 ☐ 永远是纯文本字形——两个复选框就不成一套了（2026-11-19 修）。
-const CHECKED: &str = "\u{2611}\u{FE0E}";
+/// 加 VS15 也试过，Telegram 无视；只能用压根不是 emoji 字符的 ▣。
+const CHECKED: &str = "\u{25A3}";
 
 /// planner 的待办清单（规范层形态）。
 fn canonical_todo_list() -> String {
@@ -36,14 +37,11 @@ fn qq_rendering_keeps_inline_chip_and_font_scaling() {
 }
 
 #[test]
-fn checked_checkbox_keeps_its_text_presentation_selector() {
+fn checked_checkbox_is_not_an_emoji_character() {
     let rendered = qq_render(&canonical_todo_list());
-    // 已勾选那个：☑ 后面必须跟 VS15（%EF%B8%8E），否则 QQ/TG 会渲染成彩色勾框。
-    assert!(
-        rendered.contains("show=\"%E2%98%91%EF%B8%8E\""),
-        "{rendered}"
-    );
-    // 裸 ☑（少了 VS15）不能出现。
+    // 已勾选那个：▣（U+25A3 → %E2%96%A3），不是 emoji 字符，跨客户端一致。
+    assert!(rendered.contains("show=\"%E2%96%A3\""), "{rendered}");
+    // 裸 ☑（%E2%98%91）是 emoji 字符，Telegram 上会变成彩色大勾框——不能出现。
     assert!(!rendered.contains("show=\"%E2%98%91\""), "{rendered}");
 }
 
