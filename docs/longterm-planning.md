@@ -646,6 +646,10 @@ pub struct RhythmSlot {
 > ```
 > python3 scripts/plan-sim.py --db ~/ru41-mimo-smoke/data/state.db
 > ```
+>
+> 具体的「学 Rust 基础」学习规划（哪天读哪章、做什么练习、产出什么、怎么验收）在
+> **[plans/rust-baseline.md](plans/rust-baseline.md)**，配套的 12 个示例代码在
+> `docs/plans/rust-baseline/`，已全部用 rustc 编译并跑通 46 个测试。
 
 ```
 目标：Rust 基础（不是完整 Rust）

@@ -10,7 +10,7 @@
 输出三段：
   1. 槽位稳定性表（每个候选槽位在学期内可用几个块）
   2. 目标函数推荐的两个固定槽位（容量 + 间隔）
-  3. 里程碑铺排结果，以及学期内容量 vs 目标需求的对比
+  3. 块级排期：哪一天学什么（内容含 Rust Book 章节、练习、验收产出）
 """
 
 import argparse
@@ -32,14 +32,62 @@ POOL = [
     (2, 9 * 60, "周二上午"), (4, 9 * 60, "周四上午"),
 ]
 
-# 示例目标：Rust 基础（分钟）
-MILESTONES = [
-    ("M1 环境与基本语法", 240),
-    ("M2 所有权与借用", 360),
-    ("M3 类型系统 enum/match/Option/Result", 240),
-    ("M4 泛型/trait/生命周期入门", 240),
-    ("M5 动手：写一个 CLI 小工具", 360),
+# 学期末的验收目标（对应块级内容）
+ACCEPTANCE = [
+    ("能读懂并修复借用检查器的三类报错", "块4 产出"),
+    ("能用 Result + ? 组合错误流，且错误信息对用户可读", "块6 产出"),
+    ("能用 trait 抽象行为、用泛型约束类型", "块9 产出"),
+    ("能判断何时需要手写生命周期标注", "块10 产出"),
+    ("能从零写出一个带测试的 CLI 工具", "块12 产出"),
 ]
+
+
+# 块级学习内容：与 docs/plans/rust-baseline/ 下的示例文件一一对应。
+# 每条 = (标题, Rust Book 章节, 动手练习, 验收产出)
+CURRICULUM = [
+    ("块1 环境与基本语法", "Ch1 + Ch3.1-3.5",
+     "cargo new / cargo test 跑通；shadowing、if-match、loop 返回值",
+     "能独立建项目并让测试跑起来", "block01_basics.rs"),
+    ("块2 所有权（上）", "Ch4.1-4.2",
+     "移动语义三个规则；不可变/可变借用；借用不夺所有权",
+     "能解释 'cannot move out of borrowed content' 为什么错", "block02_ownership.rs"),
+    ("块3 切片 + 结构体 + 方法", "Ch4.3 + Ch5",
+     "切片借用不复制；struct/impl/method；UTF-8 边界",
+     "写出 Rectangle + area()，理解字符串是字节不是字符", "block03_structs.rs"),
+    ("块4 借用检查器实操", "Ch4.2 三类错误",
+     "借用后修改 / 借用后移动 / 借用后销毁；三种修法",
+     "能读懂并修好 5 个借用错误", "block04_borrow_checker.rs"),
+    ("块5 枚举与模式匹配", "Ch6",
+     "enum 携带数据；Option；match 穷尽；if let；let-else；@ 绑定",
+     "用 Option 建模「可能没有值」，不用空指针", "block05_enums.rs"),
+    ("块6 错误处理", "Ch9",
+     "Result；? 运算符；From 转换；自定义错误 + Display/Error trait",
+     "写一条 ? 串联的错误流，且错误信息可读", "block06_errors.rs"),
+    ("块7 模块与包", "Ch7",
+     "mod/use/pub；可见性层级；嵌套模块；crate:: 路径",
+     "把代码拆成模块树并控制可见性", "block07_modules.rs"),
+    ("块8 常用集合", "Ch8",
+     "Vec/String/HashMap；entry API 计数惯用法",
+     "写一个词频统计小工具", "block08_collections.rs"),
+    ("块9 泛型与 Trait", "Ch10.1-10.2",
+     "泛型函数 + trait bound；trait 默认实现；impl Trait",
+     "定义一个 trait 并用泛型函数约束它", "block09_traits.rs"),
+    ("块10 生命周期", "Ch10.3",
+     "省略规则；<'a> 标注；结构体持有引用；生命周期约束",
+     "能判断什么时候该写标注、什么时候编译器能推出来", "block10_lifetimes.rs"),
+    ("块11 动手：猜数字游戏", "Ch2 全流程",
+     "输入解析与容错；比较逻辑抽枚举；随机源做成依赖以便测试",
+     "一个能玩的游戏 + 5 个通过的测试", "block11_guessing_game.rs"),
+    ("块12 动手：CLI 搜索工具", "Ch12",
+     "读参数/读文件；逻辑抽成可测函数；错误走 stderr；退出码",
+     "能跑的 minigrep + 3 个通过的测试", "block12_minigrep.rs"),
+    ("块13 机动：补漏 + 阶段复盘", "—",
+     "补前面欠的块；把 12 个示例串成一篇笔记；列出还不会的点",
+     "能口头讲清所有权/借用/生命周期三者的关系", None),
+]
+
+# 示例目录（用于校验每个块都有对应且能编译的文件）
+EXAMPLE_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "docs", "plans", "rust-baseline")
 
 
 def hhmm_to_min(text):
@@ -195,28 +243,35 @@ def main():
     a, b = best[3], best[4]
     slots = sorted(set(free_dates(tt, today, end, a[0], a[1]) + free_dates(tt, today, end, b[0], b[1])))
     capacity = len(slots) * BLOCK / 60
-    need = sum(m[1] for m in MILESTONES) / 60
     print(f"\n★ 推荐：{a[2]} + {b[2]}　{len(slots)} 块 / {capacity:.0f}h　间隔 {best[2]} 天")
 
-    print("\n【3】里程碑铺排")
-    for t, m in MILESTONES:
-        print(f"    - {t:<36} {m//60}h")
-    print(f"    合计 {need:.0f}h；学期内容量 {capacity:.0f}h → "
-          f"{'排得下，余 %.0fh' % (capacity - need) if capacity >= need else '排不下，缺 %.0fh' % (need - capacity)}")
+    print("\n【3】块级排期（每块 2h；内容见 docs/plans/rust-baseline.md）")
+    need_h = len(CURRICULUM) * BLOCK / 60
+    print(f"    需要 {len(CURRICULUM)} 块 = {need_h:.0f}h；学期内容量 {capacity:.0f}h → "
+          f"{'排得下，余 %.0fh' % (capacity - need_h) if capacity >= need_h else '排不下，缺 %.0fh' % (need_h - capacity)}")
 
-    remaining = {t: m for t, m in MILESTONES}
-    for d in slots:
-        if not remaining:
+    for i, d in enumerate(slots):
+        if i >= len(CURRICULUM):
             break
-        current = next((t for t, m in remaining.items() if m > 0), None)
-        if current is None:
-            break
-        used = min(BLOCK, remaining[current])
-        print(f"    {d}（{tt.week_of(d)}周 {'一二三四五六日'[d.weekday()]}） → {current}（{used//60}h）")
-        remaining[current] -= used
-        if remaining[current] <= 0:
-            del remaining[current]
-    print(f"    学期内学不完：{list(remaining.keys()) or '无'}")
+        title, chapter, drill, deliver, example = CURRICULUM[i]
+        wd = "一二三四五六日"[d.weekday()]
+        print(f"\n    {d}（第{tt.week_of(d)}周 周{wd}）{title}")
+        print(f"        读：Rust Book {chapter}")
+        print(f"        练：{drill}")
+        print(f"        验收：{deliver}")
+        if example:
+            path = os.path.join(EXAMPLE_DIR, example)
+            mark = "✓ 存在" if os.path.exists(path) else "✗ 缺失"
+            print(f"        示例：docs/plans/rust-baseline/{example}  {mark}")
+
+    if len(slots) < len(CURRICULUM):
+        print(f"\n    ⚠ 学期内只排得下 {len(slots)} 块，还差 {len(CURRICULUM) - len(slots)} 块（见寒假规划）")
+    else:
+        print(f"\n    ✓ 学期内 {len(CURRICULUM)} 块全部排完（{slots[0]} → {slots[len(CURRICULUM)-1]}）")
+
+    print("\n【4】学期末验收标准")
+    for (goal, where) in ACCEPTANCE:
+        print(f"    - {goal}   ← {where}")
     con.close()
 
 
