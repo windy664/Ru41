@@ -31,6 +31,15 @@ fn main() {
 /// 边界类型/签名一改，stamp 就变 → 旧插件在握手时被**明确拒绝**，而不是
 /// 靠「记得 bump crate 版本」这种纪律兜底（漏一次就是 SIGBUS 崩溃循环）。
 /// 宿主与插件编译自同一份 api crate 源码，摘要自然一致。
+///
+/// ⚠️ 摘要覆盖的是 `src/` 下的**全部** .rs，**包括 `#[cfg(test)]` 里的测试代码**。
+/// 只改测试（比如把测试夹具里的符号从 ☑ 换成 ☑+VS15）也会改 stamp →
+/// 新编的插件与**旧宿主二进制**对不上 → 插件被拒收：
+/// 「边界布局不匹配：插件 xxx / 宿主 yyy（api crate 源码已变，必须重编插件）」，
+/// 而且宿主的 stamp 来自镜像构建时的源码，改回去也来不及——
+/// 这种改动只能**重编宿主镜像**（CI 出镜像 → 滚动全部容器）才能生效。
+/// 所以：api crate 里**只改测试**是没有代价的，**改了却要重出镜像**，
+/// 动手前先掂量。
 fn layout_stamp() -> String {
     let dir = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"));
     let mut files: Vec<std::path::PathBuf> = Vec::new();
