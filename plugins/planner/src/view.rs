@@ -21,17 +21,23 @@ pub(super) fn truncate_title(title: &str, max: usize) -> String {
 /// 任何客户端都只会按纯文本字形渲染（细线方框），不会变彩色。
 pub(super) const UNCHECKED_MARK: &str = "\u{2610}";
 
-/// 已完成态的复选框：U+2611 ☑ **+ U+FE0E（VS15，强制文本呈现）**。
+/// 已完成态的复选框：U+25A3 ▣（白方框里一个实心小方块）。
 ///
-/// 为什么带 VS15：U+2611 **是** emoji 字符（`2611 ; Emoji`），客户端有 emoji 字体
-/// 就可能给它上彩色 emoji 呈现；而未勾选的 U+2610 永远是纯文本字形——
-/// 同一个清单里就会一个细线框、一个彩色勾框，看着像两种东西（2026-11-19 实测，
-/// Telegram 的字体和 emoji 支持比 QQ 全，问题在 TG 上最明显）。
-/// 追加 U+FE0E 变体选择符，明确要求按**文本**呈现，两个复选框就一致了。
+/// 选型是被 Telegram 逼出来的（2026-11-19 两轮实测）：
 ///
-/// ⚠️ VS15 是「请求」不是「强制」：个别客户端不认它时会退回 emoji 呈现。
-/// 真要绝对一致就换成 U+25A3 ▣（也不是 emoji 字符），代价是失去「框里打勾」的语义。
-pub(super) const CHECKED_MARK: &str = "\u{2611}\u{FE0E}";
+/// 1. 原先用 U+2611 ☑。它**是** emoji 字符（Unicode 18.0 `emoji-data.txt`：
+///    `2611 ; Emoji`），客户端有 emoji 字体就可能上彩色呈现；而未勾选的 U+2610 ☐
+///    永远是纯文本字形——同一个清单里一个细线框、一个彩色大勾框，看着像两种东西。
+///    Telegram 的字体和 emoji 支持比 QQ 全，问题在 TG 上最明显。
+/// 2. 改用 U+2611 ☑ + U+FE0E（VS15，请求按文本呈现）。**Telegram 不认**——
+///    实测发出去还是那个彩色大勾框（VS15 对这个字符无效，emoji 字体照样上）。
+/// 3. 现在用 U+25A3 ▣：它**根本不在 emoji 列表里**（既无 emoji 变体，也无
+///    emoji 呈现），任何客户端都只能按纯文本字形渲染，和 ☐ 绝对一致。
+///
+/// 同族（都是方框），所以 ▣/☐ 是一套。代价：没有「框里打勾」的语义，
+/// 是「框里填实了」——但这是唯一能保证跨客户端一致的做法。
+/// 备选 U+2713 ✓（也是纯文本字符）不带框，与 ☐ 不同族，没选。
+pub(super) const CHECKED_MARK: &str = "\u{25A3}";
 
 pub(super) fn format_items(
     title: &str,
@@ -168,20 +174,22 @@ mod tests {
     use ru41::domain::todo::{TodoItem, TodoOptions, TodoPriority, TodoStatus};
 
     /// 两个复选框必须同属「纯文本呈现」这一档，否则在 Telegram 上一个细线框、
-    /// 一个彩色勾框，看着像两种东西。
+    /// 一个彩色大勾框，看着像两种东西。
     ///
     /// U+2610 ☐ 不是 emoji 字符（永远纯文本字形）；
-    /// U+2611 ☑ 是 emoji 字符——必须补 U+FE0E（VS15）才按文本呈现。
+    /// 已勾选那个也必须**不是** emoji 字符——U+2611 ☑ 是，试过加 VS15 也没用
+    /// （Telegram 无视），最后用 U+25A3 ▣（压根不在 emoji 列表里）。
     #[test]
     fn both_checkbox_marks_are_text_presentation() {
         assert_eq!(UNCHECKED_MARK, "\u{2610}", "未勾选：U+2610 ☐");
         assert_eq!(
-            CHECKED_MARK, "\u{2611}\u{FE0E}",
-            "已勾选：U+2611 ☑ + U+FE0E（VS15），少了 VS15 就会变彩色 emoji"
+            CHECKED_MARK, "\u{25A3}",
+            "已勾选：U+25A3 ▣（不是 emoji 字符，跨客户端一致）"
         );
-        // 只出现一个 ☑，且紧跟 VS15。
-        assert_eq!(CHECKED_MARK.matches('\u{2611}').count(), 1);
-        assert!(CHECKED_MARK.ends_with('\u{FE0E}'));
+        // 不能是 U+2611 ☑：它是 emoji 字符，Telegram 会渲染成彩色大勾框。
+        assert!(!CHECKED_MARK.contains('\u{2611}'));
+        // 也不能带 VS15——那条路实测在 Telegram 上无效。
+        assert!(!CHECKED_MARK.contains('\u{FE0E}'));
     }
 
     #[test]
@@ -221,15 +229,12 @@ mod tests {
         assert!(!text.contains("已完成"), "{text}");
         assert!(text.contains("~~写周报~~"), "{text}");
         // 完成项的复选框是可点的恢复按钮（指令藏在占位符里）。
-        // 符号是 ☑+VS15（U+2611 U+FE0E）——emoji 字符必须带 VS15 才按文本呈现，
-        // 否则 Telegram 上会变成彩色勾框，和旁边纯文本的 ☐ 不像一套。
-        assert!(
-            text.contains("{{cmd:\u{2611}\u{FE0E}|/恢复待办 "),
-            "{text}"
-        );
-        assert!(!text.contains("\n\n- \u{2611}\u{FE0E}"), "{text}");
-        // 也不能出现「不带 VS15 的裸 ☑」——那正是要修掉的老样子。
-        assert!(!text.contains("\u{2611}|"), "{text}");
+        // 符号是 ▣（U+25A3）——不是 emoji 字符，跨客户端一致；
+        // 不用 U+2611 ☑（emoji 字符，Telegram 上会变彩色大勾框）。
+        assert!(text.contains("{{cmd:\u{25A3}|/恢复待办 "), "{text}");
+        assert!(!text.contains("\n\n- \u{25A3}"), "{text}");
+        // 也不能出现裸 ☑——那正是要修掉的老样子。
+        assert!(!text.contains("\u{2611}"), "{text}");
     }
 
     /// 用户标题里的占位符不得变成可点动作。
