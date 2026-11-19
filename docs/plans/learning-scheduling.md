@@ -200,6 +200,7 @@ FSRS 的价值要等预算真的吃紧才显现。而 Ru41 的碎片池不会吃
 
 ## 8. 来源
 
+- **上位文档**：[ai-planner.md](ai-planner.md) —— "AI 规划、人类学习"的目标函数与系统架构（本文是它的记忆层）
 - FSRS 算法与 v1-v7 演进：https://github.com/open-spaced-repetition/awesome-fsrs/wiki/The-Algorithm
 - `fsrs` Rust crate：https://github.com/open-spaced-repetition/fsrs-rs
 - 基准测试：https://github.com/open-spaced-repetition/srs-benchmark
