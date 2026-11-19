@@ -42,6 +42,11 @@ impl Rng {
     }
 }
 
+/// 从块起点算的分钟偏移 → HH:MM
+fn fmt_min(offset: i64) -> String {
+    format!("{:02}:{:02}", offset / 60, offset % 60)
+}
+
 fn parse_hm(s: &str) -> (u32, u32) {
     let (h, m) = s.split_once(':').expect("HH:MM");
     (h.parse().expect("hour"), m.parse().expect("minute"))
@@ -54,7 +59,7 @@ fn run_plan(
     term_start: DateTime<Utc>,
     term_end: DateTime<Utc>,
     anchor_override: Option<(&str, i64)>,
-) -> (Vec<Vec<planner::AllocatedBlock>>, Vec<GoalState>, Vec<String>) {
+) -> (Vec<Vec<planner::AllocatedSegment>>, Vec<GoalState>, Vec<String>) {
     // 应用 anchor 覆盖（提前 N 周）
     let mut specs = cfg.goals.clone();
     if let Some((id, weeks_earlier)) = anchor_override
@@ -67,7 +72,7 @@ fn run_plan(
 
     let mut goals: Vec<GoalState> = specs.into_iter().map(GoalState::new).collect();
     let mut warnings: Vec<String> = Vec::new();
-    let mut by_week: Vec<Vec<planner::AllocatedBlock>> = Vec::new();
+    let mut by_week: Vec<Vec<planner::AllocatedSegment>> = Vec::new();
     let mut week_start = term_start;
     let mut week_index = 0usize;
 
@@ -333,13 +338,19 @@ fn main() -> Result<()> {
             week_blocks.len()
         );
         for b in week_blocks {
+            let start_min = b.offset_minutes;
+            let end_min = b.offset_minutes + b.duration_minutes;
             println!(
-                "   {} {}  {:<14} [{}] {}",
+                "   {} {}  {:<12} {:<18} {}  {}–{} ({:>3}min)  [{}]",
                 b.date.format("%m-%d"),
                 b.label,
                 b.goal_name,
-                b.kind.label(),
-                b.content
+                b.milestone_name,
+                b.step_name,
+                fmt_min(start_min),
+                fmt_min(end_min),
+                b.duration_minutes,
+                b.kind.label()
             );
         }
     }
@@ -347,7 +358,7 @@ fn main() -> Result<()> {
     // ---------- 期末状态 ----------
     println!("\n══ 期末状态 ══");
     for st in &goals {
-        let total: i64 = st.spec.milestones.iter().map(|m| m.minutes).sum();
+        let total: i64 = st.spec.milestones.iter().map(|m| m.steps.iter().map(|x| x.minutes).sum::<i64>()).sum();
         let left = st.remaining_minutes();
         let pct = if total > 0 {
             (total - left) as f64 / total as f64 * 100.0
