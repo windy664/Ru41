@@ -8,6 +8,7 @@
 //! 配置见 config.example.toml。锚点、权重、槽位全部外置 —— 改配置就能重跑。
 
 mod config;
+mod plan;
 mod planner;
 
 use anyhow::Result;
@@ -128,15 +129,18 @@ fn main() -> Result<()> {
     let mut config_path = PathBuf::from("config.toml");
     let mut sweep: Option<String> = None;
     let mut combinations = false;
+    let mut plan_path: Option<PathBuf> = None;
     while let Some(a) = args.next() {
         match a.as_str() {
             "--config" => config_path = PathBuf::from(args.next().expect("--config 需要路径")),
             "--sweep" => sweep = Some(args.next().expect("--sweep 需要目标 id")),
             "--combinations" => combinations = true,
+            "--plan" => plan_path = Some(PathBuf::from(args.next().expect("--plan 需要路径"))),
             "--help" | "-h" => {
                 println!("用法: ai-planner-sim [--config <path>] [--sweep <goal_id>]");
                 println!("  --sweep        扫「该目标提前多少周开始」对其他目标的影响");
                 println!("  --combinations 枚举目标子集，找出这学期可行的组合");
+                println!("  --plan <path>  读长期规划文档（战略层产物）→ 报告待拆解 → 装箱");
                 return Ok(());
             }
             other => anyhow::bail!("未知参数: {other}"),
@@ -176,6 +180,62 @@ fn main() -> Result<()> {
             }
             d += Duration::days(1);
         }
+    }
+
+    // ---------- 长期规划文档模式 ----------
+    if let Some(path) = plan_path {
+        let markdown = std::fs::read_to_string(&path)
+            .map_err(|e| anyhow::anyhow!("读 {} 失败: {e}", path.display()))?;
+        let parsed = plan::parse_plan(&markdown).map_err(|e| anyhow::anyhow!("解析失败: {e}"))?;
+
+        println!("╔══════════════════════════════════════════════════════════════════════════════╗");
+        println!("║  长期规划文档 → 短期任务 → 时间槽                                              ║");
+        println!("╚══════════════════════════════════════════════════════════════════════════════╝");
+        println!("文档：{}", path.display());
+        println!(
+            "目标：{}（kind={:?} 权重={} 锚点={}）",
+            parsed.spec.name, parsed.spec.kind, parsed.spec.weight,
+            parsed.spec.anchor.clone().unwrap_or_else(|| "无".into())
+        );
+        println!("\n── 验收标准（人写的，决定「做完没有」）──");
+        for a in &parsed.acceptance {
+            println!("  □ {a}");
+        }
+        println!("\n── 里程碑 ──");
+        for m in &parsed.spec.milestones {
+            println!(
+                "  {}（{} 分钟，{} 步）",
+                m.name,
+                m.steps.iter().map(|s| s.minutes).sum::<i64>(),
+                m.steps.len()
+            );
+            for s in &m.steps {
+                println!("      · {} —— {} 分钟", s.name, s.minutes);
+            }
+        }
+        if !parsed.needs_llm_steps.is_empty() {
+            println!("\n── ⚠ 待 AI 拆解（这些里程碑还没有步骤）──");
+            for m in &parsed.needs_llm_steps {
+                println!("  · {m}");
+            }
+            println!("  → AI 应为每个里程碑产出有序 step 流（名字 + 时长），写回文档等人审。");
+            println!("  → 在此之前无法装箱：算法只装箱，不猜时长。");
+        }
+        if !parsed.unparsed.is_empty() {
+            println!("\n── 未解析的行（需检查）──");
+            for u in &parsed.unparsed {
+                println!("  ? {u}");
+            }
+        }
+        if !parsed.needs_llm_steps.is_empty() {
+            return Ok(());
+        }
+
+        // 有完整 steps → 用它跑装箱
+        let mut cfg = cfg.clone();
+        cfg.goals = vec![parsed.spec.clone()];
+        println!("\n（steps 完整，开始装箱）");
+        return run_with_config(&cfg, &slots, &frag_by_day, &path.display().to_string(), term_start, term_end);
     }
 
     // ---------- 研究模式：扫「提前多久开始」 ----------
@@ -305,144 +365,156 @@ fn main() -> Result<()> {
         return Ok(());
     }
 
-    println!("╔══════════════════════════════════════════════════════════════════════════════╗");
-    println!("║  多目标 AI 规划模拟 —— AI 规划，人类学习                                        ║");
-    println!("╚══════════════════════════════════════════════════════════════════════════════╝");
-    println!(
-        "学期 {} ~ {}｜配置 {}",
-        term_start.format("%Y-%m-%d"),
-        term_end.format("%Y-%m-%d"),
-        config_path.display()
-    );
-    println!(
-        "可用整块 {} 个（{} 分钟）｜碎片 {} 天（{} 分钟）",
-        slots.len(),
-        slots.len() as i64 * cfg.block_minutes,
-        frag_by_day.len(),
-        frag_by_day.values().sum::<i64>()
-    );
-    println!();
+    run_with_config(&cfg, &slots, &frag_by_day, &config_path.display().to_string(), term_start, term_end)
+}
 
-    // ---------- 碎片层：FSRS ----------
-    let frags = simulate_fragments(&cfg, term_start, term_end, &frag_by_day);
+/// 跑一遍完整规划并打印报告（标准模式与 --plan 模式共用）。
+fn run_with_config(
+    cfg: &Config,
+    slots: &[Slot],
+    frag_by_day: &BTreeMap<DateTime<Utc>, i64>,
+    config_label: &str,
+    term_start: DateTime<Utc>,
+    term_end: DateTime<Utc>,
+) -> Result<()> {
 
-    // ---------- 整块层 ----------
-    let (by_week, goals, warnings) = run_plan(&cfg, &slots, term_start, term_end, None);
-
-    for (wi, week_blocks) in by_week.iter().enumerate() {
+        println!("╚══════════════════════════════════════════════════════════════════════════════╝");
         println!(
-            "━━ 第{}周（{} ~ {}）· {} 块 ━━",
-            wi + 1,
-            (term_start + Duration::days((wi * 7) as i64)).format("%m-%d"),
-            (term_start + Duration::days((wi * 7 + 6) as i64)).format("%m-%d"),
-            week_blocks.len()
+            "学期 {} ~ {}｜配置 {}",
+            term_start.format("%Y-%m-%d"),
+            term_end.format("%Y-%m-%d"),
+            config_label
         );
-        for b in week_blocks {
-            let start_min = b.offset_minutes;
-            let end_min = b.offset_minutes + b.duration_minutes;
+        println!(
+            "可用整块 {} 个（{} 分钟）｜碎片 {} 天（{} 分钟）",
+            slots.len(),
+            slots.len() as i64 * cfg.block_minutes,
+            frag_by_day.len(),
+            frag_by_day.values().sum::<i64>()
+        );
+        println!();
+
+        // ---------- 碎片层：FSRS ----------
+        let frags = simulate_fragments(cfg, term_start, term_end, frag_by_day);
+
+        // ---------- 整块层 ----------
+        let (by_week, goals, warnings) = run_plan(&cfg, &slots, term_start, term_end, None);
+
+        for (wi, week_blocks) in by_week.iter().enumerate() {
             println!(
-                "   {} {}  {:<12} {:<18} {}  {}–{} ({:>3}min)  [{}]",
-                b.date.format("%m-%d"),
-                b.label,
-                b.goal_name,
-                b.milestone_name,
-                b.step_name,
-                fmt_min(start_min),
-                fmt_min(end_min),
-                b.duration_minutes,
-                b.kind.label()
+                "━━ 第{}周（{} ~ {}）· {} 块 ━━",
+                wi + 1,
+                (term_start + Duration::days((wi * 7) as i64)).format("%m-%d"),
+                (term_start + Duration::days((wi * 7 + 6) as i64)).format("%m-%d"),
+                week_blocks.len()
+            );
+            for b in week_blocks {
+                let start_min = b.offset_minutes;
+                let end_min = b.offset_minutes + b.duration_minutes;
+                println!(
+                    "   {} {}  {:<12} {:<18} {}  {}–{} ({:>3}min)  [{}]",
+                    b.date.format("%m-%d"),
+                    b.label,
+                    b.goal_name,
+                    b.milestone_name,
+                    b.step_name,
+                    fmt_min(start_min),
+                    fmt_min(end_min),
+                    b.duration_minutes,
+                    b.kind.label()
+                );
+            }
+        }
+
+        // ---------- 期末状态 ----------
+        println!("\n══ 期末状态 ══");
+        for st in &goals {
+            let total: i64 = st.spec.milestones.iter().map(|m| m.steps.iter().map(|x| x.minutes).sum::<i64>()).sum();
+            let left = st.remaining_minutes();
+            let pct = if total > 0 {
+                (total - left) as f64 / total as f64 * 100.0
+            } else {
+                0.0
+            };
+            println!(
+                "  {:<16} 进度 {:>5.1}%  用块 {:>3}  剩余 {} 分钟{}",
+                st.spec.name,
+                pct,
+                st.blocks_used,
+                left,
+                if left > 0 { "  ← 未完成" } else { "" }
             );
         }
-    }
 
-    // ---------- 期末状态 ----------
-    println!("\n══ 期末状态 ══");
-    for st in &goals {
-        let total: i64 = st.spec.milestones.iter().map(|m| m.steps.iter().map(|x| x.minutes).sum::<i64>()).sum();
-        let left = st.remaining_minutes();
-        let pct = if total > 0 {
-            (total - left) as f64 / total as f64 * 100.0
+        // ---------- 冲突告警 ----------
+        println!("\n══ 冲突告警 ══");
+        if warnings.is_empty() {
+            println!("  （无）");
         } else {
-            0.0
-        };
-        println!(
-            "  {:<16} 进度 {:>5.1}%  用块 {:>3}  剩余 {} 分钟{}",
-            st.spec.name,
-            pct,
-            st.blocks_used,
-            left,
-            if left > 0 { "  ← 未完成" } else { "" }
-        );
-    }
-
-    // ---------- 冲突告警 ----------
-    println!("\n══ 冲突告警 ══");
-    if warnings.is_empty() {
-        println!("  （无）");
-    } else {
-        for w in &warnings {
-            println!("  ⚠ {w}");
+            for w in &warnings {
+                println!("  ⚠ {w}");
+            }
         }
-    }
 
-    // ---------- 可行性诊断 ----------
-    let feas = feasibility(&goals, slots.len() as i64, term_end, term_start, cfg.block_minutes, 1);
-    println!("\n══ 可行性诊断 ══");
-    println!("  学期内可用整块：{} 块", feas.available_blocks);
-    println!("  硬需求合计（硬锚定+跟课）：{} 块", feas.mandatory_need);
-    println!("  ├ 硬锚定（锚点在本学期内）：{} 块", feas.hard_need);
-    println!("  ├ 跟课型（学校课程）：       {} 块", feas.course_need);
-    println!("  └ 留给弹性目标的容量：       {} 块（弹性全量需求 {} 块）", feas.elastic_capacity, feas.elastic_need);
-    let gap = feas.gap();
-    if gap > 0 {
-        println!(
-            "  ⚠ 缺口 {gap} 块 —— 需求是可用量的 {:.1} 倍",
-            feas.mandatory_need as f64 / feas.available_blocks as f64
-        );
-        if feas.hard_self_conflict() {
+        // ---------- 可行性诊断 ----------
+        let feas = feasibility(&goals, slots.len() as i64, term_end, term_start, cfg.block_minutes, 1);
+        println!("\n══ 可行性诊断 ══");
+        println!("  学期内可用整块：{} 块", feas.available_blocks);
+        println!("  硬需求合计（硬锚定+跟课）：{} 块", feas.mandatory_need);
+        println!("  ├ 硬锚定（锚点在本学期内）：{} 块", feas.hard_need);
+        println!("  ├ 跟课型（学校课程）：       {} 块", feas.course_need);
+        println!("  └ 留给弹性目标的容量：       {} 块（弹性全量需求 {} 块）", feas.elastic_capacity, feas.elastic_need);
+        let gap = feas.gap();
+        if gap > 0 {
             println!(
-                "  ⚠⚠ 硬锚定目标自己就冲突：即使放弃全部弹性目标，仍缺 {} 块",
-                feas.hard_need - feas.available_blocks
+                "  ⚠ 缺口 {gap} 块 —— 需求是可用量的 {:.1} 倍",
+                feas.mandatory_need as f64 / feas.available_blocks as f64
             );
-            println!("     → 至少有一个硬锚定目标必须改期（换考期 / 推迟报名）。");
+            if feas.hard_self_conflict() {
+                println!(
+                    "  ⚠⚠ 硬锚定目标自己就冲突：即使放弃全部弹性目标，仍缺 {} 块",
+                    feas.hard_need - feas.available_blocks
+                );
+                println!("     → 至少有一个硬锚定目标必须改期（换考期 / 推迟报名）。");
+            } else {
+                println!("  → 硬需求可行，但弹性目标被完全挤出。");
+            }
         } else {
-            println!("  → 硬需求可行，但弹性目标被完全挤出。");
+            println!("  ✓ 目标组合可行");
         }
-    } else {
-        println!("  ✓ 目标组合可行");
-    }
 
-    // ---------- 取舍建议 ----------
-    println!("\n══ 取舍建议（AI 该给人什么选项）══");
-    let mut options: Vec<(String, f64, i64, f64)> = Vec::new();
-    for st in &goals {
-        let used = st.blocks_used as i64;
-        let weekly = match st.spec.kind {
-            GoalKind::Course => st.spec.weekly_blocks as i64,
-            GoalKind::Pulse => 2,
-            GoalKind::Daily => 0,
-        };
-        let releasable = if st.spec.kind == GoalKind::Daily {
-            used
-        } else {
-            weekly * 6
-        };
-        if releasable > 0 {
-            let eff = releasable as f64 / st.spec.weight;
-            options.push((st.spec.name.clone(), st.spec.weight, releasable, eff));
+        // ---------- 取舍建议 ----------
+        println!("\n══ 取舍建议（AI 该给人什么选项）══");
+        let mut options: Vec<(String, f64, i64, f64)> = Vec::new();
+        for st in &goals {
+            let used = st.blocks_used as i64;
+            let weekly = match st.spec.kind {
+                GoalKind::Course => st.spec.weekly_blocks as i64,
+                GoalKind::Pulse => 2,
+                GoalKind::Daily => 0,
+            };
+            let releasable = if st.spec.kind == GoalKind::Daily {
+                used
+            } else {
+                weekly * 6
+            };
+            if releasable > 0 {
+                let eff = releasable as f64 / st.spec.weight;
+                options.push((st.spec.name.clone(), st.spec.weight, releasable, eff));
+            }
         }
-    }
-    options.sort_by(|a, b| b.3.partial_cmp(&a.3).unwrap_or(std::cmp::Ordering::Equal));
-    for (name, weight, rel, eff) in &options {
-        println!("  · 暂缓「{name}」→ 释放约 {rel} 块（权重 {weight}，性价比 {eff:.2} 块/权重）");
-    }
+        options.sort_by(|a, b| b.3.partial_cmp(&a.3).unwrap_or(std::cmp::Ordering::Equal));
+        for (name, weight, rel, eff) in &options {
+            println!("  · 暂缓「{name}」→ 释放约 {rel} 块（权重 {weight}，性价比 {eff:.2} 块/权重）");
+        }
 
-    // ---------- 碎片层 ----------
-    println!("\n══ 碎片复习（FSRS v7）══");
-    println!(
-        "  {} 天｜总复习 {} 次｜期末留存 {:.1}%｜碎片总时长 {} 分钟",
-        frags.days, frags.total_reviews, frags.retention * 100.0, frags.total_minutes
-    );
+        // ---------- 碎片层 ----------
+        println!("\n══ 碎片复习（FSRS v7）══");
+        println!(
+            "  {} 天｜总复习 {} 次｜期末留存 {:.1}%｜碎片总时长 {} 分钟",
+            frags.days, frags.total_reviews, frags.retention * 100.0, frags.total_minutes
+        );
+
     let _ = BlockKind::Flexible;
     Ok(())
 }

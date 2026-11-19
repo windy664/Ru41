@@ -40,8 +40,8 @@ subject to
 | 组件 | 先例 | Ru41 实现 | 状态 |
 |---|---|---|---|
 | **学习者模型**<br>（我当前会什么、状态如何） | [The Imperfect Learner](https://arxiv.org/abs/2511.05903)（记忆 + 发展轨迹 + 元认知 + 人格） | FSRS 记忆状态 + 里程碑进度 + 精力/心情记录 | **FSRS 部分已有** |
-| **内容仓库**<br>（能学什么、按什么顺序） | [ExpertAgent](https://arxiv.org/abs/2510.07456) 的 "validated curriculum repository"；[KG 课程建模](https://arxiv.org/abs/2501.12300) | Vault 课堂笔记 + 课表 + 拆解出的知识点/里程碑 | **素材已有，拆解待做** |
-| **动态规划器**<br>（下一步学什么、怎么学） | ExpertAgent 的 "dynamic planning based on continuously updated student model" | 确定性排期 + LLM 做相关性/拆解 | **排期已有，学习者模型待做** |
+| **内容仓库**<br>（能学什么、按什么顺序） | [ExpertAgent](https://arxiv.org/abs/2510.07456) 的 "validated curriculum repository"；[KG 课程建模](https://arxiv.org/abs/2501.12300) | **长期规划文档**（Vault `08-Planning-规划/Plans-计划/`）：人写目标/验收/停止条件，AI 补 step 流 | **原型已跑通**（`scripts/ai-planner-sim/` + `src/plan.rs`） |
+| **动态规划器**<br>（下一步学什么、怎么学） | ExpertAgent 的 "dynamic planning based on continuously updated student model" | LLM 出 step 流（名字+时长）→ 确定性装箱（可跨块切分） | **分工已跑通** |
 
 ### 2.1 ExpertAgent 有一句话点破了关键设计
 
