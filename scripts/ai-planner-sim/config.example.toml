@@ -1,0 +1,162 @@
+# ai-planner-sim 的配置（示例）
+#
+# 复制成 config.toml 后按真实情况改，然后：
+#   cargo run --release
+#
+# ⚠️ 下面的锚点与权重是**假设值**（2026-11-19 演示用）。
+#    真实值见 docs/plans/portfolio.md §8 的待补清单。
+
+[term]
+start = "2026-11-22"
+end = "2027-01-03"
+
+# 整块槽位：来自生产真实课表的空闲形状（周一晚 + 周日上午）
+[[blocks]]
+weekday = 1        # 1=周一 … 7=周日
+start = "19:00"
+label = "周一晚"
+
+[[blocks]]
+weekday = 7
+start = "10:00"
+label = "周日上午"
+
+# 碎片段：课间缝（实测一周 90 分钟）
+[[fragment_slots]]
+weekday = 1
+start = "16:50"
+minutes = 10
+
+[[fragment_slots]]
+weekday = 3
+start = "10:20"
+minutes = 20
+
+[[fragment_slots]]
+weekday = 3
+start = "16:50"
+minutes = 10
+
+[[fragment_slots]]
+weekday = 4
+start = "10:20"
+minutes = 20
+
+[[fragment_slots]]
+weekday = 4
+start = "15:20"
+minutes = 10
+
+[[fragment_slots]]
+weekday = 4
+start = "16:50"
+minutes = 10
+
+[[fragment_slots]]
+weekday = 5
+start = "15:20"
+minutes = 10
+
+# 记忆层参数（FSRS v7）
+card_count = 300
+desired_retention = 0.90
+block_minutes = 120
+seconds_per_card = 10.0
+fragment_daily_budget_seconds = 780.0
+
+# ---------------- 目标集 ----------------
+
+[[goals]]
+id = "cet4"
+name = "四级 CET"
+kind = "pulse"           # pulse=硬锚定脉冲型 | course=跟课型 | daily=日常型
+weight = 80.0
+anchor = "2026-12-19"     # 考试日 —— 需换成真实考期
+[[goals.milestones]]
+name = "词汇 5500 核心"
+minutes = 360
+[[goals.milestones]]
+name = "听力精听 15 篇"
+minutes = 360
+[[goals.milestones]]
+name = "阅读 20 篇"
+minutes = 480
+[[goals.milestones]]
+name = "写作模板 + 15 篇"
+minutes = 360
+[[goals.milestones]]
+name = "真题 3 套 + 模考"
+minutes = 480
+
+[[goals]]
+id = "hicp"
+name = "华为 HICP 证书"
+kind = "pulse"
+weight = 60.0
+anchor = "2026-12-31"     # 报名/考试窗口 —— 需换成真实日期
+[[goals.milestones]]
+name = "课程 8 节"
+minutes = 480
+[[goals.milestones]]
+name = "模拟题 + 错题"
+minutes = 240
+[[goals.milestones]]
+name = "正式考试"
+minutes = 240
+
+[[goals]]
+id = "ielts"
+name = "雅思"
+kind = "pulse"
+weight = 70.0
+anchor = "2027-02-20"     # 在学期外 → 本学期只做基础量
+[[goals.milestones]]
+name = "口语 12 套"
+minutes = 360
+[[goals.milestones]]
+name = "听力 20 篇"
+minutes = 360
+[[goals.milestones]]
+name = "阅读 15 篇"
+minutes = 360
+[[goals.milestones]]
+name = "写作 8 篇"
+minutes = 360
+[[goals.milestones]]
+name = "真题 2 套 + 模考"
+minutes = 480
+
+[[goals]]
+id = "math"
+name = "高数"
+kind = "course"
+weight = 75.0
+anchor = "2027-01-15"
+weekly_blocks = 2        # 课前预习 + 课后习题
+[[goals.milestones]]
+name = "跟课预习 + 课后习题"
+minutes = 1440
+[[goals.milestones]]
+name = "期末冲刺"
+minutes = 480
+
+[[goals]]
+id = "rust"
+name = "学 Rust"
+kind = "daily"
+weight = 50.0
+[[goals.milestones]]
+name = "M1 环境与基本语法"
+minutes = 240
+[[goals.milestones]]
+name = "M2 所有权与借用"
+minutes = 360
+[[goals.milestones]]
+name = "M3 类型系统"
+minutes = 240
+[[goals.milestones]]
+name = "M4 泛型与生命周期"
+minutes = 240
+[[goals.milestones]]
+name = "M5 动手写 CLI 工具"
+minutes = 360
