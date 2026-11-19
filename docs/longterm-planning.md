@@ -468,6 +468,10 @@ pub struct RhythmSlot {
 
 ## 7. 与既有文档的关系
 
+- **多目标怎么分时间** → [plans/portfolio.md](plans/portfolio.md)。本文只解决"一个目标怎么排进空闲"；
+  当你有多个长期规划（四级、证书、雅思、背书、高数、Rust）抢同一批晚上时，**按时间形态分三层**
+  （硬锚定脉冲型 / 跟课型 / 日常型），决策量从"六选一"降到"两选一"。
+- [plans/rust-baseline.md](plans/rust-baseline.md) —— 第一个日常型目标的完整样例（13 块学期内 + 8 周寒假）
 - `docs/agent-event-runtime.md` 提到「真的出现『等三天的事件』需求时」才启用事件运行时——**本设计就是那个需求**，但结论是**不需要新运行时**：现有的 `ScheduleService` + `run_periodic` + 任务队列已经够用
 - `docs/product-design.md` 的「人负责重要决策」原则直接落在 §3 的"人保留的决策"
 - `docs/roadmap.md` 的 P2 backlog 里的「课程复习系统」「项目周报生成」「月度复盘」都依赖这一层排期能力，建议排在它之后
