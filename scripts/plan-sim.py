@@ -156,6 +156,28 @@ class Timetable:
     def conflict(self, day, s, e):
         return [(bs, be, t) for bs, be, t in self.busy.get(day, []) if bs < e and be > s]
 
+    def free_segments(self, day, day_start=8 * 60, day_end=23 * 60, lunch=(12 * 60, 14 * 60)):
+        """当天所有空闲段（扣掉课程与午休）。"""
+        occupied = sorted(self.busy.get(day, []))
+        segments = []
+        cursor = day_start
+        for (s, e, _) in occupied:
+            if s > cursor:
+                segments.append((cursor, s))
+            cursor = max(cursor, e)
+        if cursor < day_end:
+            segments.append((cursor, day_end))
+        out = []
+        for (a, b) in segments:
+            if a < lunch[1] and b > lunch[0]:
+                if a < lunch[0]:
+                    out.append((a, lunch[0]))
+                if b > lunch[1]:
+                    out.append((lunch[1], b))
+            else:
+                out.append((a, b))
+        return [(a, b) for a, b in out if b > a]
+
 
 def dates_on(today, end, weekday):
     out = []
@@ -231,6 +253,34 @@ def main():
                 first = f"{d} {c[0][2][:22]}"
                 break
         print(f"{name:<10}{len(all_dates):<8}{len(ok):<8}{len(all_dates)-len(ok):<8}{first}")
+
+    # 碎片池：取第一个完整周（周一~周日），统计 10-29 分钟的空隙
+    week_start = today + dt.timedelta(days=(7 - today.weekday()) % 7 or 7)
+    if week_start > end:
+        week_start = today
+    week_days = [week_start + dt.timedelta(days=i) for i in range(7)]
+    print(f"\n【1.5】碎片池（10-29 分钟的空隙）｜样本周 {week_start} ~ {week_start + dt.timedelta(days=6)}")
+    print(f"{'日期':<12}{'星期':<6}{'碎片':<26}{'整块(>=30min)'}")
+    print("-" * 100)
+    frag_total = 0
+    frag_count = 0
+    for d in week_days:
+        frags, blocks = [], []
+        for (a, b) in tt.free_segments(d):
+            length = b - a
+            if 10 <= length < 30:
+                frags.append((a, b))
+            elif length >= 30:
+                blocks.append((a, b))
+        frag_total += sum(b - a for a, b in frags)
+        frag_count += len(frags)
+        fs = " ".join(f"{a//60:02d}:{a%60:02d}-{b//60:02d}:{b%60:02d}" for a, b in frags) or "—"
+        bs = " ".join(f"{a//60:02d}:{a%60:02d}-{b//60:02d}:{b%60:02d}" for a, b in blocks) or "—"
+        print(f"{d.isoformat():<12}周{'一二三四五六日'[d.weekday()]:<5} {fs:<26} {bs}")
+    print("-" * 100)
+    print(f"碎片池合计 {frag_total} 分钟（{frag_total/60:.1f}h），{frag_count} 段，平均 {frag_total/max(frag_count,1):.0f} 分钟/段")
+    print(f"→ 「每天 20 分钟 × 5 天」需要 100 分钟：{'装得下' if frag_total >= 100 else '装不下'}")
+    print(f"→ 「每天 15 分钟 × 5 天」需要 75 分钟：{'装得下' if frag_total >= 75 else '装不下'}")
 
     cands = recommend(tt, today, end)
     print("\n【2】固定槽位推荐（容量 + 间隔）")
