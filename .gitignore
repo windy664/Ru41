@@ -26,3 +26,6 @@ plugins/.target-docker-shared/
 
 # 独立 cargo 项目（scripts/ 下的模拟器）自己的 target
 scripts/*/target/
+
+# 本地模拟配置（含真实锚点，不入库）
+scripts/*/config.toml

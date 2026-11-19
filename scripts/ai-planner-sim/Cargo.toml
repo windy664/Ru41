@@ -3,6 +3,17 @@ name = "ai-planner-sim"
 version = "0.1.0"
 edition = "2024"
 
+[lib]
+name = "ai_planner_sim"
+path = "src/lib.rs"
+
+[[bin]]
+name = "ai-planner-sim"
+path = "src/main.rs"
+
 [dependencies]
 fsrs = "7.0.0"
 chrono = { version = "0.4", default-features = false, features = ["std", "clock", "alloc"] }
+serde = { version = "1", features = ["derive"] }
+toml = "0.9"
+anyhow = "1"
