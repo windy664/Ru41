@@ -17,7 +17,9 @@ use crate::{
         extract_note, parse_event_view, split_leading_time, split_selector_and_time,
         split_when_and_title,
     },
-    view::{format_items, truncate_title, usage, visible_items},
+    view::{
+        CHECKED_MARK, UNCHECKED_MARK, format_items, truncate_title, usage, visible_items,
+    },
 };
 
 /// QQ 私人待办入口；持久化与日期视图由核心 TodoService 提供。
@@ -175,9 +177,9 @@ fn todo_actions_markup(items: &[&TodoItem]) -> ReplyMarkup {
     let mut markup = ReplyMarkup::new();
     for item in items {
         let (marker, command) = if item.status == TodoStatus::Active {
-            ("☐", format!("/完成 {}", item.short_id()))
+            (UNCHECKED_MARK, format!("/完成 {}", item.short_id()))
         } else {
-            ("☑", format!("/恢复待办 {}", item.short_id()))
+            (CHECKED_MARK, format!("/恢复待办 {}", item.short_id()))
         };
         markup.push_row(vec![MarkupButton::new(
             format!("{marker} {}", truncate_title(&item.title, 24)),
@@ -223,7 +225,7 @@ impl TodoQqCommand {
             now,
         )?;
         // 只回清单：新条目就在清单里，不用再提示一遍。
-        Ok(todo_list_reply(&service, now, self.options)?)
+        todo_list_reply(service, now, self.options)
     }
 
     fn list_reply(&self, service: &TodoService, now: i64) -> Result<Reply> {

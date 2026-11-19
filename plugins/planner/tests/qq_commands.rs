@@ -269,7 +269,13 @@ async fn todo_commands_add_list_and_complete_in_private_chat() {
     // 完成回执只给清单：完成的条目落到划横线区，不带「已完成」提示行。
     assert!(!completed.text.contains("已完成"), "{}", completed.text);
     // 完成项：可点的恢复复选框（中性占位符，QQ 侧由 qq::render 展开成 cmd-input）+ 划横线标题。
-    assert!(completed.text.contains("{{cmd:☑|/恢复待办 "), "{}", completed.text);
+    // 符号是 ☑+VS15（U+2611 U+FE0E）：emoji 字符必须带 VS15 才按文本呈现，
+    // 否则 Telegram 上会渲染成彩色勾框，和旁边纯文本的 ☐ 不像一套。
+    assert!(
+        completed.text.contains("{{cmd:\u{2611}\u{FE0E}|/恢复待办 "),
+        "{}",
+        completed.text
+    );
     assert!(
         completed.text.contains("~~写项目周报~~"),
         "{}",
@@ -342,7 +348,7 @@ async fn quick_note_enters_todo_inbox_without_agent_or_schedule() {
     assert!(reply.text.contains("## 待办（1）"));
     // 行首复选框：中性占位符（QQ 侧展开成行内 cmd-input，点击把 /完成 <id> 填进输入框）。
     assert!(reply.text.contains("{{cmd:☐|/完成 "));
-    // 复选框符号是 ☐，与完成态的 ☑ 对齐。
+    // 复选框符号是 ☐，与完成态的 ☑+VS15 配成一套（一个纯文本字形、一个 emoji 字符但强制文本呈现）。
     assert!(reply.text.contains("{{cmd:☐|"));
 
     let documents = fixture.store.documents("todo_item", 10).unwrap();
