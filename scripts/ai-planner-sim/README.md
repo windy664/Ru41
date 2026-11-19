@@ -5,10 +5,25 @@
 
 ```bash
 cd scripts/ai-planner-sim
+cp config.example.toml config.toml   # config.toml 不入库（含真实锚点）
 cargo run --release
 ```
 
-依赖 `fsrs = "7.0.0"`（官方 Rust 实现，BSD-3-Clause）。
+依赖 `fsrs = "7.0.0"`（官方 Rust 实现，BSD-3-Clause）、`serde`、`toml`、`anyhow`。
+
+## 三种运行模式
+
+```bash
+cargo run --release                          # 跑一遍规划
+cargo run --release -- --config my.toml      # 换配置
+cargo run --release -- --sweep cet4          # 扫「四级提前多少周开始」
+cargo run --release -- --combinations        # 枚举目标子集：这学期能同时推进哪几个
+cargo test --release                        # 7 个回归测试（守住分配顺序等不变量）
+```
+
+## 研究日志
+
+结论与后续实验见 [docs/plans/ai-planner-research.md](../../docs/plans/ai-planner-research.md)。
 
 ## 时间预算（来自生产真实课表）
 
