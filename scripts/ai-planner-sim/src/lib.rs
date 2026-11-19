@@ -5,4 +5,5 @@
 //! - 未来要搬进 Ru41 主仓时，`src/domain/allocation.rs` 基本可以直接照搬。
 
 pub mod config;
+pub mod plan;
 pub mod planner;
