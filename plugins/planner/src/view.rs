@@ -164,8 +164,25 @@ pub(super) fn usage() -> String {
 
 #[cfg(test)]
 mod tests {
-    use super::{format_items, truncate_title};
+    use super::{CHECKED_MARK, UNCHECKED_MARK, format_items, truncate_title};
     use ru41::domain::todo::{TodoItem, TodoOptions, TodoPriority, TodoStatus};
+
+    /// 两个复选框必须同属「纯文本呈现」这一档，否则在 Telegram 上一个细线框、
+    /// 一个彩色勾框，看着像两种东西。
+    ///
+    /// U+2610 ☐ 不是 emoji 字符（永远纯文本字形）；
+    /// U+2611 ☑ 是 emoji 字符——必须补 U+FE0E（VS15）才按文本呈现。
+    #[test]
+    fn both_checkbox_marks_are_text_presentation() {
+        assert_eq!(UNCHECKED_MARK, "\u{2610}", "未勾选：U+2610 ☐");
+        assert_eq!(
+            CHECKED_MARK, "\u{2611}\u{FE0E}",
+            "已勾选：U+2611 ☑ + U+FE0E（VS15），少了 VS15 就会变彩色 emoji"
+        );
+        // 只出现一个 ☑，且紧跟 VS15。
+        assert_eq!(CHECKED_MARK.matches('\u{2611}').count(), 1);
+        assert!(CHECKED_MARK.ends_with('\u{FE0E}'));
+    }
 
     #[test]
     fn renders_active_list_and_recent_completed_footer() {

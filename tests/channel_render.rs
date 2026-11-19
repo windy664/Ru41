@@ -6,10 +6,17 @@
 
 use ru41::channels::{builtin, markdown, qq::render::qq_render};
 
+/// 已勾选复选框：U+2611 ☑ + U+FE0E（VS15，强制文本呈现）。
+///
+/// U+2611 **是** emoji 字符，不带 VS15 会被客户端渲染成彩色勾框；
+/// 而 U+2610 ☐ 永远是纯文本字形——两个复选框就不成一套了（2026-11-19 修）。
+const CHECKED: &str = "\u{2611}\u{FE0E}";
+
 /// planner 的待办清单（规范层形态）。
 fn canonical_todo_list() -> String {
-    "## 待办（1）\n\n- {{cmd:☐|/完成 abc123}} 板子焊接 — 明天\n- {{cmd:☑|/恢复待办 def456}} ~~写周报~~\n"
-        .to_owned()
+    format!(
+        "## 待办（1）\n\n- {{{{cmd:☐|/完成 abc123}}}} 板子焊接 — 明天\n- {{{{cmd:{CHECKED}|/恢复待办 def456}}}} ~~写周报~~\n"
+    )
 }
 
 #[test]
@@ -29,13 +36,28 @@ fn qq_rendering_keeps_inline_chip_and_font_scaling() {
 }
 
 #[test]
+fn checked_checkbox_keeps_its_text_presentation_selector() {
+    let rendered = qq_render(&canonical_todo_list());
+    // 已勾选那个：☑ 后面必须跟 VS15（%EF%B8%8E），否则 QQ/TG 会渲染成彩色勾框。
+    assert!(
+        rendered.contains("show=\"%E2%98%91%EF%B8%8E\""),
+        "{rendered}"
+    );
+    // 裸 ☑（少了 VS15）不能出现。
+    assert!(!rendered.contains("show=\"%E2%98%91\""), "{rendered}");
+}
+
+#[test]
 fn telegram_rendering_degrades_chip_to_plain_symbol() {
     let rendered = markdown::render(&canonical_todo_list(), &markdown::TELEGRAM);
     // 标题降级成粗体（Telegram 无多级标题）。
     assert!(rendered.contains("<b>待办（1）</b>"), "{rendered}");
     // 复选框降级成纯文本符号，命令不外泄。
     assert!(rendered.contains("• ☐ 板子焊接 — 明天"), "{rendered}");
-    assert!(rendered.contains("☑ <s>写周报</s>"), "{rendered}");
+    assert!(
+        rendered.contains(&format!("{CHECKED} <s>写周报</s>")),
+        "{rendered}"
+    );
     assert!(!rendered.contains("{{cmd:"), "{rendered}");
     assert!(!rendered.contains("<qqbot-cmd-input"), "{rendered}");
 }
