@@ -2,6 +2,7 @@
 //! 本文件只做路径保持；error/schedule 是宿主内部域，不跨插件边界。
 pub mod credential;
 pub mod error;
+pub mod plan;
 pub mod schedule;
 pub mod timetable;
 pub mod todo;
