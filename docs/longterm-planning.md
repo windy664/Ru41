@@ -1,0 +1,510 @@
+---
+type: design
+status: draft
+language: Rust
+agent: mavis
+updated: 2026-11-19
+tags: [Ru41, planning, scheduling, agent-design]
+---
+
+# 长期规划（自动排期）设计
+
+> 一句话：**用课表和行程算出真实空闲，把待办铺进去；LLM 只决定「做什么、多久、为什么」，不决定「什么时候」。**
+
+本文分三部分：调研结论（网上已有的形态）→ 现状盘点（Ru41 已有什么）→ 落地方案（怎么做、怎么退回）。
+
+---
+
+## 0. 评估结论（先看这段）
+
+**结论一：自动排期这件事本身，技术上很轻，价值有限——因为时间不是瓶颈。**
+
+实测（§2.3）：未来 46 天课程与占用 151.7h，**可排期空闲 267.5h，每周约 40h，超过一个全职工作周**。而真实的活跃待办只有 **8 条**，其中大半连截止时间都没有。
+
+排期引擎要做的事（扣占用、切空闲块、EDF 排序）是一个纯函数，半天到一天能写完并测完。但它解决的是"把 8 条待办塞进 267 小时"——**这不是真问题**。
+
+**结论二：真问题是"长期目标"没有被拆解和坚持下来。**
+
+"学 Rust"这种目标，没有截止期、没有终点，所以：
+- 它永远不会出现在待办清单里（待办要具体到"做什么"）
+- 它也不会被排进任何时间点（排期要一个可落位的任务）
+- 就算硬塞进去，一周后没人记得进度
+
+**结论三：所以方案的重心要从「填空」移到「占位」。**
+
+| | A 类：交付物 | B 类：长期目标 |
+|---|---|---|
+| 做法 | 填空——塞进最近的合适空隙 | 占位——每周固定占用同样的槽位 |
+| 载体 | 一条待办 → 一个事件 | 目标 → 里程碑 → 每周固定块 → 每周回顾 |
+| 现状 | 已有 8 条，够用 | **完全缺失** ← 缺口在这 |
+
+**结论四：B 类在当前课表下完全排得下。**
+
+"学 Rust"每周 2×2h、学期剩 6.5 周 = 26h；可用槽位是**周六 09:00-11:00 + 周三 19:00-21:00**，共 13 个 2 小时块，零冲突、容量刚好。这些时间本来就是空转的晚上和周末。
+
+**结论五：调研界的共识全部指向同一件事——分工。**
+
+LLM 出意图和拆解，确定性代码出时间表，人拍板不可逆的决定。这与 Ru41 在校园跑插件上已经确立的原则一致，本方案不引入新哲学。
+
+**建议的优先级**：B 类（长期目标链路 + 每周回顾）价值远高于 A 类（自动排期引擎）。如果只做一件事，做 B 类。
+
+**建议的第一步**（不是 P0 空闲计算，而是一个更便宜的验证）：先手工把"学 Rust"按上面的链路拆一次、占一次固定块，跑两周看能不能坚持。**如果手工都坚持不下来，自动排期只会让一堆排好的块躺在那里没人动。**
+
+---
+、怎么退回）。
+
+---
+
+## 1. 调研：网上有没有「动态决策 / 自动排期」的成熟形态
+
+有，而且已经收敛成一个相当稳定的形状。2026-11-19 查了两条线：**学术方法论**（arXiv API）和**产品实现**（Reclaim.ai 2.0 帮助中心、Motion 官网）。
+
+### 1.1 产品侧：Reclaim 2.0 的「双决策分离」
+
+Reclaim 2.0 的帮助文档（2026-10-10 更新）里最关键的一段，是它**刻意不做**的事：
+
+> Instead of automatically creating a separate calendar event for every Task, Reclaim can surface the Tasks that are most relevant to work on during the time you've already protected for getting work done, like deep work sessions created with a Focus Time Agent.
+>
+> Tasks don't automatically become individual calendar events, which gives you more flexibility in how you work through them.
+
+它把一件事拆成两个**正交**决策：
+
+| 决策 | 谁负责 | 产物 |
+|---|---|---|
+| **什么时候做**（when） | Agents：Focus Time / Habit / Buffer / Defend Meeting Overload | 日历上的时间块 |
+| **做什么**（what） | Tasks：按上下文推荐清单 | 时间块开始时的一份清单 |
+
+> This lets you separate two decisions: when you want to work and what you want to work on. Your Agents protect the time, while Tasks help fill that time with the right work.
+
+Reclaim 2.0 的功能清单本身就是这套模型：**Priorities**（按重要性排时间）、**Habit Agent**（重复习惯）、**Buffer Agent**（自动留通勤/会前准备/休息）、**Focus Time Agent**（保护深度工作）、**Defend Meeting Overload Agent**（限制开会时间）、**Smart Meetings Agent**（重复会议排到最佳时间）、**Tasks**（决定做什么）。
+
+推荐一个 Task 时用的上下文（原文列的）：
+
+> Due dates and priority / Your current calendar event / **Your scheduling hours** / **Memories and preferences you've shared with Reclaim** / Task details like title, description, project, labels
+
+注意两点：**scheduling hours**（作息时段是硬输入）和 **Memories**（用户偏好进长期记忆）。
+
+它给用户的输出分两档：
+
+> **Relevant Now**: Tasks that make sense to work on based on your current context
+> **At Risk**: Tasks that may need attention because of their timing, priority, or due date
+
+### 1.2 产品侧：Reclaim 1.0 的排期内核（四级优先级）
+
+1.0 文档（2026-10-12 更新，legacy）把算法说得更具体：
+
+- 四级优先级 **P1 Critical → P4 Low**；级别高的**可以挤占**级别低的（overbook）。
+- **外部日历事件默认 P1，永不被挤占**——除非用户手动降级。
+- 同优先级内：**Smart Meetings > Habits > Tasks**。
+- **Focus Time 特殊**：Habits/Tasks/Smart Meetings 都排在 Focus Time 前面，无论优先级。专注时间是"剩下多少算多少"。
+- Tasks 排期同时考虑 **priority + flexibility（灵活性）+ due date**：
+
+  > A P2 Task with a due date that is further out might end up scheduling after a P3 Task that is due in the next couple days.
+
+  这条很重要：**优先级不压倒截止期**。排期不是纯优先级排序，而是三者的折中。
+
+- 同优先级 Tasks 按最近截止期排；另有 "Up Next" 可以覆盖优先级强制提前。
+
+Motion 是另一种包装：AI Task Manager（整理和排优先级）+ AI Calendar（自动排一天）+ AI Gantt Chart（按时间可视化 + 自动排期）三者联动，核心机制与 Reclaim 同源。
+
+### 1.3 学术侧：收敛到同一条原则
+
+| 论文 | 结论 | 对我们的意义 |
+|---|---|---|
+| [Architecting Resilient LLM Agents (arXiv:2509.08646)](https://arxiv.org/abs/2509.08646) | Plan-then-Execute：Planner 与 Executor 分离；明确提到 **dynamic re-planning loops** 和 **HITL 验证** | 规划与执行分离；变化触发重规划；人要拍板 |
+| [EcoGym (arXiv:2602.09514)](https://arxiv.org/abs/2602.09514) | 11 个前沿模型在长期 plan-and-execute 上，**没有单一模型全面最优**；模型在「高层策略」与「高效执行」之间存在系统性次优 | 别指望 LLM 把排期做对：策略和执行要分开交给不同东西 |
+| [BiPOP (arXiv:2611.15317)](https://arxiv.org/abs/2611.15317) | LLM 把自然语言翻成 PDDL，**符号规划器**负责约束与调度；失败分析指出 LLM-only planner 主要违反时空协调约束 | LLM 出意图，确定性引擎出时间表 |
+| [TAMPAgent (arXiv:2611.03584)](https://arxiv.org/abs/2611.03584) | agent 出参数化计划 + 经典搜索算法补全可行性 | 同上 |
+| [GenPlanX (arXiv:2506.10897)](https://arxiv.org/abs/2506.10897) | LLM 理解任务 + 经典 AI 规划引擎 + 执行监控 | 同上 |
+| [MemGPT (arXiv:2310.08560)](https://arxiv.org/abs/2310.08560) | 虚拟上下文管理：分层记忆 + 中断 | 课表/日程是硬约束，偏好与目标是长期记忆 |
+| [CORAL (arXiv:2610.40350)](https://arxiv.org/abs/2610.40350) | 长程 agent 主动 checkpoint 工作记忆，输入 token 降 6–7 倍 | 长期规划别把整条时间轴塞进上下文 |
+
+**一句话收敛**：*LLM 负责「理解与生成意图」，确定性代码负责「约束与调度」，人负责「不可逆的决定」。*
+
+这正是 Ru41 已经在校园跑插件上确立的原则（"你是负责接入工具的，不是造一个校园跑程序"）。本设计不引入新哲学，只把它套到时间轴上。
+
+---
+
+## 2. 现状盘点：Ru41 已经有的地基
+
+比预想的多。**大部分零件都在，缺的是把待办铺进去的那一层。**
+
+### 2.1 已有
+
+| 能力 | 位置 | 说明 |
+|---|---|---|
+| 周期事件模型 | `src/domain/schedule.rs` | `EventRecurrence::Weekly { weekday_mask }`，读取时展开成 `EventOccurrence`，不落库展开实例 |
+| 时间轴查询 | `src/app/schedule.rs:95` | `ScheduleService::occurrences_between` |
+| **占用冲突检测** | `src/app/schedule.rs:121` | 注释原文：「**供 agent 规划行程前查询**」——设计时就为这个留了口 |
+| 课表 → 事件 | `plugins/jwxt` | `source.channel = "jwxt"`，课表提前量 `CLASS_REMIND_LEAD_SECS = 20min` |
+| 节次 → 时刻 | `src/domain/timetable.rs:172` | `SectionClock`（`section_times` + `class_duration_mins`），把「3-4节」换算成「10:40-12:00」 |
+| 校历周次 | `StoredMeeting.weeks` | 课表带「第 N 周」，可精确展开到具体日期 |
+| 待办模型 | `src/domain/todo.rs` | `TodoItem`：title / status / priority / labels / due_at / remind_at |
+| 课表并入日程 | `plugins/planner/src/qq_command.rs:26` | `/日程` 已把课表和行程合并到同一条时间轴 |
+| 周期任务入口 | `src/ingress/schedule.rs` | `run_periodic` + `ScheduledJob` 注册表 |
+| 规划目录约定 | Vault | `08-Planning-规划/Plans-计划/` |
+
+### 2.2 生产真实数据画像（2026-11-19 实测）
+
+本周课表（`ru41 jwxt classes week`）：
+
+```
+11月19日（周四）  6 节   09:00-18:20  思政/高数/体能/办公软件/英语/军事理论
+11月20日（周五）  3 节   10:40-16:50  程序设计基础×2 / 大学英语I
+11月21日（周六）  0 节
+11月22日（周日）  0 节
+11月23日（周一，第13周） 2 节  15:30-18:20  网络空间安全导论 / "五史"教育
+```
+
+节次 80 分钟，间隔 20 分钟。
+
+**这个画像直接决定了设计参数**：
+
+1. **工作日是「连轴」**：周四 09:00→18:20，中间只有 20/10/10/10/10 分钟的缝。这些缝**放不了深度工作**，只能塞「轻任务」（背单词、复习 10 分钟、看一眼笔记）。
+2. **周末全空**：两天整块，是深度工作的主战场。
+3. **晚上有整块**：最后一节 18:20 结束，到睡前有 19:00–23:00 可用。
+4. **课表在 event 表里是一次性快照**（`evt_1794184344_...`，`recurring: false`），**没有按周次自动展开**。所以长期规划必须自己从 jwxt 课表源按 `weeks` + `weekday` + `SectionClock` 展开，否则第 13 周之后的课根本不在时间轴上。
+5. **待办普遍没有截止时间**：实测 inbox 里两条活跃待办（"法线方程怎么求"、"时间优化，长期计划"）都是 `due_at: null`、`priority: normal`、`labels: ["临时想法"]`。**纯 EDF 排期在这里完全失效**——必须有优先级 + 估时 + 空闲三者共同决定。
+
+### 2.3 实测空闲块（按上述作息假设算出来）
+
+用生产真实课表（30 门课 × 校历周次 × `section_times`）展开后，扣除占用、按下限 30 分钟过滤、每日上限 6 小时：
+
+| 日期 | 周 | 课程/占用 | 空闲块 | 空闲 |
+|---|---|---|---|---|
+| 11-19 四 | 12 | 09:00-10:20 10:40-12:00 12:30-13:50 14:00-15:20 15:30-16:50 17:00-18:20 | 18:20-23:00 | 4.7h |
+| 11-20 五 | 12 | 10:40-12:00 14:00-15:20 15:30-16:50 | 09:00-10:40 16:50-21:10 | 6.0h |
+| 11-21 六 | 12 | 09:00-18:00 | 18:00-23:00 | 5.0h |
+| 11-22 日 | 12 | — | 09:00-15:00 | 6.0h |
+| 11-23 一 | 13 | 15:30-16:50 17:00-18:20 | 09:00-12:00 14:00-15:30 18:20-19:50 | 6.0h |
+| 11-24 二 | 13 | 10:40-12:00 17:00-18:20 | 09:00-10:40 14:00-17:00 18:20-19:40 | 6.0h |
+| 11-25 三 | 13 | 09:00-10:20 10:40-12:00 15:30-16:50 17:00-18:20 19:00-20:20 | 14:00-15:30 18:20-19:00 20:20-23:00 | 4.8h |
+
+```
+未来 46 天（到 2027-01-03，学期第 18 周结束）
+  课程与占用   151.7 h   （日均 3.3 h）
+  可排期空闲   267.5 h   （日均 5.8 h）
+  按周：第12周 21.7h ｜ 第13-14周 39.5h ｜ 第15周 40.8h ｜ 第16-18周 42.0h
+```
+
+**空闲块的形状非常规整**，正好对上三种节奏：
+
+| 形状 | 什么时候 | 长度 | 适合什么 |
+|---|---|---|---|
+| 早晨块 | 工作日第一节 10:40 那天 | 09:00-10:40 | 背诵、复习、读文献 |
+| 下午块 | 工作日无课下午 | 14:00-17:00 | 3 小时的整块 |
+| 晚间块 | 工作日 18:20 之后 | 18:20-23:00 | 2-3 小时，**深度工作主战场** |
+| 周末上午 | 周六周日 | 09:00-15:00+ | 最整块的深度时间 |
+
+**这张表是整个方案最重要的产出**，它同时说明了两件事：
+
+1. **时间不是瓶颈**——每周 40 小时空闲，超过一个全职工作周。
+2. **但「每日上限」这个参数设计错了**——周末明明全天无课，空闲却被 6 小时上限砍到 15:00。工作日和周末必须分开设限（见 §3 的配置修正）。
+
+### 2.4 缺的三块
+
+| 缺什么 | 后果 |
+|---|---|
+| 待办**没有计划槽位**（没有"打算什么时候做"） | 待办有截止时间但没落点，永远停在清单里 |
+| **没有空闲时段计算** | 即使知道课表，也算不出哪天有空、能空多久 |
+| **没有跨周规划产物与重排** | 排一次就死，课表一变或到期不做事就失真 |
+
+---
+
+## 3. 落地方案：三层
+
+### 层 0 · 规划对象：两类东西，两条链路（这一层最容易漏）
+
+「长期规划」实际上混着**两类完全不同的对象**，它们的处理方式不该一样：
+
+| | **A 类：交付物** | **B 类：长期目标** |
+|---|---|---|
+| 例子 | "12/3 前交实验报告" | "学 Rust" |
+| 有截止期 | 有 | 通常没有 |
+| 一次性 | 是 | 否，是持续投入 |
+| 该怎么做 | 排**一个槽位**，做完就结束 | 拆成**里程碑**，每个里程碑摊成**每周固定块**，持续到学期末 |
+| 落库 | `EventItem`（一次承诺） | 固定块 + 阶段任务（不是一条事件） |
+| 对应 Reclaim | Tasks | **Habit Agent** + Focus Time |
+
+**B 类才是"长期规划"的主体**。像"学 Rust"这种目标，如果只做成一条待办，它永远不会出现在任何时间点上——因为它没有截止期、也没有终点。所以 B 类的链路必须是：
+
+```
+长期目标（"学 Rust"）
+  ↓ agent 拆解（一次性，带目标书）
+阶段目标（Rust 基础 → 所有权与借用 → 异步 → 写个真项目）
+  ↓ 每个阶段配「每周节奏」（用户定）
+每周固定块（周六 09:00-11:00 深度 + 周三 19:00-21:00 复习）
+  ↓ 每周回顾（进度 / 卡点 / 下一周调整）
+```
+
+**每周固定块**才是 B 类的真正载体——它和 A 类的"找一个空位"是两种排法：
+
+- A 类：**填空**（把一件有截止期的事塞进最近的合适空隙）
+- B 类：**占位**（每周固定占用同样的槽位，不管那天有没有别的安排）
+
+这一层对应 Reclaim 的 **Habit Agent**（重复习惯）和 **Focus Time Agent**（保护深度工作），也正对上 §2.3 实测出的那三种空闲形状：**周末上午 = 深度块，工作日 18:20 后 = 深度块 + 复习块**。
+
+用真实空闲量算一下 B 类的可行性：
+
+```
+"学 Rust" → 每周 2 次 × 2 小时 = 4h/周
+学期剩 6.5 周（第 12-18 周）→ 共需 26h
+可用槽位：周六 09:00-11:00（6.5h）+ 周三 19:00-21:00（6.5h）= 13 个块
+每个块 2h 正好装下，容量刚好够，且不与任何课程冲突 ✓
+```
+
+**结论：B 类目标在当前课表下完全排得下，且占用的是本来就会浪费的晚上和周末。**
+
+### 层 1 · 占用与空闲（纯 Rust，确定性）
+
+**输入**
+- 课表：`jwxt` 的 `StoredMeeting`（weekday + weeks + 节次）经 `SectionClock` 展开成未来 N 周的具体占用
+- 日程：`ScheduleService::occurrences_between`（含用户 `/记日程` 的一次性与每周重复事件）
+- 作息与可用时段：**新配置** `[planning]`，决定"一天里哪些时段允许排活"
+
+**输出**：`Vec<FreeSlot>` —— 未来 N 天的空闲区间（已扣除占用、已扣缓冲）
+
+**关键规则**（照抄 Reclaim 的合理部分）：
+- **课表和已有日程是 P1，不可挤占** —— 它们是硬约束，不是可调度项
+- 课表前后留缓冲：沿用 `CLASS_REMIND_LEAD_SECS = 20min`；课后至少留 10 分钟走动
+- 空闲块按**最小有效块长**过滤（默认 30 分钟）；10 分钟的课间缝单独归为「碎片池」，只给轻任务
+
+**配置草案**（`plugins.d/planner/config.toml` 或 `ru41.toml` 的 `[planning]` 段）：
+
+```toml
+[planning]
+horizon_days = 14              # 规划窗口（滚动重排）
+
+# 作息时段：工作日与周末分开设限——实测周末全天无课却被 6h 统一上限砍掉一半
+weekday_windows = ["09:00-12:00", "14:00-23:00"]
+weekend_windows = ["09:00-23:00"]
+weekday_capacity_minutes = 360   # 工作日每天最多排 6 小时
+weekend_capacity_minutes = 600   # 周末每天最多排 10 小时
+
+min_block_minutes = 30          # 小于此长度的空闲不算「块」
+fragment_minutes = 20          # 碎片池阈值（课间缝）
+
+# B 类长期目标的每周节奏（习惯式占位，与 A 类填空并行）
+[planning.habits]
+# 例：每周六上午 2 小时深度块、每周三晚 2 小时复习块
+```
+
+### 层 2 · 估时与排序（LLM 只做这里）
+
+**LLM 的输入**：待办清单（title / labels / priority / due_at）+ 未来 N 天的空闲总量 + 课表密度
+**LLM 的输出**（结构化，每条待办）：
+
+```json
+{"todo_id": "...", "estimated_minutes": 90, "priority_hint": "high",
+ "subtasks": ["...", "..."], "rationale": "高数期中在 12/3，得先补到二次函数"}
+```
+
+**LLM 明确不输出的**：日期、时刻、要不要占这个槽。**这不是能力问题，是分工**——EcoGym 和 BiPOP 的结论都指向同一处：约束与调度交给确定性引擎。
+
+**没有 LLM 时的降级**：按 `labels` / 标题关键词查配置里的默认估时（如 `label = "考试" → 120min`），保证离线可跑、结果可复现。
+
+### 层 3 · 落位与重排（纯 Rust，确定性）
+
+**排序键**（按 Reclaim 的规则，但适配 Ru41 只有 3 级优先级的事实）：
+
+```
+1. 硬约束：已过截止期的排最前（标 At Risk）
+2. 截止期紧迫度：due_at 越近越前
+3. 优先级：High > Normal > Low
+4. 估时短的先排（同优先级同截止期时，短任务先做能更快见到进展）
+```
+
+Reclaim 的原话是 priority + flexibility + due date 三者折中，且「优先级不压倒截止期」。上面这个顺序就是它的 Rust 化：截止期先于优先级，同优先级内按估时。
+
+**排期动作**（EDF 式贪心，逐日推进）：
+1. 按排序键取出待办
+2. 在它截止期之前，找**第一个**装得下它的空闲块
+3. 块长向上取整到 30 分钟的倍数
+4. 排不下的 → 进「需要你拍板」清单
+
+**落库方式**：排好的槽位写成 `EventItem`，`source.channel = "planner"`、`source.source_id = <todo_id>`。
+这样直接复用已有的提醒、冲突检测、`/日程` 视图——**不引入第二套存储**（跟当初待办放进 `records` 的决策一致）。
+
+**重排触发**（三种）：
+1. **周期**：每天固定时间滚动生成未来 14 天计划（`run_periodic`）
+2. **事件驱动**：jwxt 课表同步成功后、或新增/取消日程后 → 重排**未开始**的部分
+3. **手动**：`/规划` 命令
+
+**重排的权限边界**：
+- 已经过去的槽位 → 不动
+- 用户手动改过的槽位（`updated_at` 变了）→ 不动，问用户
+- 其余未来槽位 → 自动挪，并通知"因为课表调整，X 从 A 挪到了 B"
+
+**人保留的决策**（对齐 `docs/product-design.md` 的"人负责重要决策"）：
+- 自动写入的只有：装得下、不与任何占用冲突、截止期来得及的槽位
+- 进「需要你拍板」清单的：排不下的、冲突的、拆解后总时长超出每日上限的
+- **落库前先给预览**（Reclaim 的 Preview Mode 模式）：先发一份计划草案，你确认后才写库
+
+### 3.1 与 Reclaim 2.0 的一处不同：我们要不要给每个待办造事件？
+
+Reclaim 2.0 **刻意不造**（原文：Tasks don't automatically become individual calendar events）。但 Ru41 的处境不同：
+
+- Ru41 的待办大多是**一次性交付物**（交报告、交作业），有明确截止期，"这件事要在周二 15:00 前交"
+- Ru41 已有 `/日程` 合并视图，课表 + 行程 + 计划槽位在一条轴上看更直观
+- Ru41 已有完整的提醒机制（`remind_at` 循环、`CLASS_REMIND_LEAD_SECS`）
+
+**建议**：折中——**给有截止期的待办造事件（它是硬承诺），没截止期的只在时间块里推荐，不落库**。这与 Reclaim 2.0 的"分离两个决策"一致：落库的是"承诺"，推荐的是"候选"。
+
+> ⚠️ 这一条需要拍板，见第 5 节。
+
+---
+
+## 4. 数据模型增量（很小）
+
+```rust
+// TodoItem 新增两个可选字段（serde default，向后兼容）
+pub struct TodoItem {
+    // ...已有字段
+    /// 估时（分钟）。agent 拆解后写回；None 表示未估时。
+    #[serde(default)]
+    pub estimated_minutes: Option<i64>,
+    /// 不早于何时开始做（软性起始约束）。
+    #[serde(default)]
+    pub not_before_at: Option<i64>,
+}
+```
+
+**不新增表**。规划槽位复用 `EventItem`（`source.channel = "planner"`），估算结果写回 `TodoItem.estimated_minutes`。
+
+B 类需要一个新 kind（和 `todo_item` 一样放通用 `records`，不建表）：
+
+```rust
+pub const GOAL_KIND: &str = "goal";
+
+pub struct GoalItem {
+    pub id: String,
+    pub title: String,              // "学 Rust"
+    pub status: GoalStatus,         // Active / Paused / Done
+    pub milestones: Vec<Milestone>, // 阶段目标（带序号、完成标记）
+    /// 每周节奏：星期几 + 时段 + 时长。落成 Weekly 事件。
+    pub weekly_rhythm: Vec<RhythmSlot>,
+    pub started_at: i64,
+    pub target_date: Option<i64>,   // 期望完成日（可空）
+}
+
+pub struct Milestone {
+    pub title: String,              // "Rust 基础语法与所有权"
+    pub done: bool,
+    pub estimated_minutes: i64,
+}
+
+pub struct RhythmSlot {
+    pub weekday: u8,                // 1..=7（周一=1）
+    pub start_minute: u32,          // 从本地 00:00 起的分钟数
+    pub duration_minutes: i64,      // 每次投入时长
+}
+```
+
+新增一个纯函数模块 `src/domain/availability.rs`：
+- `free_slots(occupied: &[EventOccurrence], windows: &DailyWindows, horizon: i64) -> Vec<FreeSlot>`
+- `place_tasks(tasks: &[PlannableTask], slots: Vec<FreeSlot>, ...) -> PlanResult`
+
+都是纯函数，好测、好回滚。
+
+---
+
+## 5. 实施前要定的参数（评估阶段不必现在拍板）
+
+按 §2.3 的实测，各项的建议默认值已经写进配置草案了：
+
+| 参数 | 建议默认 | 依据 |
+|---|---|---|
+| 规划窗口 | 14 天滚动 | 课表数据只到学期第 18 周；14 天够用且数据新鲜 |
+| 每日可排期时段 | 工作日 09:00-12:00 + 14:00-23:00；周末 09:00-23:00 | 实测课表形状 |
+| 每日上限 | 工作日 6h / 周末 10h | 周末要单独抬，否则凭空砍掉一半 |
+| 最小块长 | 30 分钟 | 课间 10-20 分钟缝另算碎片池 |
+| A 类落库 | 有截止期的落成 `EventItem`（`channel=planner`） | 「交报告」是硬承诺，要提醒 |
+| B 类落库 | 每周固定块落成重复事件 + 阶段任务落成待办 | 习惯需要固定锚点 |
+
+真正还需要你判断的只有**行为习惯**层面，不是参数层面：
+
+1. **每周愿意为「学 Rust」这类目标投入多少小时？**（决定 habit 的密度）
+2. **B 类的固定块要不要提前占住？**（占住 = 确定性，但灵活性差；不占 = 每周现场排，但可能排不进去）
+3. **每周回顾要不要做？**（这是 B 类唯一能防止「排了但没做」的机制）
+
+---
+
+## 6. 分期实施
+
+**按 §0 的结论重排了优先级**：B 类（长期目标）先行，A 类（自动排期）靠后。
+
+### B 类先行（价值高，成本低）
+
+| 阶段 | 内容 | 可回滚方式 |
+|---|---|---|
+| **B0 · 手工试跑** | 不写代码。手工把"学 Rust"拆成里程碑、占 13 个固定块（周六 09:00-11:00 + 周三 19:00-21:00），每周回顾一次，跑 2 周 | 无代码，纯手工，停止即可 |
+| **B1 · 目标与里程碑** | 新 kind `goal`（目标 + 阶段 + 每周节奏），agent 拆解一次；产出仍是待办 | 纯新增 kind，不接线 |
+| **B2 · 每周固定块** | 固定块落成 `EventRecurrence::Weekly` 事件（`channel=planner`），复用现有提醒与 `/日程` | 取消循环即停 |
+| **B3 · 每周回顾** | 每周日固定时间推送：本周目标进度 / 下周安排 / 卡点 | 关闭开关 |
+
+### A 类随后（价值有限，成本也低）
+
+| 阶段 | 内容 | 可回滚方式 |
+|---|---|---|
+| **A0 · 空闲计算** | `availability.rs` 纯函数 + 单测；CLI `ru41 plan free` | 纯新增模块，删掉即回滚 |
+| **A1 · 只读报告** | CLI `ru41 plan` 输出"未来 14 天：占用 X / 空闲 Y / 待办 Z / 按当前规则能排下 W 条"。**不写库** | 纯新增命令 |
+| **A2 · 建议清单** | 加入估时（agent 或配置默认）+ 排序 + 槽位建议，输出到 QQ/TG（**先只发，不写库**） | 关闭开关即可停 |
+| **A3 · 落库 + 重排** | 写 `EventItem`（`channel=planner`）+ 周期重排 + 课表变更触发重排 | 写库前有开关；已落库的槽位可用 `source.channel=planner` 批量识别并清理 |
+
+**风险与对策**：
+- *排出一堆没用的槽位* → A1/A2 阶段不写库，先用真实数据验证"空闲量 vs 待办量"是否匹配（§2.3 已经预告了答案：不匹配）
+- *课表同步失败导致时间轴不完整* → 课表来源以缓存为准（`jwxt_meta` 缓存了 `semester_start` + `section_times`），同步失败时用旧快照并标注"数据可能过期"
+- *重排把用户手改的东西冲掉* → 比较 `updated_at`，改过的不动
+- *B 类排了但不做* → 每周回顾是唯一防线；B0 阶段先手工验证能不能坚持，再谈自动化
+
+---
+
+## 7. 与既有文档的关系
+
+- `docs/agent-event-runtime.md` 提到「真的出现『等三天的事件』需求时」才启用事件运行时——**本设计就是那个需求**，但结论是**不需要新运行时**：现有的 `ScheduleService` + `run_periodic` + 任务队列已经够用
+- `docs/product-design.md` 的「人负责重要决策」原则直接落在 §3 的"人保留的决策"
+- `docs/roadmap.md` 的 P2 backlog 里的「课程复习系统」「项目周报生成」「月度复盘」都依赖这一层排期能力，建议排在它之后
+
+## 8. 来源
+
+- Reclaim.ai 2.0 帮助中心：https://help.reclaim.ai/en/collections/19647810-reclaim-2-0-help-docs
+  - Tasks overview（2026-10-10）：https://help.reclaim.ai/en/articles/16558552-tasks-overview-decide-what-to-work-on-when
+  - How Reclaim uses Priorities（1.0 legacy, 2026-10-12）：https://help.reclaim.ai/en/articles/8291694-how-reclaim-uses-priorities-to-intelligently-plan-your-workweek
+- Motion：https://www.usemotion.com/（AI Task Manager / AI Calendar / AI Gantt Chart）
+- 论文：arXiv:2509.08646、2602.09514、2611.15317、2611.03584、2506.10897、2310.08560、2610.40350
+- 本地实测：生产机 `ru41 jwxt classes week` / `ru41 event list` / `ru41 todo list`（2026-11-19）
+
+---
+
+## 9. 工作量与风险（评估用）
+
+### 9.1 各部分工作量
+
+| 部分 | 估计 | 说明 |
+|---|---|---|
+| 空闲计算 `availability.rs` | 0.5-1 天 | 纯函数 + 单测；课时展开逻辑已有（`SectionClock`、`week_of`）可复用 |
+| A 类：建议清单（只读） | 1 天 | 排序 + 槽位分配 + 渲染 |
+| A 类：落库 + 重排 | 1-2 天 | 写 `EventItem` + 幂等 + 课表变更触发 |
+| B 类：目标与里程碑 | 1 天 | 新 kind + agent 拆解 skill |
+| B 类：每周固定块 | 0.5 天 | 复用 `EventRecurrence::Weekly` |
+| B 类：每周回顾 | 1 天 | 周期性推送 + 进度统计 |
+
+**总计约 5-6 天**，但**真正的成本不在写代码**：
+
+### 9.2 三个真实风险
+
+1. **最大的风险不是技术，是「排了不做」。**
+   自动排期会让日历看起来很充实，反而掩盖「什么都没推进」。B0 阶段的手工试跑就是为了暴露这一点。
+
+2. **数据完整性依赖教务同步。**
+   课表数据只到第 18 周（2027-01-03），且 `jwxt_timetable` 有 2 条快照（一条空的旧学期 2025#12、一条 2026#3），**必须挑非空的那条**。教务 SSO 出问题时要用缓存快照并标注"数据可能过期"，不能静默算出一份错的空闲表。
+
+3. **每日上限这个参数容易被低估。**
+   实测证明：统一 6 小时上限会砍掉周末一半可用时间（周末全天无课，却被截到 15:00）。这类"看起来合理"的默认值会在真实数据上悄悄出错——**所有参数都必须用真实课表验证过再定**。
+
+### 9.3 未决问题（留给实施前）
+
+- 课表第 19 周之后的数据从哪来？（学期结束后是否续期，还是规划窗口要随周次收缩）
+- 长期目标（如"学 Rust"）是只放 Vault，还是也进 `records` 参与统一检索？
+- 每周回顾的推送时间与形式（周日晚上推 Markdown？还是 QQ 卡片？）
+
