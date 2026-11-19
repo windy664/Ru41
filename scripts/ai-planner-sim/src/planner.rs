@@ -1,10 +1,21 @@
 //! 规划核心：纯函数，不碰 IO。
 //!
-//! 上一轮模拟抓出三个 bug，其中最要命的是「分配顺序错」——先分弹性项（跟课型），
-//! 它固定占满每周可用块，把硬锚定目标饿死。**硬约束必须先于弹性项分配。**
-//! 这里把它变成一条可测的不变量（见 tests/planner.rs）。
+//! ## 分工（2026-11-20 修正）
+//!
+//! - **LLM 负责把一件事拆成带时长的子任务流**（"看定义 40min / 做例题 60min / 自测 20min"）
+//! - **算法只负责装箱**：把 step 流装进时间槽，允许跨块切分
+//!
+//! 上一版把里程碑当成"整块扣减"的原子单位（`remaining -= 120` 再 `.max(0)`），
+//! 会**吞掉时间**：某个里程碑还差 90 分钟、块是 120 分钟 → 直接归零，30 分钟凭空消失。
+//! 现在 step 可以跨块延续：周一晚装 40min 的"看定义" + 20min 的"做例题"，
+//! 剩下的 40min"做例题"接着排到周日上午。
+//!
+//! 分配顺序固定为 **硬锚定 → 软基础量 → 跟课 → 剩余自由**。
+//! 硬约束必须先于弹性项，否则弹性项会把可用块吃光、把硬锚定目标饿死
+//! （2026-11-19 模拟实测 bug 1，已固化成回归测试）。
 
 use chrono::{DateTime, Datelike, Duration, TimeZone, Utc};
+use std::collections::VecDeque;
 
 use crate::config::{GoalKind, GoalSpec};
 
@@ -32,13 +43,20 @@ impl BlockKind {
     }
 }
 
+/// 装箱结果的一段：**一个 step 在某个块里占用的一段时间**。
+///
+/// 一个 step 可能被切成多段（跨块），每段一条记录。
 #[derive(Debug, Clone)]
-pub struct AllocatedBlock {
+pub struct AllocatedSegment {
     pub date: DateTime<Utc>,
     pub label: String,
-    pub goal_idx: usize,
     pub goal_name: String,
-    pub content: String,
+    pub milestone_name: String,
+    pub step_name: String,
+    /// 从块开始算的偏移（分钟）
+    pub offset_minutes: i64,
+    /// 本段占用时长（分钟）
+    pub duration_minutes: i64,
     pub kind: BlockKind,
 }
 
@@ -49,35 +67,79 @@ pub struct Slot {
     pub label: String,
 }
 
-/// 目标状态：里程碑剩余量 + 已用块数。
+/// 子任务状态（LLM 拆解出来的一个步骤）。
+#[derive(Debug, Clone)]
+pub struct StepState {
+    pub name: String,
+    /// 还剩多少分钟（跨块扣减，不丢时间）
+    pub remaining_minutes: i64,
+}
+
+/// 里程碑状态：它下面的一串子任务。
+#[derive(Debug, Clone)]
+pub struct MilestoneState {
+    pub name: String,
+    pub steps: Vec<StepState>,
+    /// 当前做到第几个 step
+    pub cursor: usize,
+}
+
+/// 目标状态：里程碑 + 子任务流 + 已用块数。
 #[derive(Debug, Clone)]
 pub struct GoalState {
     pub spec: GoalSpec,
-    pub remaining: Vec<i64>,
+    pub milestones: Vec<MilestoneState>,
     pub blocks_used: u64,
 }
 
 impl GoalState {
     pub fn new(spec: GoalSpec) -> Self {
-        let remaining = spec.milestones.iter().map(|m| m.minutes).collect();
+        let milestones = spec
+            .milestones
+            .iter()
+            .map(|m| MilestoneState {
+                name: m.name.clone(),
+                steps: m
+                    .steps
+                    .iter()
+                    .map(|s| StepState {
+                        name: s.name.clone(),
+                        remaining_minutes: s.minutes,
+                    })
+                    .collect(),
+                cursor: 0,
+            })
+            .collect();
         Self {
             spec,
-            remaining,
+            milestones,
             blocks_used: 0,
         }
     }
 
+    /// 剩余总分钟数（所有未完成 step）
     pub fn remaining_minutes(&self) -> i64 {
-        self.remaining.iter().sum()
+        self.milestones
+            .iter()
+            .flat_map(|m| m.steps.iter().map(|s| s.remaining_minutes))
+            .sum()
     }
 
     pub fn done(&self) -> bool {
-        self.remaining.iter().all(|&m| m <= 0)
+        self.remaining_minutes() <= 0
     }
 
-    /// 已经投入的分钟数（已用块 + 里程碑消耗）
-    pub fn invested_minutes(&self, block_minutes: i64) -> i64 {
-        self.blocks_used as i64 * block_minutes
+    /// 当前应做的 step（第一个未完成里程碑的队首未完成 step）
+    fn current_step(&self) -> Option<(usize, usize)> {
+        for (mi, m) in self.milestones.iter().enumerate() {
+            if let Some(si) = m.steps[m.cursor..]
+                .iter()
+                .position(|s| s.remaining_minutes > 0)
+            {
+                return Some((mi, m.cursor + si));
+            }
+        }
+        None
     }
 }
 
@@ -94,9 +156,6 @@ pub struct Demand {
 }
 
 /// 算出本周各硬锚定目标的需求。
-///
-/// - 锚点**在本学期内** → 硬需求：剩余时间必须在这学期完成 → 完整倒排
-/// - 锚点**在本学期外** → 软需求：本学期只做基础量（`base_blocks`），其余留到锚点前的学期
 pub fn compute_demands(
     goals: &[GoalState],
     week_start: DateTime<Utc>,
@@ -122,10 +181,9 @@ pub fn compute_demands(
             continue;
         }
         if anchor_dt <= term_end {
-            let need = required_blocks_per_week(st, weeks_left, block_minutes);
             hard.push(Demand {
                 goal_idx: i,
-                blocks: need,
+                blocks: required_blocks_per_week(st, weeks_left, block_minutes),
                 weeks_left,
                 hard: true,
             });
@@ -142,11 +200,7 @@ pub fn compute_demands(
 }
 
 /// 倒排：剩余时间必须在这学期完成 → 每周需要几个块。
-pub fn required_blocks_per_week(
-    st: &GoalState,
-    weeks_left: i64,
-    block_minutes: i64,
-) -> usize {
+pub fn required_blocks_per_week(st: &GoalState, weeks_left: i64, block_minutes: i64) -> usize {
     let remaining = st.remaining_minutes();
     if remaining <= 0 {
         return 0;
@@ -165,13 +219,57 @@ pub fn course_demand(goals: &[GoalState]) -> usize {
         .sum()
 }
 
+/// **从目标里取 step 填满一个块，跨块切分。**
+///
+/// `budget` 是这个块剩余的分钟数（会被消耗）。
+/// step 的剩余部分保留在目标里，下一个块接着做 —— **不丢时间**。
+fn consume_into_block(
+    st: &mut GoalState,
+    kind: BlockKind,
+    slot: &Slot,
+    block_minutes: i64,
+    budget: &mut i64,
+    out: &mut Vec<AllocatedSegment>,
+) {
+    let blocks_before = st.blocks_used;
+    let mut consumed_any = false;
+    while *budget > 0 {
+        let Some((mi, si)) = st.current_step() else {
+            break;
+        };
+        let milestone_name = st.milestones[mi].name.clone();
+        let step = &mut st.milestones[mi].steps[si];
+        let step_name = step.name.clone();
+        let take = step.remaining_minutes.min(*budget);
+        out.push(AllocatedSegment {
+            date: slot.date,
+            label: slot.label.clone(),
+            goal_name: st.spec.name.clone(),
+            milestone_name,
+            step_name,
+            offset_minutes: block_minutes - *budget,
+            duration_minutes: take,
+            kind,
+        });
+        step.remaining_minutes -= take;
+        *budget -= take;
+        consumed_any = true;
+        if step.remaining_minutes <= 0 {
+            st.milestones[mi].cursor = si + 1;
+        }
+    }
+    // 一个块只算一块（哪怕它装了多个 step，或一个 step 被切成几段）
+    if consumed_any {
+        st.blocks_used = blocks_before + 1;
+    }
+}
+
 /// **分配一周的整块。**
 ///
 /// 顺序固定为 **硬锚定 → 基础量 → 跟课 → 剩余自由分配**。
-/// 硬约束必须先于弹性项，否则弹性项会把可用块吃光、把硬锚定目标饿死
-/// （2026-11-19 模拟实测的 bug 1）。
+/// 硬约束必须先于弹性项，否则弹性项会把可用块吃光、把硬锚定目标饿死。
 ///
-/// 返回分配的块；`goals` 的 `remaining` 与 `blocks_used` 会被就地更新。
+/// step 流跨周延续：本周没做完的 step，下周接着做。
 pub fn allocate_week(
     goals: &mut [GoalState],
     hard: &[Demand],
@@ -179,118 +277,61 @@ pub fn allocate_week(
     course_blocks: usize,
     slots: &[Slot],
     block_minutes: i64,
-) -> Vec<AllocatedBlock> {
-    let capacity = slots.len();
-    let mut out = Vec::new();
-    let mut slot_iter = slots.iter();
-    let mut taken = 0usize;
-
-    // 1) 硬锚定：按紧迫度（weeks_left 小）先拿
+) -> Vec<AllocatedSegment> {
+    // 1) 排出本周的目标队列：硬锚定（按紧迫度）→ 基础量 → 跟课
+    let mut queue: VecDeque<(usize, BlockKind)> = VecDeque::new();
     let mut hard_sorted = hard.to_vec();
     hard_sorted.sort_by_key(|d| d.weeks_left);
     for d in hard_sorted {
-        if taken >= capacity {
-            break;
-        }
-        for _ in 0..d.blocks.min(capacity - taken) {
-            let Some(slot) = slot_iter.next() else { break };
-            let st = &mut goals[d.goal_idx];
-            let Some(idx) = st.remaining.iter().position(|m| *m > 0) else {
-                continue; // 该目标已无里程碑，块还回去
-            };
-            let content = st.spec.milestones[idx].name.clone();
-            st.remaining[idx] = (st.remaining[idx] - block_minutes).max(0);
-            st.blocks_used += 1;
-            out.push(AllocatedBlock {
-                date: slot.date,
-                label: slot.label.clone(),
-                goal_idx: d.goal_idx,
-                goal_name: st.spec.name.clone(),
-                content,
-                kind: BlockKind::Hard,
-            });
-            taken += 1;
+        for _ in 0..d.blocks {
+            queue.push_back((d.goal_idx, BlockKind::Hard));
         }
     }
-
-    // 2) 基础量（锚点在本学期外的目标）
     for d in soft {
-        if taken >= capacity {
-            break;
-        }
-        for _ in 0..d.blocks.min(capacity - taken) {
-            let Some(slot) = slot_iter.next() else { break };
-            let st = &mut goals[d.goal_idx];
-            let Some(idx) = st.remaining.iter().position(|m| *m > 0) else {
-                continue;
-            };
-            let content = st.spec.milestones[idx].name.clone();
-            st.remaining[idx] = (st.remaining[idx] - block_minutes).max(0);
-            st.blocks_used += 1;
-            out.push(AllocatedBlock {
-                date: slot.date,
-                label: slot.label.clone(),
-                goal_idx: d.goal_idx,
-                goal_name: st.spec.name.clone(),
-                content: format!("{content}（打基础）"),
-                kind: BlockKind::Base,
-            });
-            taken += 1;
+        for _ in 0..d.blocks {
+            queue.push_back((d.goal_idx, BlockKind::Base));
         }
     }
-
-    // 3) 跟课型：固定块数，受剩余容量约束
-    for st in goals.iter_mut() {
-        if st.spec.kind != GoalKind::Course {
-            continue;
-        }
-        for _ in 0..course_blocks.min(st.spec.weekly_blocks) {
-            if taken >= capacity {
-                break;
+    for (i, st) in goals.iter().enumerate() {
+        if st.spec.kind == GoalKind::Course {
+            let n = st.spec.weekly_blocks.min(course_blocks.max(st.spec.weekly_blocks));
+            for _ in 0..n {
+                queue.push_back((i, BlockKind::Course));
             }
-            let Some(slot) = slot_iter.next() else { break };
-            let Some(idx) = st.remaining.iter().position(|m| *m > 0) else {
-                continue;
-            };
-            let content = st.spec.milestones[idx].name.clone();
-            st.remaining[idx] = (st.remaining[idx] - block_minutes).max(0);
-            st.blocks_used += 1;
-            out.push(AllocatedBlock {
-                date: slot.date,
-                label: slot.label.clone(),
-                goal_idx: usize::MAX, // 跟课型可能不止一个，这里不用于索引
-                goal_name: st.spec.name.clone(),
-                content: format!("{content}（跟课绑定）"),
-                kind: BlockKind::Course,
-            });
-            taken += 1;
         }
     }
 
-    // 4) 剩余块：跨目标背包，按「权重 × 剩余工作量」挑最值得做的
-    while taken < capacity {
-        let Some(slot) = slot_iter.next() else { break };
-        let best = pick_next(goals);
-        let Some(goal_idx) = best else { break };
-        let st = &mut goals[goal_idx];
-        let Some(idx) = st.remaining.iter().position(|m| *m > 0) else {
-            continue;
-        };
-        let content = st.spec.milestones[idx].name.clone();
-        st.remaining[idx] = (st.remaining[idx] - block_minutes).max(0);
-        st.blocks_used += 1;
-        out.push(AllocatedBlock {
-            date: slot.date,
-            label: slot.label.clone(),
-            goal_idx,
-            goal_name: st.spec.name.clone(),
-            content,
-            kind: BlockKind::Flexible,
-        });
-        taken += 1;
+    // 2) 灌块：**块内可以切换目标**。
+    //    真实的一天是「先做四级的听力，再切到 Rust 的复习」，
+    //    不是「一个块锁死给一个目标，目标做完块就空着」。
+    let mut out = Vec::new();
+    for slot in slots {
+        let mut budget = block_minutes;
+        while budget > 0 {
+            let (goal_idx, kind) = match queue.pop_front() {
+                Some(x) => x,
+                None => match pick_next(goals) {
+                    Some(i) => (i, BlockKind::Flexible),
+                    None => break, // 没事可做了
+                },
+            };
+            let before = goals[goal_idx].remaining_minutes();
+            consume_into_block(
+                &mut goals[goal_idx],
+                kind,
+                slot,
+                block_minutes,
+                &mut budget,
+                &mut out,
+            );
+            if goals[goal_idx].remaining_minutes() == before {
+                // 这个目标已经做完了（没进展）→ 跳过它，避免原地打转
+                continue;
+            }
+        }
     }
 
-    out.sort_by_key(|b| b.date);
+    out.sort_by_key(|b| (b.date, b.offset_minutes));
     out
 }
 
@@ -301,10 +342,13 @@ pub fn pick_next(goals: &[GoalState]) -> Option<usize> {
         if st.done() {
             continue;
         }
-        let remaining_blocks = st.remaining_minutes() as f64 / 120.0;
-        if remaining_blocks < 1.0 {
+        // 判据是「还有未完成的 step」，不是「还剩 ≥1 整块」——
+        // 后者会把跨块延续的 step 剩余部分直接丢掉（175 分钟只排 120 的那个 bug）。
+        let remaining_minutes = st.remaining_minutes();
+        if remaining_minutes <= 0 {
             continue;
         }
+        let remaining_blocks = remaining_minutes as f64 / 120.0;
         let value = st.spec.weight * remaining_blocks.min(6.0);
         if best.is_none_or(|(_, v)| value > v) {
             best = Some((i, value));
@@ -316,9 +360,7 @@ pub fn pick_next(goals: &[GoalState]) -> Option<usize> {
 /// 可行性诊断结果。
 ///
 /// 语义修正（2026-11-20 研究实验发现）：
-/// 上一版把「跨学期目标」的全量需求都算进本学期，于是
-/// 「高数」这种**学校课程**（不是可选项，必然发生）也显示为"不可行"，
-/// 「雅思」这种锚点在寒假的��被误判。正确语义：
+/// 不能把「跨学期目标」的全量需求都算进本学期 ——
 ///
 /// - **硬锚定**（锚点在本学期内）→ 本学期必须全做完
 /// - **跟课型**（学校课程）      → 本学期固定投入 = 每周块数 × 学期周数
@@ -326,32 +368,24 @@ pub fn pick_next(goals: &[GoalState]) -> Option<usize> {
 /// - **日常型**                  → 可延到寒假，不算进"硬需求"
 #[derive(Debug, Clone)]
 pub struct Feasibility {
-    /// 本学期可用整块
     pub available_blocks: i64,
-    /// 硬锚定需求（必须在本学期完成）
     pub hard_need: i64,
-    /// 跟课型投入（学校课程，必然发生）
     pub course_need: i64,
-    /// 硬需求 + 跟课需求之和
     pub mandatory_need: i64,
-    /// 留给弹性目标的块数（可为负 = 硬约束已冲突）
     pub elastic_capacity: i64,
-    /// 弹性目标的全量需求（仅作参考）
     pub elastic_need: i64,
 }
 
 impl Feasibility {
     pub fn gap(&self) -> i64 {
-        // 缺口只看"硬需求 + 跟课"是否超容量；弹性目标可以延后
         self.mandatory_need - self.available_blocks
     }
 
-    /// 硬锚定 + 跟课型自己是否就冲突（放弃全部弹性目标也放不下）
+    /// 硬锚定 + 跟课型自己是否就冲突
     pub fn hard_self_conflict(&self) -> bool {
         self.mandatory_need > self.available_blocks
     }
 
-    /// 弹性目标（日常型）在本学期能拿到多少块
     pub fn elastic_blocks(&self) -> i64 {
         self.elastic_capacity.max(0)
     }
@@ -368,6 +402,7 @@ pub fn feasibility(
 ) -> Feasibility {
     let weeks = (((term_end - term_start).num_days() as f64) / 7.0).ceil() as i64;
     let weeks = weeks.max(1);
+    let blocks_of = |minutes: i64| (minutes + block_minutes - 1) / block_minutes;
 
     let hard_need: i64 = goals
         .iter()
@@ -384,17 +419,15 @@ pub fn feasibility(
                     })
                     .unwrap_or(false)
         })
-        .map(|st| { let t: i64 = st.spec.milestones.iter().map(|m| m.minutes).sum(); (t + block_minutes - 1) / block_minutes })
+        .map(|st| blocks_of(st.remaining_minutes()))
         .sum();
 
-    // 跟课型：每周固定块数 × 学期周数
     let course_need: i64 = goals
         .iter()
         .filter(|st| st.spec.kind == GoalKind::Course)
         .map(|st| st.spec.weekly_blocks as i64 * weeks)
         .sum();
 
-    // 学期外锚定：本学期只做基础量
     let soft_need: i64 = goals
         .iter()
         .filter(|st| {
@@ -413,11 +446,10 @@ pub fn feasibility(
         .map(|_| base_blocks * weeks)
         .sum();
 
-    // 弹性（日常型）：可延后，只作参考
     let elastic_need: i64 = goals
         .iter()
         .filter(|st| st.spec.kind == GoalKind::Daily)
-        .map(|st| { let t: i64 = st.spec.milestones.iter().map(|m| m.minutes).sum(); (t + block_minutes - 1) / block_minutes })
+        .map(|st| blocks_of(st.remaining_minutes()))
         .sum();
 
     let mandatory_need = hard_need + course_need + soft_need;

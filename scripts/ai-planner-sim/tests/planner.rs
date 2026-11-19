@@ -26,7 +26,10 @@ fn pulse_goal(id: &str, name: &str, weight: f64, anchor: &str, minutes: i64) -> 
         weekly_blocks: 0,
         milestones: vec![MilestoneSpec {
             name: "里程碑".into(),
-            minutes,
+            steps: vec![ai_planner_sim::config::TaskStep {
+                name: "步骤".into(),
+                minutes,
+            }],
         }],
     }
 }
@@ -41,7 +44,10 @@ fn course_goal(name: &str, weight: f64, weekly_blocks: usize) -> GoalSpec {
         weekly_blocks,
         milestones: vec![MilestoneSpec {
             name: "跟课".into(),
-            minutes: 1440,
+            steps: vec![ai_planner_sim::config::TaskStep {
+                name: "步骤".into(),
+                minutes: 1440,
+            }],
         }],
     }
 }
@@ -56,7 +62,10 @@ fn daily_goal(name: &str, weight: f64, minutes: i64) -> GoalSpec {
         weekly_blocks: 0,
         milestones: vec![MilestoneSpec {
             name: "日常块".into(),
-            minutes,
+            steps: vec![ai_planner_sim::config::TaskStep {
+                name: "步骤".into(),
+                minutes,
+            }],
         }],
     }
 }
@@ -208,4 +217,104 @@ fn pick_next_skips_finished_goals() {
     );
     assert!(goals[0].done());
     assert_eq!(ai_planner_sim::planner::pick_next(&goals), None);
+}
+
+/// **跨块切分不丢时间**（2026-11-20 修正的核心缺陷）。
+///
+/// 一个 175 分钟的 step 分到两个 120 分钟的块：第一块装 120，第二块装 55。
+/// 旧实现是「整块扣减 + max(0)」，会把多出来的部分吞掉。
+#[test]
+fn step_spanning_blocks_does_not_lose_time() {
+    let week_start = dt(2026, 11, 22);
+    let term_end = dt(2027, 1, 3);
+
+    let spec = GoalSpec {
+        id: "x".into(),
+        name: "X".into(),
+        kind: GoalKind::Daily,
+        weight: 50.0,
+        anchor: None,
+        weekly_blocks: 0,
+        milestones: vec![MilestoneSpec {
+            name: "M".into(),
+            steps: vec![
+                ai_planner_sim::config::TaskStep {
+                    name: "长步骤".into(),
+                    minutes: 175,
+                },
+            ],
+        }],
+    };
+    let mut goals = vec![GoalState::new(spec)];
+    let total = goals[0].remaining_minutes();
+    assert_eq!(total, 175);
+
+    // 两个块：第一个装满 120，第二个装剩下的 55
+    let slots = vec![
+        Slot {
+            date: week_start,
+            label: "A".into(),
+        },
+        Slot {
+            date: week_start + Duration::days(1),
+            label: "B".into(),
+        },
+    ];
+    let blocks = allocate_week(&mut goals, &[], &[], 0, &slots, 120);
+
+    let allocated: i64 = blocks.iter().map(|b| b.duration_minutes).sum();
+    assert_eq!(allocated, 175, "分配出去的分钟必须等于总分钟，不能吞掉");
+    assert_eq!(goals[0].remaining_minutes(), 0, "剩余应为 0（不能为负或凭空消失）");
+    assert_eq!(goals[0].blocks_used, 2, "两个 slot → 算 2 块");
+
+    // 跨块的那个 step 必须出现在两个不同日期上
+    let dates: Vec<_> = blocks.iter().map(|b| b.date).collect();
+    assert_eq!(dates.len(), 2, "175 分钟跨两个块 → 两段记录");
+    assert_ne!(dates[0], dates[1], "两段必须落在不同日期");
+}
+
+/// 一个块里装多个 step，只算一个块。
+#[test]
+fn multiple_steps_in_one_block_count_as_one_block() {
+    let week_start = dt(2026, 11, 22);
+    let spec = GoalSpec {
+        id: "y".into(),
+        name: "Y".into(),
+        kind: GoalKind::Daily,
+        weight: 50.0,
+        anchor: None,
+        weekly_blocks: 0,
+        milestones: vec![MilestoneSpec {
+            name: "M".into(),
+            steps: vec![
+                ai_planner_sim::config::TaskStep {
+                    name: "a".into(),
+                    minutes: 30,
+                },
+                ai_planner_sim::config::TaskStep {
+                    name: "b".into(),
+                    minutes: 40,
+                },
+                ai_planner_sim::config::TaskStep {
+                    name: "c".into(),
+                    minutes: 20,
+                },
+            ],
+        }],
+    };
+    let mut goals = vec![GoalState::new(spec)];
+    let blocks = allocate_week(
+        &mut goals,
+        &[],
+        &[],
+        0,
+        &[Slot {
+            date: week_start,
+            label: "A".into(),
+        }],
+        120,
+    );
+    assert_eq!(blocks.len(), 3, "三个 step → 三段记录");
+    assert_eq!(goals[0].blocks_used, 1, "但只算一个块");
+    assert_eq!(goals[0].remaining_minutes(), 0, "90 分钟的工作在 120 分钟块里全部装完");
 }

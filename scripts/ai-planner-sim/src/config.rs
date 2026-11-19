@@ -35,11 +35,22 @@ pub enum GoalKind {
     Daily,
 }
 
+/// LLM 拆解出来的子任务（带时长）。
+///
+/// 这就是「LLM 负责单次任务时长、算法负责装箱」的接口：
+/// LLM 输出有序的 step 流，算法把它装进时间槽，允许跨块切分。
+#[derive(Debug, Clone, Deserialize)]
+pub struct TaskStep {
+    pub name: String,
+    pub minutes: i64,
+}
+
 #[derive(Debug, Clone, Deserialize)]
 pub struct MilestoneSpec {
     pub name: String,
-    /// 完成需要的整块分钟数
-    pub minutes: i64,
+    /// 子任务流（LLM 拆解的结果）。步骤之和 = 这个里程碑的总时长。
+    #[serde(default)]
+    pub steps: Vec<TaskStep>,
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -125,8 +136,15 @@ impl Config {
                 g.id
             );
             anyhow::ensure!(
-                g.milestones.iter().all(|m| m.minutes > 0),
-                "目标 {} 的里程碑 minutes 必须为正",
+                g.milestones.iter().all(|m| !m.steps.is_empty()),
+                "目标 {} 的里程碑必须有 steps（LLM 拆解结果）",
+                g.id
+            );
+            anyhow::ensure!(
+                g.milestones
+                    .iter()
+                    .all(|m| m.steps.iter().all(|s| s.minutes > 0)),
+                "目标 {} 的 step minutes 必须为正",
                 g.id
             );
         }
