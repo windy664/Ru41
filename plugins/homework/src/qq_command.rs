@@ -65,11 +65,41 @@ impl SimpleCommand for HomeworkQqCommand {
 }
 
 /// 自然语言命中要克制：既提「作业/截止」又带疑问色彩才拦截，避免日常闲聊被吞。
-/// 两道保险：只拦截短问句（长文一律交给 Agent），且「查」必须带宾语（裸「查」
-/// 会命中「筛查/检查/调查」等，比赛公告、新闻长文常被误吞）。
+///
+/// 三道保险：
+/// 1. 只拦截短问句（长文一律交给 Agent）；
+/// 2. 「查」必须带宾语（裸「查」会命中「筛查/检查/调查」等，比赛公告、新闻长文常被误吞）；
+/// 3. **问「怎么交」的不拦**——账号/密码/上传到哪/交到哪里这类**细节**问题要交给
+///    Agent（它有凭据技能和知识库），拦下来只会甩一份作业清单，答非所问。
+///
+/// 第 3 条是 2026-11-20 实测加的：用户问「程序设计作业上传的账号是什么」，
+/// 命中「作业」+「什么」被吞成作业清单，Agent 根本没被问到。
+/// 而同一句去掉「作业」（改成「程序设计ftp上传的账号是什么」）就放行、答对了——
+/// 差别只在有没有那个词，说明旧规则是碰运气，不是判断。
 fn looks_like_homework_question(content: &str) -> bool {
     let text = content.trim().to_lowercase();
     if text.chars().count() > 80 {
+        return false;
+    }
+    // 问「怎么交 / 传到哪 / 什么账号」的细节 → 放行给 Agent。
+    const DETAIL: &[&str] = &[
+        "上传",
+        "怎么交",
+        "如何交",
+        "交到",
+        "提交到",
+        "账号",
+        "密码",
+        "凭据",
+        "在哪",
+        "哪里",
+        "地址",
+        "服务器",
+        "ftp",
+        "端口",
+        "用户名",
+    ];
+    if DETAIL.iter().any(|k| text.contains(k)) {
         return false;
     }
     let topic = ["作业", "截止", "deadline", "due"]
@@ -350,6 +380,48 @@ fn fmt_mmdd_hhmm(ts: i64) -> String {
 mod tests {
     use super::*;
     use serde_json::json;
+
+    /// 自然语言拦截的判定：只拦「要清单」，不拦「问怎么交」。
+    ///
+    /// 2026-11-20 实测踩出来的：用户问「程序设计作业上传的账号是什么」，
+    /// 旧规则命中「作业」+「什么」被吞成作业清单，Agent 根本没被问到。
+    #[test]
+    fn natural_language_gate_keeps_detail_questions_for_the_agent() {
+        // 问「怎么交 / 账号密码 / 传到哪」→ 放行，交给 Agent（凭据技能能答）。
+        for msg in [
+            "程序设计作业上传的账号是什么",
+            "这个作业的账号密码是什么",
+            "智慧树作业上传到哪个服务器",
+            "程序的作业怎么上传到ftp",
+            "作业怎么交",
+        ] {
+            assert!(
+                !looks_like_homework_question(msg),
+                "不该被拦（应交给 Agent）：{msg}"
+            );
+        }
+        // 问「要清单 / 要截止」→ 仍然拦截，走快路径。
+        for msg in [
+            "有什么作业",
+            "哪些作业快截止了",
+            "还有作业吗",
+            "查下作业截止时间",
+            "作业什么时候截止？",
+        ] {
+            assert!(
+                looks_like_homework_question(msg),
+                "该被拦（回作业清单）：{msg}"
+            );
+        }
+        // 长文与无关话题不拦。
+        let long = format!("作业 {}", "很长的新闻".repeat(20));
+        assert!(long.chars().count() > 80, "这句要够长才能测长度闸");
+        assert!(!looks_like_homework_question(&long), "长文不拦");
+        assert!(
+            !looks_like_homework_question("今天天气怎么样"),
+            "无关话题不拦"
+        );
+    }
 
     fn seed_store() -> ru41::adapters::database::sqlite::SqliteTaskStore {
         let dir = std::env::temp_dir().join(format!("ru41-hw-test-{}", ru41::util::now()));
