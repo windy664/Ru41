@@ -81,6 +81,10 @@ fn mock_channel() -> Arc<MockChannel> {
 struct FixtureState {
     /// 平台登录是否放行；Default 手写为 true，失败场景显式置 false。
     login_ok: Mutex<bool>,
+    /// 登录被拒时的服务端文案（可注入「密码错误」这类硬失败）。
+    login_msg2: Mutex<String>,
+    /// /fanyalogin 命中次数：用来验证熔断后**不再发登录请求**。
+    login_hits: Mutex<usize>,
     activities: Mutex<String>,
     presign_hits: Mutex<usize>,
     /// stuSignajax（实际签到请求）命中次数。
@@ -119,6 +123,8 @@ impl FixtureState {
     fn new(activities: String) -> Self {
         Self {
             login_ok: Mutex::new(true),
+            login_msg2: Mutex::new("验证码错误".to_owned()),
+            login_hits: Mutex::new(0),
             activities: Mutex::new(activities),
             presign_hits: Mutex::new(0),
             sign_hits: Mutex::new(0),
@@ -229,8 +235,9 @@ async fn spawn_fixture(state: Arc<FixtureState>) -> SocketAddr {
             "/fanyalogin",
             post(|State(state): State<Arc<FixtureState>>| async move {
                 let status = *state.login_ok.lock().unwrap();
-                let body =
-                    Json(json!({"status": status, "msg2": if status { "" } else { "验证码错误" }}));
+                *state.login_hits.lock().unwrap() += 1;
+                let msg2 = state.login_msg2.lock().unwrap().clone();
+                let body = Json(json!({"status": status, "msg2": if status { "" } else { &msg2 }}));
                 if status {
                     // 多个 set-cookie 必须用 AppendHeaders，数组形式会同名覆盖
                     (
@@ -447,9 +454,33 @@ fn make_tracker_full(
     photo_path: Option<std::path::PathBuf>,
     auto_sign: bool,
 ) -> ChaoxingTracker {
+    make_tracker_full_with_password(
+        store,
+        base,
+        cookie_path,
+        notifier,
+        default_location,
+        photo_path,
+        auto_sign,
+        "pw",
+    )
+}
+
+/// 同 make_tracker_full，但换一套账密（测「凭据变了 → 熔断自动解除」）。
+#[allow(clippy::too_many_arguments)]
+fn make_tracker_full_with_password(
+    store: Arc<dyn TaskStore>,
+    base: &str,
+    cookie_path: std::path::PathBuf,
+    notifier: Option<Arc<dyn NotifyChannel>>,
+    default_location: Option<(f64, f64, String)>,
+    photo_path: Option<std::path::PathBuf>,
+    auto_sign: bool,
+    password: &str,
+) -> ChaoxingTracker {
     let client = ChaoxingClient::with_base_urls(
         Some("10000000000".to_owned()),
-        Some("pw".to_owned()),
+        Some(password.to_owned()),
         cookie_path.clone(),
         base.to_owned(),
         base.to_owned(),
@@ -464,7 +495,7 @@ fn make_tracker_full(
         notifier,
         ChaoxingConfig {
             phone: Some("10000000000".to_owned()),
-            password: Some("pw".to_owned()),
+            password: Some(password.to_owned()),
             cookie_path,
             interval_secs: 60,
             notify_target: "user:mock".into(),
@@ -654,6 +685,91 @@ async fn login_failure_alerts_once_per_day() {
     assert!(!report.login_ok);
     assert!(!report.notified);
     assert_eq!(channel.sent.lock().unwrap().len(), 1);
+}
+
+/// 账密被服务端明确拒绝后**熔断**：不再拿同一份账密去撞超星风控
+/// （超星：错 6 次冻结 15 分钟；签到作业每 60 秒一轮，不熔断就会自己把账号冻上）。
+///
+/// 2026-11-20 实测事故：手机号 15322883180 的旧密码失效后，插件每分钟重登一次，
+/// 5 分钟就把账号送进 15 分钟冻结，解冻后再错、再冻。
+#[tokio::test]
+async fn hard_login_failure_locks_out_and_stops_hitting_the_server() {
+    let state = Arc::new(FixtureState::new(activities_pending_json()));
+    *state.login_ok.lock().unwrap() = false;
+    // 服务端明确说「密码错、错 6 次冻结」→ 硬失败。
+    *state.login_msg2.lock().unwrap() =
+        "账号密码错误，请重新输入，错误输入6次后将被冻结15分钟".to_owned();
+    let addr = spawn_fixture(state.clone()).await;
+    let dir = tempfile::tempdir().unwrap();
+    let store = Arc::new(SqliteTaskStore::open(&dir.path().join("state.db")).unwrap());
+    let cookie_path = dir.path().join("cookies.json");
+    let tracker = make_tracker(
+        store.clone(),
+        &format!("http://{addr}"),
+        cookie_path.clone(),
+        None,
+    );
+
+    // 第一轮：登录被拒 → 熔断标记落盘。
+    let report = tracker.poll_once().await.unwrap();
+    assert!(!report.login_ok);
+    assert_eq!(*state.login_hits.lock().unwrap(), 1, "第一轮应登录一次");
+    assert!(
+        cookie_path.with_file_name("login_lockout.json").exists(),
+        "硬失败应写下熔断标记"
+    );
+
+    // 第二轮：熔断生效 → **不再发登录请求**（不再消耗超星的错误次数）。
+    let report = tracker.poll_once().await.unwrap();
+    assert!(!report.login_ok);
+    assert_eq!(
+        *state.login_hits.lock().unwrap(),
+        1,
+        "熔断后不该再打登录接口"
+    );
+
+    // 换了凭据 → 指纹对不上 → 自动解熔断，重新试一次。
+    let tracker = make_tracker_full_with_password(
+        store,
+        &format!("http://{addr}"),
+        cookie_path.clone(),
+        None,
+        None,
+        None,
+        false,
+        "new-pw",
+    );
+    let _ = tracker.poll_once().await.unwrap();
+    assert_eq!(
+        *state.login_hits.lock().unwrap(),
+        2,
+        "换了凭据应重新尝试登录"
+    );
+}
+
+/// 验证码类失败**不熔断**：那是可恢复的挑战，熔断了反而把插件锁死。
+#[tokio::test]
+async fn captcha_failure_does_not_lock_out() {
+    let state = Arc::new(FixtureState::new(activities_pending_json()));
+    *state.login_ok.lock().unwrap() = false;
+    *state.login_msg2.lock().unwrap() = "验证码错误".to_owned();
+    let addr = spawn_fixture(state.clone()).await;
+    let dir = tempfile::tempdir().unwrap();
+    let store = Arc::new(SqliteTaskStore::open(&dir.path().join("state.db")).unwrap());
+    let cookie_path = dir.path().join("cookies.json");
+    let tracker = make_tracker(store, &format!("http://{addr}"), cookie_path.clone(), None);
+
+    let _ = tracker.poll_once().await.unwrap();
+    let _ = tracker.poll_once().await.unwrap();
+    assert_eq!(
+        *state.login_hits.lock().unwrap(),
+        2,
+        "验证码失败不该熔断，两轮都该照常尝试"
+    );
+    assert!(
+        !cookie_path.with_file_name("login_lockout.json").exists(),
+        "验证码失败不该写熔断标记"
+    );
 }
 
 #[tokio::test]
