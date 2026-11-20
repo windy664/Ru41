@@ -152,10 +152,8 @@ fn render(store: &dyn TaskStore) -> String {
             card.raw(note);
             card.raw("");
         }
-        return card
-            .raw("当前没有未完成作业 🎉")
-            .hint(format!("已完成 {done} 条；清单见 Obsidian「作业总表」"))
-            .build();
+        // 已完成的作业**不显示**（2026-11-19 用户要求）：清单只管还没交的。
+        return card.raw("当前没有未完成作业 🎉").build();
     }
 
     let urgent = DUE_SOON_DAYS * 86_400;
@@ -245,7 +243,8 @@ fn render(store: &dyn TaskStore) -> String {
         &due_soon,
     );
     push_section(&mut card, format!("📝 其他未交（{}）", later.len()), &later);
-    card.hint(format!("已完成 {done} 条；清单见 Obsidian「作业总表」"));
+    // 已完成的作业**不显示**（2026-11-19 用户要求）：清单只管还没交的，
+    // 完成数在 Vault「作业总表」里查，不在这里刷存在感。
     card.build()
 }
 
@@ -509,9 +508,9 @@ mod tests {
         // 分桶：学习通临期在「3 天内截止」，智慧树远期在「其他未交」
         assert!(text.contains("⏰ 3 天内截止（1）"), "{text}");
         assert!(text.contains("📝 其他未交（1）"), "{text}");
-        // 完成计数跨平台合并
-        assert!(text.contains("已完成 2 条"));
-        assert!(text.contains("作业总表"));
+        // 已完成的作业**不显示**（2026-11-19 用户要求）：连完成计数都不出现。
+        assert!(!text.contains("已完成"), "{text}");
+        assert!(!text.contains("作业总表"), "{text}");
     }
 
     #[test]

@@ -130,6 +130,55 @@ struct PersistedCookie {
     value: String,
 }
 
+/// 账密被服务端拒绝后的**熔断标记**。
+///
+/// 超星对同一账号连续输错会「错误输入 6 次冻结 15 分钟」（2026-11-20 实测）。
+/// 而签到作业是**每 60 秒**一轮、作业轮询每 30 分钟一轮，每轮都会拿账密登一次——
+/// 不熔断的话，插件自己就能把账号摁在冻结里（15 分钟冻结 → 解冻 → 再错 → 再冻）。
+///
+/// 标记里存**账密指纹**：换了凭据（手机号/密码改了）就自动解除熔断，重新试一次。
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+struct Lockout {
+    /// 账密指纹（MD5）：只用于判断「凭据有没有变」，不承担安全职责。
+    cred: String,
+    /// 熔断时刻（unix 秒）。
+    ts: i64,
+    /// 服务端原话（给用户看）。
+    reason: String,
+}
+
+/// 熔断标记文件（与 cookie 同目录）。
+fn lockout_path(cookie_path: &std::path::Path) -> std::path::PathBuf {
+    cookie_path.with_file_name("login_lockout.json")
+}
+
+/// 账密指纹：手机号 + 密码的 MD5。只用于判断凭据有没有变。
+fn cred_fingerprint(phone: &str, password: &str) -> String {
+    use md5::{Digest, Md5};
+    let mut hasher = Md5::new();
+    hasher.update(phone.as_bytes());
+    hasher.update([0x01]);
+    hasher.update(password.as_bytes());
+    hasher
+        .finalize()
+        .iter()
+        .map(|b| format!("{b:02x}"))
+        .collect::<String>()
+}
+
+/// 服务端是否**明确拒绝了账密**（而不是网络抖动/验证码挑战）。
+///
+/// 只有这种失败才熔断：验证码/滑块是可恢复的挑战，熔断了反而把插件锁死；
+/// 而「密码错误 / 账号被冻结」重试一万次也是一样的结果，只会把账号打进风控。
+fn is_hard_login_failure(msg: &str) -> bool {
+    if msg.contains("验证码") || msg.contains("滑块") || msg.contains("风控") {
+        return false;
+    }
+    ["密码", "账号", "冻结", "锁定", "不存在"]
+        .iter()
+        .any(|k| msg.contains(k))
+}
+
 /// 学习通协议客户端。凭证来自 [sources.chaoxing]（建议环境变量注入）。
 #[derive(Clone)]
 pub struct ChaoxingClient {
@@ -264,12 +313,42 @@ impl ChaoxingClient {
             .await
             .context("学习通登录响应不是合法 JSON")?;
         if response.status != Some(true) {
-            bail!(
-                "学习通登录被拒绝: {}",
-                response.msg2.unwrap_or_else(|| "未知原因".into())
-            );
+            let msg = response.msg2.unwrap_or_else(|| "未知原因".into());
+            // 账密被服务端明确拒绝 → 熔断，别再拿同一份账密去撞风控。
+            if is_hard_login_failure(&msg) {
+                self.write_lockout(&msg, phone, password);
+            }
+            bail!("学习通登录被拒绝: {msg}");
         }
+        self.clear_lockout();
         self.save_cookies()
+    }
+
+    /// 读取熔断标记（账密被拒后置位，换了凭据自动失效）。
+    fn read_lockout(&self) -> Option<Lockout> {
+        let raw = std::fs::read_to_string(lockout_path(&self.cookie_path)).ok()?;
+        serde_json::from_str(&raw).ok()
+    }
+
+    /// 写入熔断标记：记下账密指纹与服务端原话。
+    fn write_lockout(&self, reason: &str, phone: &str, password: &str) {
+        let lock = Lockout {
+            cred: cred_fingerprint(phone, password),
+            ts: ru41::util::now(),
+            reason: reason.to_owned(),
+        };
+        let path = lockout_path(&self.cookie_path);
+        if let Some(parent) = path.parent() {
+            let _ = std::fs::create_dir_all(parent);
+        }
+        if let Ok(text) = serde_json::to_string(&lock) {
+            let _ = std::fs::write(path, text);
+        }
+    }
+
+    /// 清除熔断标记（登录成功，或凭据变了）。
+    fn clear_lockout(&self) {
+        let _ = std::fs::remove_file(lockout_path(&self.cookie_path));
     }
 
     /// 会话是否有效（accountManage 页面能取到姓名）。
@@ -296,6 +375,23 @@ impl ChaoxingClient {
     pub async fn ensure_session(&self) -> Result<()> {
         if self.load_cookies() && self.session_valid().await {
             return Ok(());
+        }
+        // 熔断中（账密被服务端拒绝过，且凭据没变）→ 立刻返回，**不发登录请求**。
+        //
+        // 超星对同一账号连续输错会「错误输入 6 次冻结 15 分钟」（2026-11-20 实测）。
+        // 而签到作业是**每 60 秒**一轮、作业轮询每 30 分钟一轮，每轮都拿账密登一次——
+        // 不熔断的话插件自己就能把账号摁在冻结里（15 分钟冻结 → 解冻 → 再错 → 再冻）。
+        // 换了凭据（手机号/密码改了）→ 指纹对不上 → 自动解熔断，重新试一次。
+        if let Some(lock) = self.read_lockout()
+            && let (Some(phone), Some(password)) = (self.phone.as_deref(), self.password.as_deref())
+            && lock.cred == cred_fingerprint(phone, password)
+        {
+            bail!(
+                "学习通登录已熔断：服务端拒绝了这份账密（{}）。\
+                 为免触发超星风控（错 6 次冻结 15 分钟）不再自动重试；\
+                 更新 sources.chaoxing 的手机号/密码后会自动恢复。",
+                lock.reason
+            );
         }
         self.login().await?;
         if !self.session_valid().await {
