@@ -84,7 +84,7 @@
 - [ ] AI 安全新闻监控（rss 模块加源即可）
 - [ ] 实习机会匹配（对应 03-opportunity-crawler 设计）
 - [ ] 比赛报名提醒（对应 04-competition-crawler 设计）
-- [ ] 长期规划自动排期（课表 + 日程算空闲 → 待办落槽位；设计见 [longterm-planning.md](longterm-planning.md)，2026-11-19 出方案待拍板）
+- [ ] 长期规划（**改为证据驱动**：每周自动刷新账本「现状证据/状态/下一动作」，只把查不到的攒成问题问人；排期为最后一步。设计见 [plans/evidence-refresh.md](plans/evidence-refresh.md)，2026-11-21 转向）
 - [ ] 课程复习系统（考试前自动生成 Quiz，新设计）
 - [ ] Blog 自动部署（GitHub Pages，新设计）
 - [ ] 项目周报生成（对应 08-weekly-summary 设计，可结合 Obsidian 闭环）
