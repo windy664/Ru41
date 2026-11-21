@@ -1,0 +1,68 @@
+name: publish-latest
+
+# 把 `:<sha>` 重新打成 `:latest` —— **只在 CI 全绿时**。
+#
+# 为什么单独一条而不是改 ci.yml：
+#   - 不动主 CI 的结构（它现在让 image 与 check 并行，注释里明说
+#     「check 红了镜像照推——但镜像推了也不会自动部署」）；
+#   - 生产机自更新（deploy/auto-update.sh）一旦上线，「人工看绿灯」这个闸就没了，
+#     check 红的镜像会被自动拉上生产。
+#
+# 失败安全：这条 workflow 挂了 → latest 停在最后一个绿灯镜像 → 机器不更新，
+# 不会更新成坏镜像。宁可晚点更新，不要坏镜像。
+#
+# 用 imagetools create 重打标签，不重新构建（几秒 vs 几分钟）。
+on:
+  workflow_run:
+    workflows: ["CI"]
+    types: [completed]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  packages: write
+
+jobs:
+  publish:
+    # CI 失败/取消都不发布：latest 保持不动。
+    if: ${{ github.event_name == 'workflow_dispatch' || github.event.workflow_run.conclusion == 'success' }}
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: docker/setup-buildx-action@v3
+
+      - uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: 算出本次 CI 推的 sha 标签
+        id: sha
+        run: |
+          set -euo pipefail
+          if [[ "${{ github.event_name }}" == "workflow_dispatch" ]]; then
+            # 手动触发：用当前 main 的最新提交
+            sha="$(git rev-parse origin/main)"
+          else
+            sha="${{ github.event.workflow_run.head_sha }}"
+          fi
+          echo "sha=$sha" >> "$GITHUB_OUTPUT"
+          echo "使用镜像标签 ghcr.io/windy664/ru41:$sha"
+
+      - name: 把 :sha 重新打成 :latest
+        run: |
+          set -euo pipefail
+          docker buildx imagetools create \
+            --tag ghcr.io/windy664/ru41:latest \
+            "ghcr.io/windy664/ru41:${{ steps.sha.outputs.sha }}"
+
+      - name: 记录
+        run: |
+          {
+            echo "### :latest 已更新（CI 全绿）"
+            echo ""
+            echo "- 来源标签：\`ghcr.io/windy664/ru41:${{ steps.sha.outputs.sha }}\`"
+            echo "- 生产机每 30 分钟自更新一次（deploy/auto-update.sh）"
+          } >> "$GITHUB_STEP_SUMMARY"
