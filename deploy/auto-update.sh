@@ -39,18 +39,21 @@ SETTLE_SECS="${RU41_AUTO_UPDATE_SETTLE:-45}"
 # 而不是从头再来。
 PULL_RETRIES="${RU41_AUTO_UPDATE_PULL_RETRIES:-3}"
 PULL_RETRY_WAIT="${RU41_AUTO_UPDATE_PULL_RETRY_WAIT:-20}"
+# 单次拉取的超时: 域名解析不通时 docker pull 会一直挂着(DNS 超时可到几分钟),
+# 定时器里干等太久会挤掉后面的步骤。
+PULL_TIMEOUT="${RU41_AUTO_UPDATE_PULL_TIMEOUT:-900}"
 
 DRY_RUN=1
 [[ "${1:-}" == "--apply" ]] && DRY_RUN=0
 
-log() { printf '[auto-update %s] %s\n' "$(date +%H:%M:%S)" "$*"; }
+log() { printf '[auto-update %s] %s\n' "$(date +%H:%M:%S)" "$*" >&2; }
 
 # 拉单个 ref; 失败重试 PULL_RETRIES 次(每次间隔 PULL_RETRY_WAIT 秒)。
 PULL_LOG=/tmp/ru41-auto-pull.log
 pull_one() {
   local ref="$1" attempt=1
   while [[ "$attempt" -le "$PULL_RETRIES" ]]; do
-    if docker pull "$ref" > "$PULL_LOG" 2>&1; then
+    if timeout "$PULL_TIMEOUT" docker pull "$ref" > "$PULL_LOG" 2>&1; then
       return 0
     fi
     log "拉 $ref 第 ${attempt}/${PULL_RETRIES} 次失败: $(tail -n 1 "$PULL_LOG" | tr -d '\r' | cut -c1-120)"
@@ -64,6 +67,10 @@ pull_one() {
 }
 
 # 拉镜像：先试镜像站，再试官方源；都失败就保留本地那份（不更新）。
+#
+# ⚠️ 这里**必须**把日志写到 stderr: 本函数的返回值是用 $(...) 捕获的,
+# log() 若写 stdout, 日志会混进 image id 里 → 跟容器实际用的镜像比对时
+# 永远「不相等」→ 每 30 分钟无谓重建一次(2026-11-21 修)。
 pull_image() {
   local mirror="$1" direct="$2" local_tag="$3" id="" ok_ref=""
   for ref in "$mirror:latest" "$direct:latest"; do
