@@ -30,6 +30,7 @@ tags: [Ru41, 智慧树, 作业, deadline, source]
       "platform": "polymas",                 // polymas | wenda，可选
       "course_home_url": "https://…",        // 可选
       "content_published": true,             // 视频内容是否已发布（Autovisor 解锁信号）；null=无法判断
+      "progress": 42,                         // 「总学习进度」百分比 0-100；null=读不到（页面没开/版式变了）
       "tasks": [
         {
           "activity_task_id": "9VDE…",       // 必填；平台任务 ID
@@ -166,6 +167,7 @@ QQ 侧另有查询命令（装配层自动注册）：单聊发送 `/作业` 或
 - `late_submit`（是否允许迟交）来自详情页 `isDelay` 字段（文本兜底）；**未完成且非考试式任务**才访问详情页，考试式任务红线跳过、绝不进入答题页（只读文本与网络响应，不点任何提交入口）。
 - 详情抓取幂等：`attachments/{task_id}/` 已存在直接复用（删目录强制刷新）；单任务失败只降级，不破坏整轮。
 - `content_published` 由 sidecar 点击「我的学习」解析「共 N 个学习资源」得出；wenda 平台与特殊版式（如图谱课）返回 null，宁缺毋滥。首轮部署时已发布的课程会各播报一次，属预期。
+- `progress` 是同一次探测里从「总学习进度 42%」读到的**课程整体**进度（2026-11-21 加）。**判「有没有内容」只能用资源数、不能用进度**（「总学习进度」恒在，哪怕 0% 也会假阳性）；但进度值本身可用——它是**刷课目标生成器**（`sidecar/zhihuishu-sidecar/scripts/plan_targets.py`）判断「这门还剩多少」的唯一数据源：Autovisor 只会按 `config.ini` 的 `[course-url]` 清单逐个刷，它自己不会判断刷哪些课。
 - QQ 自然语言拦截刻意保守：须同时含「作业/截止」类词与疑问色彩才应答，其余落 Agent；`/作业` 带参数时不拦截。
 
 ## 签到监测（预留章节，进行中）
