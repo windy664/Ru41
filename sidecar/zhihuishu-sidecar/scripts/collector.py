@@ -558,10 +558,20 @@ async def detect_course_state(page) -> tuple[bool | None, int | None]:
         if not await js_click(page, "我的学习"):
             return None, None
         await page.wait_for_timeout(6_000)
-        text = await asyncio.wait_for(
-            page.evaluate("document.body ? document.body.innerText.slice(0, 2500) : ''"),
-            timeout=STEP_TIMEOUT / 1000,
-        )
+        # 「总学习进度 X%」里的 X 是**异步取值**、渲染比页面其他部分晚；
+        # 资源数是页面自带属性、先出来。2026-11-21 实测: 采集时只拿到资源数拿不到进度，
+        # 隔几秒再读就有了 → 这里轮询等它出现(总计约 15s)。
+        text = ""
+        for _ in range(5):
+            text = await asyncio.wait_for(
+                page.evaluate(
+                    "document.body ? document.body.innerText.slice(0, 8000) : ''"
+                ),
+                timeout=STEP_TIMEOUT / 1000,
+            )
+            if "总学习进度" in text or "个学习资源" in text:
+                break
+            await page.wait_for_timeout(3_000)
     except Exception:
         return None, None
     # 「总学习进度 42%」→ 42; 只有资源数没进度时为 None.
@@ -781,20 +791,36 @@ async def collect_course(portal, index: int) -> dict | None:
         print(f"[collector] {card_info['title']} 采集异常: {str(exc)[:150]}", flush=True)
         tasks, api_hits = [], 0
 
-    # 内容上线探测(仅 polymas): 视频内容是否发布决定 Autovisor 能否跑;
+    # 内容上线探测(仅 polymas): 视频内容是否已发布决定 Autovisor 能否跑;
     # 顺带读「总学习进度」→ 这门课刷到百分之几(刷课目标生成器要用)。
-    # 失败一律降级为 None, 不影响任务采集结果
+    #
+    # 2026-11-21: 探测必须**开新标签页**做。
+    # 点「我的学习」会把页面导航走, 而任务采集要在**课程页**上点「我的任务」截 API
+    # —— 共用页面时两者必废一个(实测: 共用页面 + 放在采任务之后, 11 门课里只有
+    # 1 门探测成功, 且 progress 全是 None)。
+    # 新标签页探测失败只降级探测本身(content/progress=None), 不影响作业采集。
     content_published: bool | None = None
     progress: int | None = None
     if platform == "polymas":
+        probe = None
         try:
+            probe = await portal.context.new_page()
+            await probe.goto(url, wait_until="domcontentloaded", timeout=60_000)
+            await probe.wait_for_timeout(4_000)
+            await close_popups(probe)
             content_published, progress = await asyncio.wait_for(
-                detect_course_state(target), timeout=30
+                detect_course_state(probe), timeout=45
             )
         except asyncio.TimeoutError:
             print(f"[collector] {card_info['title']}: 内容探测超时", flush=True)
         except Exception as exc:
             print(f"[collector] {card_info['title']} 内容探测异常: {str(exc)[:120]}", flush=True)
+        finally:
+            if probe is not None:
+                try:
+                    await probe.close()
+                except Exception:
+                    pass
 
     # 清理: 关掉新开的页面; 若课程页就是门户本体(同页跳转), 由主循环回门户
     for p in portal.context.pages:
