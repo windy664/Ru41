@@ -1,0 +1,14 @@
+[Unit]
+Description=ru41 生产机自更新(拉新镜像 + 滚动重建 + 健康检查 + 回滚)
+After=docker.service
+
+[Service]
+Type=oneshot
+# 用户级单元: 放 ~/.config/systemd/user/。
+# 默认只报告不重建 —— 脚本要求 ~/ru41-mimo-smoke/.auto-update.enabled 存在才真动手。
+# 首次上机先手动跑一次 `bash deploy/auto-update.sh --dry-run` 看清楚差异,
+# 确认后再 touch 那个文件、systemctl --user enable --now ru41-auto-update.timer。
+WorkingDirectory=%h/ru41-mimo-smoke
+ExecStart=/bin/bash %h/ru41-mimo-smoke/deploy/auto-update.sh --apply
+TimeoutStartSec=1800
+RemainAfterExit=no

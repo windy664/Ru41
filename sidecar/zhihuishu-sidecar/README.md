@@ -15,8 +15,21 @@
 docker compose build
 # 2. 手动跑一次，看日志验证
 docker compose run --rm zhihuishu
-# 3. 验证通过后，systemd timer 每晚定时拉起同款命令（跑完即退）
+# 3. 装定时器（每晚 19:00 刷课，跑完即退）
+cp deploy/zhihuishu-watch.{service,timer} ~/.config/systemd/user/
+systemctl --user daemon-reload
+systemctl --user enable --now zhihuishu-watch.timer
+systemctl --user start zhihuishu-watch.service   # 立即试跑一轮
+journalctl --user -u zhihuishu-watch -f
 ```
+
+**镜像由 CI 出**（`.github/workflows/sidecar-image.yml`）：上游 Autovisor 按钉死的 sha 拉取、
+套 `patches/` 再构建，推 `ghcr.io/windy664/zhihuishu-sidecar`。生产机只需 `docker pull`。
+本地构建需要先把上游源码放进 build context：`git clone <上游> Autovisor && git -C Autovisor checkout --detach 5c71562`。
+
+**三个单元共用 `data/`（cookies 在里面），必须错开**：
+`zhihuishu-signin-watch`（白天 08–17 每 30 分钟）→ **`zhihuishu-watch`（每晚 19:00 刷课）**
+→ `zhihuishu-collector`（23:30 + 04:30 采集作业）。
 
 ## 作业采集器（collector）
 
