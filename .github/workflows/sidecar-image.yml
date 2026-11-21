@@ -50,6 +50,16 @@ jobs:
             git -C Autovisor apply "$PWD/$p"
           done
 
+      - name: 跑 sidecar 自测（纯 stdlib，不进镜像）
+        # 这些脚本以前只靠「上生产机手动跑」验证 —— 于是 2026-11-21 出了
+        # 「采集器算出 progress、写盘时漏掉」这种**不报错**的 bug 都没人发现
+        # (刷课目标生成器读到的永远是 None)。纯 stdlib, 几秒钟, 没必要省。
+        run: |
+          set -euo pipefail
+          cd sidecar/zhihuishu-sidecar
+          python3 -u scripts/test_plan_targets.py
+          python3 -u scripts/test_report_entry.py
+
       - uses: docker/setup-buildx-action@v3
 
       - uses: docker/login-action@v3

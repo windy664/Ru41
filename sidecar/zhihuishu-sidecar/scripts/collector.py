@@ -19,7 +19,10 @@ from datetime import datetime, timedelta, timezone
 from urllib.parse import urlparse
 
 sys.path.insert(0, "/app")
+# scripts/ 自己目录: 纯函数模块(course_state), 宿主上没有 /app 也能 import
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
+import course_state  # noqa: E402
 from modules import login as login_mod  # noqa: E402
 from modules import slider as slider_mod  # noqa: E402
 from modules.browser import create_browser_session  # noqa: E402
@@ -537,6 +540,15 @@ async def scan_polymas_tasks(page) -> tuple[list, int]:
     return [to_contract(raw) for raw in merged.values()], len(handle.captured)
 
 
+def parse_course_state(text: str) -> tuple[bool | None, int | None]:
+    """课程页文本 → (content_published, progress_percent).
+
+    纯函数(好测), 页面长什么样由调用方负责取。
+    实现见 scripts/course_state.py —— 那里还带着踩坑记录。
+    """
+    return course_state.parse_course_state(text)
+
+
 async def detect_course_state(page) -> tuple[bool | None, int | None]:
     """点「我的学习」探测课程视频内容是否已发布 + 已学进度.
 
@@ -558,35 +570,27 @@ async def detect_course_state(page) -> tuple[bool | None, int | None]:
         if not await js_click(page, "我的学习"):
             return None, None
         await page.wait_for_timeout(6_000)
-        # 「总学习进度 X%」里的 X 是**异步取值**、渲染比页面其他部分晚；
-        # 资源数是页面自带属性、先出来。2026-11-21 实测: 采集时只拿到资源数拿不到进度，
-        # 隔几秒再读就有了 → 这里轮询等它出现(总计约 15s)。
-        text = ""
-        for _ in range(5):
+        # 「总学习进度 X%」里的 X 是**异步取值**、可能比资源数晚几秒渲染；
+        # 资源数是页面自带属性、先出来。2026-11-21 实测: 进度在点开后 2s 就有了,
+        # 但**必须等内容和进度都读到**才停 —— 只等资源数会让进度永远是 None
+        # (采集器写盘时被丢掉过一次, 见 build_report_entry 的注释)。
+        # 最多 4 次读取(约 9s 额外等待), 读完为止。
+        content: bool | None = None
+        progress: int | None = None
+        for _ in range(4):
             text = await asyncio.wait_for(
                 page.evaluate(
                     "document.body ? document.body.innerText.slice(0, 8000) : ''"
                 ),
                 timeout=STEP_TIMEOUT / 1000,
             )
-            if "总学习进度" in text or "个学习资源" in text:
+            content, progress = parse_course_state(text)
+            if content is not None and progress is not None:
                 break
             await page.wait_for_timeout(3_000)
     except Exception:
         return None, None
-    # 「总学习进度 42%」→ 42; 只有资源数没进度时为 None.
-    progress_match = re.search(r"总学习进度\s*(\d{1,3})\s*%", text)
-    progress = int(progress_match.group(1)) if progress_match else None
-    # 页面有「总学习进度 0%共 N 个学习资源」字样, 以资源数为准;
-    # 严禁用「学习进度」等宽松词判断——「总学习进度」恒在, 会假阳性
-    count = re.search(r"共\s*(\d+)\s*个学习资源", text)
-    if count:
-        return int(count.group(1)) > 0, progress
-    if "暂无" in text:
-        return False, progress
-    if "章节" in text or "第一章" in text or "第1章" in text:
-        return True, progress
-    return None, progress
+    return content, progress
 
 
 def wenda_pick(item: dict, *keys: str):
@@ -845,6 +849,14 @@ async def collect_course(portal, index: int) -> dict | None:
     return course
 
 
+def build_report_entry(course: dict) -> dict:
+    """课程采集结果 → report.json 里的课程条目.
+
+    白名单式拷贝; 实现与踩坑记录见 scripts/course_state.py。
+    """
+    return course_state.build_report_entry(course)
+
+
 def normalize_todo_item(item: dict) -> dict | None:
     """全局待办条目 → 统一形态; 跨平台考试条目顶层 id 为空, 取嵌套 content 里的."""
     if not isinstance(item, dict):
@@ -1057,13 +1069,7 @@ async def main() -> None:
                                 "tasks": [],
                                 "api_hits": 0,
                             }
-                        entry = {
-                            "title": course["title"],
-                            "platform": course["platform"],
-                            "course_home_url": course["course_home_url"],
-                            "tasks": course["tasks"],
-                            "content_published": course.get("content_published"),
-                        }
+                        entry = build_report_entry(course)
                         report["courses"].append(entry)
                         pending = sum(1 for t in course["tasks"] if not t["completed"])
                         print(

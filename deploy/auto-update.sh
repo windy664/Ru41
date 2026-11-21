@@ -9,6 +9,8 @@
 #
 # 依赖：CI 已经把镜像推到 ghcr.io/windy664/{ru41,zhihuishu-sidecar}；
 #       国内从 NJU 镜像站拉（直连 ghcr.io 会卡住），拉不动时自动回退到 ghcr.io。
+#       镜像站代理大镜像会中途断流（3GB 的 sidecar 镜像实测 "unexpected EOF"），
+#       所以每个源都重试若干次（已下完的层留在本地，重试是接着下）。
 #
 # 用法：
 #   bash deploy/auto-update.sh --dry-run   # 只拉镜像并报告差异，不重建（默认）
@@ -30,17 +32,43 @@ DIRECT_RU41="ghcr.io/windy664/ru41"
 DIRECT_SIDECAR="ghcr.io/windy664/zhihuishu-sidecar"
 # 滚动后给容器起来的宽限时间，再判健康。
 SETTLE_SECS="${RU41_AUTO_UPDATE_SETTLE:-45}"
+# 拉镜像的重试次数与间隔。
+# 为什么必须重试(2026-11-21 实测): NJU 镜像站代理大镜像会**中途断流**
+# (sidecar 镜像 ~3GB, 报 "unexpected EOF"), 直接失败就永远升不上。
+# docker 会把已下载完的层留在本地, 重试时接着下 —— 所以重试是有效的,
+# 而不是从头再来。
+PULL_RETRIES="${RU41_AUTO_UPDATE_PULL_RETRIES:-3}"
+PULL_RETRY_WAIT="${RU41_AUTO_UPDATE_PULL_RETRY_WAIT:-20}"
 
 DRY_RUN=1
 [[ "${1:-}" == "--apply" ]] && DRY_RUN=0
 
 log() { printf '[auto-update %s] %s\n' "$(date +%H:%M:%S)" "$*"; }
 
+# 拉单个 ref; 失败重试 PULL_RETRIES 次(每次间隔 PULL_RETRY_WAIT 秒)。
+PULL_LOG=/tmp/ru41-auto-pull.log
+pull_one() {
+  local ref="$1" attempt=1
+  while [[ "$attempt" -le "$PULL_RETRIES" ]]; do
+    if docker pull "$ref" > "$PULL_LOG" 2>&1; then
+      return 0
+    fi
+    log "拉 $ref 第 ${attempt}/${PULL_RETRIES} 次失败: $(tail -n 1 "$PULL_LOG" | tr -d '\r' | cut -c1-120)"
+    attempt=$((attempt + 1))
+    if [[ "$attempt" -le "$PULL_RETRIES" ]]; then
+      log "  ${PULL_RETRY_WAIT}s 后重试（已下完的层会留在本地，接着下）"
+      sleep "$PULL_RETRY_WAIT"
+    fi
+  done
+  return 1
+}
+
 # 拉镜像：先试镜像站，再试官方源；都失败就保留本地那份（不更新）。
 pull_image() {
-  local mirror="$1" direct="$2" local_tag="$3" id=""
+  local mirror="$1" direct="$2" local_tag="$3" id="" ok_ref=""
   for ref in "$mirror:latest" "$direct:latest"; do
-    if docker pull "$ref" > /dev/null 2>&1; then
+    if pull_one "$ref"; then
+      ok_ref="$ref"
       id="$(docker image inspect "$ref" --format '{{.Id}}')"
       log "拉到 $ref → ${id:7:12}"
       break
@@ -53,8 +81,7 @@ pull_image() {
   fi
   # 顺带把本地 tag 指过去：sidecar 的 systemd 单元引用的就是 zhihuishu-sidecar:local，
   # 一 shot 容器每次都按这个 tag 起，改 tag 就等于升级了。
-  docker tag "$mirror:latest" "$local_tag" 2>/dev/null \
-    || docker tag "$direct:latest" "$local_tag" 2>/dev/null || true
+  docker tag "$ok_ref" "$local_tag" 2>/dev/null || true
   echo "$id"
 }
 
