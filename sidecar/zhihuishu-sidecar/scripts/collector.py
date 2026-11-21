@@ -537,31 +537,46 @@ async def scan_polymas_tasks(page) -> tuple[list, int]:
     return [to_contract(raw) for raw in merged.values()], len(handle.captured)
 
 
-async def detect_content_published(page) -> bool | None:
-    """点「我的学习」探测课程视频内容是否已发布(Autovisor 可跑的前提).
+async def detect_course_state(page) -> tuple[bool | None, int | None]:
+    """点「我的学习」探测课程视频内容是否已发布 + 已学进度.
 
-    None = 无法判断(页面没开/超时); False = 暂无内容; True = 出现章节/视频痕迹.
+    返回 (content_published, progress_percent):
+    - content_published: None = 无法判断(页面没开/超时); False = 暂无内容; True = 有章节/视频痕迹.
+    - progress_percent: 该课「总学习进度」的百分比; None = 读不到.
+
+    两件事在同一个页面同一段文本里, 一次点开一起读(2026-11-21):
+    页面形如「总学习进度 42%共 7 个学习资源」。
+
+    ⚠️ 判断「有没有内容」只能用**资源数**, 不能用「学习进度」这类宽松词 ——
+    「总学习进度」恒在(哪怕是 0%), 拿它判断内容会假阳性(2026-10 实测踩过).
+    但**读进度值本身**是另一回事: 刷课目标生成器要靠它判断「这门还剩多少」.
+
+    进度是**课程整体**的学习进度, 不是当前课时的播放进度(后者是 Autovisor 打印的
+    进度条, 只进 stdout, 不落文件)。
     """
     try:
         if not await js_click(page, "我的学习"):
-            return None
+            return None, None
         await page.wait_for_timeout(6_000)
         text = await asyncio.wait_for(
             page.evaluate("document.body ? document.body.innerText.slice(0, 2500) : ''"),
             timeout=STEP_TIMEOUT / 1000,
         )
     except Exception:
-        return None
+        return None, None
+    # 「总学习进度 42%」→ 42; 只有资源数没进度时为 None.
+    progress_match = re.search(r"总学习进度\s*(\d{1,3})\s*%", text)
+    progress = int(progress_match.group(1)) if progress_match else None
     # 页面有「总学习进度 0%共 N 个学习资源」字样, 以资源数为准;
     # 严禁用「学习进度」等宽松词判断——「总学习进度」恒在, 会假阳性
     count = re.search(r"共\s*(\d+)\s*个学习资源", text)
     if count:
-        return int(count.group(1)) > 0
+        return int(count.group(1)) > 0, progress
     if "暂无" in text:
-        return False
+        return False, progress
     if "章节" in text or "第一章" in text or "第1章" in text:
-        return True
-    return None
+        return True, progress
+    return None, progress
 
 
 def wenda_pick(item: dict, *keys: str):
@@ -767,12 +782,14 @@ async def collect_course(portal, index: int) -> dict | None:
         tasks, api_hits = [], 0
 
     # 内容上线探测(仅 polymas): 视频内容是否发布决定 Autovisor 能否跑;
+    # 顺带读「总学习进度」→ 这门课刷到百分之几(刷课目标生成器要用)。
     # 失败一律降级为 None, 不影响任务采集结果
     content_published: bool | None = None
+    progress: int | None = None
     if platform == "polymas":
         try:
-            content_published = await asyncio.wait_for(
-                detect_content_published(target), timeout=30
+            content_published, progress = await asyncio.wait_for(
+                detect_course_state(target), timeout=30
             )
         except asyncio.TimeoutError:
             print(f"[collector] {card_info['title']}: 内容探测超时", flush=True)
@@ -795,6 +812,9 @@ async def collect_course(portal, index: int) -> dict | None:
         "tasks": tasks,
         "api_hits": api_hits,
         "content_published": content_published,
+        # 「总学习进度」百分比(0-100); None = 读不到(页面没开/版式变了).
+        # 刷课目标生成器据此判断「这门还剩多少」, 见 scripts/plan_targets.py
+        "progress": progress,
     }
     return course
 

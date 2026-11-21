@@ -1,0 +1,13 @@
+[Unit]
+Description=每晚 18:45 生成智慧树刷课目标(赶在 19:00 刷课前)
+
+[Timer]
+# 18:45 生成目标 → 19:00 zhihuishu-watch 开刷 → 23:30 zhihuishu-collector 采集。
+# 三者顺序固定: 目标依赖上一晚的采集报告, 刷课依赖目标。
+OnCalendar=*-*-* 18:45:00
+RandomizedDelaySec=120
+# 错过(关机)则开机后补跑一次; Persistent 只对 OnCalendar 生效, 补跑后 19:00 的刷课照常。
+Persistent=true
+
+[Install]
+WantedBy=timers.target

@@ -121,21 +121,50 @@ Actions 的 runner 连不上它。**让机器自己拉自己滚**才是「人在
   `check` 红 → `latest` 不动 → 机器拉到的永远是绿过的镜像。
 - **B**：`image` job 改 `needs: check`（串行，总耗时 ~7.5 分钟）。
 
-## 3. 刷课「接进 Ru41」还差什么
+## 3. 刷课「接进 Ru41」：目标从人工清单变成自动推导（2026-11-21 已做）
 
-现在 Ru41 只从 sidecar 拿到**作业**（deadline）和**内容解锁信号**（`content_published`，
-即「这门的视频已经放出来了，可以安排自动学习」）。
+**先答一个关键问题：Autovisor 会不会自己判断刷哪些课？——不会。**
+`modules/configs.py: get_course_urls()` 只从 `config.ini` 的 `[course-url]` 段读一串
+`URL1=… URL2=…`，`Autovisor.py:276` 就是 `for index, course_url in enumerate(config.course_urls, 1)`
+——**它被告知刷哪些课**。也就是说「自动刷课」一直缺的不是刷的能力，是**目标的来源**。
 
-**刷课进度没有回传**。想做「X 门课还差 N 分钟」需要：
+**「哪些课还没刷完」的数据源本来就有**（2026-11-21 在上游源码里查实的）：
 
-1. sidecar 侧：从平台「学习进度」页读出每门课的已刷/总时长
-   （Autovisor 自己会写 `data/study_*.json`，但那是调试用的页面 dump，不是结构化进度；
-   需要新写一个采集脚本，**必须先在真机上抓一次页面结构**，盲写不了）；
-2. 写进 `report.json`（契约加字段，如 `watch_progress: [{course, done_min, total_min}]`）；
-3. Ru41 侧 `plugins/zhihuishu` 读它并播报（未解锁 → 可刷；解锁后 → 还差多少）。
+| 想要的信息 | 有没有 | 在哪 |
+|---|---|---|
+| 平台上有哪些课 | ✅ | 采集器枚举门户 `.course-card`（实测 8~9 张卡 → 11 门课） |
+| 哪门课有内容可刷 | ✅ | `content_published`（点「我的学习」数「共 N 个学习资源」） |
+| **这门课刷到百分之几** | ✅ **但没人取** | 同一次探测读到的文本里就有「总学习进度 42%」——采集器只解析了资源数，把进度丢掉了 |
+| 当前课时的播放进度 | ⚠️ | Autovisor 有 `modules/progress.py: get_course_progress()`，但只 `\r` 打印到 stdout，**不落文件** |
 
-**这一步是「开发不测试」做不了的**：页面结构得在有登录态的机器上抓。
-所以本次只交付 2.1–2.3（能盲写的部分），进度回传列为下一步。
+所以补的是**我们自研的一环**，不动上游：
+
+1. **采集器**（`scripts/collector.py`）：`detect_content_published` → `detect_course_state`，
+   同一次点开里把「总学习进度 X%」一起解析出来 → `report.json` 的 `courses[].progress`。
+   （判断「有没有内容」仍**只用资源数**——「总学习进度」恒在，用它判断会假阳性。）
+2. **目标生成器**（`scripts/plan_targets.py`，纯 stdlib，宿主上跑）：
+   读 `report.json` → 选出「`content_published is True` 且（`progress` 为 null 或 `< 阈值`）」的课
+   → **写回 `config.ini` 的 `[course-url]` 段** → Autovisor 下次跑就按这份清单刷。
+   - 只改那一段的选项行，**注释与其余段落原样保留**（`config.ini` 里有防风控的关键注释，
+     用 configparser 重写会全丢）；
+   - 人工维护的 URL 保留并排在自动选出的前面（他手放进去的必有理由），与自动选出去重；
+   - 顺带写 `data/targets.json`：今晚刷哪些、各自还差多少（给 Ru41 侧播报用）。
+3. **定时器**（`deploy/zhihuishu-targets.{service,timer}`）：每晚 **18:45** 生成目标，
+   赶在 19:00 的刷课之前。
+
+完整时间线：
+
+```
+23:30 采集器 → report.json（含 progress）      ┐
+18:45 目标生成器 → config.ini [course-url]     ├─→ 19:00 Autovisor 按清单刷
+19:00 刷课（limitMaxTime 30min/门）            ┘
+```
+
+**自测**：`scripts/test_plan_targets.py`（选课规则 / 只改 `[course-url]` 段 / 注释不丢 /
+人工清单优先 / 幂等 / 端到端），已本地跑通。
+
+**还没做的**：Ru41 侧消费 `targets.json` 播报「今晚刷 X 门，还差 Y 分钟」——
+契约字段有了，但 Ru41 插件还没读它（下一步）。
 
 ## 4. 必须回家验证的清单
 
@@ -169,8 +198,10 @@ Actions 的 runner 连不上它。**让机器自己拉自己滚**才是「人在
 
 | 文件 | 作用 |
 |---|---|
-| `.github/workflows/sidecar-image.yml` | sidecar 镜像进 CI（上游钉版本 + 套补丁 + 推 GHCR） |
-| `sidecar/zhihuishu-sidecar/deploy/zhihuishu-watch.service` | 刷课单轮单元（跑完即退） |
-| `sidecar/zhihuishu-sidecar/deploy/zhihuishu-watch.timer` | 每晚 19:00 拉起刷课 |
-| `deploy/auto-update.sh` | 生产机自更新：拉镜像 → 比对 → 滚动 → 健康检查 → 回滚 |
-| `deploy/auto-update.service` / `.timer` | 每 30 分钟自更新一轮 |
+| `.github/workflows/sidecar-image.yml` | sidecar 镜像进 CI（上游钉版本 + 套补丁 + 推 GHCR）✅ 已跑通 |
+| `.github/workflows/publish-latest.yml` | `:latest` 只在 CI 全绿时更新（给自动更新上保险）✅ 已跑通 |
+| `sidecar/zhihuishu-sidecar/deploy/zhihuishu-watch.service` / `.timer` | 每晚 19:00 刷课（Autovisor，跑完即退） |
+| `sidecar/zhihuishu-sidecar/deploy/zhihuishu-targets.service` / `.timer` | 每晚 18:45 生成刷课目标（写 `config.ini` 的 `[course-url]` 段） |
+| `sidecar/zhihuishu-sidecar/scripts/plan_targets.py` | 目标生成器：报告 → 「今晚刷哪些课」 |
+| `sidecar/zhihuishu-sidecar/scripts/test_plan_targets.py` | 目标生成器自测（本地已跑通） |
+| `deploy/auto-update.sh` / `.service` / `.timer` | 生产机自更新：拉镜像 → 比对 → 滚动 → 健康检查 → 回滚 |

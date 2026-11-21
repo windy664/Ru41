@@ -1,0 +1,16 @@
+[Unit]
+Description=生成智慧树刷课目标(写 Autovisor 的 config.ini [course-url] 段)
+After=docker.service
+
+[Service]
+Type=oneshot
+# 用户级单元: 放 ~/.config/systemd/user/。
+# 纯 stdlib 脚本, 宿主上直接跑(不需要浏览器、不需要容器):
+#   读 data/report.json(采集器每晚写) → 选出「有内容可刷 + 没刷完」的课
+#   → 写回 config.ini 的 [course-url] 段 → Autovisor 下次跑就按这份清单刷。
+#
+# 放在 18:45: 赶在 19:00 的刷课之前, 让 Autovisor 拿到当天的目标清单。
+WorkingDirectory=%h/Project/zhihuishu-sidecar
+ExecStart=/usr/bin/python3 %h/Project/zhihuishu-sidecar/scripts/plan_targets.py
+TimeoutStartSec=120
+RemainAfterExit=no

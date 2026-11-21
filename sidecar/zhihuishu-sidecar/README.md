@@ -31,6 +31,28 @@ journalctl --user -u zhihuishu-watch -f
 `zhihuishu-signin-watch`（白天 08–17 每 30 分钟）→ **`zhihuishu-watch`（每晚 19:00 刷课）**
 → `zhihuishu-collector`（23:30 + 04:30 采集作业）。
 
+## 刷课目标是自动算出来的（2026-11-21）
+
+**Autovisor 不会自己判断刷哪些课** —— 它只按 `config.ini` 的 `[course-url]` 段逐个跑。
+这份清单现在由 `scripts/plan_targets.py` 每晚 18:45 自动生成：
+
+```
+23:30 采集器 → report.json（含每门课的「总学习进度」百分比）
+18:45 目标生成器 → 选出「有内容可刷 + 没刷完」的课 → 写 config.ini 的 [course-url] 段
+19:00 Autovisor → 按清单刷（limitMaxTime 30min/门）
+```
+
+```bash
+python3 scripts/plan_targets.py --dry-run   # 只报告不改文件
+python3 scripts/plan_targets.py             # 真写 config.ini + data/targets.json
+python3 -u scripts/test_plan_targets.py     # 自测
+```
+
+- 人工在 `config.ini` 里手写的 URL **保留并排在自动选出的前面**（手放进去的必有理由）。
+- 只改 `[course-url]` 段的选项行，**注释与其余段落原样保留**（防风控的关键注释不能丢）。
+- 选课规则：`content_published is True`（有内容）且 `progress` 读不到或 `< 100`（没刷完）；
+  每晚最多 3 门（`--max`），避免一晚刷不完反而被风控盯上。
+
 ## 作业采集器（collector）
 
 `scripts/collector.py` 产出 `data/report.json`（契约见 Ru41 `docs/sources-zhihuishu.md`），
