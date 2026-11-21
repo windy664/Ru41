@@ -35,6 +35,7 @@ import os
 import re
 import sys
 from typing import Any
+from urllib.parse import urlparse
 
 # [course-url] 段里表示一条课程 URL 的选项行(URL1=… URL2=…)
 URL_OPTION_RE = re.compile(r"^\s*URL\d+\s*=")
@@ -42,7 +43,12 @@ SECTION_RE = re.compile(r"^\s*\[(?P<name>[^\]]+)\]\s*$")
 
 
 def read_manual_urls(text: str) -> list[str]:
-    """从 config.ini 文本里取出 [course-url] 段已有的 URL(人工维护的那份)."""
+    """从 config.ini 文本里取出 [course-url] 段已有的 URL(人工维护的那份).
+
+    裸首页(路径只有 "/")不算课程 —— 那是当初登录测试留下的占位
+    (「https://www.zhihuishu.com」)。Autovisor 拿到它会判定「课程未确认完成」
+    并 **break 掉整轮**, 后面的课一节都刷不到, 所以必须剔掉。
+    """
     urls: list[str] = []
     in_section = False
     for line in text.splitlines():
@@ -51,9 +57,18 @@ def read_manual_urls(text: str) -> list[str]:
             continue
         if in_section and URL_OPTION_RE.match(line):
             value = line.split("=", 1)[1].strip()
-            if value:
+            if value and not is_bare_homepage(value):
                 urls.append(value)
     return urls
+
+
+def is_bare_homepage(url: str) -> bool:
+    """是不是只有站点根路径的网址(占位符, 不是课程页)."""
+    try:
+        path = urlparse(url).path
+    except ValueError:
+        return True
+    return path in ("", "/")
 
 
 def write_course_urls(text: str, urls: list[str]) -> str:

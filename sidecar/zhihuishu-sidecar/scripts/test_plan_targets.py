@@ -100,6 +100,17 @@ manual = read_manual_urls(CONFIG)
 assert manual == ["https://manual.example/keepme"], manual
 print("  ok  读出人工维护的 URL")
 
+# 裸首页(登录测试留下的占位)不算课程 —— Autovisor 拿到会 break 掉整轮
+PLACEHOLDER = """[course-url]
+;URL1 = https://www.zhihuishu.com  ← 临时占位，仅用于登录测试
+URL1 = https://www.zhihuishu.com
+URL2 = https://www.zhihuishu.com/
+URL3 = https://www.zhihuishu.com/course/realone
+"""
+manual_ph = read_manual_urls(PLACEHOLDER)
+assert manual_ph == ["https://www.zhihuishu.com/course/realone"], manual_ph
+print("  ok  裸首页占位被剔除(否则 Autovisor 会 break 掉整轮)")
+
 new_text = write_course_urls(CONFIG, ["https://manual.example/keepme", "https://x/1", "https://x/3"])
 assert "limitMaxTime = 30" in new_text
 assert "不 24h 挂机, 防人机验证" in new_text, "注释不能丢"
