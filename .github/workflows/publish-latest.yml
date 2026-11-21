@@ -25,7 +25,14 @@ permissions:
 jobs:
   publish:
     # CI 失败/取消都不发布：latest 保持不动。
-    if: ${{ github.event_name == 'workflow_dispatch' || github.event.workflow_run.conclusion == 'success' }}
+    #
+    # ⚠️ 而且**只认 main 分支的 CI**(2026-11-21 修): CI 在任何分支 push 上都会跑,
+    # 但 `image` job 只在 main 推镜像 —— 别的分支绿了以后, 这里去找
+    # `ru41:<该分支的 sha>` 标签必然 "not found" → 整条 workflow 变红(纯噪音)。
+    if: >-
+      ${{ github.event_name == 'workflow_dispatch'
+          || (github.event.workflow_run.conclusion == 'success'
+              && github.event.workflow_run.head_branch == 'main') }}
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
