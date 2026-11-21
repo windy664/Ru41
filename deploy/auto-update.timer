@@ -1,0 +1,15 @@
+[Unit]
+Description=每 30 分钟检查一次生产机是否有新镜像
+
+[Timer]
+# 半小时一轮: CI 出镜像 → 家里机器自己拉自己滚, 人不在家也能更新。
+# 不用更密 —— 出了新镜像最多等半小时, 而半小时一次的重启成本也能接受
+# (roll.sh 逐个重建容器, 期间 QQ 网关会短暂断开)。
+OnBootSec=10min
+OnUnitActiveSec=30min
+# 开机后补一轮: 人在外面时机器重启(断电/更新)也能把积压的更新补上。
+Persistent=true
+RandomizedDelaySec=300
+
+[Install]
+WantedBy=timers.target

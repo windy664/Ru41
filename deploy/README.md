@@ -257,5 +257,34 @@ ru41 doctor
 | Sidecar | 运行时 | 产出 |
 |---|---|---|
 | [`sidecar/boss-crawler/`](../sidecar/boss-crawler/) | Python + DrissionPage + Chromium | `boss_jobs.json` → jobs 插件 |
-| [`sidecar/zhihuishu-sidecar/`](../sidecar/zhihuishu-sidecar/) | 上游 Autovisor（Playwright + Xvfb） | `report.json` → zhihuishu 插件 |
+| [`sidecar/zhihuishu-sidecar/`](../sidecar/zhihuishu-sidecar/) | 上游 Autovisor（Playwright + Xvfb） | `report.json` → zhihuishu 插件；另含**视频挂机**（刷课）与作业采集器 |
 | compose `browser` profile | browserless/chromium | JS 重度页面的统一渲染出口 |
+
+**sidecar 镜像也走 CI**（`.github/workflows/sidecar-image.yml`，与主仓 `ci.yml` 并行）：上游源码按钉死的 sha 拉取、套 `patches/` 再构建，推 `ghcr.io/windy664/zhihuishu-sidecar`。主仓的 `ci.yml` 用 `paths-ignore` 排除了 `sidecar/**`，所以 sidecar 走单独一条 workflow。
+
+### 5.1 生产机自更新（人不在家也能更新）
+
+CI 出镜像只解决了「一半」：生产机在家里 LAN、无公网入口，GitHub Actions 连不上它。
+更新链路的最后一环由**生产机自己**完成——`deploy/auto-update.sh`：
+
+```
+laptop push → CI check(绿) → 推 GHCR → 生产机 timer(每 30 分钟)拉镜像 → 比对 → roll.sh → 健康检查 → 不健康自动回滚
+```
+
+```bash
+# 装（用户级单元；生产机 ~/ru41-mimo-smoke/deploy/ 下要有脚本）
+cp deploy/auto-update.{service,timer} ~/.config/systemd/user/
+cp deploy/auto-update.sh ~/ru41-mimo-smoke/deploy/
+systemctl --user daemon-reload
+# 先只报告不重建（默认）
+bash ~/ru41-mimo-smoke/deploy/auto-update.sh --dry-run
+# 看清差异后再开自动更新
+touch ~/ru41-mimo-smoke/.auto-update.enabled
+systemctl --user enable --now ru41-auto-update.timer
+```
+
+- **默认不重建**：没有 `.auto-update.enabled` 就只拉镜像、报告差异。
+- 国内拉镜像走 NJU 镜像站（`ghcr.nju.edu.cn/windy664/...`），拉不动自动回退 ghcr.io 直连。
+- sidecar 是 one-shot 容器，没有「运行中实例」可比对 → 直接给新镜像打 `zhihuishu-sidecar:local` 标签，下次挂机/采集自动用新版。
+- ⚠️ 自动更新上线后，「人工看 CI 绿灯」这个闸就没了：建议让 `latest` 标签只在 `check` 全绿时更新
+  （见 `docs/zhihuishu-watch.md` §2.4）。

@@ -1,0 +1,85 @@
+name: sidecar-image
+
+# 智慧树 sidecar 镜像（zhihuishu-sidecar）。
+#
+# 为什么单独一条 workflow：主仓的 ci.yml 用 paths-ignore 排除了 sidecar/**，
+# 镜像 job 也不会构建 sidecar —— 过去 sidecar 镜像只在生产机上手工
+# `docker compose build` 出来（build context 里还得先放上游 Autovisor 源码）。
+# 这条 workflow 把「上游源码 + 自研补丁 + 镜像」整条链搬进 CI，
+# 生产机只要 docker pull 就能拿到与仓库一致的可复现镜像。
+#
+# 上游 Autovisor（CXRunfree/Autovisor，MIT）不进本仓库（.gitignore 排除），
+# 这里在 CI 里按钉死的 sha 拉取 —— 版本由 sidecar/zhihuishu-sidecar/README.md 记录。
+on:
+  push:
+    branches: [main]
+    paths:
+      - 'sidecar/zhihuishu-sidecar/**'
+      - '.github/workflows/sidecar-image.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  packages: write
+
+# 同一分支的新运行取消旧的：镜像构建要拉 playwright 浏览器（约 150MB），排队没意义。
+concurrency:
+  group: sidecar-image-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  image:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: 取上游 Autovisor（钉死版本）
+        run: |
+          set -euo pipefail
+          cd sidecar/zhihuishu-sidecar
+          git clone https://github.com/CXRunfree/Autovisor.git Autovisor
+          git -C Autovisor checkout --detach 5c71562
+          echo "上游版本：$(git -C Autovisor rev-parse HEAD)"
+
+      - name: 套自研补丁（Linux 安装器 NameError）
+        run: |
+          set -euo pipefail
+          cd sidecar/zhihuishu-sidecar
+          for p in patches/*.patch; do
+            echo "--- 应用 $p"
+            git -C Autovisor apply "$PWD/$p"
+          done
+
+      - uses: docker/setup-buildx-action@v3
+
+      - uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - uses: docker/build-push-action@v6
+        with:
+          context: sidecar/zhihuishu-sidecar
+          file: sidecar/zhihuishu-sidecar/Dockerfile
+          tags: |
+            ghcr.io/windy664/zhihuishu-sidecar:latest
+            ghcr.io/windy664/zhihuishu-sidecar:${{ github.sha }}
+          push: true
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+
+      - name: 记录镜像 digest（生产机按 digest 拉，避免 latest 漂移）
+        run: |
+          set -euo pipefail
+          digest=$(docker buildx imagetools inspect \
+            ghcr.io/windy664/zhihuishu-sidecar:${{ github.sha }} \
+            --format '{{.Manifest.Digest}}')
+          echo "digest=$digest" | tee -a "$GITHUB_OUTPUT"
+          {
+            echo "### 智慧树 sidecar 镜像"
+            echo ""
+            echo "- 标签：\`ghcr.io/windy664/zhihuishu-sidecar:${{ github.sha }}\`"
+            echo "- digest：\`$digest\`"
+            echo "- 生产机更新：\`docker pull && bash ~/ru41-roll.sh\`（或用 deploy/auto-update.sh 自动拉）"
+          } >> "$GITHUB_STEP_SUMMARY"
