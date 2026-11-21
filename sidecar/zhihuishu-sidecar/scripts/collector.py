@@ -32,6 +32,16 @@ from modules.utils import load_cookies, save_cookies  # noqa: E402
 from playwright.async_api import async_playwright  # noqa: E402
 
 logger = Logger()
+
+# 上游 Autovisor 的 4 类课程目录选择器(modules/lesson_navigation.py)。
+# 认课靠 DOM 不靠域名, 四类都不命中 → 该门课失败 → 整轮 break。
+# 见 detect_autovisor_catalog()。
+AUTOVISOR_CATALOGS = {
+    "wisdom": ".child-info.hasvideo",
+    "fusion": ".chapter-item",
+    "hike": ".file-item",
+    "legacy": ".clearfix.video",
+}
 PORTAL = "https://onlineweb.zhihuishu.com"
 # 全局待办聚合页(跨课程/跨平台 pending 视图; 背后是 student-course/stu/todo/findNoFinishTaskTotal)
 STUDY_TASK_URL = "https://hike-teaching-center.polymas.com/stu-hike/studyTask"
@@ -549,6 +559,44 @@ def parse_course_state(text: str) -> tuple[bool | None, int | None]:
     return course_state.parse_course_state(text)
 
 
+async def detect_autovisor_catalog(page) -> str | None:
+    """数一数上游 Autovisor 那 4 类课程目录选择器, 返回命中的目录名(都没命中→None).
+
+    上游认课**不靠域名, 靠 DOM**(modules/lesson_navigation.py):
+        wisdom = .child-info.hasvideo / fusion = .chapter-item
+        hike   = .file-item         / legacy = .clearfix.video
+    四类都不命中 → detect_catalog 抛 RuntimeError「课程目录加载超时」
+    → 该门课失败 → **整轮 break**(后面所有课一节都刷不到)。
+
+    所以「这门课 Autovisor 刷不刷得了」只能这么量, 不能看域名猜。
+    2026-11-21 实测: 我们门户上的 9 门课在两个平台, 四类选择器**全部命中 0**
+    (polymas 的资源列表是 .file-name / .el-tree-node__content, 结构完全不同)。
+
+    返回的目录名写进报告的 catalog 字段, 刷课目标生成器据此挑课
+    (见 scripts/plan_targets.py: classify_engine)。
+    """
+    for name, selector in AUTOVISOR_CATALOGS.items():
+        try:
+            if await page.locator(selector).count():
+                return name
+        except Exception:
+            continue
+    return None
+
+
+async def detect_catalog_via_video_tab(page) -> str | None:
+    """新版 AI 课: 课时列表在「课程视频」标签页, 不在知识图谱页 —— 点过去再数一次."""
+    try:
+        loc = page.get_by_text("课程视频", exact=True)
+        if not await loc.count():
+            return None
+        await loc.first.click(timeout=8_000)
+        await page.wait_for_timeout(6_000)
+    except Exception:
+        return None
+    return await detect_autovisor_catalog(page)
+
+
 async def detect_course_state(page) -> tuple[bool | None, int | None]:
     """点「我的学习」探测课程视频内容是否已发布 + 已学进度.
 
@@ -805,26 +853,47 @@ async def collect_course(portal, index: int) -> dict | None:
     # 新标签页探测失败只降级探测本身(content/progress=None), 不影响作业采集。
     content_published: bool | None = None
     progress: int | None = None
+    catalog: str | None = None
     if platform == "polymas":
-        probe = None
-        try:
-            probe = await portal.context.new_page()
-            await probe.goto(url, wait_until="domcontentloaded", timeout=60_000)
-            await probe.wait_for_timeout(4_000)
-            await close_popups(probe)
-            content_published, progress = await asyncio.wait_for(
-                detect_course_state(probe), timeout=45
-            )
-        except asyncio.TimeoutError:
-            print(f"[collector] {card_info['title']}: 内容探测超时", flush=True)
-        except Exception as exc:
-            print(f"[collector] {card_info['title']} 内容探测异常: {str(exc)[:120]}", flush=True)
-        finally:
-            if probe is not None:
-                try:
-                    await probe.close()
-                except Exception:
-                    pass
+        # 探测会偶发失手(慢网/限流时页面没渲染完 → 点不到「我的学习」),
+        # 2026-11-21 连跑四轮观察到同一门课在 True/None 之间跳 —— 那会让
+        # 「今晚刷哪些课」每晚不一样。重试一次, 仍不行才降级成 None。
+        for attempt in range(2):
+            probe = None
+            try:
+                probe = await portal.context.new_page()
+                await probe.goto(url, wait_until="domcontentloaded", timeout=60_000)
+                await probe.wait_for_timeout(4_000)
+                await close_popups(probe)
+                content_published, progress = await asyncio.wait_for(
+                    detect_course_state(probe), timeout=45
+                )
+                # 上游 Autovisor 认课靠 DOM 选择器 —— 顺手量一下这门课它认不认得。
+                # (detect_course_state 已经点过「我的学习」, 页面停在学习资源视图)
+                catalog = await detect_autovisor_catalog(probe)
+                if catalog is None:
+                    # 新版 AI 课的课时列表在「课程视频」标签页下, 不在知识图谱页
+                    catalog = await detect_catalog_via_video_tab(probe)
+                print(
+                    f"[collector] {card_info['title']}: 目录="
+                    f"{catalog or '无(Autovisor 刷不了)'}",
+                    flush=True,
+                )
+            except asyncio.TimeoutError:
+                print(f"[collector] {card_info['title']}: 内容探测超时", flush=True)
+            except Exception as exc:
+                print(f"[collector] {card_info['title']} 内容探测异常: {str(exc)[:120]}", flush=True)
+            finally:
+                if probe is not None:
+                    try:
+                        await probe.close()
+                    except Exception:
+                        pass
+            if content_published is not None:
+                break
+            if attempt == 0:
+                print(f"[collector] {card_info['title']}: 探测没结果, 重试一次", flush=True)
+                await asyncio.sleep(3)
 
     # 清理: 关掉新开的页面; 若课程页就是门户本体(同页跳转), 由主循环回门户
     for p in portal.context.pages:
@@ -845,6 +914,10 @@ async def collect_course(portal, index: int) -> dict | None:
         # 「总学习进度」百分比(0-100); None = 读不到(页面没开/版式变了).
         # 刷课目标生成器据此判断「这门还剩多少」, 见 scripts/plan_targets.py
         "progress": progress,
+        # 上游 Autovisor 认得的课程目录类型(wisdom/fusion/hike/legacy);
+        # None = 上游刷不了这门课(我们的 polymas 课就是这种)。
+        # 刷课目标生成器据此分流: 上游能刷的进 config.ini, 其余走自研引擎。
+        "catalog": catalog,
     }
     return course
 

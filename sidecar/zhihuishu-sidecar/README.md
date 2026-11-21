@@ -37,9 +37,9 @@ journalctl --user -u zhihuishu-watch -f
 这份清单现在由 `scripts/plan_targets.py` 每晚 18:45 自动生成：
 
 ```
-23:30 采集器 → report.json（含每门课的「总学习进度」百分比）
-18:45 目标生成器 → 选出「有内容可刷 + 没刷完」的课 → 写 config.ini 的 [course-url] 段
-19:00 Autovisor → 按清单刷（limitMaxTime 30min/门）
+23:30 采集器 → report.json（含每门课的「总学习进度」百分比 + 上游目录类型 catalog）
+18:45 目标生成器 → 选出「有内容可刷 + 没刷完 + 有刷课器认得」的课 → 分流
+19:00 挂机      → 按分流结果刷（limitMaxTime 30min/门）
 ```
 
 ```bash
@@ -50,8 +50,46 @@ python3 -u scripts/test_plan_targets.py     # 自测
 
 - 人工在 `config.ini` 里手写的 URL **保留并排在自动选出的前面**（手放进去的必有理由）。
 - 只改 `[course-url]` 段的选项行，**注释与其余段落原样保留**（防风控的关键注释不能丢）。
-- 选课规则：`content_published is True`（有内容）且 `progress` 读不到或 `< 100`（没刷完）；
-  每晚最多 3 门（`--max`），避免一晚刷不完反而被风控盯上。
+- 选课规则：`content_published is True`（有内容）且 `progress` 读不到或 `< 100`（没刷完）
+  且 **有刷课器认得这门课的页面**（见下）。
+- 每晚最多 3 门（`--max`），避免一晚刷不完反而被风控盯上。
+
+## 两个刷课引擎（2026-11-21 首跑后加的）
+
+上游 Autovisor 认课**不靠域名、靠 DOM 选择器**（`modules/lesson_navigation.py` 的
+wisdom/fusion/hike/legacy 四类），四类都不命中就抛「课程目录加载超时」→ 该门课失败 →
+**整轮 break**（`Autovisor.py`：`if outcome is CourseOutcome.FAILED: break`）。
+
+生产机实测：门户上 9 门课分属 `ai-smart-course-student-pro.zhihuishu.com` /
+`hike-teaching-center.polymas.com` / `wenda.zhihuishu.com` 三个平台，
+**四类选择器全部命中 0** → 上游一门都刷不了。所以分成两个引擎：
+
+| 引擎 | 谁的课 | 跑什么 | 清单在哪 |
+|---|---|---|---|
+| `autovisor` | 上游认得的课（目前 0 门） | 上游 Autovisor | `config.ini` 的 `[course-url]` |
+| `polymas` | 南京大学 AI教学中心的课（5 门） | **自研** `scripts/brush_polymas.py` | `data/targets.json`（带 `engine` 字段） |
+
+自研脚本的流程（每步都实测过）：课程主页 → 点「我的学习」→ 点「学习资源」→
+列出资源 → 跳过已完成（`.agent-course-form-item-checkbox success`）与非视频 →
+点未完成的 mp4 → 资源详情页 → iframe 里找到 `<video>` → 播到结束 → 回课程页 → 下一个。
+
+实测：看完一个 4 分 07 秒的 mp4，「总学习进度」从 0% 变 20%（5 个资源完成 1 个）→ 平台认「看过了」。
+
+```bash
+# 手动试跑一轮(容器内)
+docker run --rm -v "$PWD/config.ini:/app/config.ini:ro" -v "$PWD/data:/app/data" \
+  -v "$PWD/scripts:/scripts:ro" zhihuishu-sidecar:local \
+  sh -c 'Xvfb :99 -screen 0 1600x900x24 -nolisten tcp & XPID=$!; sleep 1.5;
+        DISPLAY=:99 python -u /scripts/brush_polymas.py --dry-run; kill $XPID 2>/dev/null'
+
+# 每晚定时挂机(自研脚本, 19:00)
+cp deploy/zhihuishu-polymas-watch.{service,timer} ~/.config/systemd/user/
+systemctl --user daemon-reload
+systemctl --user enable --now zhihuishu-polymas-watch.timer
+```
+
+风控纪律（降频保号优先）：每门课 30 分钟（`config.ini` 的 `limitMaxTime`）、每晚最多 3 门、
+倍速封顶 1.5、只在 19:00 跑、已完成的自动跳过。
 
 ## 作业采集器（collector）
 

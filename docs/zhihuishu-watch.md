@@ -166,22 +166,119 @@ Actions 的 runner 连不上它。**让机器自己拉自己滚**才是「人在
 **还没做的**：Ru41 侧消费 `targets.json` 播报「今晚刷 X 门，还差 Y 分钟」——
 契约字段有了，但 Ru41 插件还没读它（下一步）。
 
-## 4. 必须回家验证的清单
+## 4. 首跑结论：**上游 Autovisor 刷不了我们的课**（2026-11-21 夜，生产机实测）
 
-### 4.1 刷课本体（recon §6 的 5 项，至今一条没勾）
+recon §6 的第一条清单终于能回答了 —— 答案是**不行**，而且不是配置问题，是结构问题。
 
-- [ ] **水课是否属于「新版 AI 课程」**（带 AI 角标）——Autovisor 未适配这类，**决定刷课方案是否可用**
-- [ ] 账密登录 + 滑块能否被 opencv 自动过
-- [ ] Xvfb 有头模式下**进度是否正常累计**（不是「跑完但进度不涨」）
-- [ ] `data/` cookies 跨天有效（决定重登频率）
-- [ ] `limitMaxTime=30min/课` + 每晚一次的节奏会不会触发人机验证
+### 4.1 首跑日志（`docker run zhihuishu-sidecar:local`，限时 3 分钟，一门课）
 
-### 4.2 本次新增的东西
+```
+[INFO] 正在启动chrome浏览器...
+[INFO] 已加载 Cookies!  (27 条)
+[INFO] 使用Cookies登录成功!
+[INFO] ===== 课程 1/1 =====
+[INFO] 正在加载播放页...
+[ERROR] 程序运行时出现未处理异常.
+异常类型: RuntimeError
+异常详情: 课程目录加载超时，且未检测到可处理的安全验证
+  File "/app/Autovisor.py", line 295 → detect_catalog_after_verification(page, page.url)
+```
 
-- [ ] `docker pull ghcr.nju.edu.cn/windy664/zhihuishu-sidecar:latest` 能不能拉到（**G3 的唯一未决项**）
+**好消息**：镜像内 Chromium（156）起得来、Xvfb 有头模式正常、**Cookie 登录一次成功**、
+后台任务（人机验证监听 / 视频优化 / 答题跳过 / 播放）全部启动。
+
+**坏消息**：课程目录认不出来 → `detect_catalog` 抛 RuntimeError。
+
+### 4.2 为什么认不出来：上游认课靠 DOM，不靠域名
+
+上游 `modules/lesson_navigation.py` 只有四类课程目录选择器：
+
+| 目录 | 选择器 | 对应平台 |
+|---|---|---|
+| `wisdom` | `.child-info.hasvideo` | 新版 AI 课（智慧树 ai-smart） |
+| `fusion` | `.chapter-item` | 融合课（fusioncourseh5） |
+| `hike` | `.file-item` | hike.zhihuishu.com |
+| `legacy` | `.clearfix.video` | 旧版 |
+
+我们门户上的 9 门课分属**三个平台**，四类选择器在它们的代表页面上**全部命中 0**：
+
+| 平台 | 门数 | 代表 URL | 四类选择器命中 |
+|---|---|---|---|
+| `ai-smart-course-student-pro.zhihuishu.com` | 2（程序设计基础、高等数学I(理)） | `/singleCourse/knowledgeStudy/…` | 0 0 0 0 |
+| `hike-teaching-center.polymas.com` | 5 | `/agent-course-full/…/stu/course-home` | 0 0 0 0 |
+| `wenda.zhihuishu.com` | 2 | `/stu/courseInfo/studyResource?courseId=…` | — |
+
+**而且就算补上选择器也还不够**：上游的跑课循环要求「视频与目录同页」——
+`page.wait_for_selector("video")`（`course_runner.py`），而 polymas 点资源会**跳页**、
+播放器在 **iframe** 里（`polymas.com/resource/online/preview/?fileId=…`）。
+
+**最要命的一条**：上游 `Autovisor.py` 里 `if outcome is CourseOutcome.FAILED: break`
+——**一门课失败就 break 掉整轮**，后面的课一节都刷不到。所以把不认得的课放进
+`config.ini` 的 `[course-url]` 不是「少刷几门」，是**一节都刷不到**。
+
+### 4.3 于是有了「刷课引擎」这层分流
+
+```
+采集器 → report.json（含 progress + catalog）
+   ↓
+目标生成器 plan_targets.py → 按引擎分流
+   ├── engine=autovisor（catalog 有值）→ 写 config.ini [course-url] → 上游 Autovisor
+   └── engine=polymas（polymas 域名）  → 写 data/targets.json      → 自研 brush_polymas.py
+```
+
+`config.ini` 的 `[course-url]` 是**上游专用**清单（只装它认得的课）；
+自研引擎那份在 `data/targets.json` 里，带 `engine` 字段。
+
+### 4.4 自研挂机脚本 `scripts/brush_polymas.py`
+
+流程（每一步都在生产机实测过）：
+
+```
+课程主页 → 点「我的学习」→ 点「学习资源」标签
+→ 列出资源(.el-tree-node__content) → 跳过已完成(success 标记)的 / 非视频(doc,pdf)
+→ 点未完成的 mp4 → 资源详情页 → iframe 里找到 <video> → 播放到结束
+→ 回课程页 → 下一个
+```
+
+| 事实 | 值 | 怎么拿到的 |
+|---|---|---|
+| 资源条目 | `.el-tree-node__content` > `.node-left` > `.file-name` | DOM dump |
+| **已完成标记** | `.agent-course-form-item-checkbox **success**`（未完成是 `info`） | 看完一个视频前后对比两行的 `node-actions` |
+| ⚠️ 勾选框不是完成标记 | `el-checkbox is-checked` **全都**是勾上的 | 同上（差点踩坑） |
+| 课程整体进度 | 「总学习进度 X%共 N 个学习资源」 | 页面文本 |
+| 播放器 | iframe `polymas.com/resource/online/preview/?fileId=…` 里的 `<video>` | 截图 + frame 枚举 |
+| **平台认不认「看过了」** | **认** | 看一个 4 分 07 秒的 mp4 → 总学习进度 **0% → 20%**（5 个资源完成 1 个） |
+
+**风控纪律**（recon §5「降频保号优先」）：每门课时限 30 分钟（`config.ini` 的 `limitMaxTime`）、
+每晚最多 3 门、倍速封顶 1.5（平台最高 1.8）、只在 19:00 跑、已完成的自动跳过
+（否则每天重复刷同样的视频）。
+
+**自测**：`scripts/test_polymas_state.py`（进度解析 / 完成标记 / 视频识别 / 待刷清单），
+纯 stdlib，宿主与 CI 都能跑。
+
+### 4.5 首跑清单现状
+
+- [x] **水课是否属于「新版 AI 课程」** —— **不是**。水课在 `hike-teaching-center.polymas.com`
+      （南京大学 AI教学中心），上游四类目录选择器全不命中；已改走自研脚本。
+- [x] 账密登录 + 滑块 —— 本轮用的是 **Cookie 登录（27 条 cookie，一次成功）**，没走账密滑块。
+      （智慧树账密 `[REDACTED-CREDENTIAL]` 一直在用，登录本身没问题。）
+- [x] **Xvfb 有头模式下进度正常累计** —— 看一个 4 分 07 秒的 mp4，总学习进度 0% → 20%。
+- [ ] `data/` cookies 跨天有效 —— 待观察（采集器每晚 23:30 会自动账密重登续期）。
+- [ ] `limitMaxTime=30min/课` + 每晚一次会不会触发人机验证 —— 待观察（首轮 3 门连刷没弹）。
+- [x] 镜像内 Chromium 路径与 `EXE_PATH` —— `/usr/local/bin/zhihuishu-chromium` 可用。
+
+## 5. 必须回家验证的清单
+
+### 5.1 刷课本体（recon §6 的 5 项）
+
+见 §4.5（4 项已验证，2 项待观察）。
+
+### 5.2 本次新增的东西
+
+- [x] `docker pull ghcr.nju.edu.cn/windy664/zhihuishu-sidecar:latest` 能不能拉到 —— **能代理**，
+      但拉 3GB 会中途断流（`unexpected EOF`）→ `auto-update.sh` 已加重试（已下完的层留在本地）
 - [ ] `bash deploy/auto-update.sh --dry-run` 的输出符合预期，再 `touch .auto-update.enabled` 开自动更新
-- [ ] 装 `zhihuishu-watch.timer` 后手动 `systemctl --user start zhihuishu-watch.service`，
-      看 `journalctl --user -u zhihuishu-watch -f` 里 Autovisor 的首跑日志
+- [x] 装 `zhihuishu-polymas-watch.timer` 后手动 `systemctl --user start zhihuishu-polymas-watch.service`
 - [ ] 首次别真开自动更新：先 `--dry-run` 看差异，再手动 `--apply` 试一次（确认回滚可用）
 
 ## 5. 风险与红线
@@ -198,10 +295,16 @@ Actions 的 runner 连不上它。**让机器自己拉自己滚**才是「人在
 
 | 文件 | 作用 |
 |---|---|
-| `.github/workflows/sidecar-image.yml` | sidecar 镜像进 CI（上游钉版本 + 套补丁 + 推 GHCR）✅ 已跑通 |
+| `.github/workflows/sidecar-image.yml` | sidecar 镜像进 CI（上游钉版本 + 套补丁 + 推 GHCR + 跑自测）✅ 已跑通 |
 | `.github/workflows/publish-latest.yml` | `:latest` 只在 CI 全绿时更新（给自动更新上保险）✅ 已跑通 |
-| `sidecar/zhihuishu-sidecar/deploy/zhihuishu-watch.service` / `.timer` | 每晚 19:00 刷课（Autovisor，跑完即退） |
-| `sidecar/zhihuishu-sidecar/deploy/zhihuishu-targets.service` / `.timer` | 每晚 18:45 生成刷课目标（写 `config.ini` 的 `[course-url]` 段） |
-| `sidecar/zhihuishu-sidecar/scripts/plan_targets.py` | 目标生成器：报告 → 「今晚刷哪些课」 |
-| `sidecar/zhihuishu-sidecar/scripts/test_plan_targets.py` | 目标生成器自测（本地已跑通） |
-| `deploy/auto-update.sh` / `.service` / `.timer` | 生产机自更新：拉镜像 → 比对 → 滚动 → 健康检查 → 回滚 |
+| `sidecar/zhihuishu-sidecar/scripts/brush_polymas.py` | **自研 polymas 挂机脚本**（真正能刷的那个）✅ 实测刷完一个视频、进度 0%→20% |
+| `sidecar/zhihuishu-sidecar/scripts/polymas_state.py` | polymas 页面解析的纯函数（进度 / 完成标记 / 视频识别） |
+| `sidecar/zhihuishu-sidecar/scripts/test_polymas_state.py` | 上面两个的自测（CI 跑） |
+| `sidecar/zhihuishu-sidecar/scripts/course_state.py` | 采集器的纯函数（进度解析 + 报告条目字段） |
+| `sidecar/zhihuishu-sidecar/scripts/test_report_entry.py` | 报告条目字段的回归测试（防「字段悄悄丢了」） |
+| `sidecar/zhihuishu-sidecar/deploy/zhihuishu-polymas-watch.service` / `.timer` | 每晚 19:00 刷 polymas 水课（自研脚本） |
+| `sidecar/zhihuishu-sidecar/deploy/zhihuishu-watch.service` / `.timer` | 每晚 19:00 跑上游 Autovisor —— **目前先不 enable**（没有它认得的课） |
+| `sidecar/zhihuishu-sidecar/deploy/zhihuishu-targets.service` / `.timer` | 每晚 18:45 生成刷课目标（分流到两个引擎） |
+| `sidecar/zhihuishu-sidecar/scripts/plan_targets.py` | 目标生成器：报告 → 「今晚刷哪些课、谁刷」 |
+| `sidecar/zhihuishu-sidecar/scripts/test_plan_targets.py` | 目标生成器自测（CI 跑） |
+| `deploy/auto-update.sh` / `.service` / `.timer` | 生产机自更新：拉镜像（带重试）→ 比对 → 滚动 → 健康检查 → 回滚 |

@@ -18,6 +18,7 @@ import tempfile
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
 from plan_targets import (  # noqa: E402
+    classify_engine,
     pick_courses,
     read_manual_urls,
     write_course_urls,
@@ -25,34 +26,51 @@ from plan_targets import (  # noqa: E402
 
 # ---- 选课规则 ---------------------------------------------------------------
 
+# 上游 Autovisor 认得的课程页(AI 课) 与 polymas 平台课程页
+WISDOM = "https://ai-smart-course-student-pro.zhihuishu.com/singleCourse/knowledgeStudy/1/2"
+POLY = "https://hike-teaching-center.polymas.com/agent-course-full/xxx/stu/course-home"
+
 REPORT = {
     "generated_at": "2026-11-21 00:30:00",
     "login_ok": True,
     "courses": [
-        # 有内容 + 进度 40% → 要刷
-        {"title": "程序设计基础", "course_home_url": "https://x/1", "content_published": True, "progress": 40},
+        # 有内容 + 进度 40% + 上游认得 → 要刷(autovisor)
+        {"title": "程序设计基础", "course_home_url": WISDOM + "a", "content_published": True, "progress": 40, "catalog": "wisdom"},
         # 有内容 + 已刷完 100% → 不刷
-        {"title": "军事理论", "course_home_url": "https://x/2", "content_published": True, "progress": 100},
+        {"title": "军事理论", "course_home_url": WISDOM + "b", "content_published": True, "progress": 100, "catalog": "wisdom"},
         # 有内容但读不到进度 → 当作要刷(顶多多刷一次)
-        {"title": "高等数学I(理)", "course_home_url": "https://x/3", "content_published": True, "progress": None},
+        {"title": "高等数学I(理)", "course_home_url": WISDOM + "c", "content_published": True, "progress": None, "catalog": "wisdom"},
         # 还没放内容 → 刷不了
-        {"title": "国家安全教育", "course_home_url": "https://x/4", "content_published": False, "progress": 0},
+        {"title": "国家安全教育", "course_home_url": POLY + "a", "content_published": False, "progress": 0},
         # 判断不了(页面没开) → 宁缺毋滥, 不选
-        {"title": "形势与政策", "course_home_url": "https://x/5", "content_published": None, "progress": None},
+        {"title": "形势与政策", "course_home_url": POLY + "b", "content_published": None, "progress": None},
         # 没 URL → 选不了
         {"title": "无链接课", "course_home_url": "", "content_published": True, "progress": 10},
+        # polymas 课: 上游认不得(catalog=None) → 自研引擎
+        {"title": "思想道德与法治", "course_home_url": POLY + "c", "content_published": True, "progress": 0, "catalog": None},
+        # 谁都认不得的课 → 不选(塞进清单只会让整轮白跑)
+        {"title": "来路不明的课", "course_home_url": "https://unknown.example.com/x", "content_published": True, "progress": 0},
     ],
 }
+
+# ---- 引擎分流 ---------------------------------------------------------------
+
+assert classify_engine(REPORT["courses"][0]) == "autovisor"
+assert classify_engine(REPORT["courses"][6]) == "polymas"
+assert classify_engine(REPORT["courses"][7]) is None
+print("  ok  引擎分流: 上游认得的→autovisor, polymas→自研, 谁都不认→不选")
 
 picked = pick_courses(REPORT, threshold=100, limit=10)
 titles = [c["title"] for c in picked]
 assert "程序设计基础" in titles, titles
 assert "高等数学I(理)" in titles, titles
+assert "思想道德与法治" in titles, titles
 assert "军事理论" not in titles, titles
 assert "国家安全教育" not in titles, titles
 assert "形势与政策" not in titles, titles
 assert "无链接课" not in titles, titles
-print("  ok  选课规则: 有内容+没刷完才选")
+assert "来路不明的课" not in titles, titles
+print("  ok  选课规则: 有内容+没刷完+有引擎认得 才选")
 
 # 阈值: progress>=阈值 的不选; progress 读不到的仍算「要刷」(顶多多刷一次)
 picked90 = pick_courses(REPORT, threshold=90, limit=10)
@@ -153,7 +171,7 @@ with tempfile.TemporaryDirectory() as tmp:
             "--report", report_path,
             "--config", config_path,
             "--out", out_path,
-            "--max", "2",
+            "--max", "3",
         ]
     )
     assert rc == 0, rc
@@ -162,12 +180,16 @@ with tempfile.TemporaryDirectory() as tmp:
     assert "不 24h 挂机, 防人机验证" in written
     urls = read_manual_urls(written)
     assert urls[0] == "https://manual.example/keepme", urls
-    assert "https://x/1" in urls and "https://x/3" in urls, urls
-    assert len(urls) == 3, urls  # 1 人工 + 2 自动(受 --max 限制)
+    # config.ini 只装上游 Autovisor 认得的课(polymas 的走自研引擎, 不塞这里)
+    assert all("polymas" not in u for u in urls), urls
+    assert len(urls) == 3, urls  # 1 人工 + 2 上游能刷的
     with open(out_path, encoding="utf-8") as fh:
         targets = json.load(fh)
     assert targets["auto"], targets
     assert targets["manual"] == ["https://manual.example/keepme"], targets
-    print("  ok  端到端: 报告 → config.ini [course-url] + targets.json")
+    engines = {c["title"]: c["engine"] for c in targets["courses"]}
+    assert engines.get("思想道德与法治") == "polymas", engines
+    assert engines.get("程序设计基础") == "autovisor", engines
+    print("  ok  端到端: 报告 → config.ini [course-url](仅上游能刷的) + targets.json(带引擎)")
 
 print("全部通过")

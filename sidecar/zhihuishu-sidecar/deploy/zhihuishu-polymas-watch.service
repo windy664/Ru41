@@ -1,0 +1,30 @@
+[Unit]
+Description=zhihuishu polymas 视频挂机(自研脚本, 单轮跑完即退)
+
+[Service]
+Type=oneshot
+# 用户级单元: 放 ~/.config/systemd/user/, 账号需在 docker 组。
+#
+# 与其它单元错开, 大家共用同一个 data/ 目录(cookies 就在里面):
+#   19:00  polymas 挂机(本单元) —— 刷「我的学习 → 学习资源」里的 mp4
+#   23:30  作业采集              —— 独占 cookies 续期, 写 report.json
+#   08-17  课堂签到值守          —— 白天轮转巡课
+# 同时跑会互相踩 cookies(挂机中途续期, 采集读到半张表)。
+#
+# 为什么不用上游 Autovisor 那个单元: 上游认课靠 DOM 选择器(wisdom/fusion/
+# hike/legacy 四类), 我们门户上的 polymas 课四类全部命中 0 → detect_catalog
+# 抛「课程目录加载超时」→ 该门课失败 → **整轮 break**; 而且 polymas 点资源会
+# 跳页、播放器在 iframe 里, 上游要求视频与目录同页 —— 结构上刷不了。
+# 实测(2026-11-21): 自研脚本看完一个 4 分 07 秒的 mp4, 总学习进度 0% → 20%。
+WorkingDirectory=%h/Project/zhihuishu-sidecar
+ExecStart=/usr/bin/docker run --rm \
+  -v %h/Project/zhihuishu-sidecar/config.ini:/app/config.ini:ro \
+  -v %h/Project/zhihuishu-sidecar/data:/app/data \
+  -v %h/Project/zhihuishu-sidecar/logs:/app/logs \
+  -v %h/Project/zhihuishu-sidecar/scripts:/scripts:ro \
+  zhihuishu-sidecar:local \
+  sh -c 'Xvfb :99 -screen 0 1600x900x24 -nolisten tcp & XPID=$!; sleep 1.5; DISPLAY=:99 python -u /scripts/brush_polymas.py; kill $XPID 2>/dev/null'
+# 每门课 30 分钟(脚本自己按 config.ini 的 limitMaxTime 控), 每晚最多 3 门;
+# 容器上限放到 3 小时防 systemd 把它杀掉(被杀 = 进度只涨一半)。
+TimeoutStartSec=10800
+RemainAfterExit=no

@@ -42,6 +42,49 @@ URL_OPTION_RE = re.compile(r"^\s*URL\d+\s*=")
 SECTION_RE = re.compile(r"^\s*\[(?P<name>[^\]]+)\]\s*$")
 
 
+# ---- 刷课引擎 ---------------------------------------------------------------
+#
+# 一门课能不能刷, 由「刷课器认不认得这门课的页面」决定, 不是由「有没有内容」决定。
+#
+# 2026-11-21 生产机实测(首跑 + DOM 探测):
+#   上游 Autovisor 认课**不靠域名, 靠 DOM 选择器**
+#   (modules/lesson_navigation.py: wisdom/fusion/hike/legacy 四类),
+#   四类都不命中 → RuntimeError「课程目录加载超时」→ 该门课失败 → **整轮 break**
+#   (Autovisor.py: if outcome is CourseOutcome.FAILED: break) → 后面全刷不到。
+#   → 「Autovisor 能不能刷这门课」= 采集器在课程页上有没有命中目录选择器,
+#     这个结论采集器已经量出来了, 记在报告的 catalog 字段里。
+#
+#   polymas(南京大学 AI教学中心, 5 门课在那边): 点资源会**跳页**、播放器在
+#   **iframe** 里, 而上游要求「视频与目录同页」(page.wait_for_selector("video")),
+#   结构上刷不了 → 走我们自研的挂机脚本(sidecar/scripts/brush_polymas.py)。
+#
+ENGINE_AUTOVISOR = "autovisor"
+ENGINE_POLYMAS = "polymas"
+
+# polymas 平台的课程域名(自研引擎认这个)
+POLYMAS_HOSTS = ("hike-teaching-center.polymas.com",)
+
+
+def classify_engine(course: dict[str, Any]) -> str | None:
+    """这门课该由哪个刷课引擎刷; None = 现在谁都刷不了(别放进清单).
+
+    - catalog 有值 → 上游 Autovisor 认得这门课(采集器实测命中了目录选择器)
+    - polymas 域名 → 自研挂机脚本
+    """
+    url = (course.get("course_home_url") or "").strip()
+    host = ""
+    if url:
+        try:
+            host = urlparse(url).netloc.lower()
+        except ValueError:
+            host = ""
+    if course.get("catalog"):
+        return ENGINE_AUTOVISOR
+    if any(h in host for h in POLYMAS_HOSTS):
+        return ENGINE_POLYMAS
+    return None
+
+
 def read_manual_urls(text: str) -> list[str]:
     """从 config.ini 文本里取出 [course-url] 段已有的 URL(人工维护的那份).
 
@@ -99,7 +142,7 @@ def write_course_urls(text: str, urls: list[str]) -> str:
 
 
 def pick_courses(report: dict[str, Any], threshold: int, limit: int) -> list[dict[str, Any]]:
-    """挑出今晚要刷的课: 有内容可刷 + 没刷完.
+    """挑出今晚要刷的课: 有内容可刷 + 没刷完 + **有刷课器认得它**.
 
     content_published:
         True  → 有视频内容, 能刷
@@ -108,6 +151,10 @@ def pick_courses(report: dict[str, Any], threshold: int, limit: int) -> list[dic
     progress:
         0-100 → 「总学习进度」百分比
         None  → 读不到 → 认为要刷(有内容就刷, 顶多多刷一次)
+
+    ⚠️ 「有内容」不等于「刷得了」: 上游 Autovisor 一门课失败就 **break 掉整轮**
+    (Autovisor.py: if outcome is CourseOutcome.FAILED: break), 一门失败后面全刷不到。
+    所以必须同时满足「有刷课器认得这门课的页面」—— 见 classify_engine。
     """
     picked: list[dict[str, Any]] = []
     for course in report.get("courses") or []:
@@ -121,12 +168,16 @@ def pick_courses(report: dict[str, Any], threshold: int, limit: int) -> list[dic
         progress = course.get("progress")
         if isinstance(progress, int) and progress >= threshold:
             continue  # 已刷完
+        engine = classify_engine(course)
+        if engine is None:
+            continue  # 没有刷课器认得它 → 放进去只会让整轮白跑
         picked.append(
             {
                 "title": course.get("title") or "",
                 "url": url,
                 "progress": progress,
                 "platform": course.get("platform"),
+                "engine": engine,
             }
         )
     # 没读到进度的排前面(更可能还没刷), 其余按进度低→高
@@ -160,9 +211,13 @@ def main(argv: list[str] | None = None) -> int:
             config_text = fh.read()
     manual = [] if args.replace else read_manual_urls(config_text)
 
+    # config.ini 的 [course-url] 是**上游 Autovisor 专用**的清单:
+    # 一门课失败就 break 掉整轮, 所以只能放它认得的课。
+    # polymas 的课走自研引擎, 记在 data/targets.json 里(engine 字段), 不塞这里。
+    auto_for_autovisor = [c for c in picked if c["engine"] == ENGINE_AUTOVISOR]
     # 人工清单优先(他手动放进去的, 一定有理由), 自动选出的去重后追加
     urls: list[str] = []
-    for url in manual + [c["url"] for c in picked]:
+    for url in manual + [c["url"] for c in auto_for_autovisor]:
         if url not in urls:
             urls.append(url)
 
@@ -170,17 +225,29 @@ def main(argv: list[str] | None = None) -> int:
     for course in report.get("courses") or []:
         if not isinstance(course, dict):
             continue
+        engine = classify_engine(course)
+        why = ""
+        if course.get("content_published") is not True:
+            why = "无内容/判断不了"
+        elif engine is None:
+            why = "没有刷课器认得它"
         print(
-            "  - %-28s content=%-5s progress=%-5s %s"
+            "  - %-28s content=%-5s progress=%-5s engine=%-9s %s"
             % (
                 (course.get("title") or "?")[:28],
                 course.get("content_published"),
                 course.get("progress"),
-                "已刷完" if course.get("progress") == 100 else "",
+                engine or "-",
+                why or ("已刷完" if course.get("progress") == 100 else "→ 选中"),
             )
         )
-    print(f"[targets] 本轮自动选中 {len(picked)} 门: {[c['title'] for c in picked]}")
-    print(f"[targets] 人工清单 {len(manual)} 条 → 最终 [course-url] 共 {len(urls)} 条")
+    print(f"[targets] 本轮自动选中 {len(picked)} 门: "
+          f"{[(c['title'], c['engine']) for c in picked]}")
+    print(f"[targets] 其中给 Autovisor {len(auto_for_autovisor)} 门 → "
+          f"config.ini [course-url] 共 {len(urls)} 条")
+    if len(picked) > len(auto_for_autovisor):
+        print(f"[targets] 另外 {len(picked) - len(auto_for_autovisor)} 门走自研引擎 "
+              f"(记在 {args.out}, 不进 config.ini)")
 
     if args.dry_run:
         print("[targets] dry-run, 未改文件")
@@ -203,6 +270,8 @@ def main(argv: list[str] | None = None) -> int:
                 "url": c["url"],
                 "progress": c["progress"],
                 "platform": c["platform"],
+                # 由哪个刷课引擎刷: autovisor(上游) / polymas(自研脚本)
+                "engine": c["engine"],
                 "source": "manual" if c["url"] in manual else "auto",
             }
             for c in picked

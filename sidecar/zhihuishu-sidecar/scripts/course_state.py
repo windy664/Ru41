@@ -65,4 +65,7 @@ def build_report_entry(course: dict) -> dict:
         "content_published": course.get("content_published"),
         # 「总学习进度」百分比(0-100); None = 读不到(页面没开/版式变了)
         "progress": course.get("progress"),
+        # 上游 Autovisor 认得的课程目录类型(wisdom/fusion/hike/legacy);
+        # None = 上游刷不了这门课
+        "catalog": course.get("catalog"),
     }

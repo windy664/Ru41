@@ -59,6 +59,7 @@ jobs:
           cd sidecar/zhihuishu-sidecar
           python3 -u scripts/test_plan_targets.py
           python3 -u scripts/test_report_entry.py
+          python3 -u scripts/test_polymas_state.py
 
       - uses: docker/setup-buildx-action@v3
 
