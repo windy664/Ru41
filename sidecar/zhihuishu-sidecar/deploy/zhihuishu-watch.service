@@ -1,0 +1,25 @@
+[Unit]
+Description=zhihuishu sidecar 视频挂机(单轮, 跑完即退)
+After=docker.service
+
+[Service]
+Type=oneshot
+# 用户级单元: 放 ~/.config/systemd/user/, 账号需在 docker 组。
+#
+# 与另外两个单元错开, 三者共用同一个 data/ 目录(cookies 就在里面):
+#   19:00  视频挂机(本单元)   —— 开浏览器, 吃内存, 可能跑 1~3 小时
+#   23:30  作业采集           —— 独占 cookies 续期, 写 report.json
+#   08-17  课堂签到值守        —— 白天轮转巡课
+# 同时跑会互相踩 cookies(挂机中途续期, 采集读到半张表)。
+WorkingDirectory=%h/Project/zhihuishu-sidecar
+# 镜像自带 CMD: Xvfb :99 + python Autovisor.py(有头模式, 规避 headless 检测
+# 与「最小化不涨进度」)。这里只挂卷, 不覆盖命令。
+ExecStart=/usr/bin/docker run --rm \
+  -v %h/Project/zhihuishu-sidecar/config.ini:/app/config.ini:ro \
+  -v %h/Project/zhihuishu-sidecar/data:/app/data \
+  -v %h/Project/zhihuishu-sidecar/logs:/app/logs \
+  zhihuishu-sidecar:local
+# 每门课的时长由 config.ini 的 limitMaxTime 兜底(默认 30min/课), 但总时长按
+# 课程数线性涨, 上限放到 3 小时防 systemd 把它杀掉(被杀 = 进度只涨一半)。
+TimeoutStartSec=10800
+RemainAfterExit=no
