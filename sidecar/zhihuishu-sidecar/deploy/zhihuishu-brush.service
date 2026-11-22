@@ -24,10 +24,10 @@ ExecStart=/usr/bin/docker run --rm \
   -v %h/Projects/zhihuishu-sidecar/logs:/app/logs \
   -v %h/Projects/zhihuishu-sidecar/scripts:/scripts:ro \
   zhihuishu-sidecar:local \
-  sh -c 'Xvfb :99 -screen 0 1600x900x24 -nolisten tcp & XPID=$!; sleep 1.5; DISPLAY=:99 python -u /scripts/brush_courses.py --total-minutes 90; kill $XPID 2>/dev/null'
+  sh -c 'Xvfb :99 -screen 0 1600x900x24 -nolisten tcp & XPID=$!; sleep 1.5; DISPLAY=:99 python -u /scripts/brush_courses.py --total-minutes 120; kill $XPID 2>/dev/null'
 # 每门课的时长由 config.ini 的 limitMaxTime 兜底(现为 90min/课), 但**整轮**
-# 由 --total-minutes 兜住(90 分钟): 否则「每门 90 分钟 × 5 门」会超过
+# 由 --total-minutes 兜住(120 分钟): 否则「每门 90 分钟 × 5 门」会超过
 # TimeoutStartSec 被 systemd 杀在半路 —— 进度只涨一半, 下一轮又从头来。
-# 整轮收在 20:30 前, 把机器让给 21:00 的学习平台挂机(见 zhihuishu-ahk-brush.timer)。
+# 整轮收在 21:00 前, 把机器让给 21:15 的学习平台挂机(见 zhihuishu-ahk-brush.timer)。
 TimeoutStartSec=14400
 RemainAfterExit=no
