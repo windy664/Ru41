@@ -334,5 +334,82 @@ video.js 的 `<video>`(跟 polymas 的 iframe 不同)。高等数学那门**根�
 | `sidecar/zhihuishu-sidecar/deploy/zhihuishu-watch.service` / `.timer` | 每晚 19:00 跑上游 Autovisor —— **目前先不 enable**（没有它认得的课） |
 | `sidecar/zhihuishu-sidecar/deploy/zhihuishu-targets.service` / `.timer` | 每晚 18:45 生成刷课目标（分流到两个引擎） |
 | `sidecar/zhihuishu-sidecar/scripts/plan_targets.py` | 目标生成器：报告 → 「今晚刷哪些课、谁刷」 |
+| `sidecar/zhihuishu-sidecar/scripts/brush_ahk.py` | 学习平台(在线好课 gzus.aihaoke.net)实现：借 CAS TGT 登录 → 任务列表点「To learn」→ 真播 |
+| `sidecar/zhihuishu-sidecar/scripts/no_video_courses.py` | 「这门课没有视频资源」的记忆(带 14 天时效)—— 别让空课占满目标清单名额 |
+| `sidecar/zhihuishu-sidecar/scripts/test_no_video_courses.py` | 上面两个的回归测试(纯 stdlib, CI 跑) |
+| `sidecar/zhihuishu-sidecar/deploy/zhihuishu-ahk-brush.service` / `.timer` | 每晚 21:00 刷学习平台(在线好课)的视频课 |
 | `sidecar/zhihuishu-sidecar/scripts/test_plan_targets.py` | 目标生成器自测（CI 跑） |
 | `deploy/auto-update.sh` / `.service` / `.timer` | 生产机自更新：拉镜像（带重试）→ 比对 → 滚动 → 健康检查 → 回滚 |
+
+## 7. 学习平台「在线好课」(gzus.aihaoke.net) 的刷课
+
+用户给的课程页: `https://gzus.aihaoke.net/student/course/29668/task?instanceId=11187&taskType=all-tasks&columnId=708120`
+(广州软件学院 - 在线好课, 知途好课 aihaoke 平台)。
+
+**登录(不用密码/验证码)**: 借 jwxt 插件已有的 CAS TGT ——
+把它当 `CASTGC` cookie 注入(`.gzus.edu.cn`), CAS 认出 TGT 直接放行 →
+passport 建会话 → 拿到 `haoke-token`。
+
+```
+课程页 → passport.aihaoke.net/auth/login(学校「广州软件学院」已自动带出)
+  → 302 gzus.aihaoke.net/api/auth/unified/toAuth
+  → 302 se-ars1.gzus.edu.cn/aihaoke/sso.auth?tn=..&ru=..&ck=..&state=..
+  → 302 cas.gzus.edu.cn/lyuapServer/login?service=<上面那个>
+  → CAS 认 TGT 放行 → 回跳 → passport /api/auth/loginByTicket → haoke-token
+```
+
+⚠️ 生产机 DNS 解析不了 `*.gzus.edu.cn`(路由器上游查不到, 但 DoH 能查) →
+浏览器要带 `--host-resolver-rules` 映射 IP(见 `scripts/brush_ahk.py`)。
+⚠️ passport 的 `locale` 必须 `en-US`(zh-CN 时按钮文案不同, 点不中)。
+
+**任务表**(POST `/api/learn/task/listTask`): 15 个任务, `taskType` 分工:
+`10`=微课精讲(视频) / `20`=? / `30`=AI辩论 / `40`=作业 / `50`=小测。
+**只刷 taskType=10**; 小测/作业/辩论一概不碰(那是替人做作业)。
+
+**进度怎么记(决定性实验)**:
+- 播放时播放器周期性 POST `/api/learn/task/file/updateLearnFile`
+  `{classId, taskId, position(秒), overFlag}` + `/api/learn/task/updateLearnTask` 心跳。
+- **直接伪造上报没用**: 把 position 拉满、overFlag=1 发过去, 服务器把 overFlag
+  **改回 0**、progress 仍是 0 —— 平台按**真实播放**记进度 → 只能真播。
+- 而且**必须从任务列表点「To learn」进去**: 直接开播放页 URL, 视频能播完,
+  但平台不上报进度(实测 progress 一直 0)—— 学习会话是点按钮时建立的。
+
+脚本: `sidecar/zhihuishu-sidecar/scripts/brush_ahk.py`
+定时: `deploy/zhihuishu-ahk-brush.{service,timer}`(**21:00**, 与 19:00 的智慧树
+挂机错开 2 小时 —— 这台机器 15W 满载会过热断电, 别让两个浏览器同时跑)。
+
+**记账确认(2026-11-22 21:07 实测)**: 从任务列表点进去真播, 播完后
+`data/ahk_brush_log.json` 记 `{"taskId": 227778, "progress": 100, "done": 1}`
+→ **平台侧确实记账了**(与 polymas 一样是能查到的真进度)。
+
+## 8. 2026-11-22 夜: 把「自动刷完」这件事收口
+
+当晚实跑暴露的三件事, 都已修:
+
+1. **AHK 那条线通了** —— 见上, progress=100/done=1 是平台侧记账, 不是我们自己
+   记的账(脚本只是回读)。
+2. **polymas 两门课根本没有视频** —— 「26-27-1思想道德与法治」(27 个资源) 与
+   「职业生涯规划」(7 个资源) 资源全是 PDF/PPT/DOCX。它们每晚都进目标清单,
+   刷课器进课翻一遍资源树再判定「没有待刷的视频」走人, **还占满了 max=3 的名额**,
+   把真有视频的「国家安全教育」(progress=60) 挤到第 4 位 → 那一晚根本没刷它。
+   修法: 刷课器探到「没有视频」就记一笔(`data/no_video_courses.json`, 带 14 天
+   时效, 老师补了视频会自动重新探测), 目标生成器据此排除; `max` 默认 3 → 5。
+3. **整轮预算** —— 原来只有「每门 90 分钟」, 5 门就是 7.5 小时, 超过 systemd 的
+   `TimeoutStartSec`(4 小时)会被**杀在半路**: 进度只涨一半, 下一轮又从头来。
+   现在 `brush_courses.py --total-minutes` 兜住整轮(19:00 那轮 90 分钟),
+   每门课时限与整轮剩余取小。
+
+**当晚各条线的真实表现**:
+- 19:00 智慧树那轮: ai-smart「程序设计基础」播完 4 个视频(2.1变量 / 3.1运算符 /
+  4.1顺序结构 / 5.1选择结构), 45 分钟收工; 两门 polymas 空转(无视频, 见上)。
+- 21:00 前后 AHK 那轮: 227778 已在 07:59 刷完(progress=100), 227777 真播 20 分钟。
+
+**定时器时间表(生产机, 用户级 systemd)**:
+
+| 时间 | 单元 | 干什么 |
+|---|---|---|
+| 08:05 | `zhihuishu-signin-watch.timer` | 白天轮转巡课(签到) |
+| 18:45 | `zhihuishu-targets.timer` | 生成刷课目标(分流到三个引擎, 排除无视频的课) |
+| 19:00 | `zhihuishu-brush.timer` | 智慧树挂机(整轮 90 分钟, 20:30 前收工) |
+| 21:00 | `zhihuishu-ahk-brush.timer` | 学习平台(在线好课)挂机 |
+| 23:30 | `zhihuishu-collector.timer` | 作业采集(独占 cookies 续期) |
