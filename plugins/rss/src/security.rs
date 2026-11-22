@@ -241,6 +241,23 @@ pub fn is_must_report(title: &str, summary: &str, origin: Origin) -> bool {
     must_report(&verdict(title, summary), origin)
 }
 
+/// 必报优先级（数字小的先报、先进池）。
+///
+/// 分三档而不是两档：已在野利用（CISA KEV）比别的强信号更要紧 ——
+/// 它是「**现在**就被真实攻击在用」那一档，而 GHSA 的 RCE 可能只是理论风险。
+/// 2026-11-22 实测：按「强信号 → 时间」排，KEV 的 9 条被今天的 GHSA 挤到只剩 1 条。
+pub fn priority(v: &Verdict, origin: Origin) -> u8 {
+    let in_wild = origin == Origin::KEV
+        || v.reasons.iter().any(|r| r.contains("已在野"));
+    if in_wild {
+        return 0;
+    }
+    if v.is_strong() {
+        return 1;
+    }
+    2
+}
+
 /// 必报理由的一行话（进 prompt）。
 pub fn reason_line(v: &Verdict) -> String {
     if v.reasons.is_empty() {
@@ -363,6 +380,20 @@ mod tests {
         assert!(must_report(&v, Origin::KEV));
         assert!(must_report(&v, Origin::Release));
         assert!(!must_report(&v, Origin::News));
+    }
+
+    /// 优先级: 已在野利用 > 其它强信号 > 只靠编号。
+    #[test]
+    fn priority_ranks_in_the_wild_first() {
+        let kev = verdict(
+            "CVE-2026-99999：某设备漏洞",
+            "CISA 已知被利用漏洞目录（KEV）· 处置期限 2026-12-01",
+        );
+        let rce = verdict("某库 RCE", "远程代码执行，CVSS 9.8");
+        let weak = verdict("某 CMS XSS", "严重等级 moderate · CVE-2026-12345");
+        assert_eq!(priority(&kev, Origin::KEV), 0);
+        assert_eq!(priority(&rce, Origin::Advisory), 1);
+        assert_eq!(priority(&weak, Origin::Advisory), 2);
     }
 
     /// 条目 id 前缀 → 来源类别。

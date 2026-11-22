@@ -484,14 +484,11 @@ fn trim_must_pool(pool: &mut Vec<FeedItem>) {
     pool.truncate(MUST_POOL_CAP);
 }
 
-/// 必报强度：0 = 有强信号(RCE/0day/无需认证/已在野/CVSS≥9), 1 = 只靠编号与严重等级。
+/// 必报强度：0 = 已在野利用, 1 = 其它强信号, 2 = 只靠编号与严重等级。
 fn must_strength(item: &FeedItem) -> u8 {
+    let origin = crate::security::Origin::of_item(&item.id);
     let v = crate::security::verdict(&item.title, &item.summary);
-    if v.is_strong() {
-        0
-    } else {
-        1
-    }
+    crate::security::priority(&v, origin)
 }
 
 /// 条目发布时间宽容解析：RFC 2822（RSS 2.0）/ RFC 3339（Atom）/ 纯日期。
