@@ -13,4 +13,15 @@
 ///
 /// 只登记**不会被直接推给用户**的围栏。论文日报的 `ru41-screen` 不在此列——
 /// 那种围栏里的 JSON 是要给人看的，判契约不符、让任务重试才对。
-pub const INSTRUCTION_FENCES: &[&str] = &["ru41-organize"];
+///
+/// `ru41-plan-*` 是规划模块的围栏（模块本体在 `exp/ai-planner` 分支）。
+/// 这里一并登记：名单与用它的分支保持一致，将来合并时少一次冲突；
+/// 没用到这些围栏的分支上，登记是空转（没有产出这种围栏的路径）。
+pub const INSTRUCTION_FENCES: &[&str] = &[
+    "ru41-organize",
+    "ru41-plan-evidence",
+    "ru41-plan-questions",
+    "ru41-plan-proposal",
+    "ru41-plan-review",
+    "ru41-plan-decompose",
+];

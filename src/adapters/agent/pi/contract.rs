@@ -584,6 +584,18 @@ mod tests {
         assert!(parse_agent_result(raw).is_err());
     }
 
+    /// 名单里的每个围栏都要能被认下来——登记了却认不了，等于白登记。
+    #[test]
+    fn every_registered_fence_is_accepted() {
+        for fence in crate::domain::fence::INSTRUCTION_FENCES {
+            let raw = format!("```{fence}\n{{\"moves\":[]}}\n```");
+            assert!(
+                parse_agent_result(&raw).is_ok(),
+                "{fence} 登记在名单里，却没被认成交付物"
+            );
+        }
+    }
+
     /// 散文 + 契约 JSON（模型把 JSON 附在末尾）：交散文，JSON 是信封不外发。
     #[test]
     fn prose_wins_over_trailing_contract_json() {
