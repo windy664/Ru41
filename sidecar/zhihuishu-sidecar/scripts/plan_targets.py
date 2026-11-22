@@ -60,16 +60,20 @@ SECTION_RE = re.compile(r"^\s*\[(?P<name>[^\]]+)\]\s*$")
 #
 ENGINE_AUTOVISOR = "autovisor"
 ENGINE_POLYMAS = "polymas"
+ENGINE_AISMART = "aismart"
 
 # polymas 平台的课程域名(自研引擎认这个)
 POLYMAS_HOSTS = ("hike-teaching-center.polymas.com",)
+# 智慧树新版 AI 课(另一套结构, 自研引擎里另一份实现)
+AISMART_HOSTS = ("ai-smart-course",)
 
 
 def classify_engine(course: dict[str, Any]) -> str | None:
     """这门课该由哪个刷课引擎刷; None = 现在谁都刷不了(别放进清单).
 
     - catalog 有值 → 上游 Autovisor 认得这门课(采集器实测命中了目录选择器)
-    - polymas 域名 → 自研挂机脚本
+    - polymas 域名 → 自研挂机脚本(brush_polymas.py)
+    - ai-smart 域名 → 自研挂机脚本(brush_aismart.py)
     """
     url = (course.get("course_home_url") or "").strip()
     host = ""
@@ -80,6 +84,8 @@ def classify_engine(course: dict[str, Any]) -> str | None:
             host = ""
     if course.get("catalog"):
         return ENGINE_AUTOVISOR
+    if any(h in host for h in AISMART_HOSTS):
+        return ENGINE_AISMART
     if any(h in host for h in POLYMAS_HOSTS):
         return ENGINE_POLYMAS
     return None

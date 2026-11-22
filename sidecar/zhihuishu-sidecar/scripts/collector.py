@@ -597,6 +597,54 @@ async def detect_catalog_via_video_tab(page) -> str | None:
     return await detect_autovisor_catalog(page)
 
 
+async def detect_aismart_state(page) -> tuple[bool | None, int | None]:
+    """ai-smart 新版 AI 课(智慧树)的「有内容没」与进度。
+
+    页面结构与 polymas 完全不同(2026-11-22 生产机实测):
+    - 知识学习页(knowledgeStudy): 知识点树, 每个知识点带「掌握度 / 学习进度 X%」
+      → 课程级进度 = 已学知识点 / 总知识点
+    - 「课程视频」页(courseVideoShare): 章节列表, 带「视频」标签的行 = 可刷的视频
+
+    返回 (content_published, progress_percent):
+    - content_published: True = 有视频可刷; False = 没有; None = 判断不了
+    - progress: 0-100 的知识点完成度; None = 读不到
+    """
+    # 1) 进度: 知识学习页的知识点「学习进度」
+    progress: int | None = None
+    try:
+        text = await page.evaluate(
+            "document.body ? document.body.innerText.slice(0, 20000) : ''"
+        )
+        pcts = [int(m) for m in re.findall(r"学习进度\s*(\d+)%", text)]
+        if pcts:
+            progress = round(100 * sum(1 for p in pcts if p > 0) / len(pcts))
+    except Exception:
+        progress = None
+    # 2) 内容: 点「课程视频」数视频条目
+    content: bool | None = None
+    try:
+        loc = page.get_by_text("课程视频", exact=True)
+        if await loc.count():
+            await loc.first.click(timeout=10_000)
+            await page.wait_for_timeout(6_000)
+            rows = await page.evaluate(
+                """() => {
+                    let n = 0;
+                    for (const row of document.querySelectorAll('.row')) {
+                        // 一行可能有多个标签(如 ['1个知识点','视频']), 要全看
+                        const tags = Array.from(row.querySelectorAll('.info .tag'))
+                            .map(t => (t.textContent || '').trim());
+                        if (tags.includes('视频')) n++;
+                    }
+                    return n;
+                }"""
+            )
+            content = int(rows) > 0
+    except Exception:
+        content = None
+    return content, progress
+
+
 async def detect_course_state(page) -> tuple[bool | None, int | None]:
     """点「我的学习」探测课程视频内容是否已发布 + 已学进度.
 
@@ -865,9 +913,16 @@ async def collect_course(portal, index: int) -> dict | None:
                 await probe.goto(url, wait_until="domcontentloaded", timeout=60_000)
                 await probe.wait_for_timeout(4_000)
                 await close_popups(probe)
-                content_published, progress = await asyncio.wait_for(
-                    detect_course_state(probe), timeout=45
-                )
+                if "ai-smart-course" in (url or ""):
+                    # 新版 AI 课: 页面结构不同, 走自己的探测(知识学习页的知识点
+                    # 进度 + 课程视频页的视频条目数)
+                    content_published, progress = await asyncio.wait_for(
+                        detect_aismart_state(probe), timeout=90
+                    )
+                else:
+                    content_published, progress = await asyncio.wait_for(
+                        detect_course_state(probe), timeout=45
+                    )
                 # 上游 Autovisor 认课靠 DOM 选择器 —— 顺手量一下这门课它认不认得。
                 # (detect_course_state 已经点过「我的学习」, 页面停在学习资源视图)
                 catalog = await detect_autovisor_catalog(probe)

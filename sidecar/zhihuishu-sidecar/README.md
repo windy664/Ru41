@@ -80,12 +80,12 @@ wisdom/fusion/hike/legacy 四类），四类都不命中就抛「课程目录加
 docker run --rm -v "$PWD/config.ini:/app/config.ini:ro" -v "$PWD/data:/app/data" \
   -v "$PWD/scripts:/scripts:ro" zhihuishu-sidecar:local \
   sh -c 'Xvfb :99 -screen 0 1600x900x24 -nolisten tcp & XPID=$!; sleep 1.5;
-        DISPLAY=:99 python -u /scripts/brush_polymas.py --dry-run; kill $XPID 2>/dev/null'
+        DISPLAY=:99 python -u /scripts/brush_courses.py --dry-run; kill $XPID 2>/dev/null'
 
 # 每晚定时挂机(自研脚本, 19:00)
-cp deploy/zhihuishu-polymas-watch.{service,timer} ~/.config/systemd/user/
+cp deploy/zhihuishu-brush.{service,timer} ~/.config/systemd/user/
 systemctl --user daemon-reload
-systemctl --user enable --now zhihuishu-polymas-watch.timer
+systemctl --user enable --now zhihuishu-brush.timer
 ```
 
 风控纪律（降频保号优先）：每门课 30 分钟（`config.ini` 的 `limitMaxTime`）、每晚最多 3 门、

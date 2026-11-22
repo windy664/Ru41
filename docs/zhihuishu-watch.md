@@ -229,7 +229,7 @@ recon §6 的第一条清单终于能回答了 —— 答案是**不行**，而�
 `config.ini` 的 `[course-url]` 是**上游专用**清单（只装它认得的课）；
 自研引擎那份在 `data/targets.json` 里，带 `engine` 字段。
 
-### 4.4 自研挂机脚本 `scripts/brush_polymas.py`
+### 4.4 自研挂机脚本 `scripts/brush_courses.py`（按平台分发）
 
 流程（每一步都在生产机实测过）：
 
@@ -278,7 +278,7 @@ recon §6 的第一条清单终于能回答了 —— 答案是**不行**，而�
 - [x] `docker pull ghcr.nju.edu.cn/windy664/zhihuishu-sidecar:latest` 能不能拉到 —— **能代理**，
       但拉 3GB 会中途断流（`unexpected EOF`）→ `auto-update.sh` 已加重试（已下完的层留在本地）
 - [ ] `bash deploy/auto-update.sh --dry-run` 的输出符合预期，再 `touch .auto-update.enabled` 开自动更新
-- [x] 装 `zhihuishu-polymas-watch.timer` 后手动 `systemctl --user start zhihuishu-polymas-watch.service`
+- [x] 装 `zhihuishu-brush.timer` 后手动 `systemctl --user start zhihuishu-brush.service`
 - [ ] 首次别真开自动更新：先 `--dry-run` 看差异，再手动 `--apply` 试一次（确认回滚可用）
 
 ## 5. 风险与红线
@@ -297,12 +297,14 @@ recon §6 的第一条清单终于能回答了 —— 答案是**不行**，而�
 |---|---|
 | `.github/workflows/sidecar-image.yml` | sidecar 镜像进 CI（上游钉版本 + 套补丁 + 推 GHCR + 跑自测）✅ 已跑通 |
 | `.github/workflows/publish-latest.yml` | `:latest` 只在 CI 全绿时更新（给自动更新上保险）✅ 已跑通 |
-| `sidecar/zhihuishu-sidecar/scripts/brush_polymas.py` | **自研 polymas 挂机脚本**（真正能刷的那个）✅ 实测刷完一个视频、进度 0%→20% |
+| `sidecar/zhihuishu-sidecar/scripts/brush_courses.py` | **刷课入口**：按课程 URL 分发到对应平台（真正能刷的那个）✅ 实测刷完一个视频、进度 0%→20% |
+| `sidecar/zhihuishu-sidecar/scripts/brush_polymas.py` | polymas 平台实现（我的学习 → 学习资源 → 逐个 mp4，播放器在 iframe） |
+| `sidecar/zhihuishu-sidecar/scripts/brush_aismart.py` | ai-smart 新版 AI 课实现（课程视频 → 章节 → 逐个视频，播放器在同页 video.js） |
 | `sidecar/zhihuishu-sidecar/scripts/polymas_state.py` | polymas 页面解析的纯函数（进度 / 完成标记 / 视频识别） |
 | `sidecar/zhihuishu-sidecar/scripts/test_polymas_state.py` | 上面两个的自测（CI 跑） |
 | `sidecar/zhihuishu-sidecar/scripts/course_state.py` | 采集器的纯函数（进度解析 + 报告条目字段） |
 | `sidecar/zhihuishu-sidecar/scripts/test_report_entry.py` | 报告条目字段的回归测试（防「字段悄悄丢了」） |
-| `sidecar/zhihuishu-sidecar/deploy/zhihuishu-polymas-watch.service` / `.timer` | 每晚 19:00 刷 polymas 水课（自研脚本） |
+| `sidecar/zhihuishu-sidecar/deploy/zhihuishu-brush.service` / `.timer` | 每晚 19:00 刷水课（自研脚本，两个平台） |
 | `sidecar/zhihuishu-sidecar/deploy/zhihuishu-watch.service` / `.timer` | 每晚 19:00 跑上游 Autovisor —— **目前先不 enable**（没有它认得的课） |
 | `sidecar/zhihuishu-sidecar/deploy/zhihuishu-targets.service` / `.timer` | 每晚 18:45 生成刷课目标（分流到两个引擎） |
 | `sidecar/zhihuishu-sidecar/scripts/plan_targets.py` | 目标生成器：报告 → 「今晚刷哪些课、谁刷」 |

@@ -1,0 +1,31 @@
+[Unit]
+Description=zhihuishu 视频挂机(多平台自研脚本, 单轮跑完即退)
+After=docker.service
+
+[Service]
+Type=oneshot
+# 用户级单元: 放 ~/.config/systemd/user/, 账号需在 docker 组。
+#
+# 与其它单元错开, 大家共用同一个 data/ 目录(cookies 就在里面):
+#   19:00  视频挂机(本单元) —— 开浏览器, 吃内存, 可能跑 1~3 小时
+#   23:30  作业采集          —— 独占 cookies 续期, 写 report.json
+#   08-17  课堂签到值守      —— 白天轮转巡课
+# 同时跑会互相踩 cookies(挂机中途续期, 采集读到半张表)。
+#
+# 跑的是 scripts/brush_courses.py: 按课程 URL 分发到对应平台的自研挂机
+#   polymas → brush_polymas.py   (我的学习 → 学习资源 → 逐个 mp4, 播放器在 iframe)
+#   aismart → brush_aismart.py   (课程视频 → 章节 → 逐个视频, 播放器在同页)
+# 上游 Autovisor 认不了这两个平台的页面结构, 且它「一门失败就 break 整轮」,
+# 所以这两条线自己实现(见 docs/zhihuishu-watch.md)。
+WorkingDirectory=%h/Projects/zhihuishu-sidecar
+ExecStart=/usr/bin/docker run --rm \
+  -v %h/Projects/zhihuishu-sidecar/config.ini:/app/config.ini:ro \
+  -v %h/Projects/zhihuishu-sidecar/data:/app/data \
+  -v %h/Projects/zhihuishu-sidecar/logs:/app/logs \
+  -v %h/Projects/zhihuishu-sidecar/scripts:/scripts:ro \
+  zhihuishu-sidecar:local \
+  sh -c 'Xvfb :99 -screen 0 1600x900x24 -nolisten tcp & XPID=$!; sleep 1.5; DISPLAY=:99 python -u /scripts/brush_courses.py; kill $XPID 2>/dev/null'
+# 每门课的时长由 config.ini 的 limitMaxTime 兜底(默认 30min/课), 总时长按课程数
+# 线性涨, 上限放到 4 小时防 systemd 把它杀掉(被杀 = 进度只涨一半)。
+TimeoutStartSec=14400
+RemainAfterExit=no

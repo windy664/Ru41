@@ -1,14 +1,9 @@
 [Unit]
-Description=每晚拉起 polymas 视频挂机(自研脚本, 跑完即退)
+Description=每晚拉起智慧树视频挂机(自研脚本, 跑完即退)
 
 [Timer]
 # 19:00 刷课: 放在「真实使用时段」跑(风控缓解的一条 —— 深夜长时间挂机容易弹
 # 人机验证), 也让开 23:30 的作业采集(共用 cookies 目录, 同时跑会互相踩)。
-#
-# 与上游 Autovisor 那个 zhihuishu-watch.timer 的关系: 目前门户上**没有**课是
-# 上游认得的(它的 4 类目录选择器在 ai-smart / polymas / wenda 上全部命中 0),
-# 所以 Autovisor 那个定时器**先不 enable**, 留着等有能刷的课再用。
-# 本定时器是现在真正能刷的那个。
 OnCalendar=*-*-* 19:00:00
 # 错峰 10 分钟: 避免和别的定时器撞在同一秒抢 CPU/网络。
 RandomizedDelaySec=600
