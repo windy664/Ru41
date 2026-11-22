@@ -202,7 +202,9 @@ async def play_video(page, name: str, budget: float) -> bool:
         log(f"  播放失败 {name[:20]}: {str(exc)[:90]}")
         return False
 
-    deadline = time.monotonic() + min(budget, MAX_VIDEO_SECONDS)
+    # 一定把这个视频播完(上限 MAX_VIDEO_SECONDS): 半途而废的视频平台不记进度,
+    # 明天还得从头再来 —— 宁可单晚超时, 也要让每个视频都完整走一遍。
+    deadline = time.monotonic() + MAX_VIDEO_SECONDS
     last = 0.0
     while time.monotonic() < deadline:
         await page.wait_for_timeout(5_000)
@@ -259,18 +261,17 @@ async def brush_course(page, title: str, course_url: str, max_minutes: int,
     budget = max_minutes * 60
     spent = 0.0
     for v in pending:
-        left = budget - spent
-        if left <= 60:
-            log(f"[{title}] 到达时限({max_minutes} 分钟), 停")
-            break
         started = time.monotonic()
-        ok = await play_video(page, v["name"], left)
+        ok = await play_video(page, v["name"], MAX_VIDEO_SECONDS)
         spent += time.monotonic() - started
         (result["watched"] if ok else result["failed"]).append(v["name"])
         if ok:
             done.add(v["name"])
             state[course_url] = sorted(done)
             save_state(state)
+        if spent >= budget:
+            log(f"[{title}] 到达时限({max_minutes} 分钟), 收工(下一个视频留到明晚)")
+            break
     return result
 
 

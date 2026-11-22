@@ -175,7 +175,7 @@ async def play_resource(page, name: str, budget: float, speed: float) -> bool:
         except Exception:
             return False
 
-    deadline = time.monotonic() + min(budget, MAX_VIDEO_SECONDS)
+    deadline = time.monotonic() + MAX_VIDEO_SECONDS
     while time.monotonic() < deadline:
         await page.wait_for_timeout(5_000)
         try:
@@ -224,18 +224,19 @@ async def brush_course(page, title: str, course_url: str, max_minutes: int,
     budget = max_minutes * 60
     spent = 0.0
     for r in pending:
-        left = budget - spent
-        if left <= 60:
-            log(f"[{title}] 到达时限({max_minutes} 分钟), 停")
-            break
+        # 一定把这个视频播完: 半途而废的平台不记进度, 明天还得从头再来
+        # (ai-smart 实测: 12 分钟的视频在 12 分钟预算里播不完 → 进度不涨)。
         started = time.monotonic()
-        ok = await play_resource(page, r["name"], left, speed)
+        ok = await play_resource(page, r["name"], MAX_VIDEO_SECONDS, speed)
         spent += time.monotonic() - started
         (result["watched"] if ok else result["failed"]).append(r["name"])
         # 回课程页(点资源会跳页, go_back 不稳, 直接重走一遍入口)
         await page.wait_for_timeout(2_000)
         if not await goto_resources(page, course_url):
             log(f"[{title}] 回不到学习资源页, 停")
+            break
+        if spent >= budget:
+            log(f"[{title}] 到达时限({max_minutes} 分钟), 收工(下一个视频留到明晚)")
             break
 
     after_pct, after_count = await read_progress(page)
