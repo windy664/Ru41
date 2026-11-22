@@ -114,6 +114,18 @@ ssh <server> 'RU41_IMAGE=ghcr.io/windy664/ru41:latest bash ~/ru41-roll.sh \
   && bash ~/roll-set-env.sh <容器名> <参考容器名> <KEY...>'
 ```
 
+> ⚠️ **不要在生产机上编译**（2026-11-22 实证：这台宿舍服务器 i3-8130U / 15W / 无电池，
+> CPU 满载会把适配器保护顶掉 → 整机断电，日志都来不及写；取证见
+> `deploy/ru41-power-watch.sh` 的说明与 `~/.local/state/ru41-power/incidents.log`）。
+> 在生产机上跑 `docker build` / `cargo build` 时长一点就可能把机器顶掉 ——
+> 那天就是这样断电的。**构建一律在本地做，只往生产机传产物**（二进制、插件 .so、
+> 镜像 tar），生产机上只做「拷贝 + docker load + roll」。
+>
+> ⚠️ 补丁镜像（`Dockerfile.patch`）**必须带插件**：`roll.sh` 会用镜像里的插件覆盖
+> 宿主挂载目录，补丁镜像若不带 `.plugins-dist/`，宿主上热更过的 .so 会被回退成
+> 旧版（2026-11-22 实测：rss 插件被回退后不认配置里的新字段 → 容器崩溃循环）。
+> `build-fast.sh` 已经会先把插件编进 `.plugins-dist/`（`RU41_SKIP_PLUGINS=1` 可跳过）。
+
 > ⚠️ `roll-set-env.sh` 的用法是 **三个参数**：`<目标容器> <参考容器> <KEY...>`——
 > 要补的变量值**从参考容器里抄**（不必把密钥写进命令行）。
 > 它会按 inspect 把目标容器**原有的环境变量全量恢复**，再追加补的那些。
