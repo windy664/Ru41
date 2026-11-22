@@ -8,7 +8,7 @@ use serde::Serialize;
 use std::sync::Arc;
 
 /// 必报池的条目上限：必报条目独立成池（不与新闻抢名额），但也别无限涨。
-const MUST_POOL_CAP: usize = 60;
+const MUST_POOL_CAP: usize = 15;
 
 /// RSS 信息流追踪配置（对应配置文件的 [sources.rss]）。
 #[derive(Debug, Clone)]
@@ -299,9 +299,7 @@ impl RssTracker {
                 must_pool.push(item);
             }
         }
-        if must_pool.len() > MUST_POOL_CAP {
-            must_pool.drain(..must_pool.len() - MUST_POOL_CAP);
-        }
+        trim_must_pool(&mut must_pool);
         self.save_pool(&pool_id, &pool)?;
         self.save_pool(&must_pool_id, &must_pool)?;
 
@@ -469,6 +467,33 @@ fn is_fresh(published: &str, cutoff: i64, authoritative: bool) -> bool {
     }
 }
 
+/// 必报池裁剪：强的排前面、同样强的新在前，然后封顶。
+///
+/// 为什么要有排序(2026-11-22): 池子按插入顺序封顶会丢**最旧**的 ——
+/// 而 KEV（已被利用）条目可能是几天前进来的、却比今天的中危漏洞更该报。
+/// 所以按「强度 → 时间」排完再截。
+fn trim_must_pool(pool: &mut Vec<FeedItem>) {
+    if pool.len() <= MUST_POOL_CAP {
+        return;
+    }
+    pool.sort_by(|a, b| {
+        let pa = must_strength(a);
+        let pb = must_strength(b);
+        pa.cmp(&pb).then_with(|| b.published.cmp(&a.published))
+    });
+    pool.truncate(MUST_POOL_CAP);
+}
+
+/// 必报强度：0 = 有强信号(RCE/0day/无需认证/已在野/CVSS≥9), 1 = 只靠编号与严重等级。
+fn must_strength(item: &FeedItem) -> u8 {
+    let v = crate::security::verdict(&item.title, &item.summary);
+    if v.is_strong() {
+        0
+    } else {
+        1
+    }
+}
+
 /// 条目发布时间宽容解析：RFC 2822（RSS 2.0）/ RFC 3339（Atom）/ 纯日期。
 /// 聚合类源的日期格式不统一，全部试一遍；都失败返回 None 由调用方决定。
 fn parse_item_time(published: &str) -> Option<i64> {
@@ -530,8 +555,10 @@ fn must_report_prompt(candidates: &[FeedItem]) -> String {
          ——不要访问链接、不要用 bash/浏览器核实内容。材料即全部事实来源。\n\
          必报纪律（最高优先级）：\n\
          1. **每一条都要报**。一条都不能少、不能合并、不能因为「与上一条同类」而省略。\n\
-         2. 每条按四段式写：**发生了什么 / 为什么重要 / 与我有关之处 / 建议的下一步行动**。\n\
-         3. 开头写一行 `🚨 必报 {n} 条`。\n\
+         2. 开头写一行 `🚨 必报 {n} 条`，随后**每条三行**（这是告警清单，不是长文，\n\
+         每条控制在 250 字以内；总长不要超过 4000 字）：\n\
+         `**编号（CVSS/严重等级）标题**` / `发生了什么：…` / `影响与处置：…`\n\
+         3. 影响与处置里写清：受影响组件与版本、是否需要立刻升级/停用、官方处置要求。\n\
          4. 数字纪律：CVSS 分值、CVE/GHSA 编号、版本号、处置期限等**逐字取自材料**；\n\
          材料没写就写「材料未给出」，**绝对禁止**凭常识补数字。\n\
          5. 若某条材料看着像空洞公告（只有标题没有实质信息），写「材料未给出具体细节」，\n\
@@ -906,6 +933,33 @@ mod tests {
                 .iter()
                 .any(|t| t.request_key == format!("rss:digest:must:evening:{date}")),
             "空洞公告不该成必报条目: {tasks:?}"
+        );
+    }
+
+    /// 必报池裁剪：强的留下，弱的让位（KEV 那种几天前进来的「已被利用」不能被
+    /// 今天的中危漏洞挤掉）。
+    #[test]
+    fn must_pool_trim_keeps_the_strong_ones() {
+        let mut pool: Vec<FeedItem> = Vec::new();
+        for i in 0..20 {
+            let (url, mut it) = item(&format!("w{i}"));
+            it.title = format!("GHSA-w{i}：某 CMS 的 XSS");
+            it.summary = "严重等级 moderate · 官方公告，详见 CVE-2026-0000。".into();
+            it.published = "2026-11-20".into();
+            pool.push(it);
+            let _ = url;
+        }
+        // 一条强的（已在野），故意放在最后（最旧的位置）
+        let (url, mut strong) = item("strong");
+        strong.title = "CVE-2026-99999：某设备已被利用漏洞".into();
+        strong.summary = "CISA 已知被利用漏洞目录（KEV）· 处置期限 2026-12-01".into();
+        strong.published = "2026-11-10".into();
+        pool.push(strong);
+        super::trim_must_pool(&mut pool);
+        assert_eq!(pool.len(), super::MUST_POOL_CAP);
+        assert!(
+            pool.iter().any(|i| i.id == "strong"),
+            "强的条目不该被弱的挤掉"
         );
     }
 
