@@ -229,8 +229,16 @@ async def brush_course(page, title: str, course_url: str, max_minutes: int,
 
     pending = pick_pending_videos(resources)
     if not pending:
-        log(f"[{title}] 没有待刷的视频 —— 记一笔, 以后不再占目标清单的名额")
-        remember_no_video(course_url, title)
+        # 「没有待刷的视频」有两种, **必须分开**:
+        #   1. 一个视频资源都没有 → 这门课永远刷不出东西, 记一笔别再来占名额;
+        #   2. 有视频但全刷完了    → 已经完成, 绝不能记(记了就再也不刷了)。
+        # 2026-11-22 实测踩过 2: 「国家安全教育」3 个 mp4 全「已完成」, 被误记成
+        # 「无视频课」—— 老师以后补了新视频, 这门课就永远不会被挑中了。
+        if any(r["is_video"] for r in resources):
+            log(f"[{title}] 视频都刷完了, 这门课已完成")
+        else:
+            log(f"[{title}] 一个视频资源都没有 —— 记一笔, 以后不再占目标清单的名额")
+            remember_no_video(course_url, title)
         result["progress_before"] = before_pct
         result["progress_after"] = before_pct
         return result

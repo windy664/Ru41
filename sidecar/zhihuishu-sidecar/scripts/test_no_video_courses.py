@@ -123,6 +123,34 @@ def test_store_round_trip() -> None:
         assert excluded_urls(path, NOW) == set()
 
 
+
+
+def test_completed_videos_must_not_be_treated_as_no_video() -> None:
+    """「有视频但全刷完」≠「无视频课」—— 这两者必须分开(2026-11-22 踩过)。
+
+    实测: 「国家安全教育」3 个 mp4 全「已完成」, 被脚本误记成无视频课。
+    后果是老师以后补了新视频, 这门课永远进不了目标清单。
+    这里锁住判定口径: 只要**存在**视频资源, 就不许记。
+    """
+    from polymas_state import pick_pending_videos
+
+    completed = [
+        {"name": "《大学生国家安全教育》数字教材阅读.mp4", "is_video": True, "done": True},
+        {"name": "统筹发展和安全的科学内涵.mp4", "is_video": True, "done": True},
+        {"name": "资源安全的重要性.mp4", "is_video": True, "done": True},
+        {"name": "附件二（视频报告模板）.docx", "is_video": False, "done": False},
+    ]
+    all_pdf = [
+        {"name": "《平语近人》.pdf", "is_video": False, "done": False},
+        {"name": "学习资源包 (27)", "is_video": False, "done": False},
+    ]
+
+    assert pick_pending_videos(completed) == [], "全刷完的课没有待刷视频"
+    # 但「有视频资源」这一条成立 → 不该被记成无视频课
+    assert any(r["is_video"] for r in completed), "有 mp4 → 不是无视频课"
+    assert not any(r["is_video"] for r in all_pdf), "全是文档 → 才是无视频课"
+
+
 if __name__ == "__main__":
     for name, fn in sorted(list(globals().items())):
         if name.startswith("test_") and callable(fn):
