@@ -117,6 +117,13 @@ P3 观望底座。各项互不阻塞，P0 做完前 P1/P2 已能显著降低暴�
   总量 6 万字符截断，先过 `redact_secrets`）；Agent 只输出 ```ru41-organize JSON 指令
   （moves/deletes/todos/skipped），宿主经 Vault 落盘（重试轮幂等）、待办入库（同标题去重）。
   Agent 侧 vault 全文与文件系统不可见。SKILL.md 同步改写，需镜像部署生效。
+- [x] **指令围栏登记（2026-11-22）**：整理任务与规划模块的 agent 交付物是
+  ` ```ru41-organize ` / ` ```ru41-plan-* ` 围栏里的指令 JSON，**没有 `summary` 字段**
+  是契约如此。契约层（`adapters/agent/pi`）原先只认「JSON with summary」，
+  把这些交付物判成契约不符 → 整理任务重试 9 次后放弃，四个文件一直躺在收件箱里
+  （规划模块同病）。现由 `domain::fence::INSTRUCTION_FENCES` 统一登记「机器消费的指令围栏」，
+  契约层认下这类交付物；没登记的围栏（如论文日报 `ru41-screen`）仍按原口径判契约不符。
+  **新增机器消费型围栏时，两个地方都要动**：名单（domain/fence.rs）与解析器（应用层）。
 - [x] **P0.1 配置隔离（2026-11-17 改为「一份配置」）**：原先靠 `ru41 config redact` 剔除
   `sources` 段给 worker 生成裁剪副本；现在所有插件配置都搬进 `plugins.d/<插件>/config.toml`，
   插件凭证一律走环境变量、只注入需要登录的插件容器，主配置里不再有任何插件密钥 →
