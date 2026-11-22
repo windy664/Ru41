@@ -35,25 +35,61 @@ interval_secs = 21600                 # rss run 轮询间隔，默认 6 小时
 notify = true
 ```
 
-### 「哪些必须报」要写进 interests，不要靠每天现判
+### 「哪些必须报」现在是**代码硬闸**，不再靠 interests
 
-`pool_keyword_filter = false`（默认）= **全量入池**，哪些条目值得报由 digest 里的
-agent 每次**现场判断**。这条链路上：
+> 2026-11-22 起，这条从「写在 interests 里求 LLM 照做」改成**代码判定**。
 
-- 条目**采集到了、也进了 digest prompt**，不代表会被写进日报；
-- agent 会自己发明「舍弃纪律」，措辞每次都不一样。
+原来的做法是把必报类别写进 `interests`（"突发高危安全漏洞（0day / RCE / 无需认证即可
+远程接管 / 已在野利用的 CVE）必须单独报出来"），靠 prompt 求 LLM 照做。实测不牢：
 
-2026-11-18 实测：Java4Shell（OpenJDK Base64 解码器 RCE，CVSS 9.2，无需认证即可
-远程接管）在早报里被写进了「已舍弃：…安全漏洞细节…」那一行——因为 `interests`
-里没提安全，prompt 也没有相关纪律。
+- 2026-11-18：Java4Shell（OpenJDK Base64 解码器 RCE，CVSS 9.2，无需认证即可远程接管）
+  被写进了「已舍弃：…安全漏洞细节…」那一行；
+- 2026-11-21：同期池里 OpenSSL CVSS 9.8 / 群晖 DSM 9.8 / Ruby RCE / PHP 8.6 全被丢掉。
 
-改法是**改配置**（`interests` 就是「用户推荐参数」的位置）：把必报类别写进去，例如
+根因有两条，都不是「模型不听话」：
 
-> …；突发高危安全漏洞（0day / RCE / 无需认证即可远程接管 / 已在野利用的 CVE）
-> 必须单独报出来，不要当噪声舍弃
+1. **判据不在代码里** —— prompt 只说「筛选值得关注的」，哪些必须报每天由 LLM 现场判；
+2. **料根本进不来** —— 订阅的全是资讯站（机器之心/IT之家/…），漏洞公告要么不进这些源，
+   要么是二手转述、没有 CVSS 与编号。「PHP 8.6 修了 6 个 Critical RCE」这类信息**压根没进池**。
 
-改完用同一批候选重跑一次 digest 即可验证（见 `ru41 task add --key <新 key> --prompt <旧 prompt> --notify`）。
-反过来，**要舍弃**的类别也该落成 `drop_title_patterns`（入池前丢，比在 digest 里拦省 LLM 调用），
+现在的做法（`plugins/rss/src/security.rs`）：
+
+| 层 | 做什么 |
+|---|---|
+| **源** | 新增 4 个权威漏洞源（见下表），条目带 GHSA/CVE 编号、CVSS 分值与向量、官方描述 |
+| **判据** | 代码层判定：CVSS ≥ 9.0 / Critical / RCE / 0day / 无需认证即可利用 / 已在野利用 → 强信号；只有 CVE 编号 → 仅当条目来自权威源时算必报 |
+| **空洞** | 没有编号、没有评分、没有版本号、也读不出漏洞语境的条目（典型「XX 发布安全公告」）**不成条** —— 报了只是占位 |
+| **出口** | 命中的条目**单独成一条 digest 任务**（`rss:digest:must:{slot}:{date}`），prompt 里只有这些条目、明令「一条都不许舍弃」；普通日报里不再包含它们 |
+
+关键差别：必报不再依赖 LLM 的判断力 —— 那条任务里**只有**必报条目，没有别的条目跟它
+抢注意力，prompt 也明确禁掉了「舍弃纪律」。必报任务先入队 → 告警先到。
+
+### 权威漏洞源
+
+| 前缀 | 源 | 带什么 | 备注 |
+|---|---|---|---|
+| `ghsa+` | GitHub Advisory Database（`api.github.com/advisories`，免认证） | GHSA 编号、CVE 编号、CVSS 分值与向量、官方描述、严重等级 | 结构化漏洞源里最干净的一个 |
+| `kev+` | CISA 已知被利用漏洞目录（JSON） | CVE 编号、厂商/产品、处置期限(dueDate)、勒索软件标记 | **已在野利用**的那一档：现在就修 |
+| `nvd+` | NVD CVE API 2.0 | CVSS v3.1/v4.0 评分与向量、描述 | 只取 CRITICAL（全量每天上千条，会淹掉日报） |
+| `php+` | php.net 发布 Atom + ChangeLog | 版本号、GHSA-/CVE- 编号、修复描述、受影响版本提示 | Atom 条目本身是空洞公告（「有新版本了」），真正的安全修复在 ChangeLog 里 |
+
+配置样例（`[sources.rss].feeds`）：
+
+```toml
+feeds = [
+  # …原有资讯源…
+  "ghsa+https://api.github.com/advisories?per_page=100&sort=published&direction=desc&days=7",
+  "kev+https://www.cisa.gov/sites/default/files/feeds/known_exploited_vulnerabilities.json?days=7",
+  "nvd+https://services.nvd.nist.gov/rest/json/cves/2.0?days=2",
+  "php+https://www.php.net/releases/feed.php",
+]
+must_report = true   # 缺省 true
+```
+
+`days=` 是各源自己的时间窗（GHSA/KEV 默认 7 天，NVD 默认 2 天）：KEV 是**累积目录**
+（全库 1700+ 条），不设窗口就会每天把全库重报一遍。
+
+**要舍弃**的类别仍该落成 `drop_title_patterns`（入池前丢，比在 digest 里拦省 LLM 调用），
 别让 agent 每天重新判一遍。
 
 ## 运行

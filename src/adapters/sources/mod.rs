@@ -6,11 +6,13 @@ pub mod competition;
 pub mod feed;
 pub mod github;
 pub mod jobs;
+pub mod security;
 
 pub use competition::{
     datafountain, devpost, gsoc, hack123, hackathon_com, hackertrip, lablab, lfx, wqai, xfyun,
 };
 pub use jobs::mianling;
+pub use security::{ghsa, kev, nvd, php};
 
 use anyhow::Result;
 use feed::FeedItem;
@@ -40,6 +42,11 @@ pub const SOURCES: &[SourceDef] = &[
     mianling::DEF,
     gsoc::DEF,
     lfx::DEF,
+    // 安全漏洞源（GHSA / CISA KEV / NVD / php.net）：见 security 模块说明。
+    ghsa::DEF,
+    kev::DEF,
+    nvd::DEF,
+    php::DEF,
 ];
 
 /// 命中某个伪 feed 前缀则返回其抓取 future；未命中返回 None（按 RSS/Atom 处理）。
@@ -75,6 +82,13 @@ mod tests {
                 "lfx+https://api.mentorship.lfx.linuxfoundation.org/projects",
                 true,
             ),
+            ("ghsa+https://api.github.com/advisories?per_page=100", true),
+            (
+                "kev+https://www.cisa.gov/sites/default/files/feeds/known_exploited_vulnerabilities.json",
+                true,
+            ),
+            ("nvd+https://services.nvd.nist.gov/rest/json/cves/2.0", true),
+            ("php+https://www.php.net/releases/feed.php", true),
             ("https://news.ycombinator.com/rss", false),
         ] {
             assert_eq!(super::fetch_pseudo(url).is_some(), expect_hit, "{url}");

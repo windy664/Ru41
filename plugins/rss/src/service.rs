@@ -34,6 +34,8 @@ pub struct RssConfig {
     /// 标题级丢弃规则（配置里的正则编译产物）：命中即不入池。
     /// 用于源级噪声过滤（V2EX 推广/中转站节点等纯营销）。
     pub drop_title_patterns: Vec<regex::Regex>,
+    /// 必报硬闸：命中的条目**单独成一条 digest 任务**（不许被 LLM 舍弃）。
+    pub must_report: bool,
 }
 
 impl Default for RssConfig {
@@ -53,6 +55,7 @@ impl Default for RssConfig {
             max_age_days: 2,
             pool_keyword_filter: true,
             drop_title_patterns: Vec::new(),
+            must_report: true,
         }
     }
 }
@@ -283,6 +286,11 @@ impl RssTracker {
         self.save_pool(&pool_id, &pool)?;
 
         // 3. 到点出报：早报/晚报各自一天一份（request_key 天然幂等），出报即清池
+        //
+        // 必报硬闸(2026-11-21): 命中的高危安全条目**单独成一条 digest 任务** ——
+        // 它的 prompt 里只有这些条目、且明令「一条都不许舍弃」。这样「必报」不再
+        // 依赖 LLM 每天现场判断（Java4Shell 被写进「已舍弃」那一行就是这么丢的）。
+        // 必报任务先入队 → 告警先到；普通日报里不再包含必报条目（不重复报）。
         let mut digest_task_id = None;
         for (slot, slot_hour) in [
             ("morning", self.config.morning_hour),
@@ -297,34 +305,68 @@ impl RssTracker {
             if slot == "morning" && hour >= self.config.evening_hour {
                 continue;
             }
-            let key = format!("rss:digest:{slot}:{date}");
-            // 今天的这份报可能已出过（同 key）：prompt 后续迭代会让幂等检查
-            // 报「key 冲突」，所以先按 key 查存在性——存在即视为已出报，跳过。
-            let existing = self
-                .store
-                .list(500)?
-                .into_iter()
-                .find(|task| task.request_key == key);
-            if let Some(task) = existing {
-                digest_task_id = Some(task.id);
-                continue;
-            }
+            let (must, rest): (Vec<FeedItem>, Vec<FeedItem>) = pool
+                .iter()
+                .cloned()
+                .partition(|item| self.is_must_report(item));
             let mut service = ru41::app::task::TaskService::new(self.store.clone());
-            let prompt = digest_prompt(interests, &pool);
-            let result = match &self.config.notify {
-                Some(route) => {
-                    service.enqueue_with_notify(&key, &prompt, &self.config.backend, route)?
+            let mut emitted = false;
+
+            // 3.1 必报段（独立任务，先入队）
+            if !must.is_empty() {
+                let key = format!("rss:digest:must:{slot}:{date}");
+                if !self.task_exists(&key)? {
+                    let prompt = must_report_prompt(&must);
+                    let result = match &self.config.notify {
+                        Some(route) => service.enqueue_with_notify(
+                            &key,
+                            &prompt,
+                            &self.config.backend,
+                            route,
+                        )?,
+                        None => service.enqueue_for(&key, &prompt, &self.config.backend)?,
+                    };
+                    if result.created {
+                        emitted = true;
+                    }
+                    digest_task_id = Some(result.task.id);
                 }
-                None => service.enqueue_for(&key, &prompt, &self.config.backend)?,
-            };
-            if result.created {
-                digest_task_id = Some(result.task.id);
+            }
+
+            // 3.2 普通日报（不含必报条目；没有普通条目就不出报）
+            if !rest.is_empty() {
+                let key = format!("rss:digest:{slot}:{date}");
+                // 今天的这份报可能已出过（同 key）：prompt 后续迭代会让幂等检查
+                // 报「key 冲突」，所以先按 key 查存在性——存在即视为已出报，跳过。
+                let existing = self
+                    .store
+                    .list(500)?
+                    .into_iter()
+                    .find(|task| task.request_key == key);
+                if let Some(task) = existing {
+                    digest_task_id = Some(task.id);
+                } else {
+                    let prompt = digest_prompt(interests, &rest);
+                    let result = match &self.config.notify {
+                        Some(route) => service.enqueue_with_notify(
+                            &key,
+                            &prompt,
+                            &self.config.backend,
+                            route,
+                        )?,
+                        None => service.enqueue_for(&key, &prompt, &self.config.backend)?,
+                    };
+                    if result.created {
+                        emitted = true;
+                    }
+                    digest_task_id = Some(result.task.id);
+                }
+            }
+
+            if emitted {
                 // 出报即清池：晚报只覆盖早报之后的新候选，早报覆盖隔夜积累。
                 self.save_pool(&pool_id, &[])?;
                 pool.clear();
-            } else {
-                // 今天这份已建过（重复轮询/重启），不重复建任务。
-                digest_task_id = Some(result.task.id);
             }
         }
 
@@ -336,6 +378,25 @@ impl RssTracker {
             },
             pool.len(),
         ))
+    }
+
+    /// 这条要不要进必报段：代码层判据 + 是否来自权威漏洞源。
+    fn is_must_report(&self, item: &FeedItem) -> bool {
+        if !self.config.must_report {
+            return false;
+        }
+        // 权威源（GHSA / CISA KEV / NVD / php.net）的条目 id 带固定前缀。
+        let authoritative = ru41::adapters::sources::security::is_authoritative_item(&item.id);
+        crate::security::is_must_report(&item.title, &item.summary, authoritative)
+    }
+
+    /// 这个 request_key 的任务是不是已经建过了（幂等：一天一份，不重复建）。
+    fn task_exists(&self, key: &str) -> Result<bool> {
+        Ok(self
+            .store
+            .list(500)?
+            .into_iter()
+            .any(|task| task.request_key == key))
     }
 
     /// 池文档落盘：put_document(None) 是 INSERT ON CONFLICT DO NOTHING（仅新建），
@@ -403,6 +464,57 @@ fn digest_hash(candidates: &[(String, FeedItem)]) -> u64 {
         item.id.hash(&mut hasher);
     }
     hasher.finish()
+}
+
+/// 必报段 prompt：**只有必报条目**，且明令一条都不许舍弃。
+///
+/// 与普通日报 prompt 的关键差别：
+/// - 材料里**只有**必报条目，没有「可舍弃的其它条目」跟它抢注意力；
+/// - 明确禁止「舍弃纪律」——普通日报 prompt 里那句「舍弃纪律」是漏洞被丢的根源；
+/// - 空洞条目也要列出（材料没写细节就写「材料未给出具体细节」），但不能自己发挥。
+fn must_report_prompt(candidates: &[FeedItem]) -> String {
+    const PROMPT_BUDGET: usize = 60_000;
+    const SUMMARY_MAX: usize = 600;
+    let mut prompt = format!(
+        "你是安全告警播报员。下面是**必报**条目 —— 代码层已判定为高危（CVSS ≥ 9.0 / Critical / RCE / 0day / 无需认证即可利用 / 已在野利用，或来自权威漏洞源的 CVE 公告）。\n\
+         工具禁令（最高优先级）：所有判断只依据下面的材料，**全程不要调用任何工具**\n\
+         ——不要访问链接、不要用 bash/浏览器核实内容。材料即全部事实来源。\n\
+         必报纪律（最高优先级）：\n\
+         1. **每一条都要报**。一条都不能少、不能合并、不能因为「与上一条同类」而省略。\n\
+         2. 每条按四段式写：**发生了什么 / 为什么重要 / 与我有关之处 / 建议的下一步行动**。\n\
+         3. 开头写一行 `🚨 必报 {n} 条`。\n\
+         4. 数字纪律：CVSS 分值、CVE/GHSA 编号、版本号、处置期限等**逐字取自材料**；\n\
+         材料没写就写「材料未给出」，**绝对禁止**凭常识补数字。\n\
+         5. 若某条材料看着像空洞公告（只有标题没有实质信息），写「材料未给出具体细节」，\n\
+         但**仍要列出该条** —— 这是必报清单，不许自己删。\n\
+         6. **不要写「已舍弃」段落** —— 这里没有需要舍弃的条目。\n\
+         交付口径：最终 JSON 的 summary 字段放**完整正文**（Markdown 原样搬进去），\n\
+         不要先在消息里写一遍、再压缩成一段摘要交差。\n\
+         == 必报条目（{n} 条）==",
+        n = candidates.len()
+    );
+    let ordered: Vec<&FeedItem> = candidates.iter().rev().collect();
+    for (i, item) in ordered.iter().enumerate() {
+        let verdict = crate::security::verdict(&item.title, &item.summary);
+        let reasons = crate::security::reason_line(&verdict);
+        let entry = format!(
+            "\n---\n{}\n链接：{}\n发布：{}\n必报理由：{}\n内容：{}\n",
+            item.title,
+            item.link,
+            item.published,
+            reasons,
+            ru41::util::truncate_chars(&item.summary, SUMMARY_MAX)
+        );
+        if prompt.len() + entry.len() > PROMPT_BUDGET {
+            prompt.push_str(&format!(
+                "\n（其余 {} 条较旧条目超出长度预算，本次略去）\n",
+                candidates.len() - i
+            ));
+            break;
+        }
+        prompt.push_str(&entry);
+    }
+    prompt
 }
 
 /// 资讯精选 prompt：输出口径按设计文档 3.4 的四段式，区分事实与推断。
@@ -679,5 +791,99 @@ mod tests {
         let items: Vec<FeedItem> = serde_json::from_value(doc.value["items"].clone()).unwrap();
         let ids: Vec<&str> = items.iter().map(|i| i.id.as_str()).collect();
         assert_eq!(ids, ["a", "b"], "两轮 poll 的条目都在池里");
+    }
+
+    /// 必报硬闸：高危安全条目**单独成一个任务**，普通条目在另一个任务里，
+    /// 两边不互相污染（必报那条也不该再出现在普通日报里）。
+    #[test]
+    fn must_report_items_get_their_own_digest_task() {
+        let dir = tempfile::tempdir().unwrap();
+        let store: Arc<dyn TaskStore> = Arc::new(
+            ru41::adapters::database::sqlite::SqliteTaskStore::open(&dir.path().join("s.db"))
+                .unwrap(),
+        );
+        let mut tracker = daily_tracker(store.clone(), 0);
+        // 关键词粗筛默认开着，标题里没 "AI" 的漏洞条目会在入池前被筛掉 —— 关掉。
+        tracker.config.pool_keyword_filter = false;
+        let (url, mut vuln) = item("vuln");
+        vuln.title = "某库曝远程代码执行漏洞".into();
+        vuln.summary = "CVSS 9.8，无需认证即可远程接管，存在公开利用代码。".into();
+        let (url2, normal) = item("normal");
+        let (outcome, pool) = tracker
+            .poll_daily(vec![(url, vuln), (url2, normal)], &["AI".to_owned()], "i")
+            .unwrap();
+        assert_eq!(outcome.new_items, 2);
+        assert_eq!(pool, 0, "出报后清池");
+        let tasks = store.list(10).unwrap();
+        assert_eq!(tasks.len(), 2, "必报 + 普通 各一个任务: {tasks:?}");
+        let (date, _) = local_date_hour(ru41::util::now());
+        let must = tasks
+            .iter()
+            .find(|t| t.request_key == format!("rss:digest:must:evening:{date}"))
+            .expect("必报任务");
+        let plain = tasks
+            .iter()
+            .find(|t| t.request_key == format!("rss:digest:evening:{date}"))
+            .expect("普通日报任务");
+        // 必报任务里有高危条目、没有普通条目。
+        assert!(must.prompt.contains("某库曝远程代码执行漏洞"), "{}", must.prompt);
+        assert!(!must.prompt.contains("AI 机会 normal"), "{}", must.prompt);
+        assert!(must.prompt.contains("一条都不能少"), "{}", must.prompt);
+        // 普通日报里不再有必报条目。
+        assert!(!plain.prompt.contains("某库曝远程代码执行漏洞"), "{}", plain.prompt);
+        assert!(plain.prompt.contains("AI 机会 normal"), "{}", plain.prompt);
+    }
+
+    /// 空洞公告不成条：只有「发布安全公告」字样的条目不进必报。
+    #[test]
+    fn hollow_security_announcement_is_not_must_report() {
+        let dir = tempfile::tempdir().unwrap();
+        let store: Arc<dyn TaskStore> = Arc::new(
+            ru41::adapters::database::sqlite::SqliteTaskStore::open(&dir.path().join("s.db"))
+                .unwrap(),
+        );
+        let mut tracker = daily_tracker(store.clone(), 0);
+        tracker.config.pool_keyword_filter = false;
+        let (url, mut hollow) = item("hollow");
+        hollow.title = "某公司发布安全公告".into();
+        hollow.summary = "更多细节请关注官方渠道。".into();
+        tracker
+            .poll_daily(vec![(url, hollow)], &["AI".to_owned()], "i")
+            .unwrap();
+        let tasks = store.list(10).unwrap();
+        let (date, _) = local_date_hour(ru41::util::now());
+        assert!(
+            !tasks
+                .iter()
+                .any(|t| t.request_key == format!("rss:digest:must:evening:{date}")),
+            "空洞公告不该成必报条目: {tasks:?}"
+        );
+    }
+
+    /// 权威漏洞源里「只带 CVE 编号」的条目也要必报（那是漏洞公告本身）。
+    #[test]
+    fn authoritative_source_cve_only_item_is_must_report() {
+        let dir = tempfile::tempdir().unwrap();
+        let store: Arc<dyn TaskStore> = Arc::new(
+            ru41::adapters::database::sqlite::SqliteTaskStore::open(&dir.path().join("s.db"))
+                .unwrap(),
+        );
+        let mut tracker = daily_tracker(store.clone(), 0);
+        tracker.config.pool_keyword_filter = false;
+        let (url, mut adv) = item("adv");
+        adv.id = "ghsa-GHSA-xxxx-yyyy-zzzz".into();
+        adv.title = "GHSA-xxxx-yyyy-zzzz：某库权限提升漏洞".into();
+        adv.summary = "官方公告，详见 CVE-2026-12345。".into();
+        tracker
+            .poll_daily(vec![(url, adv)], &["AI".to_owned()], "i")
+            .unwrap();
+        let tasks = store.list(10).unwrap();
+        let (date, _) = local_date_hour(ru41::util::now());
+        assert!(
+            tasks
+                .iter()
+                .any(|t| t.request_key == format!("rss:digest:must:evening:{date}")),
+            "权威源的 CVE 条目应必报: {tasks:?}"
+        );
     }
 }

@@ -37,6 +37,9 @@ pub struct RssSection {
     /// 标题级丢弃规则（正则列表，命中即不入池）：用于源级噪声过滤，
     /// 如 V2EX 的 [推广]/[中转站] 节点（纯营销，digest 之前就该丢掉）。
     pub drop_title_patterns: Option<Vec<String>>,
+    /// 必报硬闸：命中的高危安全条目**单独成一条 digest 任务**，不许被 LLM 舍弃。
+    /// 缺省 true（这是「高危漏洞必须报」这条口径的代码实现，不靠 LLM 现场判断）。
+    pub must_report: Option<bool>,
 }
 
 impl RssSection {
@@ -72,6 +75,7 @@ impl RssSection {
                     regex::Regex::new(p).with_context(|| format!("invalid drop_title_pattern: {p}"))
                 })
                 .collect::<Result<Vec<_>>>()?,
+            must_report: self.must_report.unwrap_or(true),
         })
     }
 }

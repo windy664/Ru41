@@ -37,6 +37,24 @@ pub fn is_silent_source(request_key: &str, silent_sources: &[String]) -> bool {
     })
 }
 
+/// 投递重试次数上限。
+///
+/// 为什么要上限(2026-11-22): 目标失效(账号注销 / openid 过期 / QQ 侧 404)时
+/// 每次投递都失败, 没有上限就是**永久重试**——实测 `task-374-1` 目标为空
+/// (`user:`), 重试了 385 次还在跑, 每次都是白白发一次 API。
+/// 有上限后: 目标真失效就放弃(状态 abandoned), 目标只是暂时不通(网络抖动)
+/// 也还有 12 次机会。
+pub const MAX_DELIVERY_TRIES: u64 = 12;
+
+/// 投递目标是否为空(形如 `user:` / `chat:` —— 有渠道前缀但没有 id)。
+/// 这种目标送出去必然 404, 直接放弃, 别拿它耗重试预算。
+pub fn is_empty_target(target: &str) -> bool {
+    match target.split_once(':') {
+        Some((_, rest)) => rest.trim().is_empty(),
+        None => target.trim().is_empty(),
+    }
+}
+
 impl NotifyDispatcher {
     /// 处理一批终态通知、进度通知与活动流 chunk，返回成功送达的总数。
     pub async fn run_once(&self) -> Result<usize> {
@@ -195,13 +213,51 @@ impl NotifyDispatcher {
             let current = self.store.document("delivery", &id)?;
             let now = crate::runtime::worker::now();
             if let Some(doc) = &current {
-                if doc.value["status"] == "sent" {
+                let status = doc.value["status"].as_str().unwrap_or("");
+                // 终态不再重试: sent=已送达 / cancelled=人工取消 / abandoned=放弃。
+                if status == "sent" {
                     self.store.mark_notified(task.id)?;
+                    continue;
+                }
+                if status == "cancelled" || status == "abandoned" {
                     continue;
                 }
                 if doc.value["next_at"].as_i64().unwrap_or(0) > now {
                     continue;
                 }
+                // 重试用尽 → 放弃。目标永久失效时(404)再试也是白试。
+                let tried = doc.value["tries"].as_u64().unwrap_or(0);
+                if tried >= MAX_DELIVERY_TRIES {
+                    let mut rec = doc.value.clone();
+                    rec["status"] = "abandoned".into();
+                    rec["next_at"] = 0.into();
+                    self.store
+                        .put_document("delivery", &id, Some(doc.revision), &rec)?;
+                    eprintln!(
+                        "[notify] delivery {id} 放弃: 重试 {tried} 次仍失败(target={})",
+                        route.target
+                    );
+                    continue;
+                }
+            }
+            // 目标为空(只有 "user:" 没有 id)→ 送出去必然 404, 直接放弃。
+            if is_empty_target(&route.target) {
+                let mut rec = current
+                    .as_ref()
+                    .map(|d| d.value.clone())
+                    .unwrap_or_else(|| serde_json::json!({}));
+                rec["task_id"] = serde_json::Value::from(task.id);
+                rec["channel"] = serde_json::Value::String(route.channel.clone());
+                rec["target"] = serde_json::Value::String(route.target.clone());
+                rec["status"] = "cancelled".into();
+                rec["next_at"] = 0.into();
+                let rev = current.as_ref().map(|d| d.revision);
+                self.store.put_document("delivery", &id, rev, &rec)?;
+                eprintln!(
+                    "[notify] delivery {id} 放弃: 投递目标为空(target={:?})",
+                    route.target
+                );
+                continue;
             }
             let tries = current
                 .as_ref()
@@ -560,6 +616,20 @@ mod tests {
         assert!(!is_silent_source("obsidianly:organize:x", &silent));
         // 空列表不静默任何东西。
         assert!(!is_silent_source("obsidian:organize:x", &[]));
+    }
+
+    #[test]
+    fn empty_target_is_recognized() {
+        // 目标只有渠道前缀、没有 id → 送出去必然 404。
+        assert!(is_empty_target("user:"));
+        assert!(is_empty_target("user:   "));
+        assert!(is_empty_target("chat:"));
+        assert!(is_empty_target(""));
+        assert!(is_empty_target("   "));
+        // 正常目标不能误伤。
+        assert!(!is_empty_target("user:3BCF4D9D69BFD14B24951B4871223887"));
+        assert!(!is_empty_target("chat:12345"));
+        assert!(!is_empty_target("group:abc"));
     }
 
     #[test]
