@@ -239,7 +239,11 @@ async def play_video(page, task: dict, class_id: int, column_id: int, speed: flo
         log(f"  {task['taskName'][:24]}: 播放失败 {str(exc)[:90]}")
         return False
     log(f"  {task['taskName'][:26]}: 开始播(时长 {dur:.0f}s, {speed}x)")
-    deadline = time.monotonic() + max(120.0, float(dur) / max(speed, 0.1) + 180)
+    # 时限必须按**最坏速率 1.0x** 算: 平台播放器会把 playbackRate 重置回 1
+    # (2026-11-22 实测), 按 1.5x 算会在播到一半时到时限 —— 而「半途而废」
+    # 平台**不记账**(实测 progress=0 done=0), 等于白播还白等。
+    # 宁可多给 15% + 4 分钟: 视频 ended 会提前返回, 这只是上限。
+    deadline = time.monotonic() + max(180.0, float(dur) * 1.15 + 240)
     last = 0.0
     rate_fixed = 0
     while time.monotonic() < deadline:
