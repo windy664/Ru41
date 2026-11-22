@@ -1,6 +1,6 @@
 use super::{
     super::process::{OwnedChild, ProcessGroup},
-    contract::{message_text, parse_agent_result, pick_full_report},
+    contract::{is_instruction_deliverable, message_text, parse_agent_result, pick_full_report},
     models::Candidate,
     steer::pump_steers,
     ui::pi_ui_interact,
@@ -534,7 +534,11 @@ impl PiAgent {
                     let mut result = parse_agent_result(&text)?;
                     // 兜底：最后一条消息的 summary 是压缩版，而前面某条消息里有
                     // 完整正文（Markdown 报告）——交付完整正文，别交付压缩版。
-                    if let Some(report) = pick_full_report(&report_candidates, &result.summary) {
+                    // 指令围栏除外：它不是给用户看的正文，插件要靠它执行，
+                    // 换成一段叙述就解析不到了（2026-11-22 收件箱整理实测）。
+                    if !is_instruction_deliverable(&text)
+                        && let Some(report) = pick_full_report(&report_candidates, &result.summary)
+                    {
                         result.summary = report;
                     }
                     stdin.shutdown().await?;

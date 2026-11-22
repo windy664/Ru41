@@ -234,8 +234,58 @@ fn clean_contract_prose(text: &str) -> String {
     lines.join("\n").trim().to_owned()
 }
 
+/// 认出「机器消费的指令围栏」交付物。
+///
+/// 底座交回的是一段围栏（```ru41-organize …```），里面装的是给宿主/插件
+/// **执行**的指令，没有 `summary` 字段——这是契约如此，不是模型跑偏。
+/// 2026-11-22 实测：收件箱整理任务因此被判「Pi result must be JSON with
+/// summary」，重试 9 次后放弃，四个文件一直躺在收件箱里。
+///
+/// 认的条件：围栏语言已登记在 `domain::fence::INSTRUCTION_FENCES`，且围栏正文
+/// 是一份 JSON 对象。没登记的围栏（论文日报的 ru41-screen 等）仍按原口径判契约不符。
+fn instruction_fence_payload(text: &str) -> Option<String> {
+    let fence_start = text.find("```")?;
+    let after = &text[fence_start + 3..];
+    let lang_end = after.find(char::is_whitespace)?;
+    let lang = after[..lang_end].trim();
+    if !crate::domain::fence::INSTRUCTION_FENCES.contains(&lang) {
+        return None;
+    }
+    let rest = &after[lang_end..];
+    let body_rel = rest.trim_start();
+    let body_end = body_rel.find("```")?;
+    let body = body_rel[..body_end].trim();
+    let value = serde_json::from_str::<Value>(body).ok()?;
+    if !value.is_object() {
+        return None;
+    }
+    let body_abs = fence_start + 3 + lang_end + (rest.len() - body_rel.len());
+    let close = body_abs + body_end;
+    // 后面还有别的围栏 → 不是单份指令交付物，交给原口径。
+    if text[close + 3..].contains("```") {
+        return None;
+    }
+    Some(text[fence_start..close + 3].trim().to_owned())
+}
+
+/// 交付物是不是「机器消费的指令围栏」——这类交付物不许被正文兜底替换：
+/// 指令围栏是给插件执行的，正文兜底会把指令换成一段叙述，插件就解析不到了。
+pub(super) fn is_instruction_deliverable(text: &str) -> bool {
+    instruction_fence_payload(text.trim()).is_some()
+}
+
 pub(super) fn parse_agent_result(text: &str) -> Result<AgentResult> {
     let trimmed = text.trim();
+    // 「机器消费的指令围栏」：交付物是给宿主/插件执行的指令（ru41-organize 等），
+    // 没有 summary 是契约如此——收下整段围栏，别判契约不符让任务重试。
+    if let Some(payload) = instruction_fence_payload(trimmed) {
+        let result = AgentResult {
+            summary: payload,
+            media: Vec::new(),
+        };
+        result.validate().map_err(Ru41Error::InvalidOutput)?;
+        return Ok(result);
+    }
     // 模型常在散文后面附一段契约 JSON（课堂笔记实测：先写要点，末尾再补
     // `{"summary": ...}`）。契约对象取「带 summary 的那个」，不是「第一个 {」。
     if let Some((contract, summary)) = extract_contract_json(trimmed) {
@@ -375,7 +425,7 @@ fn guess_media_kind(source: &str) -> MediaKind {
 
 #[cfg(test)]
 mod tests {
-    use super::{MediaKind, parse_agent_result, pick_full_report};
+    use super::{MediaKind, is_instruction_deliverable, parse_agent_result, pick_full_report};
 
     /// 契约里的 summary 又被包了一层 ```json 围栏时，要剥到内层，
     /// 否则投递出去的是原始 JSON 而不是 Markdown（2026-11-18 课堂笔记实测）。
@@ -485,6 +535,53 @@ mod tests {
             parse_agent_result(raw).is_err(),
             "无 summary 的 JSON 不该当交付物"
         );
+    }
+
+    /// 「机器消费的指令围栏」（ru41-organize）里装的是给插件执行的指令，
+    /// 没有 summary 是契约如此——收下它，别判契约不符让任务重试
+    /// （2026-11-22 收件箱整理任务重试 9 次后放弃的根因）。
+    #[test]
+    fn accepts_instruction_fence_as_deliverable() {
+        let raw = "```ru41-organize\n{\"moves\":[{\"from\":\"00-Inbox-收件箱/a.md\",\"to\":\"03-Knowledge-知识/a.md\"}],\"deletes\":[],\"todos\":[],\"events\":[],\"skipped\":[]}\n```";
+        let result = parse_agent_result(raw).expect("指令围栏该被收下");
+        assert!(
+            result.summary.contains("ru41-organize"),
+            "{}",
+            result.summary
+        );
+        assert!(result.summary.contains("moves"), "{}", result.summary);
+    }
+
+    /// 围栏前面带一句过场话也一样认——只取围栏那段，前面的散文不带进去。
+    #[test]
+    fn accepts_instruction_fence_with_leading_prose() {
+        let raw = "整理如下：\n```ru41-organize\n{\"moves\":[],\"skipped\":[]}\n```";
+        let result = parse_agent_result(raw).expect("指令围栏该被收下");
+        assert!(
+            result.summary.starts_with("```ru41-organize"),
+            "{}",
+            result.summary
+        );
+        assert!(!result.summary.contains("整理如下"), "{}", result.summary);
+    }
+
+    /// 围栏正文不是 JSON → 不算「指令交付物」，按原有兜底当普通文本处理
+    /// （插件侧 extract_plan 会拒掉它，走它自己的重试与放弃路径）。
+    #[test]
+    fn rejects_instruction_fence_with_non_json_body() {
+        let raw = "```ru41-organize\n这不是 JSON\n```";
+        assert!(
+            !is_instruction_deliverable(raw),
+            "正文不是 JSON 时不该被当成指令交付物"
+        );
+    }
+
+    /// 没登记的围栏（论文日报的 ru41-screen）仍然拒收——
+    /// 「认指令围栏」不能变成「认所有围栏」。
+    #[test]
+    fn still_rejects_unregistered_fence() {
+        let raw = "```ru41-anything\n{\"relevant\":[]}\n```";
+        assert!(parse_agent_result(raw).is_err());
     }
 
     /// 散文 + 契约 JSON（模型把 JSON 附在末尾）：交散文，JSON 是信封不外发。

@@ -591,6 +591,10 @@ pub struct OrganizeEvent {
     pub location: Option<String>,
 }
 
+/// Agent 输出的整理指令围栏。
+///
+/// 已登记在 `domain::fence::INSTRUCTION_FENCES`：契约校验层（适配器）认这种围栏，
+/// 「没有 summary 字段」不算契约不符——指令本来就是给宿主执行的，不是正文。
 const PLAN_FENCE: &str = "ru41-organize";
 
 /// 从 Agent 输出提取整理指令：优先 ```ru41-organize 代码块，否则整段按 JSON 解析。
@@ -750,7 +754,9 @@ pub fn organize_prompt(
          \"events\":[{{\"source\":\"04-Life-生活/Travel-出行/2026年11月/2026-11-14-香港出行规划.md\",\
          \"title\":\"高铁 G6550 西九龙→常平\",\"date\":\"2026-11-14\",\"start\":\"18:54\",\"end\":\"19:47\",\
          \"location\":\"西九龙站\"}}],\"skipped\":[\"Inbox/img.png\"]}}\n\
-         ```"
+         ```\n\
+         若底座要求「最后一条消息必须是带 `summary` 字段的 JSON 对象」，\
+         就把上面整个代码块原样放进 `summary` 字段的值里——宿主两种形态都认。"
     ));
     out
 }
@@ -994,6 +1000,17 @@ mod tests {
 
         assert!(extract_plan("Agent 忘了按格式输出").is_err());
         assert!(extract_plan("```ru41-organize\n{\"moves\":[]}\n``` 缺闭合").is_ok());
+    }
+
+    /// 整理指令围栏必须在契约层的「机器消费指令围栏」名单里——
+    /// 不登记，适配器会把这份交付物判成「JSON 里没有 summary」而让任务重试
+    /// （2026-11-22 收件箱整理任务重试 9 次后放弃的根因）。
+    #[test]
+    fn plan_fence_is_registered_as_instruction_fence() {
+        assert!(
+            crate::domain::fence::INSTRUCTION_FENCES.contains(&PLAN_FENCE),
+            "整理指令围栏 {PLAN_FENCE} 没登记进 domain::fence::INSTRUCTION_FENCES"
+        );
     }
 
     #[test]

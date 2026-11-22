@@ -47,3 +47,6 @@ description: 用于整理 Obsidian Vault 收件箱：把收件箱新笔记归档
  "todos":[{"title":"交实验报告","due":"2026-11-08"}],
  "skipped":["Inbox/img.png"]}
 ```
+
+若底座要求「最后一条消息必须是带 `summary` 字段的 JSON 对象」，
+就把上面整个代码块原样放进 `summary` 字段的值里——宿主两种形态都认。
