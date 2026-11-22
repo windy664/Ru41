@@ -60,7 +60,7 @@ tags: [Ru41, zhihuishu, 水课, 作业, docker]
 
 遵循 `deploy/README.md` 第 5 节扩展约定：重依赖（浏览器 / Python 运行时）走独立 sidecar 镜像，不进 Ru41 主镜像，不挂 Docker socket。本 sidecar 与 Ru41 零网络耦合，只靠 `report.json` 文件桥。
 
-**落位：** 独立目录（如 `~/Project/zhihuishu-sidecar/`），不进 Ru41 仓库——避免把第三方仓库拖进 Ru41 的 build context；Ru41 侧未来只加 `modules/zhihuishu` 读取端。
+**落位：** 独立目录（如 `~/Projects/zhihuishu-sidecar/`），不进 Ru41 仓库——避免把第三方仓库拖进 Ru41 的 build context；Ru41 侧未来只加 `modules/zhihuishu` 读取端。
 
 ```dockerfile
 FROM mcr.microsoft.com/playwright/python:v1.49.0-jammy   # 镜像自带 Chromium 与全部系统依赖

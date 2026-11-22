@@ -12,7 +12,7 @@ tags: [Ru41, 智慧树, 作业, deadline, source]
 
 ## 架构分工（重要）
 
-- **采集端不在 Ru41 内**：登录智慧树、枚举课程与任务、写 `report.json` 全部由独立 Docker sidecar（`~/Project/zhihuishu-sidecar/`，Playwright + Xvfb）完成。Ru41 是纯消费端，不接触智慧树网络协议，不持有账号密码。
+- **采集端不在 Ru41 内**：登录智慧树、枚举课程与任务、写 `report.json` 全部由独立 Docker sidecar（`~/Projects/zhihuishu-sidecar/`，Playwright + Xvfb）完成。Ru41 是纯消费端，不接触智慧树网络协议，不持有账号密码。
 - **视频学习自动化同样不在 Ru41 内**：Autovisor sidecar 负责；本模块未来只消费其产出。
 - 契约是 `report.json` 一个文件；sidecar 挂了只影响当轮数据新鲜度，不影响 Ru41 运行。
 

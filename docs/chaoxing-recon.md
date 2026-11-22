@@ -15,7 +15,7 @@
 
 教训（承接 mengxun-sign）：CDN 会拦数据中心 IP，但本次直连实测未被拦（校园网/家宽出口）。
 
-## 协议端点（实测样本存档于 sidecar ~/Project/chaoxing-sidecar）
+## 协议端点（实测样本存档于 sidecar ~/Projects/chaoxing-sidecar）
 
 1. **登录** `POST passport2.chaoxing.com/fanyalogin`
    - form：`uname`/`password` 均 AES-128-CBC（key=iv=`u2oh6Vu^HWe4_AES`，公开值）+ PKCS7 + base64；

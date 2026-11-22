@@ -16,7 +16,7 @@ zhihuishu-sidecar/data/report.json   ←契约文件（见 ../../../docs/sources
 
 ```bash
 # 1. 代码与镜像
-git clone <sidecar-repo> ~/Project/zhihuishu-sidecar && cd ~/Project/zhihuishu-sidecar
+git clone <sidecar-repo> ~/Projects/zhihuishu-sidecar && cd ~/Projects/zhihuishu-sidecar
 docker compose build            # 或从别处 docker save|ssh|docker load 传 zhihuishu-sidecar:local
 
 # 2. 账密(gitignored, 绝不入库)
@@ -40,7 +40,7 @@ journalctl --user -u zhihuishu-collector.service -n 50
 
 ```toml
 [sources.zhihuishu]
-report_path = "/home/<user>/Project/zhihuishu-sidecar/data/report.json"
+report_path = "/home/<user>/Projects/zhihuishu-sidecar/data/report.json"
 # deadline_days = 3        # 缺省 3 天进入每日提醒
 # notify = true            # 经 [notify] 默认出口推送
 ```
@@ -56,8 +56,8 @@ Ru41 侧无需额外定时器: `schedule run zhihuishu`(或常驻网关进程)�
 # ~/.config/systemd/user/zhihuishu-report-push.service
 [Service]
 Type=oneshot
-ExecStart=/usr/bin/rsync -t %h/Project/zhihuishu-sidecar/data/report.json \
-  <ru41-host>:Project/zhihuishu-sidecar/data/report.json
+ExecStart=/usr/bin/rsync -t %h/Projects/zhihuishu-sidecar/data/report.json \
+  <ru41-host>:Projects/zhihuishu-sidecar/data/report.json
 ```
 
 timer 的 `OnUnitActiveSec` 不需要——在 collector.service 里加
@@ -72,13 +72,13 @@ timer 的 `OnUnitActiveSec` 不需要——在 collector.service 里加
 
 ```sh
 # 首次安装（.223 上执行）
-rsync scripts/signin_watch.py deploy/ windy2@192.168.1.223:Project/zhihuishu-sidecar/ -r
+rsync scripts/signin_watch.py deploy/ windy2@192.168.1.223:Projects/zhihuishu-sidecar/ -r
 ssh windy2@192.168.1.223
-cp Project/zhihuishu-sidecar/deploy/zhihuishu-signin-watch.{service,timer} ~/.config/systemd/user/
+cp Projects/zhihuishu-sidecar/deploy/zhihuishu-signin-watch.{service,timer} ~/.config/systemd/user/
 systemctl --user daemon-reload && systemctl --user enable --now zhihuishu-signin-watch.timer
 
 # 查看捕获
-cat Project/zhihuishu-sidecar/data/signin_traffic.jsonl
+cat Projects/zhihuishu-sidecar/data/signin_traffic.jsonl
 journalctl --user -u zhihuishu-signin-watch -n 20
 ```
 

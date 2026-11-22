@@ -13,7 +13,7 @@ Type=oneshot
 #       engine=polymas   → 写 data/targets.json(自研 brush_polymas.py 用)
 #
 # 放在 18:45: 赶在 19:00 的刷课之前, 让刷课器拿到当天的目标清单。
-WorkingDirectory=%h/Project/zhihuishu-sidecar
-ExecStart=/usr/bin/python3 %h/Project/zhihuishu-sidecar/scripts/plan_targets.py
+WorkingDirectory=%h/Projects/zhihuishu-sidecar
+ExecStart=/usr/bin/python3 %h/Projects/zhihuishu-sidecar/scripts/plan_targets.py
 TimeoutStartSec=120
 RemainAfterExit=no

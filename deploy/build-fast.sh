@@ -3,7 +3,7 @@
 # 再用 Dockerfile.patch 只替换二进制与 modules，跳过全量镜像构建。
 #
 # 构建纪律（治理）：只从 HEAD 构建，不吃工作区。
-# 在专用 git worktree（默认 ~/Project/Ru41-build）里 reset --hard 到 HEAD，
+# 在专用 git worktree（默认 ~/Projects/Ru41-build）里 reset --hard 到 HEAD，
 # 未提交的半成品永远进不了部署；target/ 缓存保留在 worktree 里保持增量速度。
 #
 # 用法：./deploy/build-fast.sh        # 构建 ru41:local

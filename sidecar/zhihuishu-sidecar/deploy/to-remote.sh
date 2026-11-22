@@ -13,7 +13,7 @@ SSH_OPTS=(-o ControlMaster=auto -o ControlPath=~/.ssh/cm-zhihuishu-%r@%h:%p -o C
 echo "==> 1/3 同步代码 + config.ini(账密) + cookies(SSH 加密传输)"
 rsync -av -e "ssh ${SSH_OPTS[*]}" \
   --exclude 'Autovisor/' --exclude 'logs/' --exclude '.git/' \
-  "$REPO_DIR/" "$DEST:Project/zhihuishu-sidecar/"
+  "$REPO_DIR/" "$DEST:Projects/zhihuishu-sidecar/"
 
 if [ "$WITH_IMAGE" = "--with-image" ]; then
   echo "==> 2/3 传输镜像 zhihuishu-sidecar:local (gzip 压缩, 视网络几分钟)"
@@ -26,7 +26,7 @@ fi
 echo "==> 3/3 远端安装定时器并试跑一轮"
 ssh -t "${SSH_OPTS[@]}" "$DEST" '
   set -e
-  cd ~/Project/zhihuishu-sidecar
+  cd ~/Projects/zhihuishu-sidecar
   mkdir -p ~/.config/systemd/user
   cp deploy/zhihuishu-collector.service deploy/zhihuishu-collector.timer ~/.config/systemd/user/
   systemctl --user daemon-reload
@@ -34,7 +34,7 @@ ssh -t "${SSH_OPTS[@]}" "$DEST" '
   echo "--- 试跑一轮采集(约 3 分钟) ---"
   systemctl --user start zhihuishu-collector.service
   systemctl --user list-timers zhihuishu-collector.timer --no-pager
-  head -c 300 ~/Project/zhihuishu-sidecar/data/report.json; echo
+  head -c 300 ~/Projects/zhihuishu-sidecar/data/report.json; echo
   echo "OK. 建议补一条(需要 sudo): sudo loginctl enable-linger $USER"
   echo "      —— 无登录会话(重启/注销)后用户级 timer 也能照跑"
 '

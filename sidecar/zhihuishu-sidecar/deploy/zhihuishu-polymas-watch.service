@@ -16,12 +16,12 @@ Type=oneshot
 # 抛「课程目录加载超时」→ 该门课失败 → **整轮 break**; 而且 polymas 点资源会
 # 跳页、播放器在 iframe 里, 上游要求视频与目录同页 —— 结构上刷不了。
 # 实测(2026-11-21): 自研脚本看完一个 4 分 07 秒的 mp4, 总学习进度 0% → 20%。
-WorkingDirectory=%h/Project/zhihuishu-sidecar
+WorkingDirectory=%h/Projects/zhihuishu-sidecar
 ExecStart=/usr/bin/docker run --rm \
-  -v %h/Project/zhihuishu-sidecar/config.ini:/app/config.ini:ro \
-  -v %h/Project/zhihuishu-sidecar/data:/app/data \
-  -v %h/Project/zhihuishu-sidecar/logs:/app/logs \
-  -v %h/Project/zhihuishu-sidecar/scripts:/scripts:ro \
+  -v %h/Projects/zhihuishu-sidecar/config.ini:/app/config.ini:ro \
+  -v %h/Projects/zhihuishu-sidecar/data:/app/data \
+  -v %h/Projects/zhihuishu-sidecar/logs:/app/logs \
+  -v %h/Projects/zhihuishu-sidecar/scripts:/scripts:ro \
   zhihuishu-sidecar:local \
   sh -c 'Xvfb :99 -screen 0 1600x900x24 -nolisten tcp & XPID=$!; sleep 1.5; DISPLAY=:99 python -u /scripts/brush_polymas.py; kill $XPID 2>/dev/null'
 # 每门课 30 分钟(脚本自己按 config.ini 的 limitMaxTime 控), 每晚最多 3 门;
