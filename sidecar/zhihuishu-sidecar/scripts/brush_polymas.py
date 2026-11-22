@@ -40,6 +40,11 @@ sys.path.insert(0, "/app")
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
 from collector import close_popups, js_click  # noqa: E402
+from no_video_courses import (  # noqa: E402
+    load_store as load_no_video_store,
+    mark as mark_no_video,
+    save_store as save_no_video_store,
+)
 from polymas_state import (  # noqa: E402
     parse_progress,
     parse_resource_rows,
@@ -56,6 +61,8 @@ logger = Logger()
 DATA_DIR = "/app/data"
 TARGETS_PATH = os.path.join(DATA_DIR, "targets.json")
 COOKIES_PATH = os.path.join(DATA_DIR, "cookies.json")
+# 「这门课没有视频资源」的记忆 —— 目标生成器据此排除, 别再占清单名额
+NO_VIDEO_PATH = os.path.join(DATA_DIR, "no_video_courses.json")
 
 # 每门课刷多久(秒) —— 覆盖 config.ini 的 limitMaxTime
 DEFAULT_MAX_MINUTES = 30
@@ -192,6 +199,19 @@ async def play_resource(page, name: str, budget: float, speed: float) -> bool:
 
 # ---- 一门课 -----------------------------------------------------------------
 
+def remember_no_video(course_url: str, title: str) -> None:
+    """记一笔「这门课没有视频资源」——目标生成器据此把它排除出清单。
+
+    写盘失败只记日志不抛: 记忆是优化, 不是刷课成败的关键。
+    """
+    try:
+        store = load_no_video_store(NO_VIDEO_PATH)
+        mark_no_video(store, course_url, title, int(time.time()))
+        save_no_video_store(NO_VIDEO_PATH, store)
+    except OSError as exc:
+        log(f"  [warn] 记「无视频课」失败: {exc}")
+
+
 async def brush_course(page, title: str, course_url: str, max_minutes: int,
                        speed: float, dry_run: bool) -> dict:
     result = {"title": title, "url": course_url, "watched": [], "failed": []}
@@ -209,7 +229,8 @@ async def brush_course(page, title: str, course_url: str, max_minutes: int,
 
     pending = pick_pending_videos(resources)
     if not pending:
-        log(f"[{title}] 没有待刷的视频")
+        log(f"[{title}] 没有待刷的视频 —— 记一笔, 以后不再占目标清单的名额")
+        remember_no_video(course_url, title)
         result["progress_before"] = before_pct
         result["progress_after"] = before_pct
         return result

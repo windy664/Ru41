@@ -24,7 +24,8 @@
     --config PATH      Autovisor 配置路径(默认 config.ini)
     --out PATH         目标清单输出(默认 data/targets.json)
     --threshold PCT    进度低于多少算「还没刷完」(默认 100)
-    --max N            每晚最多刷几门(默认 3; 每门 limitMaxTime=30min, 3 门≈90 分钟)
+    --max N            每晚最多刷几门(默认 5; 每门 limitMaxTime 分钟, 错开排)
+    --no-video PATH    「没有视频资源」的记忆文件(刷课器写的, 默认 data/no_video_courses.json)
     --replace          清掉 config.ini 里人工维护的 URL(默认保留并排在自动选的前面)
 """
 from __future__ import annotations
@@ -34,8 +35,11 @@ import json
 import os
 import re
 import sys
+import time
 from typing import Any
 from urllib.parse import urlparse
+
+from no_video_courses import excluded_urls  # noqa: E402
 
 # [course-url] 段里表示一条课程 URL 的选项行(URL1=… URL2=…)
 URL_OPTION_RE = re.compile(r"^\s*URL\d+\s*=")
@@ -147,7 +151,12 @@ def write_course_urls(text: str, urls: list[str]) -> str:
     return "\n".join(out) + "\n"
 
 
-def pick_courses(report: dict[str, Any], threshold: int, limit: int) -> list[dict[str, Any]]:
+def pick_courses(
+    report: dict[str, Any],
+    threshold: int,
+    limit: int,
+    excluded_urls: set[str] | None = None,
+) -> list[dict[str, Any]]:
     """挑出今晚要刷的课: 有内容可刷 + 没刷完 + **有刷课器认得它**.
 
     content_published:
@@ -161,7 +170,13 @@ def pick_courses(report: dict[str, Any], threshold: int, limit: int) -> list[dic
     ⚠️ 「有内容」不等于「刷得了」: 上游 Autovisor 一门课失败就 **break 掉整轮**
     (Autovisor.py: if outcome is CourseOutcome.FAILED: break), 一门失败后面全刷不到。
     所以必须同时满足「有刷课器认得这门课的页面」—— 见 classify_engine。
+
+    excluded_urls:
+        「刷课器探到没有视频资源」的课(见 no_video_courses.py)。它们会占满
+        limit 名额, 把真有视频的课挤掉 —— 2026-11-22 实测: 「国家安全教育」
+        progress=60 被两门纯 PDF 的课挤到第 4 位, 那一晚根本没刷它。
     """
+    excluded = excluded_urls or set()
     picked: list[dict[str, Any]] = []
     for course in report.get("courses") or []:
         if not isinstance(course, dict):
@@ -171,6 +186,8 @@ def pick_courses(report: dict[str, Any], threshold: int, limit: int) -> list[dic
         url = (course.get("course_home_url") or "").strip()
         if not url:
             continue
+        if url in excluded:
+            continue  # 刷课器探过: 这门课没有视频资源
         progress = course.get("progress")
         if isinstance(progress, int) and progress >= threshold:
             continue  # 已刷完
@@ -197,7 +214,9 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--config", default="config.ini")
     parser.add_argument("--out", default="data/targets.json")
     parser.add_argument("--threshold", type=int, default=100)
-    parser.add_argument("--max", type=int, default=3)
+    parser.add_argument("--max", type=int, default=5)
+    parser.add_argument("--no-video", default="data/no_video_courses.json",
+                        help="「没有视频资源」的记忆文件(刷课器写的)")
     parser.add_argument("--replace", action="store_true", help="清掉人工维护的 URL")
     parser.add_argument("--dry-run", action="store_true")
     args = parser.parse_args(argv)
@@ -209,7 +228,10 @@ def main(argv: list[str] | None = None) -> int:
         print(f"[targets] 读不到报告 {args.report}: {exc}", file=sys.stderr)
         return 1
 
-    picked = pick_courses(report, args.threshold, args.max)
+    excluded = excluded_urls(args.no_video, int(time.time()))
+    if excluded:
+        print(f"[targets] 排除 {len(excluded)} 门「没有视频资源」的课(刷课器探过的)")
+    picked = pick_courses(report, args.threshold, args.max, excluded)
 
     config_text = ""
     if os.path.exists(args.config):
