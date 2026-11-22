@@ -405,9 +405,10 @@ impl RssTracker {
         if !self.config.must_report {
             return false;
         }
-        // 权威源（GHSA / CISA KEV / NVD / php.net）的条目 id 带固定前缀。
-        let authoritative = ru41::adapters::sources::security::is_authoritative_item(&item.id);
-        crate::security::is_must_report(&item.title, &item.summary, authoritative)
+        // 来源类别由条目 id 前缀决定（安全源适配器给自己的 id 加了固定前缀）：
+        // GHSA/NVD=官方漏洞公告 / KEV=已在野利用 / php=语言官方安全发布 / 其它=资讯源。
+        let origin = crate::security::Origin::of_item(&item.id);
+        crate::security::is_must_report(&item.title, &item.summary, origin)
     }
 
     /// 这个 request_key 的任务是不是已经建过了（幂等：一天一份，不重复建）。
@@ -921,7 +922,7 @@ mod tests {
         let (url, mut adv) = item("adv");
         adv.id = "ghsa-GHSA-xxxx-yyyy-zzzz".into();
         adv.title = "GHSA-xxxx-yyyy-zzzz：某库权限提升漏洞".into();
-        adv.summary = "官方公告，详见 CVE-2026-12345。".into();
+        adv.summary = "严重等级 high · 官方公告，详见 CVE-2026-12345。".into();
         tracker
             .poll_daily(vec![(url, adv)], &["AI".to_owned()], "i")
             .unwrap();

@@ -54,6 +54,10 @@ static VULN_CONTEXT_RE: LazyLock<Regex> = LazyLock::new(|| {
 static CRITICAL_RE: LazyLock<Regex> =
     LazyLock::new(|| Regex::new(r"(?i)\bcritical\b|严重等级\s*critical").expect("critical regex"));
 
+/// 源给出的严重等级：「严重等级 high」这种（安全源适配器写进摘要里的）。
+static SEVERITY_RE: LazyLock<Regex> =
+    LazyLock::new(|| Regex::new(r"(?i)严重等级\s*(low|moderate|medium|high|critical)").expect("severity regex"));
+
 /// 远程代码执行。
 static RCE_RE: LazyLock<Regex> =
     LazyLock::new(|| Regex::new(r"(?i)\bRCE\b|远程代码执行|远程命令执行").expect("rce regex"));
@@ -81,6 +85,39 @@ static IN_WILD_RE: LazyLock<Regex> = LazyLock::new(|| {
 /// 必报门槛：CVSS 多少算必报。
 pub const MUST_REPORT_CVSS: f64 = 9.0;
 
+/// 条目来源类别 —— 决定「只带 CVE 编号」这种**弱信号**算不算必报。
+///
+/// 为什么要有这个(2026-11-22 实测): 弱信号规则一放开，GHSA 一天 100 条里
+/// 45 条是 contao 之类 CMS 的中低危 XSS —— 全进必报段，等于没有必报段。
+/// 分级之后：官方漏洞公告源要**高危/严重**才算，KEV（已被利用）与
+/// 语言官方安全发布直接算。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Origin {
+    /// 普通资讯源（正文里提了一嘴 CVE 不算）。
+    News,
+    /// 官方漏洞公告源（GHSA / NVD）—— 要高危/严重才算。
+    Advisory,
+    /// 已在野利用目录（CISA KEV）—— 本身就是「已被利用」，算。
+    KEV,
+    /// 语言/运行时官方安全发布（php.net）—— 算。
+    Release,
+}
+
+impl Origin {
+    /// 从条目 id 前缀判断来源（安全源适配器给自己的 id 加了固定前缀）。
+    pub fn of_item(id: &str) -> Origin {
+        if id.starts_with("kev-") {
+            Origin::KEV
+        } else if id.starts_with("php-") {
+            Origin::Release
+        } else if id.starts_with("ghsa-") || id.starts_with("nvd-") {
+            Origin::Advisory
+        } else {
+            Origin::News
+        }
+    }
+}
+
 /// 判定结果。
 #[derive(Debug, Clone, Default, PartialEq)]
 pub struct Verdict {
@@ -90,6 +127,8 @@ pub struct Verdict {
     pub cvss: Option<f64>,
     /// 是否带 CVE / GHSA 编号。
     pub has_cve_id: bool,
+    /// 源给出的严重等级（low/moderate/high/critical）；读不到为 None。
+    pub severity: Option<String>,
     /// 是否有事实性细节（编号/评分/版本号/漏洞语境）—— 反过来就是「空洞公告」。
     pub has_fact: bool,
 }
@@ -108,6 +147,10 @@ pub fn verdict(title: &str, summary: &str) -> Verdict {
 
     v.cvss = extract_cvss(&text);
     v.has_cve_id = CVE_RE.is_match(&text);
+    v.severity = SEVERITY_RE
+        .captures(&text)
+        .and_then(|c| c.get(1))
+        .map(|m| m.as_str().to_ascii_lowercase());
     let has_version = VERSION_RE.is_match(&text);
     let has_context = VULN_CONTEXT_RE.is_match(&text);
     v.has_fact = v.has_cve_id || v.cvss.is_some() || has_version || has_context;
@@ -170,9 +213,12 @@ fn extract_cvss(text: &str) -> Option<f64> {
 
 /// 这条要不要进必报。
 ///
-/// - `authoritative`：条目来自权威漏洞源（GHSA / CISA KEV / NVD / php.net）——
-///   这类源里的条目本身就是漏洞公告，**只带 CVE 编号**也算必报。
-pub fn must_report(v: &Verdict, authoritative: bool) -> bool {
+/// - 强信号（CVSS ≥ 9.0 / Critical / RCE / 0day / 无需认证 / 已在野利用）→ 必报；
+/// - 弱信号（只带 CVE 编号）→ 看来源：
+///   - KEV（已在野利用目录）与语言官方安全发布 → 必报；
+///   - 官方漏洞公告源（GHSA / NVD）→ 要**高危/严重**才算（否则一天 45 条 XSS 全进必报段）；
+///   - 普通资讯源 → 不算（正文里提一嘴 CVE 而已）。
+pub fn must_report(v: &Verdict, origin: Origin) -> bool {
     // 空洞公告不成条：没有实质信息的不报（报了只是占位）。
     if !v.has_fact {
         return false;
@@ -180,12 +226,19 @@ pub fn must_report(v: &Verdict, authoritative: bool) -> bool {
     if v.is_strong() {
         return true;
     }
-    v.has_cve_id && authoritative
+    if !v.has_cve_id {
+        return false;
+    }
+    match origin {
+        Origin::KEV | Origin::Release => true,
+        Origin::Advisory => matches!(v.severity.as_deref(), Some("high") | Some("critical")),
+        Origin::News => false,
+    }
 }
 
 /// 便利入口：直接判定一条 FeedItem 是否必报。
-pub fn is_must_report(title: &str, summary: &str, authoritative: bool) -> bool {
-    must_report(&verdict(title, summary), authoritative)
+pub fn is_must_report(title: &str, summary: &str, origin: Origin) -> bool {
+    must_report(&verdict(title, summary), origin)
 }
 
 /// 必报理由的一行话（进 prompt）。
@@ -209,7 +262,7 @@ mod tests {
         assert!(v.is_strong(), "{v:?}");
         assert!(v.reasons.iter().any(|r| r.contains("CVSS 9.2")), "{v:?}");
         assert!(v.reasons.iter().any(|r| r.contains("无需认证")), "{v:?}");
-        assert!(must_report(&v, false));
+        assert!(must_report(&v, Origin::News));
     }
 
     #[test]
@@ -218,12 +271,15 @@ mod tests {
         let v = verdict("某库漏洞公告", "CVSS:3.1/AV:N/AC:L/PR:N/UI:N/S:U/C:N/I:L/A:H");
         assert_eq!(v.cvss, None, "{v:?}");
         // 真实分值仍能读出来
-        let v2 = verdict("某库漏洞公告 CVE-2026-12345", "CVSS 3.1 score 8.2");
+        let v2 = verdict(
+            "某库漏洞公告 CVE-2026-12345",
+            "严重等级 high · CVSS 3.1 score 8.2",
+        );
         assert_eq!(v2.cvss, Some(8.2), "{v2:?}");
         // 8.2 不够 9.0 → 不是强信号，但有编号 → 官方源里仍必报
         assert!(!v2.is_strong(), "{v2:?}");
-        assert!(must_report(&v2, true));
-        assert!(!must_report(&v2, false));
+        assert!(must_report(&v2, Origin::Advisory));
+        assert!(!must_report(&v2, Origin::News));
     }
 
     #[test]
@@ -235,7 +291,7 @@ mod tests {
         ] {
             let v = verdict(title, summary);
             assert!(v.is_strong(), "{title} → {v:?}");
-            assert!(must_report(&v, false), "{title}");
+            assert!(must_report(&v, Origin::News), "{title}");
         }
     }
 
@@ -244,8 +300,8 @@ mod tests {
         // 只有「发布安全公告」四个字，没有任何实质信息 → 空洞，不成条
         let v = verdict("某公司发布年度安全公告", "更多细节请关注官方渠道。");
         assert!(!v.has_fact, "{v:?}");
-        assert!(!must_report(&v, true));
-        assert!(!must_report(&v, false));
+        assert!(!must_report(&v, Origin::KEV));
+        assert!(!must_report(&v, Origin::News));
     }
 
     #[test]
@@ -253,8 +309,8 @@ mod tests {
         let v = verdict("某项目修复了一个漏洞", "详见 CVE-2026-12345");
         assert!(v.has_cve_id);
         assert!(!v.is_strong(), "{v:?}");
-        assert!(!must_report(&v, false), "非权威源只提一嘴 CVE 不必报");
-        assert!(must_report(&v, true), "权威漏洞源里的 CVE 条目必报");
+        assert!(!must_report(&v, Origin::News), "非权威源只提一嘴 CVE 不必报");
+        assert!(must_report(&v, Origin::KEV), "权威漏洞源里的 CVE 条目必报");
     }
 
     #[test]
@@ -265,7 +321,7 @@ mod tests {
         );
         assert!(v.has_cve_id, "{v:?}");
         assert!(v.has_fact);
-        assert!(must_report(&v, true));
+        assert!(must_report(&v, Origin::KEV));
     }
 
     #[test]
@@ -276,14 +332,54 @@ mod tests {
         );
         assert!(v.reasons.iter().any(|r| r.contains("已在野")), "{v:?}");
         assert!(v.reasons.iter().any(|r| r.contains("无需认证")), "{v:?}");
-        assert!(must_report(&v, false));
+        assert!(must_report(&v, Origin::News));
+    }
+
+    /// 官方漏洞公告源里，**中低危**的条目不算必报（GHSA 一天几十条 XSS）。
+    #[test]
+    fn advisory_source_needs_high_or_critical_severity() {
+        // GHSA 的 moderate 级别漏洞（有 CVE 编号，但严重度不够）
+        let v = verdict(
+            "GHSA-xxxx-yyyy-zzzz：某 CMS 的 XSS",
+            "严重等级 moderate · 官方公告，详见 CVE-2026-12345。",
+        );
+        assert!(v.has_cve_id);
+        assert_eq!(v.severity.as_deref(), Some("moderate"));
+        assert!(!must_report(&v, Origin::Advisory), "中危不算必报");
+        // 同一来源，high 级别就算
+        let v2 = verdict(
+            "GHSA-xxxx-yyyy-zzzz：某 CMS 的权限提升",
+            "严重等级 high · 官方公告，详见 CVE-2026-12345。",
+        );
+        assert!(must_report(&v2, Origin::Advisory), "高危要算必报");
+        // 普通资讯源提到同一个 CVE 仍然不算
+        assert!(!must_report(&v2, Origin::News));
+    }
+
+    /// KEV（已被利用目录）与语言官方安全发布：只带 CVE 编号也算必报。
+    #[test]
+    fn kev_and_release_sources_count_cve_only_items() {
+        let v = verdict("CVE-2026-99999：某设备漏洞", "官方目录条目，详见 CVE-2026-99999。");
+        assert!(must_report(&v, Origin::KEV));
+        assert!(must_report(&v, Origin::Release));
+        assert!(!must_report(&v, Origin::News));
+    }
+
+    /// 条目 id 前缀 → 来源类别。
+    #[test]
+    fn origin_from_item_id_prefix() {
+        assert_eq!(Origin::of_item("ghsa-GHSA-x"), Origin::Advisory);
+        assert_eq!(Origin::of_item("nvd-CVE-2026-1"), Origin::Advisory);
+        assert_eq!(Origin::of_item("kev-CVE-2026-1"), Origin::KEV);
+        assert_eq!(Origin::of_item("php-8.5.13"), Origin::Release);
+        assert_eq!(Origin::of_item("https://news.ycombinator.com/rss#1"), Origin::News);
     }
 
     #[test]
     fn ordinary_news_is_not_must_report() {
         let v = verdict("某公司发布开源模型", "免费额度，可自行部署");
         assert!(!v.is_strong());
-        assert!(!must_report(&v, false));
-        assert!(!must_report(&v, true));
+        assert!(!must_report(&v, Origin::News));
+        assert!(!must_report(&v, Origin::KEV));
     }
 }
