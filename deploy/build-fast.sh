@@ -48,6 +48,23 @@ docker run --name "$BUILDER" \
   -w /build rust:1.98-trixie \
   cargo build --locked --release --bin ru41 --features local-embed
 
+# 插件也要重编进 .plugins-dist/（Dockerfile.patch 会 COPY 过去）。
+# 不编的后果(2026-11-22 实测): roll.sh 会用镜像里的插件**覆盖**宿主挂载目录
+# (「以镜像为准」是既定行为), 补丁镜像若不带插件, 宿主上热更过的 .so 会被
+# 回退成镜像里那个旧版 —— rss 插件被 11-18 的旧版冲掉后, 不认识配置里的
+# must_report 字段 → ru41-rss 崩溃循环。
+# RU41_SKIP_PLUGINS=1 可跳过(明知会回退插件时才用)。
+if [[ "${RU41_SKIP_PLUGINS:-0}" != "1" ]]; then
+  mkdir -p "$BUILD_DIR/.plugins-dist"
+  for d in plugins/*/; do
+    n="$(basename "$d")"
+    (cd "$BUILD_DIR/$d" && cargo build --release --features plugin-entry) || exit 8
+    cp "$BUILD_DIR/plugins/target-plugins/release/libru41_plugin_$(printf '%s' "$n" | tr - _).so" \
+       "$BUILD_DIR/.plugins-dist/" || exit 9
+  done
+  echo "[build-fast] plugins built: $(ls "$BUILD_DIR/.plugins-dist" | wc -l)"
+fi
+
 # 守卫：target/ 若被宿主机 cargo 污染（宿主机 glibc 比 trixie 运行时新），
 # cargo 可能误判产物新鲜直接复用——部署后容器内 GLIBC_X.XX not found 起不来
 # （2026-10-28 实证：宿主机 glibc 2.43 二进制进 trixie(glibc 2.41) 镜像全群 CrashLoop）。

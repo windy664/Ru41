@@ -73,6 +73,18 @@ for name in "${NAMES[@]}"; do
   fi
   CUR_ID="$(jq -r '.[0].Image' "$BACKUP/$name.json")"
   NEW_ID_TARGET="$TARGET_IMAGE"
+  # 只滚 ru41 自己的容器。
+  # 有些容器跑的是**外部镜像**(ru41-browser = browserless/chromium:latest),
+  # 换成 ru41 镜像会起不来 —— 那个镜像里没有容器指定的用户(blessuser),
+  # docker 直接报 "unable to find user blessuser"(2026-11-22 实测踩到)。
+  #
+  # 判据看**镜像的 repo 标签**, 不看 Config.Image: 上一次滚动会把容器的
+  # Config.Image 写成镜像 ID(sha256:...), 按名字匹配就全都对不上了。
+  IMG_TAGS="$(docker image inspect "$CUR_ID" --format '{{join .RepoTags " "}}' 2>/dev/null || echo "")"
+  if [[ "$IMG_TAGS" != *ru41* ]]; then
+    echo "SKIP $name: 跑的不是 ru41 镜像(${IMG_TAGS:-无标签/$SRC_IMAGE}), 不动它"
+    continue
+  fi
   # 镜像没变也要重建的情况：缺技能包挂载（挂载是后加的，inspect 里还没有）。
   SKILLS_DIR="$HOME/ru41-mimo-smoke/skills"
   NEEDS_RECREATE=0
