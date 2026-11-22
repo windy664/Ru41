@@ -206,11 +206,20 @@ async def play_video(page, name: str, budget: float) -> bool:
     # 明天还得从头再来 —— 宁可单晚超时, 也要让每个视频都完整走一遍。
     deadline = time.monotonic() + MAX_VIDEO_SECONDS
     last = 0.0
+    rate_fixed = 0
     while time.monotonic() < deadline:
         await page.wait_for_timeout(5_000)
         try:
             ended = await video.evaluate("v => v.ended")
             cur = await video.evaluate("v => v.currentTime")
+            # 平台播放器常在 play/换源之后把 playbackRate 重置回 1 ——
+            # 2026-11-22 实测: 设一次不管用, 实播就是 1.0x。每轮补设一次。
+            rate = await video.evaluate("v => v.playbackRate")
+            if abs(rate - SPEED) > 0.05:
+                await video.evaluate("(v, s) => { v.playbackRate = s; }", SPEED)
+                rate_fixed += 1
+                if rate_fixed <= 3:
+                    log(f"    倍速被重置成 {rate}x, 已补设 {SPEED}x")
         except Exception:
             break
         if cur - last >= 60:
