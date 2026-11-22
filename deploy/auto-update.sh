@@ -75,14 +75,26 @@ pull_one() {
   return 1
 }
 
-# 拉镜像：先试镜像站，再试官方源；都失败就保留本地那份（不更新）。
+# 拉镜像：按给定顺序试各源；都失败就保留本地那份（不更新）。
 #
 # ⚠️ 这里**必须**把日志写到 stderr: 本函数的返回值是用 $(...) 捕获的,
 # log() 若写 stdout, 日志会混进 image id 里 → 跟容器实际用的镜像比对时
 # 永远「不相等」→ 每 30 分钟无谓重建一次(2026-11-21 修)。
+#
+# 顺序按实测定(2026-11-22): 镜像站代理这个 4GB 的 ru41 镜像会反复
+# "unexpected EOF" 断流(连挂 3 次), 而**直连 ghcr.io 同一台机器可用**
+# (清单 7 秒, 层能正常下完)。所以默认直连优先、镜像站兜底;
+# 境内网络实在拉不动 ghcr.io 时用 RU41_PULL_ORDER=mirror,direct 反过来。
 pull_image() {
   local mirror="$1" direct="$2" local_tag="$3" id="" ok_ref=""
-  for ref in "$mirror:latest" "$direct:latest"; do
+  local order="${RU41_PULL_ORDER:-direct,mirror}"
+  local refs=()
+  if [[ "$order" == "mirror,direct" ]]; then
+    refs=("$mirror:latest" "$direct:latest")
+  else
+    refs=("$direct:latest" "$mirror:latest")
+  fi
+  for ref in "${refs[@]}"; do
     if pull_one "$ref"; then
       ok_ref="$ref"
       id="$(docker image inspect "$ref" --format '{{.Id}}')"
