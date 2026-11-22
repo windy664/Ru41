@@ -25,6 +25,15 @@ set -euo pipefail
 
 HOME_DIR="${RU41_HOME:-$HOME/ru41-mimo-smoke}"
 ENABLE_FILE="$HOME_DIR/.auto-update.enabled"
+# 滚动脚本的位置：生产机上它在 ~/ru41-compshare-build/deploy/roll.sh,
+# 不在 $HOME_DIR 下 —— 找不到就报错退出, 别去滚一个不存在的脚本。
+ROLL_SH="${RU41_ROLL_SH:-}"
+if [[ -z "$ROLL_SH" ]]; then
+  for cand in "$HOME_DIR/roll.sh" "$HOME_DIR/deploy/roll.sh" \
+              "$HOME/ru41-compshare-build/deploy/roll.sh"; do
+    if [[ -f "$cand" ]]; then ROLL_SH="$cand"; break; fi
+  done
+fi
 # NJU 镜像站（国内可达）；拉不动时回退到 ghcr.io。
 MIRROR_RU41="${RU41_MIRROR:-ghcr.nju.edu.cn/windy664/ru41}"
 MIRROR_SIDECAR="${RU41_SIDECAR_MIRROR:-ghcr.nju.edu.cn/windy664/zhihuishu-sidecar}"
@@ -132,12 +141,29 @@ fi
 
 log "开始滚动重建（用 $RU41_ID）"
 set +e
-RU41_IMAGE="$RU41_ID" bash "$HOME_DIR/roll.sh" 2>&1 | tee /tmp/ru41-auto-roll.log
+roll_running() {
+  # 只滚动**正在跑**的 ru41 容器: 手动停掉的(比如学习通那对)不该被顺手拉起来。
+  # roll.sh 不带参数时会滚它自己那份默认清单 —— 那会把停着的容器也重建并启动。
+  local image_id="$1"
+  local targets=()
+  mapfile -t targets < <(docker ps --format '{{.Names}}' | grep -E '^ru41-' || true)
+  if [[ ${#targets[@]} -eq 0 ]]; then
+    log "没有在跑的 ru41 容器, 跳过滚动"
+    return 0
+  fi
+  log "滚动这些容器: ${targets[*]}"
+  RU41_IMAGE="$image_id" bash "$ROLL_SH" "${targets[@]}"
+}
+if [[ -z "$ROLL_SH" || ! -f "$ROLL_SH" ]]; then
+  log "找不到滚动脚本(试过 \$HOME_DIR/roll.sh 等), 无法更新"
+  exit 1
+fi
+roll_running "$RU41_ID" 2>&1 | tee /tmp/ru41-auto-roll.log
 ROLL_RC="${PIPESTATUS[0]}"
 set -e
 if [[ "$ROLL_RC" != "0" ]]; then
   log "roll.sh 报错（rc=$ROLL_RC），尝试用旧镜像 ${OLD_ID:7:12} 回滚"
-  RU41_IMAGE="$OLD_ID" bash "$HOME_DIR/roll.sh" || true
+  roll_running "$OLD_ID" || true
   exit 1
 fi
 
