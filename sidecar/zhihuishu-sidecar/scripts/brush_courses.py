@@ -23,6 +23,7 @@ import asyncio
 import json
 import os
 import sys
+import time
 from urllib.parse import urlparse
 
 sys.path.insert(0, "/app")
@@ -102,6 +103,9 @@ async def main_async() -> int:
     parser.add_argument("--url", action="append", default=[], help="直接刷这门课(可多次)")
     parser.add_argument("--max-courses", type=int, default=3, help="每个引擎最多刷几门")
     parser.add_argument("--max-minutes", type=int, default=0, help="每门课时限(0=读 config.ini)")
+    parser.add_argument("--total-minutes", type=int, default=0,
+                        help="整轮时限(0=不限) —— systemd 的 TimeoutStartSec 只有 4 小时, "
+                             "不设上限会被杀在半路")
     parser.add_argument("--speed", type=float, default=0.0, help="倍速(0=读 config.ini)")
     parser.add_argument("--dry-run", action="store_true")
     args = parser.parse_args()
@@ -142,21 +146,32 @@ async def main_async() -> int:
 
     cookies = load_cookies(COOKIES_PATH)
     results = []
+    # 整轮预算: 每门课各有时限, 但**整轮**必须有上限 —— systemd 的
+    # TimeoutStartSec 只有 4 小时, 5 门 × 90 分钟会被杀在半路(进度只涨一半)。
+    deadline = time.monotonic() + args.total_minutes * 60 if args.total_minutes else None
     async with async_playwright() as pw:
         session = await create_browser_session(pw, config, cookies, logger)
         page = await session.context.new_page()
         try:
             for engine, items in per_engine.items():
                 for c in items[: args.max_courses]:
+                    # 这门课能用多少分钟: 每门上限与整轮剩余取小
+                    course_minutes = max_minutes
+                    if deadline is not None:
+                        left = (deadline - time.monotonic()) / 60
+                        if left <= 1:
+                            log(f"[整轮预算] 只剩 {left:.0f} 分钟, 收工(剩下的留到明晚)")
+                            break
+                        course_minutes = int(min(max_minutes, left))
                     log(f"===== {c['title']}（{engine}）=====")
                     try:
                         if engine == ENGINE_AISMART:
                             res = await brush_aismart.brush_course(
-                                page, c["title"], c["url"], max_minutes, args.dry_run
+                                page, c["title"], c["url"], course_minutes, args.dry_run
                             )
                         elif engine == ENGINE_POLYMAS:
                             res = await brush_polymas.brush_course(
-                                page, c["title"], c["url"], max_minutes, speed, args.dry_run
+                                page, c["title"], c["url"], course_minutes, speed, args.dry_run
                             )
                         else:
                             res = {"title": c["title"], "error": f"没有 {engine} 引擎"}
@@ -164,6 +179,9 @@ async def main_async() -> int:
                         log(f"{c['title']} 异常: {str(exc)[:150]}")
                         res = {"title": c["title"], "error": str(exc)[:200]}
                     results.append(res)
+                if deadline is not None and time.monotonic() >= deadline:
+                    log("[整轮预算] 用完, 收工(剩下的留到明晚)")
+                    break
         finally:
             await session.context.browser.close()
 

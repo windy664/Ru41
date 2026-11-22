@@ -1,0 +1,28 @@
+[Unit]
+Description=学习平台(在线好课 gzus.aihaoke.net)课程视频挂机(单轮跑完即退)
+After=docker.service
+
+[Service]
+Type=oneshot
+# 用户级单元: 放 ~/.config/systemd/user/, 账号需在 docker 组。
+#
+# 登录靠**借 jwxt 的 CAS TGT**: TGT 当 CASTGC cookie 注入浏览器 → CAS 直接放行
+# (不用密码/验证码) → passport 建会话 → 拿到 haoke-token。
+# TGT 从 jwxt 容器里现取(jwxt 会自己续期), 所以本单元依赖 ru41-jwxt 在跑。
+#
+# ⚠️ 生产机 DNS 解析不了 *.gzus.edu.cn(路由器上游查不到) → 浏览器用
+#    --host-resolver-rules 映射 DoH 查到的 IP(见 scripts/brush_ahk.py)。
+#
+# 只刷 taskType=10 的视频课; 小测/作业/辩论一概不碰(那是替人做作业)。
+WorkingDirectory=%h/Projects/zhihuishu-sidecar
+ExecStart=/bin/bash -c 'set -euo pipefail; \
+  TGT=$(docker exec ru41-jwxt python3 -c "import json;print(json.load(open(\"/home/node/.ru41/jwxt/session.json\")).get(\"cas_tgt\",\"\"))"); \
+  if [ -z "$TGT" ]; then echo "jwxt 还没有 CAS 会话, 本轮跳过"; exit 0; fi; \
+  docker run --rm -e CAS_TGT="$TGT" -e AHK_CLASS_ID=29668 -e AHK_COLUMN_ID=708120 \
+    -v %h/Projects/zhihuishu-sidecar/data:/app/data \
+    -v %h/Projects/zhihuishu-sidecar/scripts:/scripts:ro \
+    zhihuishu-sidecar:local \
+    sh -c "Xvfb :99 -screen 0 1600x900x24 -nolisten tcp & XPID=\$!; sleep 1.5; \
+      DISPLAY=:99 python -u /scripts/brush_ahk.py --speed 1.5 --max-videos 3; kill \$XPID 2>/dev/null"'
+TimeoutStartSec=14400
+RemainAfterExit=no
