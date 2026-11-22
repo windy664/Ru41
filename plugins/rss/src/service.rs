@@ -7,6 +7,9 @@ use ru41::{
 use serde::Serialize;
 use std::sync::Arc;
 
+/// 必报池的条目上限：必报条目独立成池（不与新闻抢名额），但也别无限涨。
+const MUST_POOL_CAP: usize = 60;
+
 /// RSS 信息流追踪配置（对应配置文件的 [sources.rss]）。
 #[derive(Debug, Clone)]
 pub struct RssConfig {
@@ -132,6 +135,12 @@ impl RssTracker {
             };
             fetched += feed_items.len();
             let cutoff = ru41::util::now() - (self.config.max_age_days as i64) * 86_400;
+            // 权威漏洞源(GHSA/KEV/NVD/php.net)自己管时间窗(URL 上的 days=),
+            // 不受全局 max_age_days 约束 ——
+            // 2026-11-22 实测踩坑: 漏洞条目的 published 是**日期**(没有时分),
+            // 解析出来是当天 00:00 UTC, 被「2 天内」的门槛判成旧闻全丢掉
+            // (100 条 GHSA 只剩 0 条)。而这些源本来就是按「最近 N 天」自己筛过的。
+            let authoritative = ru41::adapters::sources::security::is_authoritative_feed(url);
             items.extend(
                 feed_items
                     .into_iter()
@@ -144,12 +153,7 @@ impl RssTracker {
                             .any(|re| re.is_match(&item.title))
                     })
                     .take(self.config.max_items_per_feed as usize)
-                    .filter(|item| match parse_item_time(&item.published) {
-                        Some(ts) => ts >= cutoff,
-                        // 日期无法解析的不丢（多数源日期正常，漏解析不等于旧闻），
-                        // 交给 digest 判断。
-                        None => true,
-                    })
+                    .filter(|item| is_fresh(&item.published, cutoff, authoritative))
                     .map(|item| (url.clone(), item)),
             );
         }
@@ -266,16 +270,21 @@ impl RssTracker {
         let candidate_count = candidates.len();
 
         // 2. 入池：当天的池文档追加（按条目 id 去重，封顶 80 条保最新）
+        //
+        // 必报条目进**另一个池**(pool:must:{date}): 2026-11-22 实测, GHSA 一次
+        // 就带 100 条, 跟新闻混在一个池里会把新闻挤掉(池子封顶 80, 丢最旧的)。
+        // 分池之后: 必报池独立封顶, 普通池的名额只留给新闻。
         let (date, hour) = local_date_hour(ru41::util::now());
         let pool_id = format!("pool:{date}");
-        let pool_doc = self.store.document("rss_pool", &pool_id)?;
-        let mut pool: Vec<FeedItem> = pool_doc
-            .as_ref()
-            .and_then(|doc| serde_json::from_value(doc.value["items"].clone()).ok())
-            .unwrap_or_default();
+        let must_pool_id = format!("pool:must:{date}");
+        let (must_candidates, normal_candidates): (Vec<FeedItem>, Vec<FeedItem>) = candidates
+            .into_iter()
+            .partition(|item| self.is_must_report(item));
+        let mut pool = self.load_pool(&pool_id)?;
+        let mut must_pool = self.load_pool(&must_pool_id)?;
         let mut pool_ids: std::collections::HashSet<String> =
             pool.iter().map(|i| i.id.clone()).collect();
-        for item in candidates {
+        for item in normal_candidates {
             if pool_ids.insert(item.id.clone()) {
                 pool.push(item);
             }
@@ -283,7 +292,18 @@ impl RssTracker {
         if pool.len() > 80 {
             pool.drain(..pool.len() - 80);
         }
+        let mut must_ids: std::collections::HashSet<String> =
+            must_pool.iter().map(|i| i.id.clone()).collect();
+        for item in must_candidates {
+            if must_ids.insert(item.id.clone()) {
+                must_pool.push(item);
+            }
+        }
+        if must_pool.len() > MUST_POOL_CAP {
+            must_pool.drain(..must_pool.len() - MUST_POOL_CAP);
+        }
         self.save_pool(&pool_id, &pool)?;
+        self.save_pool(&must_pool_id, &must_pool)?;
 
         // 3. 到点出报：早报/晚报各自一天一份（request_key 天然幂等），出报即清池
         //
@@ -299,16 +319,14 @@ impl RssTracker {
             let Some(slot_hour) = slot_hour else { continue };
             // 早报只在晚报时刻之前出（hour >= 8 是一整天，不卡上界会导致
             // 晚上 21 点先出一份"早报"再出晚报）；晚报只卡下界。
-            if hour < slot_hour || pool.is_empty() {
+            if hour < slot_hour || (pool.is_empty() && must_pool.is_empty()) {
                 continue;
             }
             if slot == "morning" && hour >= self.config.evening_hour {
                 continue;
             }
-            let (must, rest): (Vec<FeedItem>, Vec<FeedItem>) = pool
-                .iter()
-                .cloned()
-                .partition(|item| self.is_must_report(item));
+            let must = must_pool.clone();
+            let rest = pool.clone();
             let mut service = ru41::app::task::TaskService::new(self.store.clone());
             let mut emitted = false;
 
@@ -366,7 +384,9 @@ impl RssTracker {
             if emitted {
                 // 出报即清池：晚报只覆盖早报之后的新候选，早报覆盖隔夜积累。
                 self.save_pool(&pool_id, &[])?;
+                self.save_pool(&must_pool_id, &[])?;
                 pool.clear();
+                must_pool.clear();
             }
         }
 
@@ -376,7 +396,7 @@ impl RssTracker {
                 candidates: candidate_count,
                 digest_task_id,
             },
-            pool.len(),
+            pool.len() + must_pool.len(),
         ))
     }
 
@@ -399,6 +419,15 @@ impl RssTracker {
             .any(|task| task.request_key == key))
     }
 
+    /// 读池文档。
+    fn load_pool(&self, pool_id: &str) -> Result<Vec<FeedItem>> {
+        let doc = self.store.document("rss_pool", pool_id)?;
+        Ok(doc
+            .as_ref()
+            .and_then(|doc| serde_json::from_value(doc.value["items"].clone()).ok())
+            .unwrap_or_default())
+    }
+
     /// 池文档落盘：put_document(None) 是 INSERT ON CONFLICT DO NOTHING（仅新建），
     /// 已存在的池必须带 revision 走 CAS 更新，否则写入被静默丢弃——池子会
     /// 冻在当天第一次写入的状态（历史 bug）。CAS 冲突（并发轮询）重读重试一次。
@@ -417,6 +446,25 @@ impl RssTracker {
         self.store
             .put_document("rss_pool", pool_id, expected, &value())?;
         Ok(())
+    }
+}
+
+/// 条目是否够新（进不进池）。
+///
+/// 权威漏洞源(GHSA/KEV/NVD/php.net)自己按 URL 上的 `days=` 管时间窗 →
+/// **不受全局 max_age_days 约束**。
+///
+/// 2026-11-22 实测踩坑: 漏洞条目的 published 是**日期**(没有时分), 解析出来是
+/// 当天 00:00 UTC, 被「2 天内」的门槛判成旧闻全丢掉(100 条 GHSA 只剩 0 条) ——
+/// 而这些源本来就按「最近 N 天」自己筛过一遍了。
+fn is_fresh(published: &str, cutoff: i64, authoritative: bool) -> bool {
+    if authoritative {
+        return true;
+    }
+    match parse_item_time(published) {
+        Some(ts) => ts >= cutoff,
+        // 日期无法解析的不丢（多数源日期正常，漏解析不等于旧闻），交给 digest 判断。
+        None => true,
     }
 }
 
@@ -885,5 +933,67 @@ mod tests {
                 .any(|t| t.request_key == format!("rss:digest:must:evening:{date}")),
             "权威源的 CVE 条目应必报: {tasks:?}"
         );
+    }
+
+    /// 必报条目与新闻条目**分池**：GHSA 一次带 100 条，跟新闻混在一个池里
+    /// 会把新闻挤掉（池子封顶 80，丢最旧的）。
+    #[test]
+    fn must_report_items_go_to_their_own_pool() {
+        let dir = tempfile::tempdir().unwrap();
+        let store: Arc<dyn TaskStore> = Arc::new(
+            ru41::adapters::database::sqlite::SqliteTaskStore::open(&dir.path().join("s.db"))
+                .unwrap(),
+        );
+        let (_, hour) = local_date_hour(ru41::util::now());
+        if hour == 23 {
+            return;
+        }
+        let mut tracker = daily_tracker(store.clone(), hour + 1);
+        tracker.config.pool_keyword_filter = false;
+        let (url, mut vuln) = item("vuln");
+        vuln.title = "某库曝远程代码执行漏洞".into();
+        vuln.summary = "CVSS 9.8，无需认证即可远程接管。".into();
+        tracker
+            .poll_daily(vec![(url, vuln), item("news")], &["AI".to_owned()], "i")
+            .unwrap();
+        let (date, _) = local_date_hour(ru41::util::now());
+        let must_pool: Vec<FeedItem> = serde_json::from_value(
+            store
+                .document("rss_pool", &format!("pool:must:{date}"))
+                .unwrap()
+                .expect("必报池存在")
+                .value["items"]
+                .clone(),
+        )
+        .unwrap();
+        let news_pool: Vec<FeedItem> = serde_json::from_value(
+            store
+                .document("rss_pool", &format!("pool:{date}"))
+                .unwrap()
+                .expect("普通池存在")
+                .value["items"]
+                .clone(),
+        )
+        .unwrap();
+        assert_eq!(must_pool.len(), 1, "必报条目进必报池");
+        assert!(must_pool[0].title.contains("远程代码执行"));
+        assert_eq!(news_pool.len(), 1, "新闻条目留在普通池");
+        assert!(news_pool[0].title.contains("AI 机会"));
+    }
+
+    /// 权威漏洞源不受全局 max_age_days 约束（它们自己按 days= 管时间窗）。
+    #[test]
+    fn authoritative_feed_bypasses_the_age_filter() {
+        let now = ru41::util::now();
+        let cutoff = now - 2 * 86_400;
+        // 三天前的条目：普通源按「2 天内」丢掉，权威源留下。
+        let old = ru41::util::today_utc(now - 3 * 86_400);
+        assert!(!super::is_fresh(&old, cutoff, false), "普通源应判旧");
+        assert!(super::is_fresh(&old, cutoff, true), "权威源不该被全局门槛丢");
+        // 当天的条目普通源也留。
+        let today = ru41::util::today_utc(now);
+        assert!(super::is_fresh(&today, cutoff, false));
+        // 日期解析不出来的不丢。
+        assert!(super::is_fresh("前天", cutoff, false));
     }
 }
