@@ -193,6 +193,43 @@ fn strip_thinking(text: &str) -> &str {
     text
 }
 
+/// 剥掉正文前的**英文思考前言**。
+///
+/// 2026-11-22 实测（必报播报员）：模型先写一句英文思考，紧接着就是中文播报稿：
+///
+/// ```text
+/// I'll compose the full broadcast for all four mandatory items, …
+/// 🚨 必报 4 条
+/// ```
+///
+/// → 用户收到的日报开头多一句英文。
+///
+/// 判据刻意收紧：**只在开头那段确实是「第一人称思考句」时才剥**
+/// （I'll / let me / we need to / I'm going to …），而且要求那段是纯 ASCII。
+/// 正常的英文交付物（"In this paper, we show…"）不受影响。
+fn strip_english_preamble(text: &str) -> &str {
+    let trimmed = text.trim_start();
+    let para = trimmed.split("\n\n").next().unwrap_or_default().trim();
+    if para.is_empty() || !para.is_ascii() {
+        return text;
+    }
+    static THINKING: std::sync::OnceLock<regex::Regex> = std::sync::OnceLock::new();
+    let thinking = THINKING.get_or_init(|| {
+        regex::Regex::new(
+            r"(?i)\b(i'?ll|i am going to|i'?m going to|let me|we need to|i should|i will|thinking|first,? let)\b",
+        )
+        .expect("前言判据正则")
+    });
+    if !thinking.is_match(para) {
+        return text;
+    }
+    // 剥掉第一段（及它后面的空行）；后面没有内容就别动（交白卷不如交原文）
+    match trimmed.find("\n\n") {
+        Some(end) if !trimmed[end + 2..].trim().is_empty() => &trimmed[end + 2..],
+        _ => text,
+    }
+}
+
 /// 挑出「完整正文」候选：模型把报告写在前面一条消息里，最后一条 JSON 的
 /// summary 反而是压缩版时，返回那份正文（2026-11-06 晚报实测）。
 ///
@@ -317,6 +354,7 @@ pub(super) fn parse_agent_result(text: &str) -> Result<AgentResult> {
     // 2026-11-23 实测）—— 不剥的话「散文更长就以散文为准」的兜底会把
     // 思考过程当成交付物推给用户。
     let text = strip_thinking(text);
+    let text = strip_english_preamble(text);
     let trimmed = text.trim();
     // 「机器消费的指令围栏」：交付物是给宿主/插件执行的指令（ru41-organize 等），
     // 没有 summary 是契约如此——收下整段围栏，别判契约不符让任务重试。
@@ -494,6 +532,37 @@ mod tests {
             result.summary
         );
         assert!(!result.summary.contains("evaluate these candidates"));
+    }
+
+    /// 2026-11-22 实测（必报播报员）：模型先写一句英文思考，紧接着中文正文，
+    /// **没有 think 标记**。这一句也要剥掉。
+    #[test]
+    fn english_thinking_preamble_is_stripped() {
+        let raw = "I'll compose the full broadcast for all four mandatory items.\n\n\
+                   🚨 必报 4 条\n\n## 1. CVE-2026-125294 …";
+        let result = parse_agent_result(raw).expect("应能解析出正文");
+        assert!(
+            result.summary.starts_with("🚨 必报 4 条"),
+            "{}",
+            result.summary
+        );
+        assert!(
+            !result.summary.contains("I'll compose"),
+            "{}",
+            result.summary
+        );
+    }
+
+    /// 正常的英文交付物**不能**被剥（判据要收紧，别误伤）。
+    #[test]
+    fn normal_english_delivery_is_kept() {
+        let raw = "In this paper, we show that the approach scales.\n\n1. Introduction\n2. Method";
+        let result = parse_agent_result(raw).expect("应能解析出正文");
+        assert!(
+            result.summary.starts_with("In this paper"),
+            "{}",
+            result.summary
+        );
     }
 
     /// 只有开标记、没有闭标记 → 后面没有正文，返回空（让上层判「没正文」重试），
