@@ -38,15 +38,17 @@ pub fn render_status(info: &SemesterInfo) -> String {
     lines.push(format!(
         "- 有效次数：{valid_count} 次（共 {total_count} 次）"
     ));
-    // 距离在涨、次数是 0 → 每条记录都没被判「完成」。
-    // 原因多半是**单次距离没达到当次任务的最小距离**（记录详情里的 selDistance，
-    // 各任务不同：见过 1.00 km 也见过 1.50 km）——2026-11-23 实测：
-    // 11-16 那条 1.22 km 低于当任务的 1.50 km → complete=false。
+    // 里程与次数**两个口径不同源**（上游没解释）：实测有 4 条记录 complete=true，
+    // 但学期「有效次数」仍是 0。所以这里只摆事实，**不猜原因**——
+    // 上游没解释的东西，转述时也不能替它编一个。
+    //
+    // 另一条独立事实（来自记录详情，11-16 那条）：单次距离低于当次任务的最小距离
+    // （selDistance，各任务不同）→ 该条 complete=false。
     if valid_count == 0 && valid > 0.0 {
         lines.push(
-            "- ⚠️ **距离在涨、有效次数是 0**：说明这些记录**没被判完成**——\
-             单次距离没达到当次任务的最小距离（各任务不同，记录详情里的 selDistance）。\
-             跑的时候按当次任务的要求来，别只盯着总里程。"
+            "- ℹ️ 里程在涨，但「有效次数」是 0 —— 这两个口径不同源，**服务端没解释**；\
+             次数口径以 App 为准。另外：单次距离要达到当次任务的最小距离\
+             （记录详情里的 selDistance，各任务不同），否则**那一条**会被判未完成。"
                 .to_owned(),
         );
     }
@@ -85,8 +87,10 @@ pub fn render_status(info: &SemesterInfo) -> String {
             let raw_goal = goal_raw.and_then(|g| g.semester_goal);
             match raw_goal {
                 Some(value) => lines.push(format!(
-                    "- 学期目标：**服务端未给出公里目标**（semesterTargetDis/targetCount 为空；\
-                     只有一个 semesterGoal={value}，单位未定义，不作数）"
+                    "- 学期目标：**服务端未给出公里目标**——semesterGoal={value}，\
+                     而上游这个字段的单位是**米**(pace-forge 源码 api/semester.rs,\
+                     实测样本 60000 即 60 km), 也就是 {value} 米 ≈ 这个课\
+                     **没设记分跑学期目标**; semesterTargetDis/semesterTargetCount 都是空的"
                 )),
                 None => lines.push("- 学期目标：服务端未提供".to_owned()),
             }
@@ -793,11 +797,14 @@ mod tests {
         assert!(!text.contains("→ 已达标"), "{text}");
     }
 
-    /// 距离在涨、次数是 0 → 必须提醒：记录没被判完成（单次距离没够当任务门槛）。
+    /// 里程与次数口径不同源 → 只摆事实，**不猜原因**（服务端没解释的东西不能替它编）。
     #[test]
-    fn status_warns_when_distance_grows_but_count_is_zero() {
+    fn status_reports_count_and_distance_without_inventing_a_cause() {
         let text = render_status(&info());
-        assert!(text.contains("距离在涨、有效次数是 0"), "{text}");
+        assert!(text.contains("「有效次数」是 0"), "{text}");
+        assert!(text.contains("这两个口径不同源"), "{text}");
+        // 不许把「单次距离不够」说成次数为 0 的原因
+        assert!(!text.contains("说明这些记录**没被判完成**"), "{text}");
     }
 
     #[test]
