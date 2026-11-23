@@ -605,9 +605,14 @@ async def detect_aismart_state(page) -> tuple[bool | None, int | None]:
       → 课程级进度 = 已学知识点 / 总知识点
     - 「课程视频」页(courseVideoShare): 章节列表, 带「视频」标签的行 = 可刷的视频
 
+    ⚠️ 还有第三种形态 —— **新形态(图谱)课**(2026-11-24 实测, 「高等数学I(理)」):
+      主页**没有**「课程视频」入口, 「课件资料」tab 写着「共 0 个学习资源」,
+      但资源挂在**知识点**下(点知识点卡片 → /learnPage → 左侧 56 个知识点带「必学 n/m」)。
+      所以「没有课程视频」不等于「没内容」→ 要再探一次 learnPage(见下面第 3 步)。
+
     返回 (content_published, progress_percent):
-    - content_published: True = 有视频可刷; False = 没有; None = 判断不了
-    - progress: 0-100 的知识点完成度; None = 读不到
+    - content_published: True = 有内容可刷; False = 没有; None = 判断不了
+    - progress: 0-100 的完成度; None = 读不到
     """
     # 1) 进度: 知识学习页的知识点「学习进度」
     progress: int | None = None
@@ -642,6 +647,36 @@ async def detect_aismart_state(page) -> tuple[bool | None, int | None]:
             content = int(rows) > 0
     except Exception:
         content = None
+    # 3) 图谱课(新形态): 没有「课程视频」入口时, 再探 learnPage 的知识点目录
+    #    (2026-11-24 实测: 「高等数学I(理)」没有课程视频, 但资源挂在知识点下)
+    if content is None:
+        try:
+            await page.evaluate(
+                """() => {
+                    const e = document.querySelector('.item-mask')
+                           || document.querySelector('.item-content');
+                    if (e) e.click();
+                }"""
+            )
+            await page.wait_for_timeout(10_000)
+            pairs = await page.evaluate(
+                """() => {
+                    const out = [];
+                    for (const el of document.querySelectorAll('.section-item-collapse-info')) {
+                        const p = el.querySelector('.progress-text');
+                        const m = p ? (p.textContent || '').match(/必学\\s*(\\d+)\\s*\\/\\s*(\\d+)/) : null;
+                        if (m) out.push([parseInt(m[1], 10), parseInt(m[2], 10)]);
+                    }
+                    return out;
+                }"""
+            )
+            if pairs:
+                content = True
+                total = sum(t for _, t in pairs)
+                done = sum(min(d, t) for d, t in pairs)
+                progress = round(100 * done / total) if total else 0
+        except Exception:
+            pass
     return content, progress
 
 

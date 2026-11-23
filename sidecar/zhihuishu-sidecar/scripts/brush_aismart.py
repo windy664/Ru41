@@ -247,6 +247,18 @@ async def brush_course(page, title: str, course_url: str, max_minutes: int,
                        dry_run: bool) -> dict:
     result = {"title": title, "url": course_url, "watched": [], "failed": []}
     if not await goto_video_page(page, course_url):
+        # 新形态(**图谱**)课: 主页没有「课程视频」入口, 资源挂在知识点下
+        # (2026-11-24 实测「高等数学I(理)」: 56 个知识点, 每个带「必学 n/m」,
+        #  点开资源平台就自己上报完成) → 交给图谱引擎, 别在这里直接放弃。
+        try:
+            import brush_aismart_graph  # noqa: PLC0415
+
+            log(f"[{title}] 没有「课程视频」入口, 改用图谱课引擎")
+            return await brush_aismart_graph.brush_course(
+                page, title, course_url, max_minutes, dry_run
+            )
+        except Exception as exc:  # noqa: BLE001
+            log(f"[{title}] 图谱课引擎也失败: {str(exc)[:150]}")
         result["error"] = "进不了课程视频页"
         return result
 
