@@ -10,13 +10,15 @@ Type=oneshot
 # (不用密码/验证码) → passport 建会话 → 拿到 haoke-token。
 # TGT 从 jwxt 容器里现取(jwxt 会自己续期), 所以本单元依赖 ru41-jwxt 在跑。
 #
+# 取 TGT 的 python 代码放独立脚本: systemd 的 ExecStart 会吃掉 \" → 引号没了 → SyntaxError。
+#
 # ⚠️ 生产机 DNS 解析不了 *.gzus.edu.cn(路由器上游查不到) → 浏览器用
 #    --host-resolver-rules 映射 DoH 查到的 IP(见 scripts/brush_ahk.py)。
 #
 # 只刷 taskType=10 的视频课; 小测/作业/辩论一概不碰(那是替人做作业)。
 WorkingDirectory=%h/Projects/zhihuishu-sidecar
 ExecStart=/bin/bash -c 'set -euo pipefail; \
-  TGT=$(docker exec ru41-jwxt python3 -c "import json;print(json.load(open(\"/home/node/.ru41/jwxt/session.json\")).get(\"cas_tgt\",\"\"))"); \
+  TGT=$(%h/Projects/zhihuishu-sidecar/deploy/get-cas-tgt.sh); \
   if [ -z "$TGT" ]; then echo "jwxt 还没有 CAS 会话, 本轮跳过"; exit 0; fi; \
   docker run --rm -e CAS_TGT="$TGT" -e AHK_CLASS_ID=29668 -e AHK_COLUMN_ID=708120 \
     -v %h/Projects/zhihuishu-sidecar/data:/app/data \
@@ -26,3 +28,6 @@ ExecStart=/bin/bash -c 'set -euo pipefail; \
       DISPLAY=:99 python -u /scripts/brush_ahk.py --speed 1.5 --max-videos 3; kill \$XPID 2>/dev/null"'
 TimeoutStartSec=14400
 RemainAfterExit=no
+# 失败要有人知道: CAS 的 TGT 有有效期, 过期后浏览器不被 CAS 认 → 登录失败 →
+# 这一轮什么也没刷(而且没人知道)。发一条 Telegram。
+ExecStopPost=/bin/bash -c 'if [ "$SERVICE_RESULT" != "success" ]; then docker exec ru41-telegram ru41 telegram send --text "⚠️ 学习平台(在线好课)那轮没跑成（$SERVICE_RESULT）。最常见原因：jwxt 的 CAS TGT 过期了 → 需要重登 jwxt 拿新 TGT（ru41 jwxt login）。" 2>/dev/null; fi'

@@ -60,6 +60,16 @@ HOST_RULES = ",".join(
 
 # 只有微课精讲(视频)才刷
 TASK_TYPE_VIDEO = 10
+
+# 浏览器 UA **必须和 jwxt 登录 CAS 时用的那个一致**：
+# CAS 的 TGT 绑定 UA, UA 对不上就放行不了 → 停在 /lyuapServer/login
+# (2026-11-23 实测: jwxt 用下面这个 UA 登录拿的 TGT, 而 Playwright 默认是
+#  Linux Chromium UA → 三个重试全失败, 拿不到 haoke-token。)
+# 这个 UA 取自 plugins/jwxt/src/source.rs 的 with_browser_ua()。
+BROWSER_UA = (
+    "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
+    "(KHTML, like Gecko) Chrome/126.0 Safari/537.36"
+)
 DATA_DIR = os.environ.get("AHK_DATA_DIR", "/app/data")
 
 
@@ -105,7 +115,7 @@ async def login() -> list[dict]:
                 "--no-sandbox",
             ],
         )
-        ctx = await browser.new_context()
+        ctx = await browser.new_context(user_agent=BROWSER_UA)
         await ctx.add_cookies(
             [{"name": "CASTGC", "value": tgt, "domain": ".gzus.edu.cn", "path": "/"}]
         )
@@ -314,7 +324,7 @@ async def main_async() -> int:
                 "--no-sandbox",
             ],
         )
-        ctx = await browser.new_context()
+        ctx = await browser.new_context(user_agent=BROWSER_UA)
         for c in cookies:
             try:
                 await ctx.add_cookies(
