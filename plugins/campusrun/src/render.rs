@@ -9,7 +9,7 @@ use crate::model::{
 use chrono::{Local, TimeZone};
 
 /// 学期进度。
-pub fn render_status(info: &SemesterInfo) -> String {
+pub fn render_status(info: &SemesterInfo, external_target_km: Option<f64>) -> String {
     let summary = &info.summary_raw;
     let mut lines = vec!["## 校园跑进度".to_owned()];
 
@@ -98,6 +98,18 @@ pub fn render_status(info: &SemesterInfo) -> String {
                 "- ⚠️ **不能据此说「已达标」**：接口没给公里目标，学期跑量要求以 App 上的\
                  学期要求为准".to_owned(),
             );
+            // App 口径的目标（配置里抄进来的）：只用来算「还差多少」，
+            // 不参与「达没达标」的判断 —— 服务端没给公里目标，我们不替它判。
+            if let Some(target_km) = external_target_km.filter(|v| *v > 0.0) {
+                let done_km = valid / 1000.0;
+                let remain = (target_km - done_km).max(0.0);
+                lines.push(format!(
+                    "- 学期跑量目标（**App 口径**，接口不给）：{target_km:.1} km"
+                ));
+                lines.push(format!(
+                    "- 按这个目标：已跑 {done_km:.2} km，还差 {remain:.2} km"
+                ));
+            }
         }
     }
     if let Some(count) = info.goal.as_ref().and_then(|g| g.target_count) {
@@ -259,10 +271,15 @@ pub fn render_cheat_with(cheat: &CheatStatus, violations: &[ViolationDetail]) ->
 }
 
 /// 一页看完：进度 + 最近记录 + 账号状态。
-pub fn render_all(status: &SemesterInfo, records: &[RunRecord], cheat: &CheatStatus) -> String {
+pub fn render_all(
+    status: &SemesterInfo,
+    records: &[RunRecord],
+    cheat: &CheatStatus,
+    external_target_km: Option<f64>,
+) -> String {
     format!(
         "{}\n\n{}\n\n{}",
-        render_status(status),
+        render_status(status, external_target_km),
         render_records(records, 5),
         render_cheat(cheat)
     )
@@ -771,7 +788,7 @@ mod tests {
 
     #[test]
     fn status_refuses_to_claim_done_without_authoritative_goal() {
-        let text = render_status(&info());
+        let text = render_status(&info(), None);
         // 上游没给 semesterTargetDis → **不许**说「已达标」。
         // (2026-11-23 实测: semesterGoal=1 的单位未定义, 拿它算达标是错的)
         assert!(text.contains("服务端未给出公里目标"), "{text}");
@@ -791,16 +808,28 @@ mod tests {
         let mut info = info();
         let goal_raw = info.goal_raw.as_mut().expect("有 goal_raw");
         goal_raw.semester_target_dis = Some(30_000.0);
-        let text = render_status(&info);
+        let text = render_status(&info, None);
         assert!(text.contains("学期目标里程：30.00 km"), "{text}");
         assert!(text.contains("→ 未达标"), "{text}");
         assert!(!text.contains("→ 已达标"), "{text}");
     }
 
+    /// App 口径的学期目标（配置里抄进来的）：**只用来显示还差多少**，
+    /// 绝不据此说「已达标」——服务端自己都说没给公里目标。
+    #[test]
+    fn status_uses_app_target_for_remaining_only() {
+        let text = render_status(&info(), Some(30.0));
+        assert!(text.contains("学期跑量目标（**App 口径**，接口不给）：30.0 km"), "{text}");
+        assert!(text.contains("还差"), "{text}");
+        // 达标判定仍然不出现
+        assert!(!text.contains("→ 已达标"), "{text}");
+        assert!(!text.contains("→ 未达标"), "{text}");
+    }
+
     /// 里程与次数口径不同源 → 只摆事实，**不猜原因**（服务端没解释的东西不能替它编）。
     #[test]
     fn status_reports_count_and_distance_without_inventing_a_cause() {
-        let text = render_status(&info());
+        let text = render_status(&info(), None);
         assert!(text.contains("「有效次数」是 0"), "{text}");
         assert!(text.contains("这两个口径不同源"), "{text}");
         // 不许把「单次距离不够」说成次数为 0 的原因

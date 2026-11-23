@@ -14,9 +14,12 @@ use ru41::ports::storage::TaskStore;
 use std::sync::Arc;
 
 /// 学期进度。
-pub async fn fetch_status(client: &CampusrunClient) -> Result<String, CampusrunError> {
+pub async fn fetch_status(
+    client: &CampusrunClient,
+    external_target_km: Option<f64>,
+) -> Result<String, CampusrunError> {
     let info = client.semester().await?;
-    Ok(render::render_status(&info))
+    Ok(render::render_status(&info, external_target_km))
 }
 
 /// 最近记录。
@@ -76,11 +79,14 @@ async fn collect_violations(
 }
 
 /// 一页看完：进度 + 最近记录 + 账号状态。
-pub async fn fetch_all(client: &CampusrunClient) -> Result<String, CampusrunError> {
+pub async fn fetch_all(
+    client: &CampusrunClient,
+    external_target_km: Option<f64>,
+) -> Result<String, CampusrunError> {
     let info = client.semester().await?;
     let records = client.records().await?;
     let cheat = client.cheat().await?;
-    Ok(render::render_all(&info, &records, &cheat))
+    Ok(render::render_all(&info, &records, &cheat, external_target_km))
 }
 
 /// 按名字分发（CLI 与 QQ 命令共用）。
@@ -88,12 +94,13 @@ pub async fn fetch_markdown(
     client: &CampusrunClient,
     what: &str,
     limit: usize,
+    external_target_km: Option<f64>,
 ) -> Result<String, CampusrunError> {
     match what {
-        "status" => fetch_status(client).await,
+        "status" => fetch_status(client, external_target_km).await,
         "records" => fetch_records(client, limit).await,
         "cheat" => fetch_cheat(client).await,
-        _ => fetch_all(client).await,
+        _ => fetch_all(client, external_target_km).await,
     }
 }
 
@@ -104,11 +111,16 @@ pub async fn fetch_markdown(
 #[derive(Clone)]
 pub struct CampusrunTracker {
     client: CampusrunClient,
+    /// App 口径的学期跑量目标（公里）；接口不给的目标，由配置补。
+    semester_target_km: Option<f64>,
 }
 
 impl CampusrunTracker {
-    pub fn new(client: CampusrunClient) -> Self {
-        Self { client }
+    pub fn new(client: CampusrunClient, semester_target_km: Option<f64>) -> Self {
+        Self {
+            client,
+            semester_target_km,
+        }
     }
 }
 
@@ -143,7 +155,8 @@ impl ru41::ingress::schedule::SimplePollJob for CampusrunTracker {
             "days_left": info.goal.as_ref().and_then(|g| g.days_left),
             "records": records.len(),
             "cheat_status": cheat.status,
-            "markdown": render::render_all(&info, &records, &cheat),
+            "target_km": self.semester_target_km,
+            "markdown": render::render_all(&info, &records, &cheat, self.semester_target_km),
         }))
     }
 }

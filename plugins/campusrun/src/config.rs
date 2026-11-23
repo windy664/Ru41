@@ -45,6 +45,16 @@ pub struct CampusrunSection {
     pub silence_secs: Option<i64>,
     /// 待确认提交的有效期（秒），默认 900。
     pub confirm_ttl_secs: Option<i64>,
+    /// **学期跑量目标（公里）——App 口径，接口不给**。
+    ///
+    /// 上游 `getPersonalSemesterInfo` 只给 `semesterGoal`（米），而我们这个课
+    /// 的值是 1（米）≈ 后台没给记分跑学期目标；真正的学期跑量要求（几十公里）
+    /// 是**App/教学计划**上的课程要求，协议层读不到。
+    ///
+    /// 所以这里让人把 App 上的数字抄进来，插件据此算「还差多少」——
+    /// 但它**只用来做进度显示**，绝不拿它判「已达标」（那是服务端的事，
+    /// 它自己都说「服务端未给出公里目标」）。
+    pub semester_target_km: Option<f64>,
 }
 
 impl CampusrunSection {
