@@ -79,8 +79,10 @@ fi
   # 握手 v2 硬门是 ru41-plugin-api 版本 + deps stamp
   # （不是 git commit），lockfile 从根同步保证两侧解析同一组依赖版本。
   PLUGINS_TARGET=/build/plugins/.target-docker-shared
-  for dir in "$BUILD_DIR"/plugins/*/; do
-    [ -f "$dir/Cargo.toml" ] || continue
+  # 同样用 Cargo.toml 作锚点（plugins/ 下还有 target-plugins/ 这类目录）。
+  for manifest in "$BUILD_DIR"/plugins/*/Cargo.toml; do
+    [ -f "$manifest" ] || continue
+    dir="$(dirname "$manifest")"
     name="$(basename "$dir")"
     cp "$BUILD_DIR/Cargo.lock" "$dir/Cargo.lock"
     # 用 --manifest-path 而不是 -w plugins/<name>：cargo 的配置发现基于 cwd，
@@ -101,8 +103,12 @@ fi
   mkdir -p "$BUILD_DIR/.plugins-dist"
   # 按精确文件名收 .so——插件作为对方依赖编译时只在 deps/ 产 rlib，
   # 不会覆盖 release/ 顶层的 cdylib；deps/ 里的中间产物一律不收。
-  for dir in "$BUILD_DIR"/plugins/*/; do
-    name="$(basename "$dir")"
+  # 用 Cargo.toml 作锚点，不用 plugins/*/ 目录名：plugins/target-plugins/
+  # 与 .target-docker-shared 也是 plugins/ 下的目录，按目录名遍历会把它们当插件
+  # （编不出来就报「插件产物缺失 libru41_plugin_target-plugins.so」，2026-11-22 实测）。
+  for manifest in "$BUILD_DIR"/plugins/*/Cargo.toml; do
+    [ -f "$manifest" ] || continue
+    name="$(basename "$(dirname "$manifest")")"
     so="$BUILD_DIR/plugins/.target-docker-shared/release/libru41_plugin_$name.so"
     [ -f "$so" ] || { echo "[build-fast] FATAL: 插件产物缺失 $so"; exit 1; }
     cp "$so" "$BUILD_DIR/.plugins-dist/"
