@@ -54,16 +54,14 @@ docker run --name "$BUILDER" \
 # 回退成镜像里那个旧版 —— rss 插件被 11-18 的旧版冲掉后, 不认识配置里的
 # must_report 字段 → ru41-rss 崩溃循环。
 # RU41_SKIP_PLUGINS=1 可跳过(明知会回退插件时才用)。
-if [[ "${RU41_SKIP_PLUGINS:-0}" != "1" ]]; then
-  mkdir -p "$BUILD_DIR/.plugins-dist"
-  for d in plugins/*/; do
-    n="$(basename "$d")"
-    (cd "$BUILD_DIR/$d" && cargo build --release --features plugin-entry) || exit 8
-    cp "$BUILD_DIR/plugins/target-plugins/release/libru41_plugin_$(printf '%s' "$n" | tr - _).so" \
-       "$BUILD_DIR/.plugins-dist/" || exit 9
-  done
-  echo "[build-fast] plugins built: $(ls "$BUILD_DIR/.plugins-dist" | wc -l)"
-fi
+#
+# ⚠️ 这里以前还有一段「宿主机 cargo 编插件」的循环, 已删除:
+#   1. 它的产物随后会被下面的净室循环 rm -rf 掉, 纯属白干;
+#   2. 宿主机 glibc 比 trixie 新, 编出的 .so 进镜像会烂(见下面 GLIBC 守卫那段的实证);
+#   3. `for d in plugins/*/` 会把 plugins/target-plugins/ 当成插件目录,
+#      那里没有 Cargo.toml → cargo 往上找到根包 → 报
+#      「the package 'ru41' does not contain this feature: plugin-entry」直接退出 8
+#      (2026-11-22 实测: 只要跑过一次 hot-patch.sh 盘上有 target-plugins/ 就必炸)。
 
 # 守卫：target/ 若被宿主机 cargo 污染（宿主机 glibc 比 trixie 运行时新），
 # cargo 可能误判产物新鲜直接复用——部署后容器内 GLIBC_X.XX not found 起不来
