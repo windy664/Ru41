@@ -522,15 +522,10 @@ impl PiAgent {
                         stop_reason == "stop",
                         Ru41Error::AgentProcess(pi_stop_error(stop_reason, &message))
                     );
-                    let mut text = String::new();
-                    for block in message["content"]
-                        .as_array()
-                        .context("Pi content missing")?
-                    {
-                        if block["type"] == "text" {
-                            text.push_str(block["text"].as_str().context("Pi text missing")?);
-                        }
-                    }
+                    // 走 message_text：它会把**思考段**剥掉（MiniMax-M3 把思考
+                    // 和契约 JSON 放在同一个 text block 里，2026-11-23 实测），
+                    // 否则「散文更长就以散文为准」的兜底会把思考推给用户。
+                    let text = message_text(&message);
                     let mut result = parse_agent_result(&text)?;
                     // 兜底：最后一条消息的 summary 是压缩版，而前面某条消息里有
                     // 完整正文（Markdown 报告）——交付完整正文，别交付压缩版。

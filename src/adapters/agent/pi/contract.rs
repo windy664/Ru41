@@ -152,6 +152,44 @@ pub(super) fn message_text(message: &Value) -> String {
             text.push_str(chunk);
         }
     }
+    strip_thinking(&text).to_owned()
+}
+
+/// 剥掉**思考段**，只留真正的交付内容。
+///
+/// 2026-11-23 实测（MiniMax-M3 / anthropic-messages 接口）：模型把思考过程和
+/// 契约 JSON 放在**同一个 text block**里：
+///
+/// ```text
+/// I'll evaluate these candidates ... Write it out.</think>{"summary": "# AI / CS 日报…"}
+/// ```
+///
+/// 闭标记里夹着 **U+200B 零宽字符**（`</` + U+200B + `mm:think>`）——等宽匹配
+/// 剥不掉，于是整段思考被当成正文候选；思考又比真正的日报长 → 契约层
+/// 「散文更长就以散文为准」的兜底把**思考过程**推给了用户（11-22、11-23 的日报）。
+///
+/// 规则：
+/// - 有闭标记 → 闭标记**之前**全是思考，丢掉（开标记有时已被适配器剥掉）；
+/// - 只有开标记 → 思考到结尾，后面没有正文，返回空（让契约层判「没正文」重试，
+///   好过把思考发出去）；
+/// - 都没有 → 原样返回。
+fn strip_thinking(text: &str) -> &str {
+    static CLOSE_RE: std::sync::OnceLock<regex::Regex> = std::sync::OnceLock::new();
+    let close_re = CLOSE_RE.get_or_init(|| {
+        regex::Regex::new(r"</[\u{200b}\u{200c}\u{200d}\u{feff}\u{2060}]*(?:mm:)?think>")
+            .expect("闭标记正则")
+    });
+    if let Some(matched) = close_re.find(text) {
+        return &text[matched.end()..];
+    }
+    static OPEN_RE: std::sync::OnceLock<regex::Regex> = std::sync::OnceLock::new();
+    let open_re =
+        OPEN_RE.get_or_init(|| regex::Regex::new(r"<\u{feff}?think").expect("开标记正则"));
+    if open_re.is_match(text) {
+        // 只有开标记：思考一直延续到结尾，后面没有正文 → 交白卷
+        // （上层会判「没有正文」让任务重试，好过把思考推给用户）
+        return "";
+    }
     text
 }
 
@@ -275,6 +313,10 @@ pub(super) fn is_instruction_deliverable(text: &str) -> bool {
 }
 
 pub(super) fn parse_agent_result(text: &str) -> Result<AgentResult> {
+    // 先剥思考段（MiniMax-M3 把思考和契约 JSON 放在同一个 text block 里，
+    // 2026-11-23 实测）—— 不剥的话「散文更长就以散文为准」的兜底会把
+    // 思考过程当成交付物推给用户。
+    let text = strip_thinking(text);
     let trimmed = text.trim();
     // 「机器消费的指令围栏」：交付物是给宿主/插件执行的指令（ru41-organize 等），
     // 没有 summary 是契约如此——收下整段围栏，别判契约不符让任务重试。
@@ -426,6 +468,42 @@ fn guess_media_kind(source: &str) -> MediaKind {
 #[cfg(test)]
 mod tests {
     use super::{MediaKind, is_instruction_deliverable, parse_agent_result, pick_full_report};
+
+    /// 2026-11-23 线上日报的真实形态：MiniMax-M3 把思考段和契约 JSON 放在
+    /// **同一个 text block**里，闭标记里夹着 U+200B 零宽字符。
+    ///
+    /// 之前思考段比真正的日报正文更长 → 契约层「散文更长就以散文为准」的
+    /// 兜底把**思考过程**当成交付物推给了用户（11-22、11-23 的日报都这样）。
+    #[test]
+    fn thinking_prefix_is_stripped_before_delivery() {
+        let thinking = "I'll evaluate these candidates against the user's focus areas.\n\n             **Analysis of the candidate list (58 items):**\n\nMost entries are low-signal...\n\n             Write it out.";
+        let digest = "# AI / CS 日报 · 2026-11-23\n\n从 58 条候选里挑出 3 条值得看的。";
+        let raw = format!("{thinking}</\u{200b}mm:think>{{\"summary\": {digest:?}}}");
+
+        // 契约解析：交付的必须是日报正文，不是思考
+        let result = parse_agent_result(&raw).expect("应能解析出契约");
+        assert_eq!(result.summary, digest, "交付的必须是正文，不是思考过程");
+        assert!(!result.summary.contains("evaluate these candidates"));
+
+        // 裸 JSON（没有契约包裹）也要剥掉思考
+        let bare = format!("{thinking}</\u{200b}mm:think>\n{digest}");
+        let result = parse_agent_result(&bare).expect("应能解析出正文");
+        assert!(
+            result.summary.contains("AI / CS 日报"),
+            "{}",
+            result.summary
+        );
+        assert!(!result.summary.contains("evaluate these candidates"));
+    }
+
+    /// 只有开标记、没有闭标记 → 后面没有正文，返回空（让上层判「没正文」重试），
+    /// 好过把思考推给用户。
+    #[test]
+    fn unterminated_thinking_yields_nothing() {
+        let raw = "<think>I'm still thinking... and then some";
+        let result = parse_agent_result(raw);
+        assert!(result.is_err(), "没正文就不该当成交付物");
+    }
 
     /// 契约里的 summary 又被包了一层 ```json 围栏时，要剥到内层，
     /// 否则投递出去的是原始 JSON 而不是 Markdown（2026-11-18 课堂笔记实测）。
