@@ -33,6 +33,8 @@ import sys
 import urllib.request
 
 CONTAINER = "ru41-mimo-worker"
+# 通知从网关容器发（bot token 在那儿，worker 里没有）
+NOTIFY_CONTAINERS = ("ru41-telegram", "ru41-qq")
 CONSOLE = "http://127.0.0.1:9999"
 KM_PER_RUN = 3.0
 # 每次多跑一点点余量：服务端算的是「有效里程」，实测会比申报值少几十米。
@@ -125,6 +127,42 @@ def decide(km: float, last_run: str | None, today: datetime.date) -> tuple[bool,
     )
 
 
+def fetch_record(rrid: str) -> dict:
+    """单条记录详情（服务端给的逐条判定）。"""
+    token = console_token()
+    if not token:
+        return {}
+    request = urllib.request.Request(
+        f"{CONSOLE}/api/record/{rrid}", headers={"X-Pace-Token": token}
+    )
+    try:
+        with urllib.request.urlopen(request, timeout=25) as response:
+            return json.load(response).get("data") or {}
+    except Exception:  # noqa: BLE001
+        return {}
+
+
+def notify(text: str) -> None:
+    """发一条 Telegram 通知（默认 chat 来自配置）。
+
+    只在「真跑了」或「跑失败」时发；按间隔跳过的日子不发 —— 每天一条
+    「今天不跑」是噪音。
+
+    ⚠️ bot token 只在**网关容器**里（ru41-telegram / ru41-qq），worker 没有
+    （`ru41 telegram send` 报 "telegram bot token required"）。所以从网关容器发。
+    """
+    for container in (NOTIFY_CONTAINERS):
+        result = subprocess.run(
+            ["docker", "exec", container, "ru41", "telegram", "send", "--text", text],
+            capture_output=True, text=True, timeout=120,
+        )
+        if result.returncode == 0:
+            log(f"通知已发（{container}）")
+            return
+        log(f"{container} 发通知失败：{((result.stdout or '') + (result.stderr or ''))[-200:]}")
+    log("通知没发出去（网关容器都不可用）")
+
+
 def campusrun(*args: str) -> str:
     result = subprocess.run(
         ["docker", "exec", CONTAINER, "ru41", "campusrun", *args],
@@ -133,26 +171,27 @@ def campusrun(*args: str) -> str:
     return (result.stdout or "") + (result.stderr or "")
 
 
-def run_once() -> bool:
-    """登记 + 确认。拿不到口令或预演被拦就不提交。"""
+def run_once() -> tuple[bool, str]:
+    """登记 + 确认。拿不到口令或预演被拦就不提交。返回 (成功, 说明)。"""
     plan = campusrun("submit", "--km", "3", "--rand", "--days", "1")
     if "预演被拦下" in plan or "不能提交" in plan:
         log("预演被拦下，不提交：")
         log(plan[-600:])
-        return False
+        return False, "预演被拦下（工具自检没过）"
     match = re.search(r"campusrun confirm ([0-9a-fA-F]+)", plan)
     if not match:
         log("没拿到待确认口令，不提交：")
         log(plan[-600:])
-        return False
+        return False, "没拿到待确认口令"
     token = match.group(1)
     result = campusrun("confirm", token)
     if "已提交" in result:
         log(f"提交成功：{result.strip()[-200:]}")
-        return True
+        rrid = re.search(r"id=(\d+)", result)
+        return True, rrid.group(1) if rrid else ""
     log("提交失败：")
     log(result[-600:])
-    return False
+    return False, "确认提交失败：" + result.strip()[-120:]
 
 
 def main() -> int:
@@ -167,15 +206,53 @@ def main() -> int:
     if not should_run:
         return 0
 
-    if run_once():
+    ok, detail = run_once()
+    if ok:
+        record = fetch_record(detail) if detail else {}
+        after = current_km()
+        runs = int(state.get("runs", 0)) + 1
         state["last_run"] = today.isoformat()
-        state["km_after"] = km
-        state["runs"] = int(state.get("runs", 0)) + 1
+        state["km_after"] = after if after is not None else km
+        state["runs"] = runs
         save_state(state)
-        log(f"已记：last_run={state['last_run']}，累计 {state['runs']} 次")
+        log(f"已记：last_run={state['last_run']}，累计 {runs} 次")
+        notify(format_success(record, km, after, runs, state))
         return 0
     # 失败不更新 last_run → 下一轮还会再试（间隔照旧按上次成功算）
+    notify(f"⚠️ 校园跑今天没跑成\n"
+           f"· 原因：{detail}\n"
+           f"· 当前有效里程 {km:.2f} km（目标 36 km，还差 {max(36.0 - km, 0.0):.2f} km）")
     return 1
+
+
+def format_success(record: dict, before_km: float, after_km: float | None,
+                  runs: int, state: dict) -> str:
+    """成功后的通知正文。"""
+    distance = record.get("totalDis")
+    seconds = record.get("totalTime")
+    cadence = record.get("avgStepFreq")
+    verdict = record.get("statusInfo") or ""
+    if record.get("isCheat"):
+        verdict = "⚠️ 服务端标记了违规"
+    lines = ["🏃 校园跑已完成"]
+    if distance and seconds:
+        pace = (seconds / 60.0) / (distance / 1000.0)
+        pace_text = f"{int(pace)}'{int((pace % 1) * 60):02d}\"/km"
+        lines.append(
+            f"· {distance / 1000:.2f} km / {int(seconds // 60)}'{int(seconds % 60):02d}\""
+            f"（配速 {pace_text}"
+            + (f"，步频 {cadence}" if cadence else "")
+            + "）"
+        )
+    if verdict:
+        lines.append(f"· 服务端判定：{verdict}")
+    if after_km is not None:
+        lines.append(
+            f"· 学期有效里程 {before_km:.2f} → {after_km:.2f} km"
+            f"（目标 36 km，还差 {max(36.0 - after_km, 0.0):.2f} km）"
+        )
+    lines.append(f"· 第 {runs} 次")
+    return "\n".join(lines)
 
 
 if __name__ == "__main__":
