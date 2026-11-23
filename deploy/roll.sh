@@ -82,7 +82,10 @@ for name in "${NAMES[@]}"; do
   # Config.Image 写成镜像 ID(sha256:...), 按名字匹配就全都对不上了。
   IMG_TAGS="$(docker image inspect "$CUR_ID" --format '{{join .RepoTags " "}}' 2>/dev/null || echo "")"
   if [[ "$IMG_TAGS" != *ru41* ]]; then
-    echo "SKIP $name: 跑的不是 ru41 镜像(${IMG_TAGS:-无标签/$SRC_IMAGE}), 不动它"
+    # ⚠️ 别在这里引用未定义变量: set -u 下 `${X:-默认/$UNDEF}` 里的默认分支
+    # 也会展开 → 整个脚本中止（2026-11-22 实测: 外部镜像容器没标签时炸了，
+    # 26 个容器一个都没滚）。提示文案只用已定义的 $TARGET_IMAGE。
+    echo "SKIP $name: 跑的不是 ru41 镜像(${IMG_TAGS:-无标签}, 当前镜像 $TARGET_IMAGE), 不动它"
     continue
   fi
   # 镜像没变也要重建的情况：缺技能包挂载（挂载是后加的，inspect 里还没有）。
