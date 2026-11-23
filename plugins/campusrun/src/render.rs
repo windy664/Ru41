@@ -38,37 +38,69 @@ pub fn render_status(info: &SemesterInfo) -> String {
     lines.push(format!(
         "- 有效次数：{valid_count} 次（共 {total_count} 次）"
     ));
+    // 距离在涨、次数是 0 → 每条记录都没被判「完成」。
+    // 原因多半是**单次距离没达到当次任务的最小距离**（记录详情里的 selDistance，
+    // 各任务不同：见过 1.00 km 也见过 1.50 km）——2026-11-23 实测：
+    // 11-16 那条 1.22 km 低于当任务的 1.50 km → complete=false。
+    if valid_count == 0 && valid > 0.0 {
+        lines.push(
+            "- ⚠️ **距离在涨、有效次数是 0**：说明这些记录**没被判完成**——\
+             单次距离没达到当次任务的最小距离（各任务不同，记录详情里的 selDistance）。\
+             跑的时候按当次任务的要求来，别只盯着总里程。"
+                .to_owned(),
+        );
+    }
 
-    // 目标：**semesterGoal 是目标里程（米），不是次数**
-    // （pace-forge 源码 api/semester.rs 的 parse_goal：target_dis = semesterGoal，
-    //  goalMethod=2 = 按里程；目标次数在 targetCount，0 = 不计次）。
-    // 之前按「次数」渲染、还把米当公里——2026-11-16 修正。
-    let goal_m = info.goal_raw.as_ref().and_then(|g| g.semester_goal);
-    match goal_m {
-        Some(goal_m) => {
+    // 目标：**只有上游的 semesterTargetDis / semesterTargetCount 算数**。
+    //
+    // ⚠️ 2026-11-23 实测（这条把之前「已达标」的误判堵上）：
+    // 真实响应里 semesterTargetDis 与 semesterTargetCount **都是空的**，
+    // 只剩一个 semesterGoal=1 —— 它的单位是未定义的：控制台当公里读、
+    // pace-forge 当米读，两边自相矛盾（1 公里 vs 1 米）。
+    // 而学期真实要求是几十公里量级 → 这个 1 根本不是公里目标。
+    //
+    // 所以：**拿它算「达标」就是错的**（之前正是这么报的「已达标」）。
+    // 拿不到权威目标时，只如实报「服务端没给公里目标」，达标与否让用户按 App 核对。
+    let goal_raw = info.goal_raw.as_ref();
+    let authoritative_dis = goal_raw.and_then(|g| g.semester_target_dis).filter(|v| *v > 0.0);
+    match authoritative_dis {
+        Some(target_m) => {
             lines.push(format!(
-                "- 学期目标里程：{}（服务端 semesterGoal，按里程口径）",
-                fmt_goal_distance(goal_m)
+                "- 学期目标里程：{}（服务端 semesterTargetDis）",
+                fmt_goal_distance(target_m)
             ));
-            if let Some(count) = info.goal.as_ref().and_then(|g| g.target_count) {
-                lines.push(format!(
-                    "- 学期目标次数：{count}{}",
-                    if count == 0 { "（不计次）" } else { "" }
-                ));
-            }
             let valid = summary.semester_valid_dis.unwrap_or_default();
             lines.push(format!(
                 "- 达标判定：有效 {} ≥ 目标 {} → {}",
                 fmt_distance(valid),
-                fmt_goal_distance(goal_m),
-                if valid >= goal_m {
+                fmt_goal_distance(target_m),
+                if valid >= target_m {
                     "已达标"
                 } else {
                     "未达标"
                 }
             ));
         }
-        None => lines.push("- 学期目标：服务端未提供".to_owned()),
+        None => {
+            let raw_goal = goal_raw.and_then(|g| g.semester_goal);
+            match raw_goal {
+                Some(value) => lines.push(format!(
+                    "- 学期目标：**服务端未给出公里目标**（semesterTargetDis/targetCount 为空；\
+                     只有一个 semesterGoal={value}，单位未定义，不作数）"
+                )),
+                None => lines.push("- 学期目标：服务端未提供".to_owned()),
+            }
+            lines.push(
+                "- ⚠️ **不能据此说「已达标」**：接口没给公里目标，学期跑量要求以 App 上的\
+                 学期要求为准".to_owned(),
+            );
+        }
+    }
+    if let Some(count) = info.goal.as_ref().and_then(|g| g.target_count) {
+        lines.push(format!(
+            "- 学期目标次数：{count}{}",
+            if count == 0 { "（不计次）" } else { "" }
+        ));
     }
     if let Some(days) = info.goal.as_ref().and_then(|g| g.days_left) {
         lines.push(format!("- 学期剩余：{days} 天"));
@@ -716,6 +748,8 @@ mod tests {
             goal_raw: Some(SemesterGoalRaw {
                 // semesterGoal 是**目标里程（米）**：1 米 = 实质没有门槛。
                 semester_goal: Some(1.0),
+                semester_target_dis: None,
+                semester_target_count: None,
                 semester_valid: Some(0.0),
                 goal_method: Some(2),
                 start_date: Some(1_793_376_000_000),
@@ -732,16 +766,38 @@ mod tests {
     }
 
     #[test]
-    fn status_reads_goal_as_distance_not_count() {
+    fn status_refuses_to_claim_done_without_authoritative_goal() {
         let text = render_status(&info());
-        // semesterGoal 是目标里程（米），不是次数；也不能当公里。
-        assert!(text.contains("学期目标里程：1 m"), "{text}");
+        // 上游没给 semesterTargetDis → **不许**说「已达标」。
+        // (2026-11-23 实测: semesterGoal=1 的单位未定义, 拿它算达标是错的)
+        assert!(text.contains("服务端未给出公里目标"), "{text}");
+        assert!(text.contains("不能据此说「已达标」"), "{text}");
+        // 判定行（带箭头的那种）不该存在 —— 警告文案里出现「已达标」不算
+        assert!(!text.contains("→ 已达标"), "{text}");
         assert!(text.contains("学期目标次数：0（不计次）"), "{text}");
-        assert!(text.contains("有效 6.29 km ≥ 目标 1 m → 已达标"), "{text}");
         assert!(text.contains("学期剩余：45 天"), "{text}");
         // 旧措辞（「学期目标：1 次」「还差 1 次」「目标距离：1.00 km」）是错的。
         assert!(!text.contains("还差"), "{text}");
         assert!(!text.contains("目标距离"), "{text}");
+    }
+
+    /// 上游**给了**权威目标（semesterTargetDis）时，才算达标 —— 这时口径才可信。
+    #[test]
+    fn status_uses_authoritative_target_when_present() {
+        let mut info = info();
+        let goal_raw = info.goal_raw.as_mut().expect("有 goal_raw");
+        goal_raw.semester_target_dis = Some(30_000.0);
+        let text = render_status(&info);
+        assert!(text.contains("学期目标里程：30.00 km"), "{text}");
+        assert!(text.contains("→ 未达标"), "{text}");
+        assert!(!text.contains("→ 已达标"), "{text}");
+    }
+
+    /// 距离在涨、次数是 0 → 必须提醒：记录没被判完成（单次距离没够当任务门槛）。
+    #[test]
+    fn status_warns_when_distance_grows_but_count_is_zero() {
+        let text = render_status(&info());
+        assert!(text.contains("距离在涨、有效次数是 0"), "{text}");
     }
 
     #[test]

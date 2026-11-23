@@ -68,6 +68,16 @@ pub struct SemesterGoalRaw {
     /// 目标里程（**米**，不是次数）。
     #[serde(default)]
     pub semester_goal: Option<f64>,
+    /// 上游给的**权威**目标距离（米）。
+    ///
+    /// ⚠️ 2026-11-23 实测：这一项在真实响应里**是空的**，连同
+    /// `semesterTargetCount` 一起缺。此时 `semesterGoal=1` 的单位是未定义的
+    /// （控制台当公里读、插件当米读，两边都自相矛盾），**不能拿它算达标**。
+    #[serde(default)]
+    pub semester_target_dis: Option<f64>,
+    /// 上游给的权威目标次数。
+    #[serde(default)]
+    pub semester_target_count: Option<i64>,
     /// 已完成里程（米，服务端口径）。
     #[serde(default)]
     pub semester_valid: Option<f64>,
