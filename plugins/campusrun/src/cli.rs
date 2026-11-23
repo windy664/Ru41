@@ -3,7 +3,7 @@
 //! ```text
 //! ru41 campusrun status          学期进度
 //! ru41 campusrun records [条数]   最近记录
-//! ru41 campusrun cheat           违规名单状态
+//! ru41 campusrun cheat           违规名单状态 + 逐条真实原因
 //! ru41 campusrun all             上面三样一起
 //! ru41 campusrun rules           规则面：窗口/必过点/围栏/单次门槛
 //! ru41 campusrun plan --laps 3   预演（不提交）
@@ -148,7 +148,7 @@ pub fn usage() -> String {
     "用法:\n  \
      ru41 campusrun status            学期进度\n  \
      ru41 campusrun records [条数]     最近记录\n  \
-     ru41 campusrun cheat             违规名单状态\n  \
+     ru41 campusrun cheat             违规名单状态 + 逐条真实原因\n  \
      ru41 campusrun all               进度+记录+状态\n  \
      ru41 campusrun rules             规则面（窗口/必过点/围栏/门槛）\n  \
      ru41 campusrun plan --laps 3     预演（不提交）\n  \

@@ -247,6 +247,105 @@ pub struct RunRecordDetail {
     /// 未完成原因码（complete=false 时有值）。
     #[serde(default)]
     pub un_complete_reason: Option<i64>,
+    /// 服务端是否把这条判为违规（1 = 是）。
+    ///
+    /// `/api/cheat` 只在聚合层说「违规 2 次，原因：服务端未提供原因」——
+    /// **真正的原因在这一层的 reasonList 里**（2026-11-22 实测：两条被判
+    /// 「运动数据有问题」type=0，聚合层完全看不到）。
+    #[serde(default)]
+    pub is_cheat: Option<i64>,
+    /// 申诉状态说明（如「申诉未通过，查看审核信息」）。
+    #[serde(default)]
+    pub appeal_status_info: Option<String>,
+    /// 还能不能再申诉：0 = 不能。
+    #[serde(default)]
+    pub can_appeal: Option<i64>,
+}
+
+/// 一条被判违规的记录 + 从详情里挖出来的**真实原因**。
+///
+/// 为什么单独建结构（2026-11-22）：聚合接口 `/api/cheat` 只说「违规 N 次」，
+/// 原因/时间一律「服务端未提供」。实测发现真要的东西挂在每条记录详情的
+/// `reasonList` 里 —— 是 `complete=false` 的那几条（例如 `type=0`
+/// 「运动数据有问题」）。不补这一层，回答「为什么被判违规」就只能瞎猜。
+#[derive(Debug, Clone, Default)]
+pub struct ViolationDetail {
+    pub rrid: i64,
+    pub start_time: Option<i64>,
+    pub distance_km: Option<f64>,
+    /// 服务端结论（如「你的跑步成绩已被系统判为可疑」）。
+    pub status_info: Option<String>,
+    /// 申诉说明。
+    pub appeal_info: Option<String>,
+    /// 还能不能再申诉（0 = 不能）。
+    pub can_appeal: Option<i64>,
+    /// **判违规的依据**：reasonList 里 type=0 且没过的项
+    /// （实测就是「运动数据有问题」——反作弊的事后跑批判定）。
+    pub cheat_reasons: Vec<String>,
+    /// 没达标但**不算违规**的项（距离/时长这类门槛）。
+    pub incomplete_reasons: Vec<String>,
+    /// 过了的项（用来说明「不是因为它」，避免把未完成当违规）。
+    pub passed_reasons: Vec<String>,
+}
+
+/// 判违规那条规则的 type 值（实测：「运动数据有问题」）。
+///
+/// 与距离/时长/步频/配速这些**门槛**规则分开：门槛没过只是「这次不成功」，
+/// 只有这一条没过才是「被判违规/可疑」。混在一起会把未完成说成违规。
+pub const REASON_KIND_CHEAT: i64 = 0;
+
+impl RunRecordDetail {
+    /// 服务端是否把这条判成了违规/可疑。
+    pub fn is_flagged(&self) -> bool {
+        self.is_cheat == Some(1)
+            || self
+                .reason_list
+                .as_deref()
+                .unwrap_or_default()
+                .iter()
+                .any(|item| item.kind == Some(REASON_KIND_CHEAT) && item.complete == Some(false))
+    }
+}
+
+impl ViolationDetail {
+    /// 从记录详情里把「真实原因」挖出来。
+    pub fn from_detail(detail: &RunRecordDetail) -> Self {
+        let mut cheat_reasons = Vec::new();
+        let mut incomplete_reasons = Vec::new();
+        let mut passed_reasons = Vec::new();
+        for item in detail.reason_list.as_deref().unwrap_or_default() {
+            let Some(text) = item.reason.as_deref().map(str::trim) else {
+                continue;
+            };
+            if text.is_empty() {
+                continue;
+            }
+            match item.complete {
+                Some(true) => passed_reasons.push(text.to_owned()),
+                Some(false) if item.kind == Some(REASON_KIND_CHEAT) => {
+                    cheat_reasons.push(text.to_owned())
+                }
+                Some(false) => incomplete_reasons.push(text.to_owned()),
+                None => {}
+            }
+        }
+        Self {
+            rrid: detail.rrid,
+            start_time: detail.start_time,
+            distance_km: detail.total_dis.map(|meters| meters / 1000.0),
+            status_info: nonblank(detail.status_info.clone()),
+            appeal_info: nonblank(detail.appeal_status_info.clone()),
+            can_appeal: detail.can_appeal,
+            cheat_reasons,
+            incomplete_reasons,
+            passed_reasons,
+        }
+    }
+}
+
+/// 空串与纯空白一律当没有（服务端会返回 `""`，渲染成空行更难看）。
+fn nonblank(value: Option<String>) -> Option<String> {
+    value.filter(|text| !text.trim().is_empty())
 }
 
 /// `/api/cheat` 的 data：违规名单自查结果。

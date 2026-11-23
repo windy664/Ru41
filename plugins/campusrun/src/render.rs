@@ -4,6 +4,7 @@
 
 use crate::model::{
     CheatStatus, FencesData, PlanData, PointsData, RunRecord, SemesterInfo, StartTimes, Verdict,
+    ViolationDetail,
 };
 use chrono::{Local, TimeZone};
 
@@ -130,6 +131,16 @@ pub fn render_records(records: &[RunRecord], limit: usize) -> String {
 /// `list` = **全校通报榜**（别人）。控制台把 `list` 压成了 `listCount`，
 /// 渲染时必须说清这是全校人数，否则会被读成「你有 9 条」。
 pub fn render_cheat(cheat: &CheatStatus) -> String {
+    render_cheat_with(cheat, &[])
+}
+
+/// 带逐条真实原因的账号状态。
+///
+/// 聚合接口的 `reason` 常年是「服务端未提供原因」，看起来像查不到；实际
+/// 判罚依据在每条记录详情的 reasonList 里（`type=0` 那条）。所以这里要
+/// 把 `violations` 展开，并把「没达标」与「判违规」分开说 —— 混在一起会把
+/// 只是距离不够的记录说成违规。
+pub fn render_cheat_with(cheat: &CheatStatus, violations: &[ViolationDetail]) -> String {
     let mut lines = vec!["## 校园跑账号状态".to_owned()];
     let label = cheat
         .label
@@ -146,7 +157,7 @@ pub fn render_cheat(cheat: &CheatStatus) -> String {
         ));
     }
     if let Some(reason) = cheat.reason.as_deref().filter(|s| !s.trim().is_empty()) {
-        lines.push(format!("- 原因：{reason}"));
+        lines.push(format!("- 原因（聚合层）：{reason}"));
     }
     if let Some(appeal) = cheat.appeal.as_deref().filter(|s| !s.trim().is_empty()) {
         lines.push(format!("- 申诉：{appeal}"));
@@ -166,6 +177,48 @@ pub fn render_cheat(cheat: &CheatStatus) -> String {
         lines.push("- ⚠️ 查询结果已过期（超过 5 分钟），请重查".to_owned());
     }
     lines.push(format!("- 查询时间：{}", fmt_datetime(cheat.checked_at_ms)));
+    if !violations.is_empty() {
+        lines.push(String::new());
+        lines.push("### 逐条真实原因（从记录详情的 reasonList 挖出来的）".to_owned());
+        for item in violations {
+            lines.push(String::new());
+            let when = item
+                .start_time
+                .map(|ms| fmt_datetime(Some(ms)))
+                .unwrap_or_else(|| "时间未知".to_owned());
+            let distance = item
+                .distance_km
+                .map(|km| format!(" · {km:.2} km"))
+                .unwrap_or_default();
+            lines.push(format!("- **rrid {}** · {when}{distance}", item.rrid));
+            if let Some(info) = item.status_info.as_deref() {
+                lines.push(format!("  - 服务端结论：{info}"));
+            }
+            if item.cheat_reasons.is_empty() {
+                lines.push("  - 判违规依据：**逐条规则里没有「运动数据有问题」这类判罚项**".to_owned());
+            } else {
+                for reason in &item.cheat_reasons {
+                    lines.push(format!("  - ❌ 判违规依据：**{reason}**"));
+                }
+            }
+            if !item.incomplete_reasons.is_empty() {
+                lines.push(format!(
+                    "  - 没达标（不算违规）：{}",
+                    item.incomplete_reasons.join(" / ")
+                ));
+            }
+            if !item.passed_reasons.is_empty() {
+                lines.push(format!("  - 已通过：{}", item.passed_reasons.join(" / ")));
+            }
+            if let Some(info) = item.appeal_info.as_deref() {
+                let tail = match item.can_appeal {
+                    Some(0) => "（`canAppeal=0`，**不能再申诉**）",
+                    _ => "",
+                };
+                lines.push(format!("  - 申诉：{info}{tail}"));
+            }
+        }
+    }
     lines.join("\n")
 }
 
@@ -495,6 +548,71 @@ mod tests {
     use super::*;
     use crate::model::{SemesterGoal, SemesterGoalRaw, SemesterSummary};
 
+    /// 2026-11-22 生产实测的真实数据：两条被判违规的记录，聚合接口只说
+    /// 「原因：服务端未提供原因」，真正原因在 reasonList 的 type=0 那条。
+    #[test]
+    fn cheat_shows_real_violation_reason_from_reason_list() {
+        let detail: crate::model::RunRecordDetail = serde_json::from_str(
+            r#"{"rrid":1367213418,"totalDis":1212.0,"startTime":1794870446000,
+                "statusInfo":"你的跑步成绩已被系统判为可疑","isCheat":1,
+                "appealStatus":4,"appealStatusInfo":"申诉未通过，查看审核信息","canAppeal":0,
+                "reasonList":[
+                  {"complete":true,"reason":"按顺序通过所有点位","type":9},
+                  {"complete":true,"reason":"最少要跑1.00公里","type":1},
+                  {"complete":false,"reason":"运动数据有问题","type":0}
+                ]}"#,
+        )
+        .unwrap();
+        assert!(detail.is_flagged(), "isCheat=1 该算判违规");
+        let violation = ViolationDetail::from_detail(&detail);
+        assert_eq!(violation.cheat_reasons, vec!["运动数据有问题".to_owned()]);
+        assert!(violation.incomplete_reasons.is_empty(), "门槛项不该算违规依据");
+
+        let cheat: CheatStatus = serde_json::from_str(
+            r#"{"status":"flagged","label":"服务端已标记违规","count":2,
+                "reason":"服务端未提供原因","appeal":"未知",
+                "occurredAt":"服务端未提供时间","listCount":20,"checkedAtMs":1795361991577}"#,
+        )
+        .unwrap();
+        let text = render_cheat_with(&cheat, &[violation]);
+        assert!(text.contains("运动数据有问题"), "{text}");
+        assert!(text.contains("判违规依据"), "{text}");
+        assert!(text.contains("不能再申诉"), "{text}");
+        assert!(text.contains("已通过：按顺序通过所有点位"), "{text}");
+        // 聚合层的「未提供原因」要与逐条原因并存，不能互相覆盖
+        assert!(text.contains("服务端未提供原因"), "{text}");
+    }
+
+    /// 距离不够只是「这次不成功」，**不能**渲染成判违规。
+    #[test]
+    fn cheat_keeps_incomplete_reasons_out_of_violation() {
+        let detail: crate::model::RunRecordDetail = serde_json::from_str(
+            r#"{"rrid":1367168510,"totalDis":1216.0,"startTime":1794809703000,
+                "statusInfo":"你的跑步成绩已被系统判为可疑","isCheat":1,"canAppeal":0,
+                "reasonList":[
+                  {"complete":false,"reason":"最少要跑1.50公里","type":1},
+                  {"complete":true,"reason":"跑6分钟以上","type":7},
+                  {"complete":false,"reason":"运动数据有问题","type":0}
+                ]}"#,
+        )
+        .unwrap();
+        let violation = ViolationDetail::from_detail(&detail);
+        assert_eq!(violation.incomplete_reasons, vec!["最少要跑1.50公里".to_owned()]);
+        assert_eq!(violation.cheat_reasons, vec!["运动数据有问题".to_owned()]);
+        assert_eq!(violation.passed_reasons, vec!["跑6分钟以上".to_owned()]);
+    }
+
+    /// 没被判违规的记录不展开（别把正常记录也说成违规）。
+    #[test]
+    fn clean_record_is_not_flagged() {
+        let detail: crate::model::RunRecordDetail = serde_json::from_str(
+            r#"{"rrid":1371568189,"totalDis":3000.0,"status":0,
+                "reasonList":[{"complete":true,"reason":"按顺序通过所有点位","type":9}]}"#,
+        )
+        .unwrap();
+        assert!(!detail.is_flagged());
+    }
+
     /// 服务端把起跑时段**收窄**过时要转述给用户（控制台这时会弹窗确认）。
     #[test]
     fn plan_reports_server_side_clamping() {
@@ -722,8 +840,12 @@ mod tests {
             distance_km: Some(1.21),
         }];
         let text = render_records(&records, 5);
+        // 时间列不能写死「11-17 07:07」：渲染用的是 Local，机器时区一变
+        // 断言就假失败（2026-11-22 实测：会话切到 UTC-8 后差 16 小时）。
+        // 改成与同一份 fmt_datetime 对齐，验的是「日期取自 start_time」这件事。
+        let expected_when = fmt_datetime(Some(1_794_870_446_000));
         assert!(
-            text.contains("| 11-17 07:07 | 1.21 km | 5'51\"/km |"),
+            text.contains(&format!("| {expected_when} | 1.21 km | 5'51\"/km |")),
             "{text}"
         );
         // 有效 < 总：两个数都显示，别让人误以为整条都算。

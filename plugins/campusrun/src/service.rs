@@ -31,7 +31,48 @@ pub async fn fetch_records(
 /// 违规名单/风控状态。
 pub async fn fetch_cheat(client: &CampusrunClient) -> Result<String, CampusrunError> {
     let cheat = client.cheat().await?;
-    Ok(render::render_cheat(&cheat))
+    // 聚合层只说「违规 N 次、原因：服务端未提供原因」，真正的原因在每条
+    // 记录详情的 reasonList 里（2026-11-22 实测）—— 补这一层，否则答不了
+    // 「我到底为什么被判违规」。
+    let violations = collect_violations(client, &cheat).await;
+    Ok(render::render_cheat_with(&cheat, &violations))
+}
+
+/// 「违规条数」这件事最多逐条展开几条（每条要多一次详情请求）。
+const VIOLATION_DETAIL_LIMIT: usize = 5;
+
+/// 把被判违规的记录逐条拉详情，挖出真实原因。
+///
+/// 详情请求失败不算整体失败：聚合层的结论（违规 N 次）仍然有效，
+/// 少几条展开比整页报错有用。
+async fn collect_violations(
+    client: &CampusrunClient,
+    cheat: &crate::model::CheatStatus,
+) -> Vec<crate::model::ViolationDetail> {
+    let flagged = cheat.status == "flagged" || cheat.count.is_some_and(|count| count > 0);
+    if !flagged {
+        return Vec::new();
+    }
+    let Ok(records) = client.records().await else {
+        return Vec::new();
+    };
+    let mut flagged_records: Vec<_> = records
+        .into_iter()
+        .filter(|record| record.status.is_some_and(|code| code != 0) || record.appeal_status.is_some_and(|code| code != 0))
+        .collect();
+    // 最近的在前：用户问的是「最近为什么被拒」，先给最新的。
+    flagged_records.sort_by(|a, b| b.start_time.cmp(&a.start_time));
+    flagged_records.truncate(VIOLATION_DETAIL_LIMIT);
+
+    let mut out = Vec::new();
+    for record in flagged_records {
+        if let Ok(detail) = client.record(record.rrid).await {
+            if detail.is_flagged() || record.appeal_status.is_some_and(|code| code != 0) {
+                out.push(crate::model::ViolationDetail::from_detail(&detail));
+            }
+        }
+    }
+    out
 }
 
 /// 一页看完：进度 + 最近记录 + 账号状态。
