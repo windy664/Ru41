@@ -22,6 +22,19 @@
     只刷 taskType=10 的视频课; 小测(50)/作业(40)/辩论(30) 一律不碰
     (要答题、要提交, 那是「替人做作业」, 不是刷课)。
 
+type=20 是什么(2026-11-24 实测):
+    是**材料/文档**任务(每个微课配一条同名材料)。浏览它也计进度 ——
+    证据: 181980「计算机与人工智能概论」与视频 227777 同名, 视频刷完后
+    它的进度也到了 100; 而 181983 / 181984 的视频早就是 100, 材料却是 0
+    → **材料没浏览就不算完成**。
+    机制与视频同接口: POST /api/learn/task/file/updateLearnFile
+    {classId, taskId, position, overFlag}; 材料页是
+    /student/course/<classId>/studyTask/<taskId>/doc, 页面上有
+    /api/learn/task/file/queryFile 取文档、/api/learn/home/saveLearnStat 记时长。
+    ⚠️ 实测浏览 60 秒 + 滚动 12 次 + 点完 3 个 tab(Question1/2/Summary, 那是
+    问答环节不是正文) → position 恒为 1、progress 仍 0 —— **怎么让 position
+    涨还没测出来**, 所以「浏览材料」还没实现(见 docs 里的待办)。
+
 用法(容器内, 由宿主 unit 注入 CAS_TGT):
     python3 -u /scripts/brush_ahk.py [--class-id 29668] [--column-id 708120]
                                     [--speed 1.5] [--max-videos 3] [--dry-run]
