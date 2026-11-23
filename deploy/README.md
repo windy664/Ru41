@@ -47,6 +47,9 @@ install -m755 deploy/campusrun-brush.py ~/.local/bin/ru41-campusrun-brush.py
 install -m644 deploy/campusrun-brush.{service,timer} ~/.config/systemd/user/
 systemctl --user daemon-reload && systemctl --user enable --now campusrun-brush.timer
 
+# 通知：跑完（成功/失败）发一条 Telegram；按间隔跳过的日子不发
+# ⚠️ bot token 只在网关容器里，脚本从 ru41-telegram / ru41-qq 发（worker 里没有）
+
 # 看状态 / 手动跑一轮（脚本自己判断跑不跑）
 systemctl --user list-timers | grep campusrun
 journalctl --user -u campusrun-brush.service -n 40
