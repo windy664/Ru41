@@ -63,6 +63,9 @@ TARGETS_PATH = os.path.join(DATA_DIR, "targets.json")
 COOKIES_PATH = os.path.join(DATA_DIR, "cookies.json")
 # 「这门课没有视频资源」的记忆 —— 目标生成器据此排除, 别再占清单名额
 NO_VIDEO_PATH = os.path.join(DATA_DIR, "no_video_courses.json")
+# 浏览一个文档要停留多久(秒) —— 平台在预览页停留够久才点亮完成标记。
+# 2026-11-24 实测: 停留约半分钟就够, 取 45 留余量。
+BROWSE_SECONDS = 45
 
 # 每门课刷多久(秒) —— 覆盖 config.ini 的 limitMaxTime
 DEFAULT_MAX_MINUTES = 30
@@ -197,6 +200,61 @@ async def play_resource(page, name: str, budget: float, speed: float) -> bool:
     return False
 
 
+async def browse_document(page, name: str, dwell_seconds: int) -> bool:
+    """点开一个**文档**资源, 停留到平台把标记点亮。
+
+    2026-11-24 实测(生产机, 职业生涯规划 7 个资源):
+    - 点文档 → /stu/study/resource-detail → iframe 指向
+      polymas.com/resource/online/preview/?fileId=..&studyReport=true
+    - 平台随即 GET /student-course/study/student/resource/courseStudy
+    - 停留约半分钟后 → 该资源的完成标记点亮 → 「总学习进度」从 0% 涨到 14.29%(1/7)
+    所以**不需要翻页**, 进预览页待着就行 —— 这是「浏览也算学习」的关键。
+    """
+    items = page.locator(".file-name")
+    target = None
+    for i in range(await items.count()):
+        if ((await items.nth(i).text_content() or "").strip() == name):
+            target = items.nth(i)
+            break
+    if target is None:
+        log(f"  列表里找不到资源 {name!r}")
+        return False
+    try:
+        await target.click(timeout=15_000)
+    except Exception as exc:
+        log(f"  点文档失败 {name[:20]}: {str(exc)[:100]}")
+        return False
+    await page.wait_for_timeout(8_000)
+    await close_popups(page)
+    # 预览 iframe 里滚一滚, 让人看着像在读(顺带触发滚动上报)
+    for frame in page.frames:
+        if "preview" not in (frame.url or ""):
+            continue
+        for _ in range(4):
+            try:
+                await frame.evaluate("window.scrollBy(0, 1200)")
+            except Exception:
+                pass
+            await page.wait_for_timeout(2_000)
+    log(f"  {name[:30]}: 浏览中, 停留 {dwell_seconds}s")
+    waited = 0
+    while waited < dwell_seconds:
+        await page.wait_for_timeout(5_000)
+        waited += 5
+    # 回资源页(点「返回」)
+    back = page.get_by_text("返回", exact=False)
+    if await back.count():
+        try:
+            await back.first.click(timeout=8_000)
+            await page.wait_for_timeout(4_000)
+        except Exception:
+            pass
+    else:
+        await page.go_back()
+        await page.wait_for_timeout(4_000)
+    return True
+
+
 # ---- 一门课 -----------------------------------------------------------------
 
 def remember_no_video(course_url: str, title: str) -> None:
@@ -214,7 +272,7 @@ def remember_no_video(course_url: str, title: str) -> None:
 
 async def brush_course(page, title: str, course_url: str, max_minutes: int,
                        speed: float, dry_run: bool) -> dict:
-    result = {"title": title, "url": course_url, "watched": [], "failed": []}
+    result = {"title": title, "url": course_url, "watched": [], "browsed": [], "failed": []}
     if not await goto_resources(page, course_url):
         result["error"] = "进不去学习资源页"
         return result
@@ -228,7 +286,17 @@ async def brush_course(page, title: str, course_url: str, max_minutes: int,
         log(f"   - {r['name'][:40]:<42} {mark}")
 
     pending = pick_pending_videos(resources)
-    if not pending:
+    # 文档类资源也要「浏览」—— 用户的课里「思想道德与法治」「职业生涯规划」
+    # 全是 PDF/PPT/docx, 一个视频都没有, 不浏览就永远是 0%。
+    # 2026-11-24 实测: 浏览文档(进预览页停留)会把该资源的完成标记点亮,
+    # 进度从 0% → 14.29%(1/7)。「学习资源包 (N)」是容器, 点它没意义, 跳过。
+    docs = [
+        r for r in resources
+        if not r["is_video"] and not r["done"] and "资源包" not in r["name"]
+    ]
+    if docs:
+        log(f"[{title}] 待浏览文档 {len(docs)} 个")
+    if not pending and not docs:
         # 「没有待刷的视频」有两种, **必须分开**:
         #   1. 一个视频资源都没有 → 这门课永远刷不出东西, 记一笔别再来占名额;
         #   2. 有视频但全刷完了    → 已经完成, 绝不能记(记了就再也不刷了)。
@@ -267,6 +335,20 @@ async def brush_course(page, title: str, course_url: str, max_minutes: int,
         if spent >= budget:
             log(f"[{title}] 到达时限({max_minutes} 分钟), 收工(下一个视频留到明晚)")
             break
+
+    # ---- 浏览文档(在视频之后, 用剩余预算) ----
+    if docs and not dry_run:
+        left = max_minutes * 60 - spent
+        for r in docs:
+            if left <= 30:
+                log(f"[{title}] 时间不够了, 剩下的文档留到明晚")
+                break
+            dwell = min(int(BROWSE_SECONDS), int(left) - 10)
+            if dwell < 20:
+                break
+            ok = await browse_document(page, r["name"], dwell)
+            left -= dwell + 15
+            (result["browsed"] if ok else result["failed"]).append(r["name"])
 
     after_pct, after_count = await read_progress(page)
     log(f"[{title}] 刷之后: 进度={after_pct}% 资源数={after_count}")
