@@ -47,10 +47,7 @@ pub static DEF: ru41::modules::ModuleDef = ru41::modules::ModuleDef {
         }
         let section = config.sources.get::<CampusrunSection>(MODULE_NAME)?;
         let client = CampusrunClient::new(&section).map_err(|error| anyhow::anyhow!("{error}"))?;
-        Ok(Some(Box::new(CampusrunTracker::new(
-            client,
-            section.semester_target_km,
-        ))))
+        Ok(Some(Box::new(CampusrunTracker::new(client))))
     },
     qq_handlers: |config, _| {
         let section = config

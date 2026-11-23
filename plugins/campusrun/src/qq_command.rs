@@ -67,25 +67,25 @@ impl SimpleCommand for CampusrunQqCommand {
         let client = CampusrunClient::new(&section).map_err(|error| anyhow::anyhow!("{error}"))?;
         match action {
             Action::Status => {
-                let text = fetch_markdown(&client, "status", 5, self.section.semester_target_km)
+                let text = fetch_markdown(&client, "status", 5)
                     .await
                     .map_err(|error| anyhow::anyhow!("{error}"))?;
                 Ok(Some(Reply::text(text)))
             }
             Action::Records => {
-                let text = fetch_markdown(&client, "records", 5, self.section.semester_target_km)
+                let text = fetch_markdown(&client, "records", 5)
                     .await
                     .map_err(|error| anyhow::anyhow!("{error}"))?;
                 Ok(Some(Reply::text(text)))
             }
             Action::Cheat => {
-                let text = fetch_markdown(&client, "cheat", 5, self.section.semester_target_km)
+                let text = fetch_markdown(&client, "cheat", 5)
                     .await
                     .map_err(|error| anyhow::anyhow!("{error}"))?;
                 Ok(Some(Reply::text(text)))
             }
             Action::All => {
-                let text = fetch_markdown(&client, "all", 5, self.section.semester_target_km)
+                let text = fetch_markdown(&client, "all", 5)
                     .await
                     .map_err(|error| anyhow::anyhow!("{error}"))?;
                 Ok(Some(Reply::text(text)))

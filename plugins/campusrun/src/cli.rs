@@ -56,7 +56,7 @@ async fn dispatch(
     match command.as_str() {
         "status" | "进度" => {
             let client = client(section)?;
-            Ok(text(fetch_markdown(&client, "status", 5, section.semester_target_km).await?))
+            Ok(text(fetch_markdown(&client, "status", 5).await?))
         }
         "records" | "记录" => {
             let limit = flags
@@ -64,15 +64,15 @@ async fn dispatch(
                 .and_then(|raw| raw.parse::<usize>().ok())
                 .unwrap_or(5);
             let client = client(section)?;
-            Ok(text(fetch_markdown(&client, "records", limit, section.semester_target_km).await?))
+            Ok(text(fetch_markdown(&client, "records", limit).await?))
         }
         "cheat" | "风控" | "状态" => {
             let client = client(section)?;
-            Ok(text(fetch_markdown(&client, "cheat", 5, section.semester_target_km).await?))
+            Ok(text(fetch_markdown(&client, "cheat", 5).await?))
         }
         "all" | "全部" => {
             let client = client(section)?;
-            Ok(text(fetch_markdown(&client, "all", 5, section.semester_target_km).await?))
+            Ok(text(fetch_markdown(&client, "all", 5).await?))
         }
         "rules" | "规则" => {
             let client = client(section)?;
