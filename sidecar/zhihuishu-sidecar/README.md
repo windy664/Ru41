@@ -91,6 +91,30 @@ systemctl --user enable --now zhihuishu-brush.timer
 风控纪律（降频保号优先）：每门课 30 分钟（`config.ini` 的 `limitMaxTime`）、每晚最多 3 门、
 倍速封顶 1.5、只在 19:00 跑、已完成的自动跳过。
 
+### ai-smart 的三种页面形态（2026-11-24 摸清）
+
+同一个 `ai-smart-course-student-pro.zhihuishu.com` 域下其实有**三种**课，页面结构完全不同，
+认错了就会「看着没内容其实有」：
+
+| 形态 | 怎么认 | 资源在哪 | 怎么刷 |
+|---|---|---|---|
+| 视频课 | 主页有「课程视频」入口 | 「课程视频」页的章节列表（带「视频」标签的行） | `brush_aismart.py`：逐个点开，同页 video.js 播放器 |
+| **图谱课**（新形态） | 主页**没有**「课程视频」 | 挂在**知识点**下：点知识点卡片 → `/learnPage/<course>/<knowledgeId>/<chapter>` → 右侧「切换学习资源」 | `brush_aismart_graph.py`：逐个知识点 → 逐个资源 → 点开 |
+| 内容未发布 | 「课件资料」写着「暂无学习资源」 | — | 跳过 |
+
+图谱课（实例：「高等数学I(理)」，56 个知识点）几个要点：
+
+- 「课件资料」tab 显示「共 0 个学习资源」，**但课不是空的** —— 别拿它判断有没有内容。
+- 左侧目录每条知识点带「必学 n/m」（`.section-item-collapse-info` → `.progress-text`），
+  这才是图谱课的进度口径（不是知识学习页那个「学习进度 X%」）。
+- 右侧资源卡片是 `.basic-info-video-card-container`，文本形如「二、函数 已完成」「38页 01-02 函数.pptx」。
+- **点开资源 → 前端自己发 `stu/studyRecord/completed` → 资源变「已完成」→ 「必学」计数上涨**。
+  实测「函数的概念」必学 0/2 → 2/2。
+- ⚠️ 这些上报的请求体是**加密**的（`secretStr`），所以只能走真实浏览路径，伪造不了 ——
+  这也正好符合「不替平台造数据」的纪律。
+
+采集器第三步会探 learnPage 的知识点目录，所以图谱课不会再被当成「没内容」踢出自动队列。
+
 ## 作业采集器（collector）
 
 `scripts/collector.py` 产出 `data/report.json`（契约见 Ru41 `docs/sources-zhihuishu.md`），
