@@ -1,0 +1,12 @@
+[Unit]
+Description=校验校园跑定时跑的自动提交有没有真的入账（查记录 + 发确认）
+After=network-online.target
+
+[Service]
+Type=oneshot
+WorkingDirectory=%h
+# 同 campusrun-brush.service：用户级 systemd 里没有 docker.service，只能等守护进程就绪
+ExecStartPre=%h/.local/bin/ru41-wait-docker.sh
+ExecStart=%h/.local/bin/ru41-campusrun-verify.py
+TimeoutStartSec=300
+RemainAfterExit=no

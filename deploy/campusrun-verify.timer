@@ -1,0 +1,12 @@
+[Unit]
+Description=中午起每 10 分钟校验一次校园跑定时跑的入账情况
+
+[Timer]
+# 定时跑最早 08:30 触发、最晚 11:30（08:30 + 3h 随机延迟），所以从 12:00 开始查
+OnCalendar=*-*-* 12:00:00
+# 查一次没查到就下一轮再来（脚本自己判断窗口，没到 20:00 静默退出）
+OnUnitActiveSec=10min
+Persistent=true
+
+[Install]
+WantedBy=timers.target
