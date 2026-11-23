@@ -13,4 +13,9 @@ RUN apt-get update \
 COPY target/release/ru41 /usr/local/bin/ru41
 COPY src/modules /etc/ru41/modules
 COPY .plugins-dist/ /etc/ru41/plugins/
+# 插件技能包也必须进镜像：roll.sh 用镜像里的 /usr/share/ru41/plugins 覆盖宿主
+# 的 ~/ru41-mimo-smoke/skills，补丁镜像不带技能 = 改过的 SKILL.md 一滚就回退
+# （和「插件 .so 被回退」是同一个坑，2026-11-22 补上）。
+# 布局与主 Dockerfile 的 /plugins-skills 一致：<插件>/skills/<技能>/SKILL.md。
+COPY .skills-dist/ /usr/share/ru41/plugins/
 USER node

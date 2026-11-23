@@ -116,6 +116,20 @@ fi
       || { echo "[build-fast] FATAL: $so 缺少 ru41_plugin_entry"; exit 1; }
   done
 
+  # 插件技能包也打包进镜像（布局同主 Dockerfile 的 /plugins-skills）。
+  # 不打包的后果(2026-11-22): roll.sh 会用镜像里的 /usr/share/ru41/plugins
+  # 覆盖宿主 ~/ru41-mimo-smoke/skills —— 改过的 SKILL.md 当场回退成旧版，
+  # 表现是「镜像换了、agent 行为没变」。
+  rm -rf "$BUILD_DIR/.skills-dist"
+  mkdir -p "$BUILD_DIR/.skills-dist"
+  for dir in "$BUILD_DIR"/plugins/*/skills; do
+    [ -d "$dir" ] || continue
+    name="$(basename "$(dirname "$dir")")"
+    mkdir -p "$BUILD_DIR/.skills-dist/$name"
+    cp -r "$dir" "$BUILD_DIR/.skills-dist/$name/"
+  done
+  echo "[build-fast] skills staged: $(ls "$BUILD_DIR/.skills-dist" | wc -l) 个插件"
+
 docker build -f "$BUILD_DIR/deploy/Dockerfile.patch" -t ru41:local "$BUILD_DIR"
 
 if [[ "${PUSH:-0}" == "1" ]]; then
