@@ -23,6 +23,7 @@
 from __future__ import annotations
 
 import datetime
+import importlib.util
 import json
 import os
 import subprocess
@@ -148,6 +149,48 @@ def describe(record: dict, detail: dict, km: float | None) -> str:
     return "\n".join(lines)
 
 
+def load_brush_module():
+    """加载刷课脚本, 复用它自己的间隔判定。
+
+    ⚠️ 别自己重写一遍 decide(): 间隔规则(目标日程 / 剩余天数 / 至少 2 天)是刷课脚本里的,
+    两处各写一份迟早会对不上 —— 今天本来就该跳过(间隔不够)的日子, 验证脚本不能误报
+    「今天没有记录」。
+    """
+    path = os.path.expanduser("~/.local/bin/ru41-campusrun-brush.py")
+    try:
+        spec = importlib.util.spec_from_file_location("campusrun_brush", path)
+        module = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(module)
+        return module
+    except Exception as error:  # noqa: BLE001
+        log(f"加载刷课脚本失败({error}), 按「今天应该跑」处理")
+        return None
+
+
+def should_run_today(token: str) -> tuple[bool, str]:
+    """今天本来该不该跑。返回 (该跑, 理由)。"""
+    module = load_brush_module()
+    if module is None:
+        return True, "刷课脚本加载不了, 保守当成该跑"
+    state = load_brush_state()
+    km = semester_km(token) or 0.0
+    try:
+        return module.decide(km, state.get("last_run"), datetime.date.today())
+    except Exception as error:  # noqa: BLE001
+        log(f"判定间隔失败({error}), 保守当成该跑")
+        return True, "判定失败"
+
+
+def load_brush_state() -> dict:
+    path = os.path.expanduser("~/.local/state/ru41/campusrun-brush.json")
+    try:
+        with open(path, encoding="utf-8") as handle:
+            data = json.load(handle)
+        return data if isinstance(data, dict) else {}
+    except (OSError, ValueError):
+        return {}
+
+
 def main() -> int:
     token = console_token()
     if not token:
@@ -167,10 +210,16 @@ def main() -> int:
 
     record = today_record(token)
     if not record:
+        run_today, reason = should_run_today(token)
+        if not run_today:
+            # 今天本来就该跳过(间隔保护) —— 没有记录是正常的, 别误报
+            log(f"今天本来就不跑: {reason} —— 静默")
+            return 0
         if now.time() >= POLL_UNTIL:
-            # 窗口都过完了还没有今天的记录 → 定时跑没触发或没提交，报一声
+            # 该跑的日子却一整天没有记录 → 真出问题了, 报一声
             km = semester_km(token) or 0.0
-            notify("⚠️ 校园跑定时跑：今天没有记录\n"
+            notify("⚠️ 校园跑定时跑：今天该跑却没有记录\n"
+                   f"· 判定: {reason}\n"
                    "· 12:00–20:00 轮询过，查不到今天起跑的任何记录\n"
                    f"· 当前有效里程 {km:.2f} km")
             state["verified_for"] = today
