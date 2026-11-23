@@ -78,14 +78,14 @@ for name in "${NAMES[@]}"; do
   # 换成 ru41 镜像会起不来 —— 那个镜像里没有容器指定的用户(blessuser),
   # docker 直接报 "unable to find user blessuser"(2026-11-22 实测踩到)。
   #
-  # 判据看**镜像的 repo 标签**, 不看 Config.Image: 上一次滚动会把容器的
-  # Config.Image 写成镜像 ID(sha256:...), 按名字匹配就全都对不上了。
-  IMG_TAGS="$(docker image inspect "$CUR_ID" --format '{{join .RepoTags " "}}' 2>/dev/null || echo "")"
-  if [[ "$IMG_TAGS" != *ru41* ]]; then
-    # ⚠️ 别在这里引用未定义变量: set -u 下 `${X:-默认/$UNDEF}` 里的默认分支
-    # 也会展开 → 整个脚本中止（2026-11-22 实测: 外部镜像容器没标签时炸了，
-    # 26 个容器一个都没滚）。提示文案只用已定义的 $TARGET_IMAGE。
-    echo "SKIP $name: 跑的不是 ru41 镜像(${IMG_TAGS:-无标签}, 当前镜像 $TARGET_IMAGE), 不动它"
+  # 判据看**镜像的 entrypoint**, 不看 repo 标签也不看 Config.Image:
+  # - 上一次滚动会把容器的 Config.Image 写成镜像 ID(sha256:...), 按名字匹配对不上;
+  # - `docker load` 新镜像后, 旧镜像的 ru41:local 标签被摘掉 → 变 dangling,
+  #   RepoTags 为空 → 按标签判会把**所有**容器都跳过(2026-11-22 实测, 26 个一个没滚)。
+  # entrypoint 稳定: ru41 镜像是 /usr/local/bin/ru41, 外部镜像(browserless)不是。
+  IMG_ENTRY="$(docker image inspect "$CUR_ID" --format '{{json .Config.Entrypoint}}' 2>/dev/null || echo "")"
+  if [[ "$IMG_ENTRY" != *"/usr/local/bin/ru41"* ]]; then
+    echo "SKIP $name: 镜像 entrypoint 不是 ru41(${IMG_ENTRY:-无}), 不动它"
     continue
   fi
   # 镜像没变也要重建的情况：缺技能包挂载（挂载是后加的，inspect 里还没有）。
