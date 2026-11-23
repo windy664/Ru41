@@ -1,0 +1,14 @@
+[Unit]
+Description=校园跑定时跑（每 3 公里一条，间隔与起跑时刻按「像人」的原则算）
+After=docker.service
+Requires=docker.service
+
+[Service]
+Type=oneshot
+# 每天触发一次，脚本自己判断今天该不该跑（间隔 >= 2 天 + 目标日程）。
+# 提交成绩是不可逆写操作，脚本内部走 submit → confirm 两步。
+WorkingDirectory=%h
+ExecStart=%h/.local/bin/ru41-campusrun-brush.py
+# 预演要拉 OSM 路网/高德瓦片，最多给 20 分钟
+TimeoutStartSec=1800
+RemainAfterExit=no

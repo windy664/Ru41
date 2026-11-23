@@ -1,0 +1,13 @@
+[Unit]
+Description=每天拉起一次校园跑定时跑（脚本自己决定今天跑不跑）
+
+[Timer]
+# 上午 08:30 触发，之后在 3 小时内随机挑一个时刻 —— 固定时刻容易被
+# 反作弊的「起跑时刻集中度」盯上。
+OnCalendar=*-*-* 08:30:00
+RandomizedDelaySec=10800
+# 错过（关机/没开机）则开机后补跑一次，别让进度停一周
+Persistent=true
+
+[Install]
+WantedBy=timers.target

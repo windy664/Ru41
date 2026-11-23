@@ -27,6 +27,38 @@ docker build -t ru41:local .
 | `.ru41/codex/` | `/home/node/.codex/` | 默认的容器专用 Codex 认证目录 |
 | `.ru41/backups/` | `/data/backups/` | 数据库备份 |
 
+## 1.5 校园跑定时跑（deploy/campusrun-brush.*）
+
+每晚自己跑一条 3 公里的校园跑记录，**间隔与起跑时刻按「像人」的原则算**：
+
+| 维度 | 做法 | 为什么 |
+|---|---|---|
+| 起跑时刻 | `--rand --days 1`（服务端在 07:00~20:00 里挑一个**过去**时刻） | 写死时刻会被反作弊的「起跑时刻集中度」盯上 |
+| 间隔 | ≥ 2 天 | 连续性也是被盯的一维；历史最长连续也只有 2 天 |
+| 单次距离 | 3 km | 过所有见过的门槛（1.00/1.50 km），时长自然到 18 分钟以上；1.2 km 那条被判过「运动数据有问题」 |
+| 轨迹 | pace-forge 的 `route` 模式（瓦片路网 + 按打卡点顺序串） | 点位顺序正确，OU 起伏 + 起步窗口 + 弯道预判，不是匀速直线 |
+
+目标日程在脚本里（`SCHEDULE`）：2026-11-30 前 ≥18 km，2026-12-31（学期末）前 ≥36 km。
+脚本每天自己判断今天该不该跑（间隔 + 还差多少 + 还剩几天），不需要人盯。
+
+```bash
+# 装（用户级单元，账号要在 docker 组）
+install -m755 deploy/campusrun-brush.py ~/.local/bin/ru41-campusrun-brush.py
+install -m644 deploy/campusrun-brush.{service,timer} ~/.config/systemd/user/
+systemctl --user daemon-reload && systemctl --user enable --now campusrun-brush.timer
+
+# 看状态 / 手动跑一轮（脚本自己判断跑不跑）
+systemctl --user list-timers | grep campusrun
+journalctl --user -u campusrun-brush.service -n 40
+~/.local/bin/ru41-campusrun-brush.py
+
+# 停
+systemctl --user disable --now campusrun-brush.timer
+```
+
+> 提交成绩是**不可逆写操作**，脚本内部走 submit → confirm 两步（预演被拦或拿不到口令就不提交）。
+> 里程碑与实测结论见 `docs/campusrun-architecture.md`。
+
 ## 2. 配置 Codex 并启动 Worker
 
 Worker 与其他容器**共用同一份 `ru41.toml`**：插件配置已全部搬到 `plugins.d/<插件>/config.toml`，
