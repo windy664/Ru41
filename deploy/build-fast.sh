@@ -140,7 +140,46 @@ fi
   done
   echo "[build-fast] skills staged: $(ls "$BUILD_DIR/.skills-dist" | wc -l) 个插件"
 
+  # 基底镜像：必须是**干净**的完整运行时镜像。
+  #
+  # ⚠️ 2026-11-24: Dockerfile.patch 原来写 `FROM ru41:local` —— 每次构建都叠在
+  # 上一版自己身上, 镜像 2.71 GB → 12.2 GB, 推送要 25 分钟。
+  # 现在 patch 统一 FROM `ru41:base`, 这里负责把它准备好:
+  # 从 CI 拉的完整镜像(ghcr)取一份 tag 成 ru41:base —— 那是**主 Dockerfile** 的产物,
+  # 干净且完整(node + apt 工具 + codex/pi + /usr/share/ru41 目录结构)。
+  #
+  # 只在缺失时拉: 拉一次就有本地层缓存, 后面的构建直接复用。
+  # 想刷新基底(拿 CI 的新基础层)就删掉 ru41:base 再构建, 或设 RU41_REFRESH_BASE=1。
+  BASE_REF="${RU41_BASE_REF:-ghcr.io/windy664/ru41:latest}"
+  if [[ "${RU41_REFRESH_BASE:-0}" == "1" ]] || ! docker image inspect ru41:base >/dev/null 2>&1; then
+    echo "[build-fast] 准备基底镜像 ru41:base (来自 $BASE_REF)"
+    docker pull "$BASE_REF"
+    docker tag "$BASE_REF" ru41:base
+  fi
+  echo "[build-fast] 基底 ru41:base = $(docker images ru41:base --format '{{.ID}} {{.Size}}')"
+
 docker build -f "$BUILD_DIR/deploy/Dockerfile.patch" -t ru41:local "$BUILD_DIR"
+
+# 工具校验：基底 ru41:base 会随 CI 变(← ghcr latest)，清单可能漂移。
+# 少了哪个工具，agent 抓数据/跑脚本会在**运行时**才炸 —— 那时已经上线了。
+# 所以构建后立刻逐个查，缺就直接失败（别把坏镜像推上去）。
+echo "[build-fast] 校验镜像里的工具"
+missing=""
+for tool in python3 pip3 curl jq rg zip unzip ffmpeg pandoc convert soffice sqlite3 git; do
+  docker run --rm --entrypoint sh ru41:local -c "command -v $tool" >/dev/null 2>&1 \
+    || missing="$missing $tool"
+done
+for mod in requests bs4 lxml; do
+  docker run --rm --entrypoint python3 ru41:local -c "import $mod" >/dev/null 2>&1 \
+    || missing="$missing py:$mod"
+done
+if [[ -n "$missing" ]]; then
+  echo "[build-fast] FATAL: 镜像里缺这些工具:$missing"
+  echo "[build-fast] 基底可能漂移了(ru41:base ← ghcr latest)，"
+  echo "[build-fast] 查 Dockerfile.patch 的 apt 清单，把缺的补回去。"
+  exit 1
+fi
+echo "[build-fast] 工具齐全"
 
 if [[ "${PUSH:-0}" == "1" ]]; then
   python3 "$HOME/bin/ru41-push-image.py"

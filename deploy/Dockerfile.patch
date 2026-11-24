@@ -1,17 +1,39 @@
-# 补丁式镜像：以上一个 ru41:local 运行时镜像为基底，只替换本次编译的
-# 二进制与附属模块文件，跳过全量构建（宿主机磁盘紧张时避免 buildkit 全量层）。
-# 由 deploy/build-fast.sh 调用；基底镜像必须已存在（首次需先完整 docker build）。
-FROM ru41:local
-# codex 的执行环境就是本容器：python3/curl/jq 是 agent 抓数据、跑脚本的基本
-# 工具（与主 Dockerfile 同款清单；patch 单独加一层，避免为几个包全量重建）。
+# 补丁式镜像：以**干净的完整运行时镜像**为基底，只替换本次编译的
+# 二进制与技能包，跳过全量构建（宿主机磁盘紧张时避免 buildkit 全量层）。
+# 由 deploy/build-fast.sh 调用；基底 tag `ru41:base` 必须已存在
+# （build-fast.sh 负责从 CI 拉的完整镜像 tag 过来）。
+#
+# ⚠️ 2026-11-24 修正基底继承: 原来这里写 `FROM ru41:local` ——
+# 那等于**每次构建都叠在自己身上**（docker build 解析 FROM 时取的是构建开始
+# 时已存在的同名 tag，而 build-fast.sh 的产物 tag 就是 ru41:local）。
+# 后果: 镜像从 2.71 GB 一路叠到 12.2 GB（每版 +250 MB: 插件 192 + 二进制 58），
+# 每次推送要传 12 GB，约 25 分钟（早期只要 8 分钟）。
+# 现在基底是固定的 `ru41:base`（CI 拉的干净完整镜像），体积恒定 ~3 GB。
+FROM ru41:base
+# codex 的执行环境就是本容器：python3/curl/jq 是 agent 抓数据、跑脚本的基本工具。
+#
+# ⚠️ 2026-11-24: 原来这里把主 Dockerfile 那套清单**整套重装**一遍
+# (python3/python3-pip/curl/jq/ripgrep/zip/unzip/ffmpeg/pandoc + pip 三个包)。
+# 但基底 ru41:base 里**早就有了**这些 —— apt 对同版本包是 no-op(不重下)，
+# 可 RUN 造出的新层会把这些文件**再记一遍**(上层遮蔽下层) → 每版白白多几百 MB。
+# 现在只补基底**确实没有**的:
+#   - imagemagick(convert): 主 Dockerfile 也没装, 之前是 patch 层补的
+#   - python3-pip: 主 Dockerfile 装完又 purge 掉了(为了减体积),
+#     但 patch 层一直留着 —— agent 有时要 pip 装包, 保持这个能力
+# 其余工具与 pip 包(requests/bs4/lxml/yt-dlp/openpyxl)基底全有, 不重复装。
+#
+# ⚠️ 基底会随 CI 变(ru41:base ← ghcr latest) → 清单可能漂移。
+# build-fast.sh 在构建后会**逐个校验**关键工具在不在, 缺就报错(见那里的校验步骤)。
 USER root
 RUN apt-get update \
-    && apt-get install -y --no-install-recommends python3 python3-pip curl jq \
-        ripgrep zip unzip ffmpeg pandoc imagemagick \
-    && rm -rf /var/lib/apt/lists/* \
-    && pip3 install --break-system-packages --no-cache-dir requests beautifulsoup4 lxml
+    && apt-get install -y --no-install-recommends imagemagick python3-pip \
+    && rm -rf /var/lib/apt/lists/*
 COPY target/release/ru41 /usr/local/bin/ru41
-COPY src/modules /etc/ru41/modules
+# 技能包（src/modules）必须烤进 /usr/share/ru41/ —— **不能放 /etc/ru41**：
+# 那边是宿主机 bind mount，会被整体遮蔽，放那里等于没更新
+# （skills/mod.rs 的 default_roots 注释写的就是这件事，2026-11-24 顺手修对）。
+# 主 Dockerfile 也是这个路径，两边保持一致。
+COPY src/modules /usr/share/ru41/modules
 COPY .plugins-dist/ /etc/ru41/plugins/
 # 插件技能包也必须进镜像：roll.sh 用镜像里的 /usr/share/ru41/plugins 覆盖宿主
 # 的 ~/ru41-mimo-smoke/skills，补丁镜像不带技能 = 改过的 SKILL.md 一滚就回退
