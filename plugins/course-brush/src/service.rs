@@ -115,7 +115,7 @@ fn course_lines(status: &Status) -> Vec<String> {
         .iter()
         .map(|course| {
             format!(
-                "- {}（{}引擎，进度 {}）",
+                "  · {}（{}引擎，进度 {}）",
                 course.title.as_deref().unwrap_or("未命名"),
                 course.engine.as_deref().unwrap_or("?"),
                 course
@@ -158,12 +158,11 @@ fn render_brush(before: &Status, result: &BrushResult, after: Option<&Status>) -
             .unwrap_or_else(|| before.now_local.clone().unwrap_or_default())
     )];
     lines.push(if result.ok {
+        let secs = result.elapsed_secs.unwrap_or_default();
         format!(
-            "- 结果：✅ 跑完一轮（耗时 {} 分钟）",
-            result
-                .elapsed_secs
-                .map(|secs| secs / 60)
-                .unwrap_or_default()
+            "- 结果：✅ 跑完一轮（耗时 {} 分 {} 秒）",
+            secs / 60,
+            secs % 60
         )
     } else {
         format!(
