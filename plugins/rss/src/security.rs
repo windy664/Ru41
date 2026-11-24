@@ -33,8 +33,10 @@ static CVSS_SCORE_RE: LazyLock<Regex> = LazyLock::new(|| {
 });
 
 /// CVE / GHSA 编号。
-static CVE_RE: LazyLock<Regex> =
-    LazyLock::new(|| Regex::new(r"(?i)\b(?:CVE-\d{4}-\d{4,7}|GHSA-[0-9a-z]{4}-[0-9a-z]{4}-[0-9a-z]{4})\b").expect("cve regex"));
+static CVE_RE: LazyLock<Regex> = LazyLock::new(|| {
+    Regex::new(r"(?i)\b(?:CVE-\d{4}-\d{4,7}|GHSA-[0-9a-z]{4}-[0-9a-z]{4}-[0-9a-z]{4})\b")
+        .expect("cve regex")
+});
 
 /// 版本号样式的数字（8.6.0 / 3.0.12 / 8.5.13）。
 static VERSION_RE: LazyLock<Regex> =
@@ -55,8 +57,9 @@ static CRITICAL_RE: LazyLock<Regex> =
     LazyLock::new(|| Regex::new(r"(?i)\bcritical\b|严重等级\s*critical").expect("critical regex"));
 
 /// 源给出的严重等级：「严重等级 high」这种（安全源适配器写进摘要里的）。
-static SEVERITY_RE: LazyLock<Regex> =
-    LazyLock::new(|| Regex::new(r"(?i)严重等级\s*(low|moderate|medium|high|critical)").expect("severity regex"));
+static SEVERITY_RE: LazyLock<Regex> = LazyLock::new(|| {
+    Regex::new(r"(?i)严重等级\s*(low|moderate|medium|high|critical)").expect("severity regex")
+});
 
 /// 远程代码执行。
 static RCE_RE: LazyLock<Regex> =
@@ -143,17 +146,23 @@ impl Verdict {
 /// 从材料（标题 + 摘要）里判定。
 pub fn verdict(title: &str, summary: &str) -> Verdict {
     let text = format!("{title} {summary}");
-    let mut v = Verdict::default();
-
-    v.cvss = extract_cvss(&text);
-    v.has_cve_id = CVE_RE.is_match(&text);
-    v.severity = SEVERITY_RE
+    let cvss = extract_cvss(&text);
+    let has_cve_id = CVE_RE.is_match(&text);
+    let severity = SEVERITY_RE
         .captures(&text)
         .and_then(|c| c.get(1))
         .map(|m| m.as_str().to_ascii_lowercase());
     let has_version = VERSION_RE.is_match(&text);
     let has_context = VULN_CONTEXT_RE.is_match(&text);
-    v.has_fact = v.has_cve_id || v.cvss.is_some() || has_version || has_context;
+    let has_fact = has_cve_id || cvss.is_some() || has_version || has_context;
+
+    let mut v = Verdict {
+        cvss,
+        has_cve_id,
+        severity,
+        has_fact,
+        reasons: Vec::new(),
+    };
 
     if let Some(score) = v.cvss
         && score >= MUST_REPORT_CVSS
@@ -247,8 +256,7 @@ pub fn is_must_report(title: &str, summary: &str, origin: Origin) -> bool {
 /// 它是「**现在**就被真实攻击在用」那一档，而 GHSA 的 RCE 可能只是理论风险。
 /// 2026-11-22 实测：按「强信号 → 时间」排，KEV 的 9 条被今天的 GHSA 挤到只剩 1 条。
 pub fn priority(v: &Verdict, origin: Origin) -> u8 {
-    let in_wild = origin == Origin::KEV
-        || v.reasons.iter().any(|r| r.contains("已在野"));
+    let in_wild = origin == Origin::KEV || v.reasons.iter().any(|r| r.contains("已在野"));
     if in_wild {
         return 0;
     }
@@ -285,7 +293,10 @@ mod tests {
     #[test]
     fn cvss_vector_version_is_not_a_score() {
         // "CVSS:3.1/AV:N/AC:L/PR:N/UI:N/S:U/C:N/I:L/A:H" 里的 3.1 是版本号
-        let v = verdict("某库漏洞公告", "CVSS:3.1/AV:N/AC:L/PR:N/UI:N/S:U/C:N/I:L/A:H");
+        let v = verdict(
+            "某库漏洞公告",
+            "CVSS:3.1/AV:N/AC:L/PR:N/UI:N/S:U/C:N/I:L/A:H",
+        );
         assert_eq!(v.cvss, None, "{v:?}");
         // 真实分值仍能读出来
         let v2 = verdict(
@@ -326,7 +337,10 @@ mod tests {
         let v = verdict("某项目修复了一个漏洞", "详见 CVE-2026-12345");
         assert!(v.has_cve_id);
         assert!(!v.is_strong(), "{v:?}");
-        assert!(!must_report(&v, Origin::News), "非权威源只提一嘴 CVE 不必报");
+        assert!(
+            !must_report(&v, Origin::News),
+            "非权威源只提一嘴 CVE 不必报"
+        );
         assert!(must_report(&v, Origin::KEV), "权威漏洞源里的 CVE 条目必报");
     }
 
@@ -376,7 +390,10 @@ mod tests {
     /// KEV（已被利用目录）与语言官方安全发布：只带 CVE 编号也算必报。
     #[test]
     fn kev_and_release_sources_count_cve_only_items() {
-        let v = verdict("CVE-2026-99999：某设备漏洞", "官方目录条目，详见 CVE-2026-99999。");
+        let v = verdict(
+            "CVE-2026-99999：某设备漏洞",
+            "官方目录条目，详见 CVE-2026-99999。",
+        );
         assert!(must_report(&v, Origin::KEV));
         assert!(must_report(&v, Origin::Release));
         assert!(!must_report(&v, Origin::News));
@@ -403,7 +420,10 @@ mod tests {
         assert_eq!(Origin::of_item("nvd-CVE-2026-1"), Origin::Advisory);
         assert_eq!(Origin::of_item("kev-CVE-2026-1"), Origin::KEV);
         assert_eq!(Origin::of_item("php-8.5.13"), Origin::Release);
-        assert_eq!(Origin::of_item("https://news.ycombinator.com/rss#1"), Origin::News);
+        assert_eq!(
+            Origin::of_item("https://news.ycombinator.com/rss#1"),
+            Origin::News
+        );
     }
 
     #[test]

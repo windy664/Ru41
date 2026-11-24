@@ -8,7 +8,18 @@ use serde::Serialize;
 use std::sync::Arc;
 
 /// 必报池的条目上限：必报条目独立成池（不与新闻抢名额），但也别无限涨。
-const MUST_POOL_CAP: usize = 15;
+///
+/// ⚠️ 2026-11-24 从 15 降到 **5**：15 是当初为了让「必报段能发得出去」定的，
+/// 结果微软 11-23 一次批量发布被 NVD 收录成 15 条高危 CVE，必报段就发 15 条 ——
+/// 一篇日报的必报段吃掉 3750 字（用户原话：「谁让你发这么多安全漏洞的」）。
+const MUST_POOL_CAP: usize = 5;
+
+/// **同一批次**最多留几条必报。
+///
+/// 批次 = 同来源前缀 + 同发布日。同一家的批量补丁（微软 Patch Tuesday 那种）
+/// 本质是**同一条消息**，留最重的两条就够，剩下的逐条列出来只是刷屏。
+/// 不同发布日的多条高危漏洞不受影响（各是各的事）。
+const MUST_CLUSTER_CAP: usize = 2;
 
 /// RSS 信息流追踪配置（对应配置文件的 [sources.rss]）。
 #[derive(Debug, Clone)]
@@ -299,7 +310,10 @@ impl RssTracker {
                 must_pool.push(item);
             }
         }
-        trim_must_pool(&mut must_pool);
+        // 必报池裁剪：同批次扎堆 + 总量封顶。落选的条目**不进正文**
+        // (换到正文发还是 15 条, 用户照样嫌多), 但数量会在日报里留一行说明。
+        let dropped = trim_must_pool(&mut must_pool);
+        let overflow_note = overflow_note(&dropped);
         self.save_pool(&pool_id, &pool)?;
         self.save_pool(&must_pool_id, &must_pool)?;
 
@@ -362,7 +376,7 @@ impl RssTracker {
                 if let Some(task) = existing {
                     digest_task_id = Some(task.id);
                 } else {
-                    let prompt = digest_prompt(interests, &rest);
+                    let prompt = digest_prompt_with_note(interests, &rest, &overflow_note);
                     let result = match &self.config.notify {
                         Some(route) => service.enqueue_with_notify(
                             &key,
@@ -472,16 +486,102 @@ fn is_fresh(published: &str, cutoff: i64, authoritative: bool) -> bool {
 /// 为什么要有排序(2026-11-22): 池子按插入顺序封顶会丢**最旧**的 ——
 /// 而 KEV（已被利用）条目可能是几天前进来的、却比今天的中危漏洞更该报。
 /// 所以按「强度 → 时间」排完再截。
-fn trim_must_pool(pool: &mut Vec<FeedItem>) {
-    if pool.len() <= MUST_POOL_CAP {
-        return;
-    }
+///
+/// ⚠️ 2026-11-24 加了**同批次扎堆**抑制：原来只有总量上限(15)，没有批次概念，
+/// 于是微软 11-23 一次批量发布被 NVD 收录的 15 条高危 CVE 全进了必报段。
+/// 现在两层：
+///   1. 同批次(同来源 + 同发布日)最多留 [`MUST_CLUSTER_CAP`] 条；
+///   2. 总量封顶 [`MUST_POOL_CAP`]。
+///
+/// 落选的**不进必报段、也不进日报正文** —— 换个位置发还是 15 条，用户照样嫌多；
+/// 但会在日报里留一行「另有 N 条同批次高危未逐条列出」，数量可见，不静默吞掉。
+/// 返回落选的条目。
+fn trim_must_pool(pool: &mut Vec<FeedItem>) -> Vec<FeedItem> {
     pool.sort_by(|a, b| {
         let pa = must_strength(a);
         let pb = must_strength(b);
         pa.cmp(&pb).then_with(|| b.published.cmp(&a.published))
     });
-    pool.truncate(MUST_POOL_CAP);
+
+    // 1) 同批次裁剪
+    let mut kept: Vec<FeedItem> = Vec::with_capacity(pool.len());
+    let mut dropped: Vec<FeedItem> = Vec::new();
+    let mut per_cluster: std::collections::HashMap<(String, String), usize> =
+        std::collections::HashMap::new();
+    for item in pool.drain(..) {
+        let key = (source_prefix(&item), publish_day(&item));
+        let counter = per_cluster.entry(key).or_insert(0);
+        if *counter < MUST_CLUSTER_CAP {
+            *counter += 1;
+            kept.push(item);
+        } else {
+            dropped.push(item);
+        }
+    }
+
+    // 2) 总量封顶
+    if kept.len() > MUST_POOL_CAP {
+        dropped.extend(kept.split_off(MUST_POOL_CAP));
+    }
+
+    *pool = kept;
+    dropped
+}
+
+/// 条目的来源前缀（`nvd-…` → `nvd`）：同一前缀的条目来自同一个漏洞源。
+fn source_prefix(item: &FeedItem) -> String {
+    item.id
+        .split('-')
+        .next()
+        .filter(|part| !part.is_empty())
+        .unwrap_or("?")
+        .to_owned()
+}
+
+/// 条目的发布日期（批次的一半）。解析不出日期就整串用 —— 那时每条各不相同，
+/// 等于不聚簇（保守：宁可不压，也不误压）。
+fn publish_day(item: &FeedItem) -> String {
+    let raw = item.published.trim();
+    let is_date = |s: &str| s.len() == 10 && s.matches('-').count() == 2;
+    if let Some((head, _)) = raw.split_once([' ', 'T'])
+        && is_date(head)
+    {
+        return head.to_owned();
+    }
+    if is_date(raw) {
+        return raw.to_owned();
+    }
+    raw.to_owned()
+}
+
+/// 落选必报条目的说明行（进日报开头）。
+///
+/// 例：`ℹ️ 另有 13 条同日(2026-11-23)同源(nvd)的高危漏洞未逐条列出（同一批次，
+/// 已按强度取前 2 条）。`
+/// 没有落选时返回空串。
+fn overflow_note(dropped: &[FeedItem]) -> String {
+    if dropped.is_empty() {
+        return String::new();
+    }
+    // 按批次分组说明，别只给一个总数让人猜是哪批
+    let mut groups: std::collections::BTreeMap<(String, String), usize> =
+        std::collections::BTreeMap::new();
+    for item in dropped {
+        *groups
+            .entry((source_prefix(item), publish_day(item)))
+            .or_insert(0) += 1;
+    }
+    let detail = groups
+        .iter()
+        .map(|((source, day), count)| format!("{day} 的 {source} 源 {count} 条"))
+        .collect::<Vec<_>>()
+        .join("；");
+    format!(
+        "ℹ️ 另有 {} 条同批次高危漏洞未逐条列出（{}）—— 同一批次的条目本质是同一件事，\
+         已按强度取前几条列入必报段。",
+        dropped.len(),
+        detail
+    )
 }
 
 /// 必报强度：0 = 已在野利用, 1 = 其它强信号, 2 = 只靠编号与严重等级。
@@ -592,6 +692,15 @@ fn must_report_prompt(candidates: &[FeedItem]) -> String {
 
 /// 资讯精选 prompt：输出口径按设计文档 3.4 的四段式，区分事实与推断。
 fn digest_prompt(interests: &str, candidates: &[FeedItem]) -> String {
+    digest_prompt_with_note(interests, candidates, "")
+}
+
+/// 带「落选必报条目」说明行的日报 prompt。
+///
+/// 必报池裁剪（同批次扎堆 + 总量封顶）落选的条目不进正文 —— 换到正文发还是
+/// 十几条漏洞, 用户照样嫌多。但数量不该静默消失: 在日报开头留一行说明,
+/// 让人知道「还有多少条同批次的没逐条列」。
+fn digest_prompt_with_note(interests: &str, candidates: &[FeedItem], note: &str) -> String {
     // 任务入队校验上限是 65536 字节（app/task validate_input），池子随源增多
     // 会涨破它——这里给 prompt 留 6 万字节预算：单条摘要截断、超预算截尾。
     const PROMPT_BUDGET: usize = 60_000;
@@ -624,6 +733,10 @@ fn digest_prompt(interests: &str, candidates: &[FeedItem]) -> String {
          == 候选条目（{} 条）==\n",
         candidates.len()
     );
+    // 必报池落选说明放在最前面（读者第一眼就能看到「还有多少条没列」）
+    if !note.is_empty() {
+        prompt = format!("{note}\n\n{prompt}");
+    }
     // 预算有限时**优先保最新的**：池子是插入顺序（老→新），按原顺序填、截尾丢的
     // 恰好是最新采集的那批（2026-11-18 实测：当天最该报的条目被截掉了，
     // 日报里只剩二手转载）。所以这里改成**新的在前**，超预算时丢最旧的。
@@ -807,10 +920,7 @@ mod tests {
         let candidates: Vec<super::FeedItem> = big.into_iter().map(|(_, it)| it).collect();
         let prompt = super::digest_prompt("i", &candidates);
         // 池子最后一条 = 最新一条，必须在里面。
-        assert!(
-            prompt.contains("https://x/n499"),
-            "最新的条目被预算截掉了"
-        );
+        assert!(prompt.contains("https://x/n499"), "最新的条目被预算截掉了");
         // 最老的那批才是被舍弃的。
         assert!(!prompt.contains("https://x/n0"), "最旧的应被舍弃");
     }
@@ -899,11 +1009,19 @@ mod tests {
             .find(|t| t.request_key == format!("rss:digest:evening:{date}"))
             .expect("普通日报任务");
         // 必报任务里有高危条目、没有普通条目。
-        assert!(must.prompt.contains("某库曝远程代码执行漏洞"), "{}", must.prompt);
+        assert!(
+            must.prompt.contains("某库曝远程代码执行漏洞"),
+            "{}",
+            must.prompt
+        );
         assert!(!must.prompt.contains("AI 机会 normal"), "{}", must.prompt);
         assert!(must.prompt.contains("一条都不能少"), "{}", must.prompt);
         // 普通日报里不再有必报条目。
-        assert!(!plain.prompt.contains("某库曝远程代码执行漏洞"), "{}", plain.prompt);
+        assert!(
+            !plain.prompt.contains("某库曝远程代码执行漏洞"),
+            "{}",
+            plain.prompt
+        );
         assert!(plain.prompt.contains("AI 机会 normal"), "{}", plain.prompt);
     }
 
@@ -935,6 +1053,64 @@ mod tests {
 
     /// 必报池裁剪：强的留下，弱的让位（KEV 那种几天前进来的「已被利用」不能被
     /// 今天的中危漏洞挤掉）。
+    /// 2026-11-24: 同批次扎堆 —— 微软 11-23 一次批量发布被 NVD 收录成 15 条高危 CVE,
+    /// 原来只有总量上限(15) → 必报段就发 15 条, 一篇日报的必报段吃掉 3750 字。
+    /// 现在同批次(同来源+同发布日)最多留 2 条, 落选的 13 条不进正文(但日报留一行说明)。
+    #[test]
+    fn must_pool_trims_same_batch_to_a_couple() {
+        let mut pool: Vec<FeedItem> = Vec::new();
+        for i in 0..15 {
+            let (_url, mut it) = item(&format!("nvd-CVE-2026-{}", 10_000 + i));
+            it.title = format!("CVE-2026-{}：Microsoft 某产品漏洞", 10_000 + i);
+            it.summary =
+                "CVSS 9.1 · 严重等级 CRITICAL · 向量 CVSS:3.1/AV:N/AC:L/PR:N/UI:N/S:U/C:H/I:H/A:N · 描述"
+                    .into();
+            it.published = "2026-11-23".into();
+            pool.push(it);
+        }
+        let dropped = super::trim_must_pool(&mut pool);
+        assert_eq!(
+            pool.len(),
+            super::MUST_CLUSTER_CAP,
+            "同批次只该留最重的几条"
+        );
+        assert_eq!(dropped.len(), 13, "落选的条目要交回去(日报里留一行说明)");
+    }
+
+    /// 不同发布日的高危漏洞**不是同一批** —— 各是各的事, 不该被扎堆压掉。
+    #[test]
+    fn must_pool_keeps_different_days_apart() {
+        let mut pool: Vec<FeedItem> = Vec::new();
+        for i in 0..10 {
+            let (_url, mut it) = item(&format!("nvd-CVE-2026-{}", 20_000 + i));
+            it.title = format!("CVE-2026-{}：某产品漏洞", 20_000 + i);
+            it.summary =
+                "CVSS 9.1 · 严重等级 CRITICAL · 向量 CVSS:3.1/AV:N/AC:L/PR:N/UI:N/S:U/C:H/I:H/A:N · 描述"
+                    .into();
+            it.published = format!("2026-11-{:02}", 1 + i);
+            pool.push(it);
+        }
+        super::trim_must_pool(&mut pool);
+        assert_eq!(pool.len(), super::MUST_POOL_CAP, "跨批次时只受总量上限约束");
+    }
+
+    /// 落选条目不许静默消失 —— 日报开头要有一行说明「还有多少条没列」。
+    #[test]
+    fn overflow_note_reports_dropped_count() {
+        let mut pool: Vec<FeedItem> = Vec::new();
+        for i in 0..6 {
+            let (_url, mut it) = item(&format!("nvd-CVE-2026-{}", 30_000 + i));
+            it.published = "2026-11-23".into();
+            pool.push(it);
+        }
+        let dropped = super::trim_must_pool(&mut pool);
+        let note = super::overflow_note(&dropped);
+        assert!(!dropped.is_empty());
+        assert!(note.contains("4 条"), "说明行要带落选条数: {note}");
+        assert!(note.contains("2026-11-23"), "说明行要带批次日期: {note}");
+        assert!(super::overflow_note(&[]).is_empty(), "没落选就不该有说明行");
+    }
+
     #[test]
     fn must_pool_trim_keeps_the_strong_ones() {
         let mut pool: Vec<FeedItem> = Vec::new();
@@ -947,7 +1123,7 @@ mod tests {
             let _ = url;
         }
         // 一条强的（已在野），故意放在最后（最旧的位置）
-        let (url, mut strong) = item("strong");
+        let (_url, mut strong) = item("strong");
         strong.title = "CVE-2026-99999：某设备已被利用漏洞".into();
         strong.summary = "CISA 已知被利用漏洞目录（KEV）· 处置期限 2026-12-01".into();
         strong.published = "2026-11-10".into();
@@ -1041,7 +1217,10 @@ mod tests {
         // 三天前的条目：普通源按「2 天内」丢掉，权威源留下。
         let old = ru41::util::today_utc(now - 3 * 86_400);
         assert!(!super::is_fresh(&old, cutoff, false), "普通源应判旧");
-        assert!(super::is_fresh(&old, cutoff, true), "权威源不该被全局门槛丢");
+        assert!(
+            super::is_fresh(&old, cutoff, true),
+            "权威源不该被全局门槛丢"
+        );
         // 当天的条目普通源也留。
         let today = ru41::util::today_utc(now);
         assert!(super::is_fresh(&today, cutoff, false));
