@@ -110,7 +110,13 @@ fi
     [ -f "$manifest" ] || continue
     name="$(basename "$(dirname "$manifest")")"
     so="$BUILD_DIR/plugins/.target-docker-shared/release/libru41_plugin_$name.so"
-    [ -f "$so" ] || { echo "[build-fast] FATAL: 插件产物缺失 $so"; exit 1; }
+    # cargo 把 crate 名里的连字符换成下划线（ru41-plugin-course-brush →
+    # libru41_plugin_course_brush.so），而这里的 $name 是**目录名**。
+    # 目录名带连字符时两者对不上 → 两种都试（2026-11-24 实测踩到）。
+    # 注：宿主按 .so 文件名过滤插件只在 RU41_PLUGINS 设了白名单时才用得上，
+    # 注册名取自插件的 DEF.name，所以文件名本身不影响插件被加载。
+    [ -f "$so" ] || so="$BUILD_DIR/plugins/.target-docker-shared/release/libru41_plugin_${name//-/_}.so"
+    [ -f "$so" ] || { echo "[build-fast] FATAL: 插件产物缺失 libru41_plugin_$name.so"; exit 1; }
     cp "$so" "$BUILD_DIR/.plugins-dist/"
   done
   ls "$BUILD_DIR/.plugins-dist" | wc -l
