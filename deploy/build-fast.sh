@@ -144,17 +144,28 @@ fi
   #
   # ⚠️ 2026-11-24: Dockerfile.patch 原来写 `FROM ru41:local` —— 每次构建都叠在
   # 上一版自己身上, 镜像 2.71 GB → 12.2 GB, 推送要 25 分钟。
-  # 现在 patch 统一 FROM `ru41:base`, 这里负责把它准备好:
-  # 从 CI 拉的完整镜像(ghcr)取一份 tag 成 ru41:base —— 那是**主 Dockerfile** 的产物,
-  # 干净且完整(node + apt 工具 + codex/pi + /usr/share/ru41 目录结构)。
+  # 现在 patch 统一 FROM `ru41:base`, 这里负责把它准备好。
   #
-  # 只在缺失时拉: 拉一次就有本地层缓存, 后面的构建直接复用。
-  # 想刷新基底(拿 CI 的新基础层)就删掉 ru41:base 再构建, 或设 RU41_REFRESH_BASE=1。
+  # 取基底顺序: **本地已有的 ghcr 镜像优先**(最新那个) —— 它们是 CI 拉的干净完整
+  # 镜像(主 Dockerfile 的产物), 拿来就能用; 本地没有才 pull。
+  # ⚠️ 别无脑 pull: 2.7 GB 的下载比整个构建还慢(实测 12 分钟没拉完)。
+  #   基底只提供运行时环境(node/apt 工具/codex+pi/目录结构), 二进制与插件都由
+  #   patch 层覆盖 —— 所以基底不必是最新的代码, 干净就够了。
   BASE_REF="${RU41_BASE_REF:-ghcr.io/windy664/ru41:latest}"
-  if [[ "${RU41_REFRESH_BASE:-0}" == "1" ]] || ! docker image inspect ru41:base >/dev/null 2>&1; then
-    echo "[build-fast] 准备基底镜像 ru41:base (来自 $BASE_REF)"
+  if [[ "${RU41_REFRESH_BASE:-0}" == "1" ]]; then
+    echo "[build-fast] 强制刷新基底(拉 $BASE_REF)"
     docker pull "$BASE_REF"
     docker tag "$BASE_REF" ru41:base
+  elif ! docker image inspect ru41:base >/dev/null 2>&1; then
+    local_base="$(docker images "$BASE_REF" --format '{{.CreatedAt}}|{{.ID}}' 2>/dev/null | sort -r | head -1 | cut -d'|' -f2)"
+    if [[ -n "$local_base" ]]; then
+      echo "[build-fast] 用本地已有的 $BASE_REF 镜像当基底($local_base)"
+      docker tag "$local_base" ru41:base
+    else
+      echo "[build-fast] 本地没有 $BASE_REF, 拉取中(可能要几分钟)"
+      docker pull "$BASE_REF"
+      docker tag "$BASE_REF" ru41:base
+    fi
   fi
   echo "[build-fast] 基底 ru41:base = $(docker images ru41:base --format '{{.ID}} {{.Size}}')"
 
