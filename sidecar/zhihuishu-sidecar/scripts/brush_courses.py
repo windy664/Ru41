@@ -97,7 +97,8 @@ def load_targets(path: str) -> list[dict]:
     return out
 
 
-async def main_async() -> int:
+async def main_async(argv: list[str] | None = None) -> int:
+    # argv 可传: 服务模式(serve.py)要带参数调它, 不走 sys.argv。
     parser = argparse.ArgumentParser(description="智慧树视频挂机(多平台)")
     parser.add_argument("--targets", default=TARGETS_PATH)
     parser.add_argument("--url", action="append", default=[], help="直接刷这门课(可多次)")
@@ -108,7 +109,7 @@ async def main_async() -> int:
                              "不设上限会被杀在半路")
     parser.add_argument("--speed", type=float, default=0.0, help="倍速(0=读 config.ini)")
     parser.add_argument("--dry-run", action="store_true")
-    args = parser.parse_args()
+    args = parser.parse_args(argv)
 
     config = Config(config_path="config.ini")
     max_minutes = args.max_minutes or int(
