@@ -698,17 +698,28 @@ async def detect_course_state(page) -> tuple[bool | None, int | None]:
     进度条, 只进 stdout, 不落文件)。
     """
     try:
-        if not await js_click(page, "我的学习"):
+        # 「我的学习」有时还没渲染出来(慢网/刚重登过 cookies) → 点不到。
+        # 点不到一次就降级成 None 的代价: 这门课会被自动刷课队列**整个排除**
+        # (2026-11-24 实测「26-27-1思想道德与法治」两次都没点着, 而单独手动探测
+        #  稳定读到 (True, 100) —— 判据没问题, 只是那一次没点着)。
+        # 所以点不到就再等一轮重试, 别急着放弃。
+        clicked = False
+        for _ in range(2):
+            if await js_click(page, "我的学习"):
+                clicked = True
+                break
+            await page.wait_for_timeout(3_000)
+        if not clicked:
             return None, None
         await page.wait_for_timeout(6_000)
         # 「总学习进度 X%」里的 X 是**异步取值**、可能比资源数晚几秒渲染；
         # 资源数是页面自带属性、先出来。2026-11-21 实测: 进度在点开后 2s 就有了,
         # 但**必须等内容和进度都读到**才停 —— 只等资源数会让进度永远是 None
         # (采集器写盘时被丢掉过一次, 见 build_report_entry 的注释)。
-        # 最多 4 次读取(约 9s 额外等待), 读完为止。
+        # 最多 6 次读取(约 15s 额外等待), 读完为止。
         content: bool | None = None
         progress: int | None = None
-        for _ in range(4):
+        for _ in range(6):
             text = await asyncio.wait_for(
                 page.evaluate(
                     "document.body ? document.body.innerText.slice(0, 8000) : ''"
@@ -941,7 +952,10 @@ async def collect_course(portal, index: int) -> dict | None:
         # 探测会偶发失手(慢网/限流时页面没渲染完 → 点不到「我的学习」),
         # 2026-11-21 连跑四轮观察到同一门课在 True/None 之间跳 —— 那会让
         # 「今晚刷哪些课」每晚不一样。重试一次, 仍不行才降级成 None。
-        for attempt in range(2):
+        # 2026-11-24: 「26-27-1思想道德与法治」两次都没点着(单独手动探测却稳定
+        # 读到 100%), 于是重试次数提到 3 —— 探测失败一次就等于把这门课**整个
+        # 踢出自动刷课队列**, 代价比多跑一轮大。
+        for attempt in range(3):
             probe = None
             try:
                 probe = await portal.context.new_page()
