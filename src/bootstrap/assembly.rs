@@ -10,6 +10,7 @@ use crate::{
         feishu::{self, FeishuWebhookNotifier},
         qq::{QqNotifier, ReplySequencer, api::QqApiClient},
         telegram::{self, TelegramNotifier, api::TelegramApi},
+        unseal::UnsealingChannel,
     },
     domain::NotifyRoute,
     ingress::{
@@ -29,8 +30,13 @@ use std::sync::Arc;
 
 /// 终态通知渠道装配：QQ 网关进程传入 api + 共享序号器时注册 QQ；配置了飞书 webhook 即注册飞书。
 /// qq_seq 必须与 QqBot 共享同一实例，保证同 msg_id 被动回复 seq 不重复。
+///
+/// 每个通道都被 [`UnsealingChannel`] 包一层：**出站前把消息里的凭据标识换成真值**
+/// （`cred_xxx` → 明文）。LLM 上下文里只有标识，真值在网关出站前才落地 ——
+/// 模型和模型供应商的日志里没有明文，用户收到的却是能直接用的。
 pub fn notify_channels(
     config: &Config,
+    store: Arc<dyn TaskStore>,
     qq: Option<Arc<QqApiClient>>,
     qq_seq: Option<Arc<ReplySequencer>>,
 ) -> Result<Vec<Arc<dyn NotifyChannel>>> {
@@ -51,7 +57,13 @@ pub fn notify_channels(
             config.channel.telegram.default_chat_id.clone(),
         )));
     }
-    Ok(channels)
+    // 一律包解封层：所有出站文本都要过一遍（入站回复/终态通知/主动推送/提醒）。
+    Ok(channels
+        .into_iter()
+        .map(|channel| {
+            Arc::new(UnsealingChannel::new(channel, store.clone())) as Arc<dyn NotifyChannel>
+        })
+        .collect())
 }
 
 /// Telegram 客户端：token + 该渠道专属出网代理（境内直连不通）。
@@ -332,7 +344,7 @@ pub fn proactive_dispatcher(
         config,
     )
     .ok();
-    let channels = notify_channels(config, qq_api.map(Arc::new), None)?;
+    let channels = notify_channels(config, store.clone(), qq_api.map(Arc::new), None)?;
     Ok(ProactiveDispatcher::new(
         store,
         channels,

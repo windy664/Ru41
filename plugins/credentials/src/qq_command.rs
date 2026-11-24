@@ -58,8 +58,12 @@ impl SimpleCommand for CredentialQqCommand {
 }
 
 impl CredentialQqCommand {
-    /// 查询凭据：消息里出现 `cred_xxxxxxxxxxxx` 标识，或出现某条凭据的唯一标签，
+    /// 查询凭据：消息里出现 `cred_xxxxxxxxxxxx` 标识，或出现某条凭据的标签/别名，
     /// 就把真值直接回给用户——全程不经过模型。
+    ///
+    /// ⚠️ **可以一次回多条**(2026-11-24)：用户问「ftp 的凭据」时，上传与下载两条
+    /// 都该给 —— 只给一条等于没答。核心的 `resolve` 是「宁可不给也不拿错」的语义
+    /// （给 agent 用），这里是人问「凭据」，给全更合用。
     fn lookup_reply(&self, content: &str, ctx: &CommandContext<'_>) -> Result<Option<Reply>> {
         let docs = ctx.store.documents(KIND, 500)?;
         let live: Vec<_> = docs
@@ -71,7 +75,7 @@ impl CredentialQqCommand {
         }
         // 1) 标识精确匹配。
         let by_id = live.iter().find(|doc| content.contains(doc.id.as_str()));
-        // 2) 标签匹配：必须同时带查询意图（「查」「是什么」…），
+        // 2) 标签/别名匹配：必须同时带查询意图（「查」「是什么」…），
         //    否则「ftp 的密码是 xxx」这种陈述会被误当成查询。
         const LOOKUP_WORDS: &[&str] = &[
             "查",
@@ -86,34 +90,46 @@ impl CredentialQqCommand {
             "显示",
         ];
         let asks = LOOKUP_WORDS.iter().any(|word| content.contains(word));
-        let by_label = if asks {
-            live.iter().find(|doc| {
-                doc.value["label"]
-                    .as_str()
-                    .filter(|label| !label.is_empty())
-                    .is_some_and(|label| content.contains(label))
-            })
-        } else {
-            None
-        };
-        // 命中后走核心的共享寻址（标识优先，标签唯一匹配），避免两处逻辑漂移。
-        let selector = by_id
-            .map(|doc| doc.id.clone())
-            .or_else(|| by_label.map(|doc| doc.id.clone()));
-        let Some(selector) = selector else {
-            return Ok(None);
-        };
-        let Some(doc) = ru41::domain::credential::resolve(ctx.store.as_ref(), &selector)? else {
-            return Ok(None);
-        };
-        let value = doc.value["value"].as_str().unwrap_or_default();
-        if value.is_empty() {
+
+        // 命中的凭据（去重，标识优先）。
+        let mut hits: Vec<&ru41::domain::records::Document> = Vec::new();
+        if let Some(doc) = by_id {
+            hits.push(doc);
+        }
+        if asks {
+            for doc in &live {
+                if hits.iter().any(|hit| hit.id == doc.id) {
+                    continue;
+                }
+                let label = doc.value["label"].as_str().unwrap_or("").trim();
+                let alias_hit = ru41::domain::credential::aliases_of(doc)
+                    .iter()
+                    .any(|alias| !alias.is_empty() && content.contains(alias.as_str()));
+                let label_hit = !label.is_empty() && content.contains(label);
+                if label_hit || alias_hit {
+                    hits.push(doc);
+                }
+            }
+        }
+        if hits.is_empty() {
             return Ok(None);
         }
-        let label = doc.value["label"].as_str().unwrap_or_default();
+
+        let mut lines = Vec::new();
+        for doc in &hits {
+            let value = doc.value["value"].as_str().unwrap_or_default().trim();
+            if value.is_empty() {
+                continue;
+            }
+            let label = doc.value["label"].as_str().unwrap_or_default();
+            lines.push(format!("🔑 {label}（{}）\n\n{value}", doc.id));
+        }
+        if lines.is_empty() {
+            return Ok(None);
+        }
         Ok(Some(Reply::text(format!(
-            "🔑 {label}（{}）\n\n{value}\n\n这条回复含明文，建议撤回。",
-            doc.id
+            "{}\n\n这条回复含明文，建议撤回。",
+            lines.join("\n\n---\n\n")
         ))))
     }
 }

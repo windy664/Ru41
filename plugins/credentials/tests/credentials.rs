@@ -38,7 +38,7 @@ fn ctx<'a>(
     }
 }
 
-fn bind(fixture: &Fixture, ctx: &CommandContext<'_>) {
+fn bind(_fixture: &Fixture, ctx: &CommandContext<'_>) {
     commands::execute(
         &Command::Bind("s3cret".into()),
         ctx,
@@ -133,5 +133,100 @@ async fn group_chat_and_unbound_are_rejected() {
             .documents("credential", 10)
             .unwrap()
             .is_empty()
+    );
+}
+
+/// 2026-11-24: 凭据托管 v1 的寻址键就是用户说的那个词(「ftp上传密码」)，
+/// v2 改成唯一标识后那个入口消失了 —— 用户问「ftp 的凭据」只能拿到标识。
+/// 别名把入口补回来: 别名命中时直接回明文。
+#[tokio::test]
+async fn alias_lookup_returns_plaintext() {
+    let fixture = fixture();
+    let command = CredentialQqCommand;
+    let c2c = ctx(&fixture, "user:U1", "U1", true);
+    bind(&fixture, &c2c);
+
+    let stored = command
+        .handle_message("帮我记住 ftp 的密码是 upload_80894", &c2c)
+        .await
+        .unwrap()
+        .unwrap();
+    assert!(stored.text.contains("已存凭据"), "{}", stored.text);
+
+    // 给它加别名「ftp」
+    let docs = fixture.store.documents("credential", 10).unwrap();
+    let doc = docs.first().expect("有一条凭据");
+    let id = doc.id.clone();
+    let revision = fixture
+        .store
+        .document("credential", &id)
+        .unwrap()
+        .map(|d| d.revision);
+    let mut body = doc.value.clone();
+    body["aliases"] = serde_json::json!(["ftp", "上传"]);
+    fixture
+        .store
+        .put_document("credential", &id, revision, &body)
+        .unwrap();
+
+    // 问「ftp 的凭据是什么」→ 命中别名 → 回明文
+    let reply = command
+        .handle_message("ftp 的凭据是什么", &c2c)
+        .await
+        .unwrap()
+        .unwrap();
+    assert!(
+        reply.text.contains("upload_80894"),
+        "别名命中该回明文: {}",
+        reply.text
+    );
+}
+
+/// 一条别名能命中多条凭据(上传/下载都叫 ftp) → **一起回**，只给一条等于没答。
+#[tokio::test]
+async fn alias_lookup_returns_all_matches() {
+    let fixture = fixture();
+    let command = CredentialQqCommand;
+    let c2c = ctx(&fixture, "user:U1", "U1", true);
+    bind(&fixture, &c2c);
+
+    for (alias, value) in [("ftp-上传", "upload_pw"), ("ftp-下载", "download_pw")] {
+        let stored = command
+            .handle_message(&format!("帮我记住 {alias} 的密码是 {value}"), &c2c)
+            .await
+            .unwrap()
+            .unwrap();
+        assert!(stored.text.contains("已存凭据"), "{}", stored.text);
+    }
+    // 两条都加别名 "ftp"
+    for doc in fixture.store.documents("credential", 10).unwrap() {
+        let id = doc.id.clone();
+        let revision = fixture
+            .store
+            .document("credential", &id)
+            .unwrap()
+            .map(|d| d.revision);
+        let mut body = doc.value.clone();
+        body["aliases"] = serde_json::json!(["ftp"]);
+        fixture
+            .store
+            .put_document("credential", &id, revision, &body)
+            .unwrap();
+    }
+
+    let reply = command
+        .handle_message("ftp 的凭据是什么", &c2c)
+        .await
+        .unwrap()
+        .unwrap();
+    assert!(
+        reply.text.contains("upload_pw"),
+        "应回第一条: {}",
+        reply.text
+    );
+    assert!(
+        reply.text.contains("download_pw"),
+        "应回第二条: {}",
+        reply.text
     );
 }

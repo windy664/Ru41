@@ -233,9 +233,10 @@ async fn main() -> Result<()> {
                     coalesce: Arc::new(Mutex::new(CoalesceState::default())),
                     pricing,
                 });
+                let channels = notify_channels(&config, store.clone(), Some(api), Some(sequencer))?;
                 let dispatcher = NotifyDispatcher {
                     store,
-                    channels: notify_channels(&config, Some(api), Some(sequencer))?,
+                    channels,
                     batch: 20,
                     interval: Duration::from_secs(2),
                     silent_sources: config.notify.silent_sources.clone().unwrap_or_default(),
@@ -312,9 +313,10 @@ async fn main() -> Result<()> {
                     allowed_user_ids: telegram_allowed_user_ids(&config),
                     pricing,
                 });
+                let channels = notify_channels(&config, store.clone(), None, None)?;
                 let dispatcher = NotifyDispatcher {
                     store,
-                    channels: notify_channels(&config, None, None)?,
+                    channels,
                     batch: 20,
                     interval: Duration::from_secs(2),
                     silent_sources: config.notify.silent_sources.clone().unwrap_or_default(),
@@ -330,13 +332,14 @@ async fn main() -> Result<()> {
             TelegramCommand::Doctor => unreachable!("handled by cli_ops"),
         },
         Command::Notify => {
-            let channels = notify_channels(&config, None, None)?;
+            let store = open_store(&store_config)?;
+            let channels = notify_channels(&config, store.clone(), None, None)?;
             anyhow::ensure!(
                 !channels.is_empty(),
                 "no notify channel configured (e.g. channel.feishu.webhook_url)"
             );
             let dispatcher = NotifyDispatcher {
-                store: open_store(&store_config)?,
+                store,
                 channels,
                 batch: 20,
                 interval: Duration::from_secs(2),
