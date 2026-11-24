@@ -1,0 +1,10 @@
+[Unit]
+Description=核对日报必报条数(新规则有没有生效)
+After=docker.service
+
+[Service]
+Type=oneshot
+WorkingDirectory=%h
+ExecStart=%h/.local/bin/ru41-digest-check.py
+TimeoutStartSec=300
+RemainAfterExit=no

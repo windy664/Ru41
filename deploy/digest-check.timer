@@ -1,0 +1,11 @@
+[Unit]
+Description=早报出完后核对必报条数(一次性)
+
+[Timer]
+# 早报 08:00 出(ru41 的 morning_hour), 半小时后核对。
+# 一次性: 核对完就停用自己 —— 这是 2026-11-24 那次修复的验证, 不是常驻心跳。
+OnCalendar=2026-11-25 08:35:00
+Persistent=true
+
+[Install]
+WantedBy=timers.target
