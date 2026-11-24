@@ -675,6 +675,11 @@ async fn main() -> Result<()> {
                     )?;
                     println!("deleted: {}", doc.id);
                 }
+                SecretCommand::Unseal { text } => {
+                    // 与网关出站时**同一份**解封逻辑（不是复刻）——
+                    // 拿它排查「这条消息发出去时长什么样」。
+                    println!("{}", cred::unseal_text(store.as_ref(), &text));
+                }
                 SecretCommand::Audit { limit } => {
                     let mut rows: Vec<(String, String, String)> = store
                         .documents("credential_audit", 500)?
