@@ -509,7 +509,15 @@ fn trim_must_pool(pool: &mut Vec<FeedItem>) -> Vec<FeedItem> {
     let mut per_cluster: std::collections::HashMap<(String, String), usize> =
         std::collections::HashMap::new();
     for item in pool.drain(..) {
-        let key = (source_prefix(&item), publish_day(&item));
+        let source = source_prefix(&item);
+        // ⚠️ KEV(CISA 已在野利用目录)**不参与扎堆抑制** —— 那类是「现在就被真实
+        // 攻击在用」的条目, 必须逐条报, 不能因为同一天攒了几条就被压掉。
+        // 它的优先级也最高(priority=0), 排序时自然在前, 不会被总量上限截掉。
+        if source == "kev" {
+            kept.push(item);
+            continue;
+        }
+        let key = (source.clone(), publish_day(&item));
         let counter = per_cluster.entry(key).or_insert(0);
         if *counter < MUST_CLUSTER_CAP {
             *counter += 1;
@@ -519,9 +527,24 @@ fn trim_must_pool(pool: &mut Vec<FeedItem>) -> Vec<FeedItem> {
         }
     }
 
-    // 2) 总量封顶
+    // 2) 总量封顶 —— **KEV 不受此限**。
+    //
+    // KEV 是「现在就被真实攻击在用」的条目, 每一条都该报; 而它每天新增只有个位数,
+    // 不会变成刷屏。普通强信号按「强度 → 时间」排序后截, KEV 优先级最高(0),
+    // 排序时自然在前 —— 这里逐条判断只让**非 KEV** 的去抢那 5 个名额。
     if kept.len() > MUST_POOL_CAP {
-        dropped.extend(kept.split_off(MUST_POOL_CAP));
+        let mut capped: Vec<FeedItem> = Vec::with_capacity(kept.len());
+        let mut overflow: Vec<FeedItem> = Vec::new();
+        for item in kept {
+            let is_kev = source_prefix(&item) == "kev";
+            if is_kev || capped.len() < MUST_POOL_CAP {
+                capped.push(item);
+            } else {
+                overflow.push(item);
+            }
+        }
+        kept = capped;
+        dropped.extend(overflow);
     }
 
     *pool = kept;
@@ -1075,6 +1098,21 @@ mod tests {
             "同批次只该留最重的几条"
         );
         assert_eq!(dropped.len(), 13, "落选的条目要交回去(日报里留一行说明)");
+    }
+
+    /// KEV(已在野利用)**不参与扎堆抑制** —— 那类必须逐条报。
+    #[test]
+    fn must_pool_never_trims_in_the_wild_entries() {
+        let mut pool: Vec<FeedItem> = Vec::new();
+        for i in 0..6 {
+            let (_url, mut it) = item(&format!("kev-CVE-2026-{}", 40_000 + i));
+            it.title = format!("CVE-2026-{}：已被利用漏洞", 40_000 + i);
+            it.summary = "CISA 已知被利用漏洞目录（KEV）· 处置期限 2026-12-01".into();
+            it.published = "2026-11-23".into();
+            pool.push(it);
+        }
+        super::trim_must_pool(&mut pool);
+        assert_eq!(pool.len(), 6, "已在野利用的条目不该被扎堆压掉");
     }
 
     /// 不同发布日的高危漏洞**不是同一批** —— 各是各的事, 不该被扎堆压掉。
