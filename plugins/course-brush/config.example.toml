@@ -1,0 +1,31 @@
+# 自动刷课插件配置模板；复制到 plugins.d/course-brush/config.toml 后修改。
+#
+# 这个文件在**主配置旁边**的 plugins.d/<插件名>/ 里（段名 = 插件配置键 = course-brush）。
+# 别塞进主 toml：worker 用的 ru41-worker.toml 和其他容器的 ru41.toml 不是同一份。
+#
+# 刷课本身跑在生产机的 sidecar 容器里（ru41-sidecar，带 Playwright + Xvfb），
+# 这个插件只负责**什么时候刷 / 汇报 / 通知**。
+
+[course-brush]
+# sidecar 服务基址。两个容器在同一个 ru41-net 网络里，容器名能直接解析。
+base_url = "http://ru41-sidecar:9100"
+
+# 普通请求超时（秒），默认 15。
+timeout_secs = 15
+
+# 刷课请求的超时（秒），默认 10800（3 小时）。
+# 刷一轮是同步的：sidecar 跑完整个 brush_courses.py 才返回，
+# 中间要开浏览器、播视频、浏览文档 —— 用普通超时会被误判成失败。
+brush_timeout_secs = 10800
+
+# 多久问一次「今天该不该刷」（秒），默认 3600。
+# 真正的开工时间由 sidecar 决定（每天 19:00 CST 之后、且今天还没刷过）。
+interval_secs = 3600
+
+# 单轮预算（分钟），默认 120；每轮最多刷几门，默认 3。
+max_minutes = 120
+max_courses = 3
+
+# 是否发通知，默认发。
+# 「今天不用刷」这种日常状态**不发**（是噪音），只有真刷了或出错了才发。
+notify = true
