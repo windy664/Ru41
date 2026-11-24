@@ -106,13 +106,20 @@ pub struct CourseBrushClient {
 
 impl CourseBrushClient {
     pub fn new(section: &CourseBrushSection) -> Result<Self, BrushError> {
+        // ⚠️ 必须 no_proxy：sidecar 是 ru41-net 内的**容器名**地址
+        // (http://ru41-sidecar:9100)。容器里注入了出站代理(HTTP_PROXY 指向 mihomo),
+        // 而 NO_PROXY 只列了 localhost/127.0.0.1/ru41-browser/172.17.0.1 ——
+        // 代理解析不了容器名, 请求过去拿到空响应, 报「EOF while parsing a value」。
+        // 同款修法见 src/adapters/sources/competition/xfyun.rs(ru41-browser 同一个坑)。
         let client = reqwest::Client::builder()
             .timeout(section.timeout())
+            .no_proxy()
             .build()
             .map_err(|error| BrushError::Request(error.to_string()))?;
         // 刷课是同步的长任务，用单独的 client + 超时。
         let brush_client = reqwest::Client::builder()
             .timeout(section.brush_timeout())
+            .no_proxy()
             .build()
             .map_err(|error| BrushError::Request(error.to_string()))?;
         Ok(Self {
@@ -196,6 +203,7 @@ impl CourseBrushClient {
 pub fn test_client(base_url: &str, timeout: Duration) -> Result<CourseBrushClient, BrushError> {
     let client = reqwest::Client::builder()
         .timeout(timeout)
+        .no_proxy()
         .build()
         .map_err(|error| BrushError::Request(error.to_string()))?;
     Ok(CourseBrushClient {
