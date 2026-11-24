@@ -1,8 +1,12 @@
 //! `ru41 course-brush` 的子命令。
 //!
 //! - `status`：查 sidecar 当前状态（今天该不该刷、目标清单、上一轮结果）
-//! - `run`：**强制**跑一轮刷课（不看「今天刷过没」）
+//! - `brush`：**强制**跑一轮刷课（不看「今天刷过没」）
 //! - `refresh`：让 sidecar 重算目标清单（跑 plan_targets.py）
+//!
+//! ⚠️ **不能叫 `run`**：宿主把 `ru41 <模块> poll|run` 两个词**留给 tracker**
+//! （`poll` 跑一轮，`run` 起常驻循环，见 src/main.rs 的 Command::Tracker 分发），
+//! 插件自己的钩子只拿得到其余子命令。所以「强制刷一轮」叫 `brush`。
 
 use std::sync::Arc;
 
@@ -54,7 +58,7 @@ async fn dispatch(section: &CourseBrushSection, args: &[String]) -> Result<serde
                 "report": status.report,
             }))
         }
-        "run" | "刷" => {
+        "brush" | "刷" | "force" => {
             let result = client
                 .brush(section.max_minutes(), section.max_courses())
                 .await
@@ -77,7 +81,7 @@ async fn dispatch(section: &CourseBrushSection, args: &[String]) -> Result<serde
             }))
         }
         other => Ok(serde_json::json!({
-            "error": format!("未知子命令 {other}（可用：status / run / refresh）")
+            "error": format!("未知子命令 {other}（可用：status / brush / refresh）")
         })),
     }
 }

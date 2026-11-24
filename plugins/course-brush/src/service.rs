@@ -23,6 +23,7 @@ pub struct CourseBrushTracker {
     max_minutes: u64,
     max_courses: u32,
     should_notify: bool,
+    interval: std::time::Duration,
 }
 
 impl CourseBrushTracker {
@@ -33,6 +34,7 @@ impl CourseBrushTracker {
         max_minutes: u64,
         max_courses: u32,
         should_notify: bool,
+        interval: std::time::Duration,
     ) -> Self {
         Self {
             client,
@@ -41,6 +43,7 @@ impl CourseBrushTracker {
             max_minutes,
             max_courses,
             should_notify,
+            interval,
         }
     }
 
@@ -60,7 +63,7 @@ impl ru41::ingress::schedule::SimplePollJob for CourseBrushTracker {
     fn interval(&self) -> std::time::Duration {
         // 真正的开工时间由 sidecar 决定（每天 19:00 CST 之后且今天没刷过），
         // 这里只决定「多久问一次」。
-        std::time::Duration::from_secs(3600)
+        self.interval
     }
 
     async fn poll(&self) -> anyhow::Result<Self::Report> {

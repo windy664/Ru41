@@ -54,6 +54,7 @@ pub static DEF: ru41::modules::ModuleDef = ru41::modules::ModuleDef {
             section.max_minutes(),
             section.max_courses(),
             section.notify(),
+            section.interval(),
         ))))
     },
     // 刷课进度不接 QQ 交互命令：用户问「刷到哪了」用 `ru41 course-brush status` 或看通知。
