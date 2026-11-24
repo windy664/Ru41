@@ -171,22 +171,24 @@ fi
 
 docker build -f "$BUILD_DIR/deploy/Dockerfile.patch" -t ru41:local "$BUILD_DIR"
 
-# 工具校验：基底 ru41:base 会随 CI 变(← ghcr latest)，清单可能漂移。
+# 工具校验：基底 ru41:base 会随 CI 变(← ghcr 镜像)，清单可能漂移。
 # 少了哪个工具，agent 抓数据/跑脚本会在**运行时**才炸 —— 那时已经上线了。
-# 所以构建后立刻逐个查，缺就直接失败（别把坏镜像推上去）。
+# 所以构建后立刻查，缺就直接失败（别把坏镜像推上去）。
+# ⚠️ **一次容器里查完**（早先一个工具一次 docker run, 16 次起容器要 ~30 秒）。
 echo "[build-fast] 校验镜像里的工具"
-missing=""
-for tool in python3 pip3 curl jq rg zip unzip ffmpeg pandoc convert soffice sqlite3 git; do
-  docker run --rm --entrypoint sh ru41:local -c "command -v $tool" >/dev/null 2>&1 \
-    || missing="$missing $tool"
-done
-for mod in requests bs4 lxml; do
-  docker run --rm --entrypoint python3 ru41:local -c "import $mod" >/dev/null 2>&1 \
-    || missing="$missing py:$mod"
-done
-if [[ -n "$missing" ]]; then
+missing="$(docker run --rm --entrypoint sh ru41:local -c '
+  missing=""
+  for tool in python3 pip3 curl jq rg zip unzip ffmpeg pandoc convert soffice sqlite3 git; do
+    command -v "$tool" >/dev/null 2>&1 || missing="$missing $tool"
+  done
+  for mod in requests bs4 lxml; do
+    python3 -c "import $mod" >/dev/null 2>&1 || missing="$missing py:$mod"
+  done
+  echo "$missing"
+')"
+if [[ -n "${missing// /}" ]]; then
   echo "[build-fast] FATAL: 镜像里缺这些工具:$missing"
-  echo "[build-fast] 基底可能漂移了(ru41:base ← ghcr latest)，"
+  echo "[build-fast] 基底可能漂移了(ru41:base ← ghcr 镜像)，"
   echo "[build-fast] 查 Dockerfile.patch 的 apt 清单，把缺的补回去。"
   exit 1
 fi
