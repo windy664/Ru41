@@ -111,11 +111,15 @@ async fn transcribes_a_real_recording_with_speakers() {
 
     assert!(transcript.word_count > 0, "真录音应该有字数");
     assert!(!transcript.sentences.is_empty(), "应该有句子");
-    // 说话人分离：si 从 1 起（网页版显示的「说话人 1」）。
-    assert!(
-        transcript.sentences.iter().all(|s| s.speaker >= 1),
-        "说话人编号不该从 0 起"
-    );
+    // 说话人分离：听悟的 si 就是**1 起**的（实测 1..31），插件原样用，
+    // 所以「说话人 1」得真的存在。
+    let min_speaker = transcript
+        .sentences
+        .iter()
+        .map(|s| s.speaker)
+        .min()
+        .unwrap_or_default();
+    assert_eq!(min_speaker, 1, "说话人编号该从 1 起");
     // 时间戳：句子按时间递增。
     let mut previous = i64::MIN;
     for sentence in &transcript.sentences {

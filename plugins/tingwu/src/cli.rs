@@ -138,7 +138,7 @@ async fn dispatch(
                         "status": task.status,
                         "duration_secs": task.duration_secs,
                         "word_count": task.word_count,
-                        "show_time": crate::client::format_ts(task.show_time_ms),
+                        "show_time": crate::client::format_time(task.show_time_ms),
                     })
                 })
                 .collect();

@@ -518,6 +518,21 @@ pub fn group_by_speaker(sentences: &[Sentence], gap_ms: i64) -> Vec<Segment> {
     out
 }
 
+/// 绝对时间戳（毫秒）→ 本地日期时间 `MM-DD HH:MM`。
+///
+/// ⚠️ 别拿 [`format_ts`] 渲染它 —— 那是**时长**（从 0 数起）；
+/// showTime 是绝对 epoch 毫秒，用时长格式会渲染成「498781:51:41」这种鬼话。
+pub fn format_time(ms: i64) -> String {
+    chrono::DateTime::from_timestamp_millis(ms)
+        .map(|stamp| {
+            stamp
+                .with_timezone(&chrono::Local)
+                .format("%Y-%m-%d %H:%M")
+                .to_string()
+        })
+        .unwrap_or_default()
+}
+
 /// 毫秒 → `HH:MM:SS`（超过一小时才带小时）。
 pub fn format_ts(ms: i64) -> String {
     let total = (ms.max(0) / 1000) as u64;
@@ -543,7 +558,7 @@ pub fn render_markdown(transcript: &Transcript) -> String {
     for segment in &transcript.segments {
         out.push_str(&format!(
             "\n**说话人 {}**（{} - {}）\n\n{}\n",
-            segment.speaker + 1,
+            segment.speaker,
             format_ts(segment.begin_ms),
             format_ts(segment.end_ms),
             segment.text
@@ -559,7 +574,7 @@ pub fn render_text(transcript: &Transcript) -> String {
         out.push_str(&format!(
             "[{}] 说话人{}：{}\n",
             format_ts(sentence.begin_ms),
-            sentence.speaker + 1,
+            sentence.speaker,
             sentence.text
         ));
     }
@@ -679,7 +694,42 @@ mod tests {
     }
 
     #[test]
+    fn absolute_time_is_not_rendered_as_duration() {
+        // showTime 是绝对 epoch 毫秒 —— 用时长格式会渲染成「498781:51:41」。
+        let text = format_time(1_795_614_000_000);
+        assert!(!text.contains(":51:41"), "绝对时间不该按时长渲染：{text}");
+        assert!(text.len() >= 10, "至少是 YYYY-MM-DD 的长度：{text}");
+    }
+
+    #[test]
     fn srt_timestamp_has_milliseconds() {
         assert_eq!(srt_ts(3_725_456), "01:02:05,456");
+    }
+
+    #[test]
+    fn markdown_shows_speaker_one_as_one() {
+        // si 是 1 起的 —— 渲染不能再 +1（不然「说话人 1」永远不存在）。
+        let transcript = Transcript {
+            trans_id: "t1".into(),
+            title: "x".into(),
+            duration_secs: 1.0,
+            word_count: 1,
+            sentences: vec![Sentence {
+                speaker: 1,
+                begin_ms: 0,
+                end_ms: 500,
+                text: "喂".into(),
+            }],
+            segments: vec![Segment {
+                speaker: 1,
+                begin_ms: 0,
+                end_ms: 500,
+                text: "喂".into(),
+            }],
+            raw: Value::Null,
+        };
+        let markdown = render_markdown(&transcript);
+        assert!(markdown.contains("说话人 1"), "{markdown}");
+        assert!(!markdown.contains("说话人 2"), "{markdown}");
     }
 }
