@@ -386,6 +386,8 @@ struct CleanOptions {
     yes: bool,
     /// 指定要删的任务 ID（给了就只删这些）。
     trans_ids: Vec<String>,
+    /// 连**阿里云盘导入**的老转写一起删（默认不碰 —— 那是用户的资料）。
+    include_imported: bool,
 }
 
 /// 解析 `clean` 的参数。
@@ -397,6 +399,7 @@ fn parse_clean_args(args: &[String]) -> Result<CleanOptions> {
         permanent: false,
         yes: false,
         trans_ids: Vec::new(),
+        include_imported: false,
     };
     let mut index = 0;
     while index < args.len() {
@@ -405,6 +408,7 @@ fn parse_clean_args(args: &[String]) -> Result<CleanOptions> {
             "--cloud" => options.cloud = true,
             "--permanent" => options.permanent = true,
             "--yes" | "-y" => options.yes = true,
+            "--include-imported" => options.include_imported = true,
             "--older-than-days" | "--keep" | "--trans-id" => {
                 let value = args
                     .get(index + 1)
@@ -491,6 +495,12 @@ async fn local_candidates(output_dir: &Path, older_than_days: i64) -> Result<Vec
 /// 清理：本地旧稿 + 云端旧任务。
 ///
 /// ⚠️ **默认只列不删**（dry-run）：删东西不可逆，得让调用方显式说 `--yes`。
+///
+/// ⚠️ **云端只删「本地/网页版上传」的任务**（`task_id` 以 `rc-upload-` 开头）。
+/// 听悟账号里还有一大票**阿里云盘导入**的老转写（高考/考研网课那些）——
+/// 那是用户的资料，不是垃圾。2026-11-25 实测踩过：按服务端返回顺序删，
+/// 把网盘资料一起删了（86 条，事后靠回收站 revertTrashes 全量捞回）。
+/// 要连网盘的一起清，得显式 `--include-imported`。
 async fn clean(
     client: &TingwuClient,
     output_dir: &Path,
@@ -499,17 +509,24 @@ async fn clean(
     let local = local_candidates(output_dir, options.older_than_days).await?;
     let mut cloud: Vec<String> = Vec::new();
     let mut kept: Vec<String> = Vec::new();
+    let mut skipped_imported: Vec<String> = Vec::new();
     if options.cloud {
         if !options.trans_ids.is_empty() {
             cloud = options.trans_ids.clone();
         } else {
-            let tasks = client
+            let mut tasks = client
                 .list(100)
                 .await
                 .map_err(|error| anyhow::anyhow!("{error}"))?;
-            // list 是按时间倒序的（实测：最新的在前），所以前 keep 个留着。
-            for (index, task) in tasks.iter().enumerate() {
-                if index < options.keep {
+            // ⚠️ **不能靠服务端的返回顺序**（实测它把今天的和 2024 年的混着排，
+            // 只按位置取「最近 N 个」会连老资料一起选中）—— 自己按 showTime 排。
+            tasks.sort_by_key(|task| std::cmp::Reverse(task.show_time_ms));
+            for task in &tasks {
+                if !task.is_local_upload() && !options.include_imported {
+                    skipped_imported.push(format!("{}（{}）", task.show_name, task.task_id));
+                    continue;
+                }
+                if kept.len() < options.keep {
                     kept.push(task.trans_id.clone());
                 } else {
                     cloud.push(task.trans_id.clone());
@@ -548,6 +565,8 @@ async fn clean(
         "local_freed_mib": round2(deleted_bytes as f64 / 1048576.0),
         "cloud_candidates": cloud,
         "cloud_kept": kept,
+        "cloud_skipped_imported": skipped_imported,
+        "cloud_skipped_imported_count": skipped_imported.len(),
         "cloud_permanent": options.permanent,
         "cloud_deleted": if options.yes { cloud.len() } else { 0 },
         "note": if options.yes {
@@ -631,6 +650,13 @@ mod tests {
         assert!(!options.yes, "不给 --yes 就必须只列不删");
         assert!(!options.cloud, "默认不动云端");
         assert_eq!(options.older_than_days, 7);
+        assert!(!options.include_imported, "默认不许碰阿里云盘导入的老资料");
+    }
+
+    #[test]
+    fn clean_can_opt_into_imported() {
+        let options = parse_clean_args(&["--include-imported".to_owned()]).expect("应解析成功");
+        assert!(options.include_imported);
     }
 
     #[test]

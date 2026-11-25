@@ -117,6 +117,17 @@ pub struct TaskSummary {
     pub show_time_ms: i64,
 }
 
+impl TaskSummary {
+    /// 这是**本地/网页版上传**的任务吗（`rc-upload-…`）？
+    ///
+    /// ⚠️ 听悟账号里还有一大票**阿里云盘导入**的老转写（高考/考研网课那些，
+    /// `task_id` 是 `aliyun-drive-…`）—— 那些是**用户的资料**，不是垃圾。
+    /// 清理时只碰 `rc-upload-` 开头的（插件/网页版自己上传的）。
+    pub fn is_local_upload(&self) -> bool {
+        self.task_id.starts_with("rc-upload-")
+    }
+}
+
 /// 账号权益（听悟的「剩余时长 / 剩余存储」）。
 ///
 /// ⚠️ **时间单位是秒**（不是毫秒）：实测 `equityAllTimeFlow=4006673`
