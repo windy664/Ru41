@@ -1,0 +1,25 @@
+# 通义听悟插件配置模板；复制到 plugins.d/tingwu/config.toml 后修改。
+#
+# 这个文件在**主配置旁边**的 plugins.d/<插件名>/ 里（段名 = 插件配置键 = tingwu）。
+# 别塞进主 toml：worker 用的 ru41-worker.toml 和其他容器的 ru41.toml 不是同一份。
+#
+# ⚠️ **cookie 不在这里**：认证串放 ru41 的凭据托管库（真值不进仓库、不进模型上下文）：
+#     ru41 secret set tingwu-cookie '<整串 cookie>'
+
+[tingwu]
+# 凭据托管库里那条凭据的名字（标签或唯一标识）。默认 tingwu-cookie。
+# 换账号了就换这个名字，或给同一条凭据加个别名。
+credential = "tingwu-cookie"
+
+# 等转写结果的超时（秒），默认 900（15 分钟）。
+# 长录音（几小时）要调大。
+poll_timeout_secs = 900
+
+# 轮询间隔（秒），默认 5。
+poll_interval_secs = 5
+
+# 逐字稿落盘目录。缺省落在 state.db 同级的 tingwu/（容器内即 /data/tingwu）。
+# output_dir = "/data/tingwu"
+
+# 单文件大小上限（MB），默认 500（听悟网页版的单文件限制）。
+max_file_mb = 500

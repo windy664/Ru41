@@ -1,0 +1,26 @@
+[package]
+name = "ru41-plugin-tingwu"
+version = "0.1.0"
+edition = "2024"
+description = "通义听悟音视频转文字：上传 → 转写 → 逐字稿（时间戳 + 说话人分离）"
+
+[lib]
+crate-type = ["cdylib", "rlib"]
+
+[features]
+plugin-entry = []
+
+[dependencies]
+# 必须与宿主同一版本（ABI 握手校验 crate 版本 + deps stamp）。
+ru41 = { path = "../.." }
+anyhow = "1"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+toml = "0.9"
+chrono = { version = "0.4", default-features = false, features = ["std", "clock"] }
+reqwest = { version = "0.12", default-features = false, features = ["rustls-tls", "json"] }
+tokio = { version = "1", features = ["fs", "time"] }
+
+[dev-dependencies]
+tempfile = "3"
+tokio = { version = "1", features = ["macros", "rt-multi-thread", "time"] }
