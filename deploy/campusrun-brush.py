@@ -60,26 +60,96 @@ def console_token() -> str:
     return ""
 
 
-def current_km() -> float | None:
+def relogin(token: str) -> bool:
+    """让 pace-forge 重新登录运动世界校园(账号密码在它的加密库里)。
+
+    ⚠️ 2026-11-25 实测: 机器断电重启后, 运动世界校园的会话 token 失效,
+    /api/semester 会回「token有误或缓存中token不存在」→ 之前脚本直接放弃这一轮,
+    校园跑就**永久停摆**了(没人再跑, token 也不会自己好)。
+    重新登录还会过极验 —— 那是 PoW 挑战, pace-forge 自己能算(前提是容器能连上
+    geetest, 见 apps/pace-forge/compose.yaml 的代理配置)。
+    """
+    request = urllib.request.Request(
+        f"{CONSOLE}/api/accounts/login-all",
+        data=b"{}",
+        headers={"X-Pace-Token": token, "Content-Type": "application/json"},
+        method="POST",
+    )
+    try:
+        # 极验 PoW 要算一会儿, 超时给足
+        with urllib.request.urlopen(request, timeout=180) as response:
+            data = json.load(response)
+        # ⚠️ 顶层 ok 只是「接口本身没报错」; 真正的成败在 data.results[].ok
+        # (data.ok 是**成功条数**: 全成功=1, 全失败=0)。2026-11-25 踩到:
+        # 顶层 ok=true 但 data.ok=0(登录失败), 照顶层判会误以为登上了。
+        results = (data.get("data") or {}).get("results") or []
+        ok = bool(results) and all(bool(item.get("ok")) for item in results)
+        detail = "; ".join(
+            str(item.get("error") or "")[:120] for item in results if not item.get("ok")
+        )
+        log(f"重新登录{'成功' if ok else '失败'}{'：' + detail if detail else ''}")
+        return ok
+    except Exception as error:  # noqa: BLE001
+        log(f"重新登录失败：{error}")
+        return False
+
+
+def current_km(token: str | None = None) -> float | None:
     """当前有效里程（km）——服务端给的 semesterValidDis，不是我们自己算的。"""
-    token = console_token()
+    token = token or console_token()
     if not token:
         log("拿不到 PACE_FORGE_TOKEN，放弃这一轮")
         return None
+    for attempt in (1, 2):
+        request = urllib.request.Request(
+            f"{CONSOLE}/api/semester", headers={"X-Pace-Token": token}
+        )
+        try:
+            with urllib.request.urlopen(request, timeout=25) as response:
+                data = json.load(response)["data"]
+        except Exception as error:  # noqa: BLE001
+            log(f"读学期进度失败：{error}")
+            return None
+        meters = data.get("summaryRaw", {}).get("semesterValidDis")
+        if meters is not None:
+            return float(meters) / 1000.0
+        # 没有 semesterValidDis = 会话 token 失效 → 重新登录再试一次
+        log("响应里没有 semesterValidDis（会话 token 失效？）")
+        if attempt == 1 and relogin(token):
+            time.sleep(3)
+            continue
+        log("重新登录后仍读不到学期进度，放弃这一轮")
+        return None
+    return None
+
+
+def last_server_run_date(token: str | None = None) -> str | None:
+    """服务端最新一条跑步记录的起跑日（YYYY-MM-DD）。
+
+    ⚠️ 为什么不能只看本地状态文件(2026-11-25 实测踩到):
+    用户自己手跑一次(App 里跑的, 2.75 km), 脚本的状态文件根本不知道 →
+    脚本以为「上次是 11-23」→ 今天又判定该跑 → **重复提交**。
+    真实跑没跑, 只有服务端知道。
+    """
+    token = token or console_token()
+    if not token:
+        return None
     request = urllib.request.Request(
-        f"{CONSOLE}/api/semester", headers={"X-Pace-Token": token}
+        f"{CONSOLE}/api/records", headers={"X-Pace-Token": token}
     )
     try:
         with urllib.request.urlopen(request, timeout=25) as response:
-            data = json.load(response)["data"]
+            records = json.load(response)["data"].get("records") or []
     except Exception as error:  # noqa: BLE001
-        log(f"读学期进度失败：{error}")
+        log(f"读跑步记录失败：{error}")
         return None
-    meters = data.get("summaryRaw", {}).get("semesterValidDis")
-    if meters is None:
-        log("响应里没有 semesterValidDis，放弃这一轮")
-        return None
-    return float(meters) / 1000.0
+    for record in records:
+        start = record.get("startTime")
+        if not start:
+            continue
+        stamp = datetime.datetime.fromtimestamp(start / 1000)
+        return stamp.strftime("%Y-%m-%d")
+    return None
 
 
 def load_state() -> dict:
@@ -197,11 +267,27 @@ def run_once() -> tuple[bool, str]:
 def main() -> int:
     today = datetime.date.today()
     state = load_state()
-    km = current_km()
+    token = console_token()
+    km = current_km(token)
     if km is None:
+        # ⚠️ 读不到里程就静默退出的后果: 用户完全不知道校园跑停摆了。
+        # 通知里说清原因(多半是会话 token 失效且重登也失败)。
+        notify("⚠️ 校园跑今天没跑成\n"
+               "· 原因：读不到运动世界校园的学期进度(会话失效且自动重登失败)\n"
+               "· 查一下 pace-forge 的账号登录状态, 或手动跑一次")
         return 1
 
-    should_run, reason = decide(km, state.get("last_run"), today)
+    # 「上次跑」以**服务端记录**为准, 本地状态文件只作兜底 —— 两者取较晚的。
+    # ⚠️ 2026-11-25 实测: 用户自己手跑一次(App 里跑的 2.75 km), 脚本的状态文件
+    # 根本不知道 → 脚本以为「上次还是 11-23」→ 今天又判定该跑 → 差点重复提交。
+    # 真实跑没跑, 只有服务端知道。
+    local_last = state.get("last_run")
+    server_last = last_server_run_date(token)
+    last_run = max((d for d in (local_last, server_last) if d), default=None)
+    if server_last and local_last and server_last != local_last:
+        log(f"上次跑步时间以服务端为准: 服务端={server_last} 本地={local_last} → 用 {last_run}")
+
+    should_run, reason = decide(km, last_run, today)
     log(f"当前有效里程 {km:.2f} km；{reason}")
     if not should_run:
         return 0
@@ -209,7 +295,7 @@ def main() -> int:
     ok, detail = run_once()
     if ok:
         record = fetch_record(detail) if detail else {}
-        after = current_km()
+        after = current_km(token)
         runs = int(state.get("runs", 0)) + 1
         state["last_run"] = today.isoformat()
         state["km_after"] = after if after is not None else km
