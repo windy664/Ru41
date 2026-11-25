@@ -24,6 +24,13 @@ pub struct TingwuSection {
     /// 同一人两句话间隔小于这个毫秒数就并进同一段（默认 5000）。
     /// 调小 → 分段更碎；调大 → 一段更长。
     pub merge_gap_ms: Option<i64>,
+    /// 听悟失败（配额用完 / 网络挂了 / cookie 过期）时是否自动回落本地 ASR。
+    /// 缺省 true —— 本地那条路没有说话人分离，但至少有字。
+    pub fallback_local: Option<bool>,
+    /// 本地 ASR 的基址（容器间服务名）。缺省 `http://paraformer-asr:50000`。
+    pub local_asr_base_url: Option<String>,
+    /// 本地 ASR 的接口形态：`whispercpp`（默认）或 `openai`。
+    pub local_asr_api: Option<String>,
 }
 
 impl TingwuSection {
@@ -54,5 +61,31 @@ impl TingwuSection {
     /// 同一人合并成一段的间隔阈值（毫秒）。
     pub fn merge_gap_ms(&self) -> i64 {
         self.merge_gap_ms.unwrap_or(5_000).max(0)
+    }
+
+    /// 听悟失败要不要自动回落本地 ASR（缺省要）。
+    pub fn fallback_local(&self) -> bool {
+        self.fallback_local.unwrap_or(true)
+    }
+
+    /// 本地 ASR 基址（容器间服务名）。
+    pub fn local_asr_base_url(&self) -> String {
+        self.local_asr_base_url
+            .as_deref()
+            .map(str::trim)
+            .filter(|value| !value.is_empty())
+            .unwrap_or("http://paraformer-asr:50000")
+            .trim_end_matches('/')
+            .to_owned()
+    }
+
+    /// 本地 ASR 接口形态（`whispercpp` / `openai`）。
+    pub fn local_asr_api(&self) -> String {
+        self.local_asr_api
+            .as_deref()
+            .map(str::trim)
+            .filter(|value| !value.is_empty())
+            .unwrap_or("whispercpp")
+            .to_ascii_lowercase()
     }
 }

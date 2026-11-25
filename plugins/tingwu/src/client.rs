@@ -117,6 +117,27 @@ pub struct TaskSummary {
     pub show_time_ms: i64,
 }
 
+/// 账号权益（听悟的「剩余时长 / 剩余存储」）。
+///
+/// ⚠️ **时间单位是秒**（不是毫秒）：实测 `equityAllTimeFlow=4006673`
+/// = 1112.96 小时，`dailyEquityList` 里每天签到送 `timeFlow=36000` = 10 小时 ——
+/// 按毫秒算就成了「每天送 36 秒」，明显不对。
+#[derive(Debug, Clone)]
+pub struct Quota {
+    /// 累计获得的转写时长（秒）。
+    pub total_secs: i64,
+    /// 已消耗的转写时长（秒）。
+    pub used_secs: i64,
+    /// 当前可用时长（秒）—— 取 `maxTimeFlow` 与「总额 - 已用」的较小值。
+    pub remaining_secs: i64,
+    /// 存储总额（字节）。
+    pub storage_total: i64,
+    /// 已用存储（字节）。
+    pub storage_used: i64,
+    /// 账号昵称。
+    pub user_name: String,
+}
+
 /// 听悟客户端。
 pub struct TingwuClient {
     http: reqwest::Client,
@@ -125,6 +146,10 @@ pub struct TingwuClient {
     poll_interval: Duration,
     max_file_bytes: u64,
     merge_gap_ms: i64,
+    /// 本地 ASR 基址（听悟挂了时的兜底）。
+    local_asr_base_url: String,
+    /// 本地 ASR 接口形态。
+    local_asr_api: String,
 }
 
 impl TingwuClient {
@@ -145,6 +170,8 @@ impl TingwuClient {
             poll_interval: section.poll_interval(),
             max_file_bytes: section.max_file_bytes(),
             merge_gap_ms: section.merge_gap_ms(),
+            local_asr_base_url: section.local_asr_base_url(),
+            local_asr_api: section.local_asr_api(),
         })
     }
 
@@ -429,6 +456,172 @@ impl TingwuClient {
                 })
             })
             .collect())
+    }
+
+    /// 查账号权益：剩余转写时长 / 剩余存储。
+    ///
+    /// 接口是 `GET|POST /api/subscription/equity/queryUserEquityInfo`（不是
+    /// `/api/trans/request` 那一套，所以单独走，不复用 [`Self::post`] 的
+    /// `?action=` 约定）。字段：`equityAllTimeFlow`（总额，秒）、
+    /// `equityExpendTimeFlow`（已用，秒）、`maxTimeFlow`（当前上限，秒）、
+    /// `equityAllStorage` / `equityExpendStorage`（字节）。
+    pub async fn quota(&self) -> Result<Quota> {
+        let url = format!("{BASE}/api/subscription/equity/queryUserEquityInfo");
+        let response = self
+            .http
+            .post(&url)
+            .header("Cookie", &self.cookie)
+            .header("Referer", format!("{BASE}/equity"))
+            .header("Content-Type", "application/json")
+            .json(&json!({}))
+            .send()
+            .await
+            .context("请求听悟权益接口失败")?;
+        let text = response.text().await.context("读听悟权益接口的响应失败")?;
+        let parsed: Value = serde_json::from_str(&text).with_context(|| {
+            format!(
+                "听悟权益接口返回的不是 JSON: {}",
+                &text[..text.len().min(200)]
+            )
+        })?;
+        let data = parsed
+            .get("data")
+            .cloned()
+            .context("听悟权益接口没返回 data")?;
+        let total = data
+            .get("equityAllTimeFlow")
+            .and_then(Value::as_i64)
+            .unwrap_or(0);
+        let used = data
+            .get("equityExpendTimeFlow")
+            .and_then(Value::as_i64)
+            .unwrap_or(0);
+        let cap = data.get("maxTimeFlow").and_then(Value::as_i64).unwrap_or(0);
+        // 剩余 = min(上限, 总额-已用)：两个口径取小的那个，保守。
+        let by_diff = (total - used).max(0);
+        let remaining = if cap > 0 { cap.min(by_diff) } else { by_diff };
+        Ok(Quota {
+            total_secs: total,
+            used_secs: used,
+            remaining_secs: remaining,
+            storage_total: data
+                .get("equityAllStorage")
+                .and_then(Value::as_i64)
+                .unwrap_or(0),
+            storage_used: data
+                .get("equityExpendStorage")
+                .and_then(Value::as_i64)
+                .unwrap_or(0),
+            user_name: data
+                .get("aliyunUserName")
+                .and_then(Value::as_str)
+                .unwrap_or("")
+                .to_owned(),
+        })
+    }
+
+    /// 删除云端转写任务。
+    ///
+    /// `permanent = true` → 直接永久删除（不进回收站，不可恢复）；
+    /// `permanent = false` → 进回收站（之后还能 `revertTrashes` 捞回来）。
+    pub async fn delete_trans(&self, trans_ids: &[String], permanent: bool) -> Result<()> {
+        if trans_ids.is_empty() {
+            bail!("没给要删的任务 ID");
+        }
+        let body = json!({
+            "action": "delTrans",
+            "version": "1.0",
+            "userId": "",
+            "transIds": trans_ids,
+            "deletePermanently": permanent,
+        });
+        self.post("/api/trans/request?delTrans&c=web", &body)
+            .await?;
+        Ok(())
+    }
+
+    /// 清空回收站（听悟的「垃圾」就堆在这儿 —— delTrans 不带永久标记时先进回收站）。
+    pub async fn empty_trash(&self) -> Result<()> {
+        let body = json!({
+            "action": "delAllTrashes",
+            "version": "1.0",
+        });
+        self.post("/api/trash/request?delAllTrashes&c=web", &body)
+            .await?;
+        Ok(())
+    }
+
+    /// 本地 ASR 兜底转写（听悟配额用完 / 网络挂时用）。
+    ///
+    /// ⚠️ 本地这条**没有说话人分离**（whisper.cpp / paraformer 都不给 `si`），
+    /// 所以结果是一整段文字、segments 为空 —— 有字就行。
+    pub async fn transcribe_local(&self, path: &Path) -> Result<Transcript> {
+        let bytes = tokio::fs::read(path)
+            .await
+            .with_context(|| format!("读文件 {} 失败", path.display()))?;
+        let file_name = path
+            .file_name()
+            .map(|name| name.to_string_lossy().to_string())
+            .unwrap_or_else(|| "audio.mp3".to_owned());
+        let endpoint = if self.local_asr_api == "openai" {
+            format!("{}/v1/audio/transcriptions", self.local_asr_base_url)
+        } else {
+            format!("{}/inference", self.local_asr_base_url)
+        };
+        let part = reqwest::multipart::Part::bytes(bytes)
+            .file_name(file_name)
+            .mime_str("audio/mpeg")
+            .context("构造本地 ASR 的上传块失败")?;
+        let mut form = reqwest::multipart::Form::new().part("file", part);
+        if self.local_asr_api == "openai" {
+            form = form.text("model", "whisper-1").text("stream", "false");
+        } else {
+            form = form.text("response-format", "json");
+        }
+        let response = self
+            .http
+            .post(&endpoint)
+            .multipart(form)
+            .send()
+            .await
+            .with_context(|| format!("本地 ASR（{endpoint}）请求失败"))?;
+        let status = response.status();
+        let text = response.text().await.context("读本地 ASR 的响应失败")?;
+        if !status.is_success() {
+            bail!(
+                "本地 ASR 返回 HTTP {status}: {}",
+                &text[..text.len().min(200)]
+            );
+        }
+        let parsed: Value = serde_json::from_str(&text).with_context(|| {
+            format!("本地 ASR 返回的不是 JSON: {}", &text[..text.len().min(200)])
+        })?;
+        let content = parsed
+            .get("text")
+            .and_then(Value::as_str)
+            .or_else(|| parsed.get("content").and_then(Value::as_str))
+            .map(str::trim)
+            .filter(|value| !value.is_empty())
+            .context("本地 ASR 没给转写文本")?
+            .to_owned();
+        let title = path
+            .file_stem()
+            .map(|stem| stem.to_string_lossy().to_string())
+            .unwrap_or_else(|| "audio".to_owned());
+        Ok(Transcript {
+            trans_id: format!("local-{title}"),
+            title,
+            duration_secs: 0.0,
+            word_count: content.chars().filter(|c| !c.is_whitespace()).count(),
+            sentences: vec![Sentence {
+                speaker: 0,
+                begin_ms: 0,
+                end_ms: 0,
+                text: content,
+            }],
+            segments: Vec::new(),
+            raw: parsed,
+        })
     }
 }
 

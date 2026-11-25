@@ -3,6 +3,8 @@
 //! - `transcribe <文件>`：上传音视频 → 转写 → 落盘逐字稿（**主入口**）
 //! - `list [条数]`：看账号里的历史转写任务
 //! - `result <任务ID>`：取某个已有任务的逐字稿（不重新转写）
+//! - `quota`：看账号还剩多少转写时长 / 存储
+//! - `clean`：清云端旧转写 + 本地旧稿（**默认只列不删**，要 `--yes` 才真删）
 //!
 //! ⚠️ **不能叫 `run`/`poll`**：宿主把 `ru41 <模块> poll|run` 两个词**留给 tracker**
 //! （`poll` 跑一轮，`run` 起常驻循环，见 src/main.rs 的 Command::Tracker 分发），
@@ -11,6 +13,10 @@
 //! 输出落在 `output_dir`（默认 state.db 同级的 `tingwu/`，容器内即 `/data/tingwu`）：
 //! `<任务ID>.md` 逐字稿（说话人 + 时间戳）、`<任务ID>.json` 原始逐字稿，
 //! 外加 `--format text|srt` 时的 `.txt` / `.srt`。
+//!
+//! **兜底链**：听悟失败（配额用完 / cookie 过期 / 网络抽风）→ 自动回落本地 ASR
+//! （`plugins/lecture` 那套 whisper.cpp / paraformer），返回里会标 `engine=local-fallback`。
+//! 本地稿**没有说话人分离**，只有字。
 
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
@@ -101,11 +107,34 @@ async fn dispatch(
         "transcribe" | "转写" | "转录" => {
             let (path, format) = parse_transcribe_args(&rest)?;
             let client = build_client(section, store)?;
-            let transcript = client
-                .transcribe(&path)
-                .await
-                .map_err(|error| anyhow::anyhow!("{error}"))?;
-            write_outputs(output_dir, &transcript, format).await
+            match client.transcribe(&path).await {
+                Ok(transcript) => write_outputs(output_dir, &transcript, format).await,
+                Err(error) => {
+                    // 听悟这条路挂了（配额用完 / cookie 过期 / 网络抽风）→ 回落本地 ASR。
+                    // 本地没有说话人分离，但总比拿不到字强 —— 所以返回里标清楚是谁出的稿。
+                    if !section.fallback_local() {
+                        return Err(anyhow::anyhow!("{error}"));
+                    }
+                    let reason = format!("{error}");
+                    let transcript = client.transcribe_local(&path).await.map_err(|local| {
+                        anyhow::anyhow!(
+                            "听悟失败（{reason}），本地兜底也失败：{local}\n\
+                                 两条路都断了 —— 听悟多半是配额用完或 cookie 过期，\
+                                 先跑 `ru41 tingwu quota` 看看剩余时长"
+                        )
+                    })?;
+                    let mut value = write_outputs(output_dir, &transcript, format).await?;
+                    if let Some(obj) = value.as_object_mut() {
+                        obj.insert("engine".to_owned(), serde_json::json!("local-fallback"));
+                        obj.insert("fallback_reason".to_owned(), serde_json::json!(reason));
+                        obj.insert(
+                            "note".to_owned(),
+                            serde_json::json!("本地兜底稿没有说话人分离和时间戳"),
+                        );
+                    }
+                    Ok(value)
+                }
+            }
         }
         "result" | "结果" | "稿子" => {
             let (trans_id, format) = parse_result_args(&rest)?;
@@ -144,19 +173,50 @@ async fn dispatch(
                 .collect();
             Ok(serde_json::json!({ "ok": true, "count": rows.len(), "tasks": rows }))
         }
+        "quota" | "配额" | "额度" => {
+            let client = build_client(section, store)?;
+            let quota = client
+                .quota()
+                .await
+                .map_err(|error| anyhow::anyhow!("{error}"))?;
+            Ok(serde_json::json!({
+                "ok": true,
+                "user_name": quota.user_name,
+                "remaining_hours": round2(quota.remaining_secs as f64 / 3600.0),
+                "remaining_secs": quota.remaining_secs,
+                "total_hours": round2(quota.total_secs as f64 / 3600.0),
+                "used_hours": round2(quota.used_secs as f64 / 3600.0),
+                "storage_remaining_gib": round2(
+                    (quota.storage_total - quota.storage_used).max(0) as f64 / 1073741824.0
+                ),
+                "storage_total_gib": round2(quota.storage_total as f64 / 1073741824.0),
+            }))
+        }
+        "clean" | "清理" => {
+            let options = parse_clean_args(&rest)?;
+            let client = build_client(section, store)?;
+            clean(&client, output_dir, &options).await
+        }
         "help" | "--help" | "-h" => Ok(serde_json::json!({
             "ok": true,
             "usage": [
                 "ru41 tingwu transcribe <音视频文件> [--format markdown|text|srt]",
                 "ru41 tingwu result <任务ID> [--format markdown|text|srt]",
                 "ru41 tingwu list [条数]",
+                "ru41 tingwu quota            # 剩余转写时长 / 存储",
+                "ru41 tingwu clean [--cloud] [--older-than-days N] [--keep N] [--permanent] [--yes]",
             ],
         })),
         other => Ok(serde_json::json!({
             "ok": false,
-            "error": format!("未知子命令 {other}（可用：transcribe / result / list）")
+            "error": format!("未知子命令 {other}（可用：transcribe / result / list / quota / clean）")
         })),
     }
+}
+
+/// 保留两位小数（JSON 里别给一串 399.34444444444）。
+fn round2(value: f64) -> f64 {
+    (value * 100.0).round() / 100.0
 }
 
 /// 构造客户端（取 cookie + 组装参数）。
@@ -309,6 +369,195 @@ fn sanitize(raw: &str) -> String {
     }
 }
 
+// ── 清理 ─────────────────────────────────────────────────────────────
+
+/// `clean` 的参数。
+#[derive(Debug, Clone)]
+struct CleanOptions {
+    /// 要不要动云端任务（默认只清本地）。
+    cloud: bool,
+    /// 本地：只删 N 天前的（0 = 全删）。
+    older_than_days: i64,
+    /// 云端：保留最近 N 个（0 = 全删）。
+    keep: usize,
+    /// 云端：永久删除（不进回收站）。
+    permanent: bool,
+    /// 真删（不给就只列清单）。
+    yes: bool,
+    /// 指定要删的任务 ID（给了就只删这些）。
+    trans_ids: Vec<String>,
+}
+
+/// 解析 `clean` 的参数。
+fn parse_clean_args(args: &[String]) -> Result<CleanOptions> {
+    let mut options = CleanOptions {
+        cloud: false,
+        older_than_days: 7,
+        keep: 0,
+        permanent: false,
+        yes: false,
+        trans_ids: Vec::new(),
+    };
+    let mut index = 0;
+    while index < args.len() {
+        let arg = args[index].trim();
+        match arg {
+            "--cloud" => options.cloud = true,
+            "--permanent" => options.permanent = true,
+            "--yes" | "-y" => options.yes = true,
+            "--older-than-days" | "--keep" | "--trans-id" => {
+                let value = args
+                    .get(index + 1)
+                    .ok_or_else(|| anyhow::anyhow!("{arg} 后面要给值"))?;
+                if arg == "--older-than-days" {
+                    options.older_than_days = value
+                        .trim()
+                        .parse::<i64>()
+                        .map_err(|_| anyhow::anyhow!("--older-than-days 要一个天数（0 = 全删）"))?;
+                } else if arg == "--keep" {
+                    options.keep = value
+                        .trim()
+                        .parse::<usize>()
+                        .map_err(|_| anyhow::anyhow!("--keep 要一个数字（0 = 全删）"))?;
+                } else {
+                    options.trans_ids.push(value.trim().to_owned());
+                }
+                index += 1;
+            }
+            other if other.starts_with("--") => {
+                let (key, value) = other
+                    .split_once('=')
+                    .ok_or_else(|| anyhow::anyhow!("未知参数 {other}"))?;
+                match key {
+                    "--older-than-days" => {
+                        options.older_than_days = value.trim().parse::<i64>().map_err(|_| {
+                            anyhow::anyhow!("--older-than-days 要一个天数（0 = 全删）")
+                        })?;
+                    }
+                    "--keep" => {
+                        options.keep = value
+                            .trim()
+                            .parse::<usize>()
+                            .map_err(|_| anyhow::anyhow!("--keep 要一个数字（0 = 全删）"))?;
+                    }
+                    "--trans-id" => options.trans_ids.push(value.trim().to_owned()),
+                    _ => bail!("未知参数 {other}"),
+                }
+            }
+            other => bail!("未知参数 {other}"),
+        }
+        index += 1;
+    }
+    Ok(options)
+}
+
+/// 本地待删文件（只认插件自己落的稿子：`.md` / `.json` / `.srt` / `.txt`）。
+async fn local_candidates(output_dir: &Path, older_than_days: i64) -> Result<Vec<PathBuf>> {
+    let mut out = Vec::new();
+    let Ok(mut entries) = tokio::fs::read_dir(output_dir).await else {
+        return Ok(out);
+    };
+    let cutoff = chrono::Local::now() - chrono::Duration::days(older_than_days);
+    while let Some(entry) = entries.next_entry().await? {
+        let path = entry.path();
+        let extension = path
+            .extension()
+            .map(|e| e.to_string_lossy().to_ascii_lowercase())
+            .unwrap_or_default();
+        if !matches!(extension.as_str(), "md" | "json" | "srt" | "txt") {
+            continue;
+        }
+        let Ok(meta) = tokio::fs::metadata(&path).await else {
+            continue;
+        };
+        if !meta.is_file() {
+            continue;
+        }
+        let modified = meta
+            .modified()
+            .ok()
+            .and_then(|time| time.duration_since(std::time::UNIX_EPOCH).ok())
+            .and_then(|delta| chrono::DateTime::from_timestamp_millis(delta.as_millis() as i64))
+            .map(|stamp| stamp.with_timezone(&chrono::Local))
+            .unwrap_or(cutoff);
+        if modified <= cutoff {
+            out.push(path);
+        }
+    }
+    out.sort();
+    Ok(out)
+}
+
+/// 清理：本地旧稿 + 云端旧任务。
+///
+/// ⚠️ **默认只列不删**（dry-run）：删东西不可逆，得让调用方显式说 `--yes`。
+async fn clean(
+    client: &TingwuClient,
+    output_dir: &Path,
+    options: &CleanOptions,
+) -> Result<serde_json::Value> {
+    let local = local_candidates(output_dir, options.older_than_days).await?;
+    let mut cloud: Vec<String> = Vec::new();
+    let mut kept: Vec<String> = Vec::new();
+    if options.cloud {
+        if !options.trans_ids.is_empty() {
+            cloud = options.trans_ids.clone();
+        } else {
+            let tasks = client
+                .list(100)
+                .await
+                .map_err(|error| anyhow::anyhow!("{error}"))?;
+            // list 是按时间倒序的（实测：最新的在前），所以前 keep 个留着。
+            for (index, task) in tasks.iter().enumerate() {
+                if index < options.keep {
+                    kept.push(task.trans_id.clone());
+                } else {
+                    cloud.push(task.trans_id.clone());
+                }
+            }
+        }
+    }
+
+    let mut deleted_local = 0usize;
+    let mut deleted_bytes = 0u64;
+    if options.yes {
+        for path in &local {
+            if let Ok(meta) = tokio::fs::metadata(path).await {
+                deleted_bytes += meta.len();
+            }
+            match tokio::fs::remove_file(path).await {
+                Ok(()) => deleted_local += 1,
+                Err(error) => {
+                    eprintln!("[tingwu] 删 {} 失败：{error}", path.display());
+                }
+            }
+        }
+        if !cloud.is_empty() {
+            client
+                .delete_trans(&cloud, options.permanent)
+                .await
+                .map_err(|error| anyhow::anyhow!("{error}"))?;
+        }
+    }
+
+    Ok(serde_json::json!({
+        "ok": true,
+        "dry_run": !options.yes,
+        "local_candidates": local.iter().map(|p| p.display().to_string()).collect::<Vec<_>>(),
+        "local_deleted": deleted_local,
+        "local_freed_mib": round2(deleted_bytes as f64 / 1048576.0),
+        "cloud_candidates": cloud,
+        "cloud_kept": kept,
+        "cloud_permanent": options.permanent,
+        "cloud_deleted": if options.yes { cloud.len() } else { 0 },
+        "note": if options.yes {
+            "已执行删除（云端任务先进回收站，除非 --permanent）"
+        } else {
+            "只列清单，没删 —— 真删加 --yes"
+        },
+    }))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -356,5 +605,43 @@ mod tests {
         assert_eq!(sanitize("speech"), "speech");
         assert_eq!(sanitize("a/b:c"), "a_b_c");
         assert_eq!(sanitize("///"), "audio");
+    }
+
+    #[test]
+    fn parses_clean_arguments() {
+        let args = vec![
+            "--cloud".to_owned(),
+            "--keep".to_owned(),
+            "2".to_owned(),
+            "--older-than-days=30".to_owned(),
+            "--permanent".to_owned(),
+            "--yes".to_owned(),
+        ];
+        let options = parse_clean_args(&args).expect("应解析成功");
+        assert!(options.cloud);
+        assert!(options.permanent);
+        assert!(options.yes);
+        assert_eq!(options.keep, 2);
+        assert_eq!(options.older_than_days, 30);
+    }
+
+    #[test]
+    fn clean_defaults_to_dry_run() {
+        let options = parse_clean_args(&[]).expect("应解析成功");
+        assert!(!options.yes, "不给 --yes 就必须只列不删");
+        assert!(!options.cloud, "默认不动云端");
+        assert_eq!(options.older_than_days, 7);
+    }
+
+    #[test]
+    fn clean_rejects_unknown_arguments() {
+        assert!(parse_clean_args(&["--nope".to_owned()]).is_err());
+        assert!(parse_clean_args(&["--keep".to_owned()]).is_err());
+    }
+
+    #[test]
+    fn round2_keeps_two_decimals() {
+        assert_eq!(round2(399.34444), 399.34);
+        assert_eq!(round2(1.005), 1.0);
     }
 }

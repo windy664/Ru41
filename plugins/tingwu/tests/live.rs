@@ -142,3 +142,39 @@ async fn transcribes_a_real_recording_with_speakers() {
     let head: String = markdown.chars().take(600).collect();
     println!("--- markdown 前 600 字 ---\n{head}");
 }
+
+/// 查账号权益：剩余时长 / 剩余存储。
+///
+/// ⚠️ 判据是**生产代码自己解析出来的数**，不是 curl 的原始 JSON：
+/// 单位（秒 vs 毫秒）这种坑，只有解析后的数能验出来。
+#[tokio::test]
+#[ignore = "要真网与真 cookie"]
+async fn quota_reports_remaining_hours() {
+    let cookie = std::env::var("RU41_TINGWU_COOKIE").expect("要 RU41_TINGWU_COOKIE");
+    let section = TingwuSection::default();
+    let client = TingwuClient::new(&cookie, &section).expect("建客户端");
+
+    let quota = client.quota().await.expect("查权益");
+
+    // ⚠️ 单位是**秒**（实测 equityAllTimeFlow=4006673 → 1112.96 小时；
+    // 按毫秒算就是 1.1 小时，跟「每天签到送 36000」= 10 小时对不上）。
+    assert!(
+        quota.total_secs > 3600,
+        "总时长看着不像秒（{total}）",
+        total = quota.total_secs
+    );
+    assert!(
+        quota.remaining_secs > 0,
+        "剩余时长该是正数（{remaining}）",
+        remaining = quota.remaining_secs
+    );
+    assert!(quota.remaining_secs <= quota.total_secs, "剩余不该超过总额");
+    println!(
+        "账号={} 剩余={:.2} 小时（总 {:.2} / 已用 {:.2}）· 存储剩 {:.2} GiB",
+        quota.user_name,
+        quota.remaining_secs as f64 / 3600.0,
+        quota.total_secs as f64 / 3600.0,
+        quota.used_secs as f64 / 3600.0,
+        (quota.storage_total - quota.storage_used).max(0) as f64 / 1073741824.0,
+    );
+}
