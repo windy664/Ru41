@@ -1435,6 +1435,47 @@ mod tests {
         );
     }
 
+    /// 用**真实池子数据**跑一遍合并 prompt（生产侧验证用）。
+    ///
+    /// `RU41_RSS_FIXTURE=/tmp/rss_fixture.json cargo test -- --ignored merged_prompt_on_real_data`
+    /// fixture 格式：`{"must":[FeedItem…],"rest":[FeedItem…]}`
+    #[test]
+    #[ignore = "要 RU41_RSS_FIXTURE 指向真实池子导出"]
+    fn merged_prompt_on_real_data() {
+        let path = std::env::var("RU41_RSS_FIXTURE").expect("要 RU41_RSS_FIXTURE");
+        let raw = std::fs::read_to_string(&path).expect("读 fixture 失败");
+        let fixture: serde_json::Value = serde_json::from_str(&raw).expect("fixture 不是 JSON");
+        let must: Vec<FeedItem> =
+            serde_json::from_value(fixture["must"].clone()).expect("must 解析失败");
+        let rest: Vec<FeedItem> =
+            serde_json::from_value(fixture["rest"].clone()).expect("rest 解析失败");
+        println!("真实条目：必报 {} 条，资讯 {} 条", must.len(), rest.len());
+        let prompt = super::merged_report_prompt(&must, &rest, "测试关注方向", "");
+        // 必报段在前、资讯段在后。
+        let must_at = prompt.find("第一部分 · 必报").expect("必报段");
+        let news_at = prompt.find("第二部分 · 今日资讯").expect("资讯段");
+        assert!(must_at < news_at, "必报段必须在前面");
+        // 必报条目逐条出现在第一部分。
+        for item in &must {
+            let at = prompt
+                .find(&item.title)
+                .unwrap_or_else(|| panic!("必报条目没进 prompt: {}", item.title));
+            assert!(
+                at > must_at && at < news_at,
+                "必报条目跑进资讯段了: {}",
+                item.title
+            );
+        }
+        // 长度不能破入队上限（65536）。
+        assert!(prompt.len() < 65_536, "prompt 太大: {}", prompt.len());
+        println!(
+            "--- 合并后 prompt 长度 {} 字节，头 1200 字 ---",
+            prompt.len()
+        );
+        let head: String = prompt.chars().take(1200).collect();
+        println!("{head}");
+    }
+
     /// 权威漏洞源里「只带 CVE 编号」的条目也要必报（那是漏洞公告本身）。
     #[test]
     fn authoritative_source_cve_only_item_is_must_report() {
