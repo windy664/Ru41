@@ -63,6 +63,15 @@ def console_token() -> str:
 def relogin(token: str) -> bool:
     """让 pace-forge 重新登录运动世界校园(账号密码在它的加密库里)。
 
+    ⚠️ 两个外部限制(2026-11-25 实测):
+      1. **账号保护**: 同一账号 1 小时内只能在一个设备登录, 否则服务端回
+         「此账号已在其他设备登录…请过一小时后登录或原设备退出后再登录」(错误码 10121)。
+         → 所以**别频繁重登**(我连试三次就把自己锁了 1 小时)。
+      2. **DNS 抖动**: 容器 DNS 走宿主 systemd-resolved 的转发链, 宿主一抖容器就
+         EAI_AGAIN → Rust 报成「tls connection init failed: os error 11」, 看着像
+         网络故障其实是 DNS。已给 pace-forge 容器配独立 DNS(见 apps/pace-forge/compose.yaml)。
+         → DNS 修好后这一步就稳了。
+
     ⚠️ 2026-11-25 实测: 机器断电重启后, 运动世界校园的会话 token 失效,
     /api/semester 会回「token有误或缓存中token不存在」→ 之前脚本直接放弃这一轮,
     校园跑就**永久停摆**了(没人再跑, token 也不会自己好)。
