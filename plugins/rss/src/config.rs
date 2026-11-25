@@ -40,6 +40,12 @@ pub struct RssSection {
     /// 必报硬闸：命中的高危安全条目**单独成一条 digest 任务**，不许被 LLM 舍弃。
     /// 缺省 true（这是「高危漏洞必须报」这条口径的代码实现，不靠 LLM 现场判断）。
     pub must_report: Option<bool>,
+    /// 必报条目**并进日报正文**（一条消息发完），而不是单独成一条任务。
+    /// 缺省 true（2026-11-25 用户要求：日报和漏洞别分成两条发）。
+    /// ⚠️ 合并后两套纪律是**分区**的：第一部分必报（一条不许舍）、
+    /// 第二部分资讯（可舍弃）—— 混在一起时普通日报的「舍弃纪律」会把漏洞一起丢
+    /// （Java4Shell 就是这么丢的，见 `merged_report_prompt`）。
+    pub merge_must_report: Option<bool>,
 }
 
 impl RssSection {
@@ -76,6 +82,7 @@ impl RssSection {
                 })
                 .collect::<Result<Vec<_>>>()?,
             must_report: self.must_report.unwrap_or(true),
+            merge_must_report: self.merge_must_report.unwrap_or(true),
         })
     }
 }

@@ -50,6 +50,9 @@ pub struct RssConfig {
     pub drop_title_patterns: Vec<regex::Regex>,
     /// 必报硬闸：命中的条目**单独成一条 digest 任务**（不许被 LLM 舍弃）。
     pub must_report: bool,
+    /// 必报条目**并进日报正文**（一条消息发完），而不是单独成一条任务。
+    /// 缺省 true。
+    pub merge_must_report: bool,
 }
 
 impl Default for RssConfig {
@@ -70,6 +73,7 @@ impl Default for RssConfig {
             pool_keyword_filter: true,
             drop_title_patterns: Vec::new(),
             must_report: true,
+            merge_must_report: true,
         }
     }
 }
@@ -342,54 +346,91 @@ impl RssTracker {
             let mut service = ru41::app::task::TaskService::new(self.store.clone());
             let mut emitted = false;
 
-            // 3.1 必报段（独立任务，先入队）
-            if !must.is_empty() {
-                let key = format!("rss:digest:must:{slot}:{date}");
-                if !self.task_exists(&key)? {
-                    let prompt = must_report_prompt(&must);
-                    let result = match &self.config.notify {
-                        Some(route) => service.enqueue_with_notify(
-                            &key,
-                            &prompt,
-                            &self.config.backend,
-                            route,
-                        )?,
-                        None => service.enqueue_for(&key, &prompt, &self.config.backend)?,
-                    };
-                    if result.created {
-                        emitted = true;
+            // 3.1 合并模式（缺省）：必报条目并进日报正文，**一条消息发完**。
+            //     两套纪律分区：第一部分必报（一条不许舍），第二部分资讯（可舍弃）。
+            //     key 用普通日报那个（rss:digest:{slot}:{date}），别再用 must 的 key ——
+            //     否则同一天可能同时存在「旧的必报独立任务」和「合并任务」两条消息。
+            //
+            //     ⚠️ 这里**不能 continue**：后面还有「出报即清池」，
+            //     跳过去池子就不清了（下一轮 poll 会一直带着旧条目）。
+            if self.config.merge_must_report {
+                if !must.is_empty() || !rest.is_empty() {
+                    let key = format!("rss:digest:{slot}:{date}");
+                    let existing = self
+                        .store
+                        .list(500)?
+                        .into_iter()
+                        .find(|task| task.request_key == key);
+                    if let Some(task) = existing {
+                        digest_task_id = Some(task.id);
+                    } else {
+                        let prompt = merged_report_prompt(&must, &rest, &interests, &overflow_note);
+                        let result = match &self.config.notify {
+                            Some(route) => service.enqueue_with_notify(
+                                &key,
+                                &prompt,
+                                &self.config.backend,
+                                route,
+                            )?,
+                            None => service.enqueue_for(&key, &prompt, &self.config.backend)?,
+                        };
+                        if result.created {
+                            emitted = true;
+                        }
+                        digest_task_id = Some(result.task.id);
                     }
-                    digest_task_id = Some(result.task.id);
                 }
-            }
-
-            // 3.2 普通日报（不含必报条目；没有普通条目就不出报）
-            if !rest.is_empty() {
-                let key = format!("rss:digest:{slot}:{date}");
-                // 今天的这份报可能已出过（同 key）：prompt 后续迭代会让幂等检查
-                // 报「key 冲突」，所以先按 key 查存在性——存在即视为已出报，跳过。
-                let existing = self
-                    .store
-                    .list(500)?
-                    .into_iter()
-                    .find(|task| task.request_key == key);
-                if let Some(task) = existing {
-                    digest_task_id = Some(task.id);
-                } else {
-                    let prompt = digest_prompt_with_note(interests, &rest, &overflow_note);
-                    let result = match &self.config.notify {
-                        Some(route) => service.enqueue_with_notify(
-                            &key,
-                            &prompt,
-                            &self.config.backend,
-                            route,
-                        )?,
-                        None => service.enqueue_for(&key, &prompt, &self.config.backend)?,
-                    };
-                    if result.created {
-                        emitted = true;
+            } else {
+                // 3.2 分开发模式：必报段独立成任务，先入队 → 告警先到；
+                //     普通日报里不再包含必报条目（不重复报）。
+                if !must.is_empty() {
+                    let key = format!("rss:digest:must:{slot}:{date}");
+                    if !self.task_exists(&key)? {
+                        let prompt = must_report_prompt(&must);
+                        let result = match &self.config.notify {
+                            Some(route) => service.enqueue_with_notify(
+                                &key,
+                                &prompt,
+                                &self.config.backend,
+                                route,
+                            )?,
+                            None => service.enqueue_for(&key, &prompt, &self.config.backend)?,
+                        };
+                        if result.created {
+                            emitted = true;
+                        }
+                        digest_task_id = Some(result.task.id);
                     }
-                    digest_task_id = Some(result.task.id);
+                }
+
+                // 3.3 普通日报（不含必报条目；没有普通条目就不出报）
+                if !rest.is_empty() {
+                    let key = format!("rss:digest:{slot}:{date}");
+                    // 今天的这份报可能已出过（同 key）：prompt 后续迭代会让幂等检查
+                    // 报「key 冲突」，所以先按 key 查存在性——存在即视为已出报，跳过。
+                    let existing = self
+                        .store
+                        .list(500)?
+                        .into_iter()
+                        .find(|task| task.request_key == key);
+                    if let Some(task) = existing {
+                        digest_task_id = Some(task.id);
+                    } else {
+                        let prompt = digest_prompt_with_note(interests, &rest, &overflow_note);
+                        let result = match &self.config.notify {
+                            Some(route) => service.enqueue_with_notify(
+                                &key,
+                                &prompt,
+                                &self.config.backend,
+                                route,
+                            )?,
+                            None => service.enqueue_for(&key, &prompt, &self.config.backend)?,
+                        };
+                        if result.created {
+                            emitted = true;
+                        }
+                        digest_task_id = Some(result.task.id);
+                    }
                 }
             }
 
@@ -713,6 +754,128 @@ fn must_report_prompt(candidates: &[FeedItem]) -> String {
     prompt
 }
 
+/// 合并日报 prompt：**一条消息发完**，但必报硬闸不丢。
+///
+/// ⚠️ 为什么要分区（2026-11-25 改）：
+/// 原来必报是**独立一条任务**，普通日报是另一条 —— 用户收到两条消息，问「为什么分开发」。
+/// 但直接把两套材料混在一起会出事：普通日报 prompt 里那句「舍弃纪律」会把必报漏洞一起舍掉
+/// （Java4Shell 就是这么丢的）。所以合并时**纪律必须分区**：
+///   第一部分 = 必报（一条都不许舍、每条三行、🚨 开头）
+///   第二部分 = 资讯（时效/拉人头/来源/舍弃纪律照旧）
+/// 且第一部分在**最前面** —— dispatcher 的空报判定只看正文前 80 字，
+/// 📭 出现在开头会被当空报静默消化掉。
+///
+/// 预算：任务入队上限 65536 字节（app/task validate_input），所以两个部分
+/// **各自**限额（不能各给 60k，合起来就爆了）。
+fn merged_report_prompt(
+    must: &[FeedItem],
+    rest: &[FeedItem],
+    interests: &str,
+    note: &str,
+) -> String {
+    const MUST_BUDGET: usize = 26_000;
+    const REST_BUDGET: usize = 26_000;
+    const SUMMARY_MAX: usize = 400;
+
+    let mut prompt = String::new();
+    if !note.is_empty() {
+        prompt.push_str(note);
+        prompt.push_str("\n\n");
+    }
+    prompt.push_str(&format!(
+        "你是信息筛选助手，正在为用户出一份日报。这份日报有**两个部分**，**纪律不同**，请严格分区执行。\n\
+         个人关注方向：{interests}\n\n\
+         工具禁令（最高优先级）：所有判断只依据下面的材料，**全程不要调用任何工具**\n\
+         ——不要访问链接、不要用 bash/浏览器核实内容。材料即全部事实来源，链接留待读者自行打开。\n\
+         数字纪律（对两部分都生效）：金额、人数、日期、百分比、CVSS 分值、CVE/GHSA 编号、版本号等\n\
+         所有数字必须逐字取自材料；材料没写就写「材料未给出」，**绝对禁止**凭常识脑补任何数字。\n\
+         交付口径：最终 JSON 的 summary 字段放**完整日报正文**（Markdown 结构原样搬进去），\n\
+         不要先在消息里写一遍、再压缩成一段摘要交差——那段摘要会被直接推给用户。\n\n\
+         ══════════ 第一部分 · 必报安全告警（{must_count} 条）══════════\n\
+         【必报纪律（最高优先级，优先于第二部分的一切规则）】\n\
+         1. **每一条都要报**。一条都不能少、不能合并、不能因为「与上一条同类」而省略。\n\
+         2. **本部分必须写在最前面**，第一行写 `🚨 必报 {must_count} 条`，随后**每条三行**\n\
+         （这是告警清单，不是长文，每条控制在 250 字以内；本部分总长不要超过 4000 字）：\n\
+         `**编号（CVSS/严重等级）标题**` / `发生了什么：…` / `影响与处置：…`\n\
+         3. 影响与处置里写清：受影响组件与版本、是否需要立刻升级/停用、官方处置要求。\n\
+         4. 若某条材料看着像空洞公告（只有标题没有实质信息），写「材料未给出具体细节」，\n\
+         但**仍要列出该条** —— 这是必报清单，不许自己删。\n\
+         5. **不要写「已舍弃」段落** —— 本部分没有需要舍弃的条目。\n\
+         6. **本部分非空时绝对禁止**只回「📭 今日无值得关注的机会」—— 那行只属于第二部分。\n\n\
+         == 必报条目（{must_count} 条）==",
+        must_count = must.len()
+    ));
+    // 必报材料：新的在前，超预算丢最旧的。
+    // ⚠️ 预算按**材料段自己的长度**算（不含前面的指令）—— 否则第二段的预算
+    // 会被第一段的累计长度吃掉，一条都放不进去。
+    let must_start = prompt.len();
+    let ordered: Vec<&FeedItem> = must.iter().rev().collect();
+    for (i, item) in ordered.iter().enumerate() {
+        let verdict = crate::security::verdict(&item.title, &item.summary);
+        let reasons = crate::security::reason_line(&verdict);
+        let entry = format!(
+            "\n---\n{}\n链接：{}\n发布：{}\n必报理由：{}\n内容：{}\n",
+            item.title,
+            item.link,
+            item.published,
+            reasons,
+            ru41::util::truncate_chars(&item.summary, SUMMARY_MAX)
+        );
+        if prompt.len() - must_start + entry.len() > MUST_BUDGET {
+            prompt.push_str(&format!(
+                "\n（其余 {} 条较旧必报条目超出长度预算，本次略去）\n",
+                must.len() - i
+            ));
+            break;
+        }
+        prompt.push_str(&entry);
+    }
+
+    prompt.push_str(&format!(
+        "\n\n══════════ 第二部分 · 今日资讯（{} 条）══════════\n\
+         【资讯纪律（只作用于本部分；第一部分的必报条目不受这些规则影响）】\n\
+         时效纪律：这是日报，优先近 48 小时的条目；发布时间超过 3 天的视为旧闻，\n\
+         除非仍在行动窗口内（如未过截止日期/仍可领取），否则一律舍弃并简要说明。\n\
+         请筛选出真正有信息增量、与关注方向相关的条目（搬运、纯营销、无实质内容的直接舍弃），\n\
+         对每条输出：标题 / 链接 / 发生了什么 / 为什么重要 / 与我有关之处 / 建议的下一步行动。\n\
+         区分事实与推断，事实必须能在所给材料中找到依据。\n\
+         拉人头纪律：邀请码、邀请链接、注册返利、用码送额度等推广类条目一律舍弃——\n\
+         发帖人拿返利，对读者没有信息增量，且往往夸大收益。项目官方公告、平台官方\n\
+         活动（官方域名发布）不在此列。社区用户发帖（v2ex/Reddit/论坛等）要优先\n\
+         怀疑其推广动机，除非能给出来自官方来源的佐证。\n\
+         来源纪律：同一事件有多个来源时，**优先给原始出处**——研究机构/厂商/官方公告/\n\
+         官方条目的原文链接；中文转载、聚合站只作补充，不能只给转载链接。\n\
+         原始来源就在候选材料里时，链接必须用它。\n\
+         舍弃纪律：不要逐条罗列舍弃理由或展开分析被舍弃的条目；\n\
+         个别接近但不够格的条目至多一句话带过。\n\
+         ⚠️ 如果本部分全部不值得关注：**不要**把「📭 今日无值得关注的机会」放在正文最前面\n\
+         （系统按开头判断空报，会把整条报静默吃掉）——第一部分报完之后再写这一行，或干脆不写。\n\n\
+         == 资讯候选条目（{} 条）==",
+        rest.len(),
+        rest.len()
+    ));
+    let rest_start = prompt.len();
+    let ordered: Vec<&FeedItem> = rest.iter().rev().collect();
+    for (i, item) in ordered.iter().enumerate() {
+        let entry = format!(
+            "\n---\n{}\n链接：{}\n发布：{}\n内容：{}\n",
+            item.title,
+            item.link,
+            item.published,
+            ru41::util::truncate_chars(&item.summary, SUMMARY_MAX)
+        );
+        if prompt.len() - rest_start + entry.len() > REST_BUDGET {
+            prompt.push_str(&format!(
+                "\n（其余 {} 条较旧条目超出长度预算，本次略去）\n",
+                rest.len() - i
+            ));
+            break;
+        }
+        prompt.push_str(&entry);
+    }
+    prompt
+}
+
 /// 资讯精选 prompt：输出口径按设计文档 3.4 的四段式，区分事实与推断。
 fn digest_prompt(interests: &str, candidates: &[FeedItem]) -> String {
     digest_prompt_with_note(interests, candidates, "")
@@ -999,8 +1162,12 @@ mod tests {
         assert_eq!(ids, ["a", "b"], "两轮 poll 的条目都在池里");
     }
 
-    /// 必报硬闸：高危安全条目**单独成一个任务**，普通条目在另一个任务里，
+    /// 必报硬闸（**分开发**模式）：高危安全条目**单独成一个任务**，普通条目在另一个任务里，
     /// 两边不互相污染（必报那条也不该再出现在普通日报里）。
+    ///
+    /// ⚠️ 现在默认是**合并**模式（一条消息发完），这个测试专测分开发那条路，
+    /// 所以显式把 `merge_must_report` 关掉 —— 合并模式的覆盖见下面的
+    /// `merged_digest_puts_must_and_news_in_one_task`。
     #[test]
     fn must_report_items_get_their_own_digest_task() {
         let dir = tempfile::tempdir().unwrap();
@@ -1009,6 +1176,7 @@ mod tests {
                 .unwrap(),
         );
         let mut tracker = daily_tracker(store.clone(), 0);
+        tracker.config.merge_must_report = false;
         // 关键词粗筛默认开着，标题里没 "AI" 的漏洞条目会在入池前被筛掉 —— 关掉。
         tracker.config.pool_keyword_filter = false;
         let (url, mut vuln) = item("vuln");
@@ -1046,6 +1214,99 @@ mod tests {
             plain.prompt
         );
         assert!(plain.prompt.contains("AI 机会 normal"), "{}", plain.prompt);
+    }
+
+    /// 合并模式（缺省）：必报漏洞与普通资讯**合成一条**日报任务 —— 用户收到一条消息，
+    /// 但必报那部分仍带「一条都不许舍」的硬闸。
+    ///
+    /// ⚠️ 判据是**任务数**（1 条，不是 2 条）+ **prompt 里两段都在**，
+    /// 再加一条容易踩的：必报段必须在**最前面**（dispatcher 按正文前 80 字判空报，
+    /// 📭 开头会被静默吞掉）。
+    #[test]
+    fn merged_digest_puts_must_and_news_in_one_task() {
+        let dir = tempfile::tempdir().unwrap();
+        let store: Arc<dyn TaskStore> = Arc::new(
+            ru41::adapters::database::sqlite::SqliteTaskStore::open(&dir.path().join("s.db"))
+                .unwrap(),
+        );
+        let mut tracker = daily_tracker(store.clone(), 0);
+        tracker.config.pool_keyword_filter = false;
+        let (url, mut vuln) = item("vuln");
+        vuln.title = "某库曝远程代码执行漏洞".into();
+        vuln.summary = "CVSS 9.8，无需认证即可远程接管，存在公开利用代码。".into();
+        let (url2, normal) = item("normal");
+        let (outcome, pool) = tracker
+            .poll_daily(vec![(url, vuln), (url2, normal)], &["AI".to_owned()], "i")
+            .unwrap();
+        assert_eq!(outcome.new_items, 2);
+        assert_eq!(pool, 0, "出报后清池");
+
+        let tasks = store.list(10).unwrap();
+        assert_eq!(tasks.len(), 1, "合成一条，不是两条: {tasks:?}");
+        let (date, _) = local_date_hour(ru41::util::now());
+        let merged = tasks
+            .iter()
+            .find(|t| t.request_key == format!("rss:digest:evening:{date}"))
+            .expect("合并日报任务");
+        // 不能再有独立的必报任务（否则当天会发两条）。
+        assert!(
+            !tasks
+                .iter()
+                .any(|t| t.request_key == format!("rss:digest:must:evening:{date}")),
+            "不该再有独立必报任务: {tasks:?}"
+        );
+        // 两段材料都在。
+        assert!(
+            merged.prompt.contains("某库曝远程代码执行漏洞"),
+            "{}",
+            merged.prompt
+        );
+        assert!(
+            merged.prompt.contains("AI 机会 normal"),
+            "{}",
+            merged.prompt
+        );
+        // 必报的硬闸还在（一条都不许舍）。
+        assert!(merged.prompt.contains("一条都不能少"), "{}", merged.prompt);
+        // 必报段在**前面**，资讯段在后 —— 顺序反了会被空报判定吃掉。
+        let must_at = merged.prompt.find("第一部分 · 必报").expect("必报段");
+        let news_at = merged.prompt.find("第二部分 · 今日资讯").expect("资讯段");
+        assert!(must_at < news_at, "必报段必须在资讯段之前");
+        // 纪律分区：资讯纪律不得覆盖必报段。
+        assert!(
+            merged
+                .prompt
+                .contains("只作用于本部分；第一部分的必报条目不受这些规则影响"),
+            "{}",
+            merged.prompt
+        );
+    }
+
+    /// 合并模式下**只有必报、没有资讯**时，也要出一条（且必报段在前）。
+    #[test]
+    fn merged_digest_still_reports_when_only_must_items() {
+        let dir = tempfile::tempdir().unwrap();
+        let store: Arc<dyn TaskStore> = Arc::new(
+            ru41::adapters::database::sqlite::SqliteTaskStore::open(&dir.path().join("s.db"))
+                .unwrap(),
+        );
+        let mut tracker = daily_tracker(store.clone(), 0);
+        tracker.config.pool_keyword_filter = false;
+        let (url, mut vuln) = item("vuln");
+        vuln.title = "某库曝远程代码执行漏洞".into();
+        vuln.summary = "CVSS 9.8，无需认证即可远程接管，存在公开利用代码。".into();
+        tracker
+            .poll_daily(vec![(url, vuln)], &["AI".to_owned()], "i")
+            .unwrap();
+        let tasks = store.list(10).unwrap();
+        assert_eq!(tasks.len(), 1, "只有必报也要出一条: {tasks:?}");
+        let prompt = &tasks[0].prompt;
+        assert!(prompt.contains("某库曝远程代码执行漏洞"), "{prompt}");
+        // 必报非空时禁止回 📭（那是空报信号）。
+        assert!(
+            prompt.contains("绝对禁止**只回「📭 今日无值得关注的机会」"),
+            "{prompt}"
+        );
     }
 
     /// 空洞公告不成条：只有「发布安全公告」字样的条目不进必报。
@@ -1193,11 +1454,22 @@ mod tests {
             .unwrap();
         let tasks = store.list(10).unwrap();
         let (date, _) = local_date_hour(ru41::util::now());
+        // 合并模式（缺省）：没有独立的必报任务，但该条目必须落在**必报段**里。
+        let merged = tasks
+            .iter()
+            .find(|t| t.request_key == format!("rss:digest:evening:{date}"))
+            .expect("合并日报任务");
+        let must_at = merged.prompt.find("第一部分 · 必报").expect("必报段");
+        let item_at = merged.prompt.find("GHSA-xxxx-yyyy-zzzz").expect("条目");
         assert!(
-            tasks
-                .iter()
-                .any(|t| t.request_key == format!("rss:digest:must:evening:{date}")),
-            "权威源的 CVE 条目应必报: {tasks:?}"
+            must_at < item_at,
+            "权威源的 CVE 条目应落在必报段（不是资讯段）: {prompt}",
+            prompt = merged.prompt
+        );
+        assert!(
+            merged.prompt.contains("必报理由：官方漏洞源条目"),
+            "{}",
+            merged.prompt
         );
     }
 
