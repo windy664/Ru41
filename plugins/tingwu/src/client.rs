@@ -83,6 +83,9 @@ pub struct Transcript {
     pub segments: Vec<Segment>,
     /// 原始逐字稿（解析后的结构）。
     pub raw: Value,
+    /// 听悟的 `si` 语义：`speaker` = 真的人（多人对话）；`turn-index` = 发言轮次
+    /// （单人连讲，已把 `si` 归一化成一个人，说话人分离在这里没有意义）。
+    pub speaker_mode: &'static str,
 }
 
 impl Transcript {
@@ -407,7 +410,11 @@ impl TingwuClient {
         if raw.is_null() {
             bail!("听悟任务 {trans_id} 还没有逐字稿（可能还在转写）");
         }
-        let sentences = parse_sentences(&raw);
+        let mut sentences = parse_sentences(&raw);
+        // 听悟的 si 可能是「人」也可能是「发言轮次」（单人连讲）。轮次语义下
+        // 按 si 分段会切出几百个碎片段（实测课堂课 716 段），归一化成一个人
+        // 再按停顿分段才可读。
+        let turn_index = normalize_turn_index_speakers(&mut sentences);
         let segments = group_by_speaker(&sentences, self.merge_gap_ms);
         Ok(Transcript {
             trans_id: trans_id.to_owned(),
@@ -423,6 +430,7 @@ impl TingwuClient {
             sentences,
             segments,
             raw,
+            speaker_mode: if turn_index { "turn-index" } else { "speaker" },
         })
     }
 
@@ -632,6 +640,8 @@ impl TingwuClient {
             }],
             segments: Vec::new(),
             raw: parsed,
+            // 本地 ASR 没有说话人信息。
+            speaker_mode: "none",
         })
     }
 }
@@ -698,6 +708,45 @@ pub fn parse_sentences(raw: &Value) -> Vec<Sentence> {
         collect(sentences, &mut out);
     }
     out
+}
+
+/// 听悟的 `si` 有**两种语义**（2026-11-26 实测）：
+///
+/// 1. **人** —— 多人对话时 `si` 会**回退**（A,B,A,B…）。实测 261 秒多人录音：
+///    `si` 1..31 连续且会回退 → 按 `si` 分段才有说话人分离的价值。
+/// 2. **发言轮次** —— 单人连讲（课堂录音）时 `si` **单调递增**且从不回头：
+///    实测 75 分钟课堂课 8518 句切成 `si` 1..716，平均每个 `si` 只 12 个字。
+///    这时按 `si` 分段会把逐字稿切成一堆碎片（每段一个"假说话人"）。
+///
+/// 判据：`si` 单调不减（无回退）且至少递增过一次 ⇒ 是轮次编号。
+/// 命中时把 `si` 归一化成同一个人，再按**停顿间隔**分段（课堂课 5 秒阈值 → 24 段，
+/// 可读；按 `si` 分则是 716 段碎片）。
+pub fn is_turn_index(sentences: &[Sentence]) -> bool {
+    let mut previous: Option<u64> = None;
+    let mut increases = 0usize;
+    for sentence in sentences {
+        if let Some(prev) = previous {
+            if sentence.speaker < prev {
+                return false; // 回退 ⇒ si 是「人」
+            }
+            if sentence.speaker > prev {
+                increases += 1;
+            }
+        }
+        previous = Some(sentence.speaker);
+    }
+    increases >= 1
+}
+
+/// 把「发言轮次」语义的 `si` 归一化成同一个人。返回是否做过归一化。
+pub fn normalize_turn_index_speakers(sentences: &mut [Sentence]) -> bool {
+    if !is_turn_index(sentences) {
+        return false;
+    }
+    for sentence in sentences.iter_mut() {
+        sentence.speaker = 1;
+    }
+    true
 }
 
 /// 按说话人合并句子：同一人且与上一句间隔 < `gap_ms` 的并进同一段。
@@ -931,9 +980,80 @@ mod tests {
                 text: "喂".into(),
             }],
             raw: Value::Null,
+            speaker_mode: "speaker",
         };
         let markdown = render_markdown(&transcript);
         assert!(markdown.contains("说话人 1"), "{markdown}");
         assert!(!markdown.contains("说话人 2"), "{markdown}");
+    }
+}
+
+#[cfg(test)]
+mod speaker_mode_tests {
+    use super::*;
+
+    fn sentence(speaker: u64, begin_ms: i64, end_ms: i64, text: &str) -> Sentence {
+        Sentence {
+            speaker,
+            begin_ms,
+            end_ms,
+            text: text.to_owned(),
+        }
+    }
+
+    /// 单人连讲：si 单调递增（1,1,2,2,3…）⇒ 是「发言轮次」，
+    /// 归一化成一个人后按停顿分段 —— 不按 si 分的话会切成一堆碎片。
+    #[test]
+    fn monotonic_si_is_turn_index_and_gets_normalized() {
+        let mut sentences = vec![
+            sentence(1, 0, 500, "今天"),
+            sentence(1, 500, 900, "早上"),
+            sentence(2, 900, 1400, "给你们"),
+            sentence(2, 1400, 2000, "讲课"),
+            sentence(3, 9000, 9500, "停了很久"),
+        ];
+        assert!(is_turn_index(&sentences), "单调递增的 si 该判成轮次编号");
+        assert!(normalize_turn_index_speakers(&mut sentences));
+        assert!(
+            sentences.iter().all(|s| s.speaker == 1),
+            "归一化后所有句子该属于同一个人"
+        );
+        // 间隔 7000ms > 5s ⇒ 断成两段。
+        let segments = group_by_speaker(&sentences, 5_000);
+        assert_eq!(segments.len(), 2, "应按停顿分两段: {segments:?}");
+        assert_eq!(segments[0].text, "今天早上给你们讲课");
+    }
+
+    /// 多人对话：si 会回退（A,B,A）⇒ 是「人」，保持原样不归一化。
+    #[test]
+    fn si_going_backwards_stays_as_speakers() {
+        let mut sentences = vec![
+            sentence(1, 0, 500, "你好"),
+            sentence(2, 500, 1000, "嗯"),
+            sentence(1, 1000, 1500, "继续说"),
+        ];
+        assert!(
+            !is_turn_index(&sentences),
+            "si 有回退 ⇒ 是人，不能当轮次编号"
+        );
+        assert!(!normalize_turn_index_speakers(&mut sentences));
+        assert_eq!(
+            sentences.iter().map(|s| s.speaker).collect::<Vec<_>>(),
+            vec![1, 2, 1],
+            "多人对话的 si 该原样保留"
+        );
+        let segments = group_by_speaker(&sentences, 5_000);
+        // A-B-A：中间的 B 把两个 A 隔开，只合并**相邻**的同一人 ⇒ 3 段。
+        assert_eq!(segments.len(), 3, "相邻同一人间隔短才合并: {segments:?}");
+        assert_eq!(segments[0].speaker, 1);
+        assert_eq!(segments[1].speaker, 2);
+        assert_eq!(segments[2].speaker, 1);
+    }
+
+    /// 全程只有一个人（si 恒为 1）⇒ 不算轮次编号，但结果一样（一个人）。
+    #[test]
+    fn single_speaker_is_not_turn_index() {
+        let sentences = vec![sentence(1, 0, 500, "甲"), sentence(1, 500, 1000, "乙")];
+        assert!(!is_turn_index(&sentences));
     }
 }

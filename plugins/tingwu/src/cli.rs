@@ -342,6 +342,7 @@ async fn write_outputs(
         "duration_secs": transcript.duration_secs,
         "word_count": transcript.word_count,
         "segments": transcript.segments.len(),
+        "speaker_mode": transcript.speaker_mode,
         "speakers": transcript.speaker_count(),
         "files": files,
         "markdown_path": markdown_path.display().to_string(),
