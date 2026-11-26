@@ -56,6 +56,8 @@ pub struct RunParams {
     pub start_clamped: bool,
     /// 海拔区间（米）。
     pub alt_range: Option<(f64, f64)>,
+    /// 轨迹模式：`stadium`（真机跑道轨迹，失败自动回退）/ `free`（围栏内自由规划）。
+    pub track_mode: String,
 }
 
 impl RunParams {
@@ -81,6 +83,8 @@ pub struct BaseParams {
     pub laps: Option<f64>,
     /// 海拔区间（米）。
     pub alt_range: Option<(f64, f64)>,
+    /// 轨迹模式（从配置来）。
+    pub track_mode: String,
 }
 
 /// 起跑时刻（**服务端给的**，不是插件自己算的）。
@@ -119,6 +123,7 @@ pub fn base_params(
         lane,
         laps,
         alt_range: section.alt_range(),
+        track_mode: section.track_mode(),
     })
 }
 
@@ -226,6 +231,7 @@ pub fn plan_params(base: BaseParams, start: StartAt) -> RunParams {
         start_at_ms: start.at_ms,
         start_clamped: start.clamped,
         alt_range: base.alt_range,
+        track_mode: base.track_mode.clone(),
     }
 }
 
@@ -313,6 +319,33 @@ mod tests {
 
     fn section() -> CampusrunSection {
         CampusrunSection::default()
+    }
+
+    /// 轨迹模式缺省 `stadium`（真机跑道轨迹；跑不成 pace-forge 内部自动回退）。
+    ///
+    /// 为什么改：`free` 模式在打卡点之间直线穿场 —— 地图上一堆尖刺，
+    /// 10 秒桶位移能差 12.8 倍（实测 4.4~56.5 m），服务端判「运动数据有问题」。
+    #[test]
+    fn track_mode_defaults_to_stadium_and_is_configurable() {
+        assert_eq!(section().track_mode(), "stadium", "缺省要 stadium");
+        let mut custom = section();
+        custom.track_mode = Some("free".to_owned());
+        assert_eq!(custom.track_mode(), "free");
+        custom.track_mode = Some("  STADIUM ".to_owned());
+        assert_eq!(custom.track_mode(), "stadium", "大小写与空格要归一");
+    }
+
+    /// track_mode 一路透传到提交体（body 的 `mode` 字段）。
+    #[test]
+    fn track_mode_reaches_the_request_body() {
+        let mut sec = section();
+        sec.track_mode = Some("stadium".to_owned());
+        let base = base_params(&sec, &RunIntent::DistanceKm { km: 2.0 }, 1_794_890_000_000)
+            .expect("换算");
+        let params = plan_params(base, StartAt::default());
+        assert_eq!(params.track_mode, "stadium");
+        let body = crate::client::PlanRequest::campusrun(&params).to_body();
+        assert_eq!(body["mode"], "stadium", "提交体必须带轨迹模式");
     }
 
     #[test]

@@ -45,6 +45,13 @@ pub struct CampusrunSection {
     pub silence_secs: Option<i64>,
     /// 待确认提交的有效期（秒），默认 900。
     pub confirm_ttl_secs: Option<i64>,
+    /// 轨迹模式：`stadium`（优先用操场/真机跑道轨迹，失败自动回退围栏内规划）
+    /// 或 `free`（围栏内自由规划）。缺省 `stadium`。
+    ///
+    /// 为什么改这个（2026-11-26 实测）：`free` 模式在打卡点之间**直线穿场**，
+    /// 轨迹在地图上是一堆尖刺叠成的畸形小圈，10 秒桶位移 4.4~56.5 米（差 12.8 倍）
+    /// —— 服务端一眼看出「不是人跑的」。`stadium` 用的是真机在操场跑的轨迹模板。
+    pub track_mode: Option<String>,
 }
 
 impl CampusrunSection {
@@ -136,6 +143,17 @@ impl CampusrunSection {
     /// 静默窗口（秒）。
     pub fn silence_secs(&self) -> i64 {
         self.silence_secs.unwrap_or(Self::DEFAULT_SILENCE_SECS)
+    }
+
+    /// 轨迹模式（`stadium` / `free`），缺省 `stadium`。
+    pub fn track_mode(&self) -> String {
+        self.track_mode
+            .as_deref()
+            .map(str::trim)
+            .filter(|value| !value.is_empty())
+            .unwrap_or("stadium")
+            .to_ascii_lowercase()
+            .to_owned()
     }
 
     /// 待确认提交的有效期（秒）。

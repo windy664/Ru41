@@ -498,7 +498,8 @@ mod tests {
         let body = &calls[0].1;
         assert_eq!(body["runMode"], 1);
         assert_eq!(body["sportType"], 1);
-        assert_eq!(body["mode"], "free");
+        // 轨迹模式缺省 stadium（真机跑道轨迹；跑不成 pace-forge 内部自动回退）。
+        assert_eq!(body["mode"], "stadium");
         assert!((body["distance"].as_f64().unwrap() - 1.2).abs() < 0.01);
         // 默认档 = 用户推荐参数「当天随机，几天前 0」→ 起点由服务端给。
         assert_eq!(body["startAtMs"], 1_794_890_000_000i64);

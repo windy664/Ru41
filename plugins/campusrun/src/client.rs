@@ -302,7 +302,10 @@ impl PlanRequest {
             duration_min: params.duration_min,
             run_mode: 1,
             sport_type: 1,
-            mode: "free".to_owned(),
+            // 轨迹模式：优先 `stadium`（真机跑道轨迹；跑不成时 pace-forge 内部
+            // 自动回退围栏内规划，见其 `stadium_fallback`）。
+            // `free` 会在打卡点之间直线穿场 —— 地图上一堆尖刺，服务端判「运动数据有问题」。
+            mode: params.track_mode.clone(),
             lane: params.lane,
             start_at_ms: params.start_at_ms,
             alt_min: params.alt_range.map(|range| range.0),

@@ -378,6 +378,8 @@ pub async fn confirm_and_submit(
         start_at_ms: pending.start_at_ms,
         start_clamped: pending.start_clamped,
         alt_range: pending.alt_range,
+        // 提交时用的是 pending 里存的那一份（登记时从配置取的）。
+        track_mode: section.track_mode(),
     });
     match client.run(&request).await {
         Ok(run) => {

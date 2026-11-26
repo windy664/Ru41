@@ -195,12 +195,13 @@ async fn renders_markdown_for_each_view() {
         .await
         .unwrap();
     assert!(status.contains("## 校园跑进度"), "{status}");
-    // semesterGoal 是目标里程（米），不是次数。
-    assert!(status.contains("学期目标里程：1 m"), "{status}");
+    // 插件层不许自造「学期目标」（55c6437 撤掉了）→ 没给公里目标就明说，
+    // 并且不许说「已达标」。
     assert!(
-        status.contains("达标判定：有效 6.29 km ≥ 目标 1 m → 已达标"),
+        status.contains("学期目标：**服务端未给出公里目标**"),
         "{status}"
     );
+    assert!(status.contains("不能据此说「已达标」"), "{status}");
     assert!(status.contains("有效里程：6.29 km"), "{status}");
     assert!(status.contains("学期剩余：45 天"), "{status}");
 
