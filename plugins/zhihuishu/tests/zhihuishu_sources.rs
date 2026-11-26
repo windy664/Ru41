@@ -1378,3 +1378,147 @@ async fn legacy_duplicate_todos_are_deduped() {
     .unwrap();
     assert_eq!(new.status, TodoStatus::Active, "当前待办不该被动");
 }
+
+// ── 2026-11-26 生产实况回归：作业状态的三个判据 ────────────────────────────
+
+/// 已完成的作业**不是「过期」**：截止时间在昨天、作业今天已交，
+/// 报「⚠️已过期」纯属噪音（用户原话「什么叫作业已过期了」）。
+#[tokio::test]
+async fn completed_task_with_past_deadline_is_not_overdue() {
+    let dir = tempfile::tempdir().unwrap();
+    let store = make_store(dir.path());
+    let channel = mock_channel();
+    let mut report_value = sample_report_json();
+    report_value["courses"][0]["tasks"] = json!([{
+        "activity_task_id": "DONE",
+        "title": "已交的作业",
+        "kind": "assignment",
+        "end_at": platform_time(-2),          // 截止在两天前
+        "completed": true,                    // 但已完成
+        "content": "这是一份已经提交的作业，内容足够长以通过实质作业判定。"
+    }]);
+    let path = write_report(dir.path(), &report_value);
+    let tracker = make_tracker(&store, path, Some(channel.clone()));
+
+    let report = tracker.poll_once().await.unwrap();
+    assert!(
+        report.overdue.is_empty(),
+        "已完成的作业不该进过期列表: {:?}",
+        report.overdue
+    );
+    // 推送文案里也不该出现「已过期」。
+    let sent = channel.sent.lock().unwrap();
+    assert!(
+        !sent.iter().any(|m| m.contains("已过期")),
+        "已完成作业不该被报成过期: {sent:?}"
+    );
+}
+
+/// 平台有作业**不给 activityTaskId**：空 id 会让 key 变成「课程名#」，
+/// 同一课程的不同作业撞进同一个 key，标题/截止互相覆盖。
+#[tokio::test]
+async fn empty_task_id_uses_title_in_key() {
+    let dir = tempfile::tempdir().unwrap();
+    let store = make_store(dir.path());
+    let mut report_value = sample_report_json();
+    report_value["courses"][0]["tasks"] = json!([
+        {
+            "activity_task_id": "",
+            "title": "第一次作业",
+            "kind": "assignment",
+            "end_at": platform_time(1),
+            "completed": false,
+            "content": "第一次作业的正文，内容足够长以通过实质作业判定。"
+        },
+        {
+            "activity_task_id": "",
+            "title": "第二次作业",
+            "kind": "assignment",
+            "end_at": platform_time(2),
+            "completed": false,
+            "content": "第二次作业的正文，内容足够长以通过实质作业判定。"
+        }
+    ]);
+    let path = write_report(dir.path(), &report_value);
+    let tracker = make_tracker(&store, path, None);
+
+    tracker.poll_once().await.unwrap();
+    let docs = store.documents("zhihuishu_task", 100).unwrap();
+    let titles: Vec<String> = docs
+        .iter()
+        .map(|d| d.value["title"].as_str().unwrap_or_default().to_owned())
+        .collect();
+    assert!(
+        titles.contains(&"第一次作业".to_owned()) && titles.contains(&"第二次作业".to_owned()),
+        "两条空 id 作业必须各占一条快照（不能撞 key）: {titles:?}"
+    );
+    // key 里不能留空尾巴。
+    assert!(
+        !docs.iter().any(|d| d.id.ends_with('#')),
+        "不该再出现「课程名#」这种空尾巴 key: {:?}",
+        docs.iter().map(|d| &d.id).collect::<Vec<_>>()
+    );
+}
+
+/// 整门课在报告里**完全消失**（平台不再返回）且报告新鲜 → 连续两轮后归档，
+/// 否则 `/作业` 里会长期挂着「⚠️已过期」的僵尸条目。
+#[tokio::test]
+async fn vanished_course_snapshot_is_archived_after_rounds() {
+    let dir = tempfile::tempdir().unwrap();
+    let store = make_store(dir.path());
+    // 先跑一轮让快照存在（报告里有这门课）。
+    let mut report_value = sample_report_json();
+    report_value["courses"][0]["tasks"] = json!([{
+        "activity_task_id": "V1",
+        "title": "会消失的作业",
+        "kind": "assignment",
+        "end_at": platform_time(-1),
+        "completed": false,
+        "content": "一门之后会从平台消失的课，正文足够长以通过实质作业判定。"
+    }]);
+    let path = write_report(dir.path(), &report_value);
+    let tracker = make_tracker(&store, path.clone(), None);
+    tracker.poll_once().await.unwrap();
+    assert!(
+        store
+            .document("zhihuishu_task", "职业生涯规划#V1")
+            .unwrap()
+            .is_some(),
+        "首轮快照应存在"
+    );
+
+    // 第二轮：报告里这门课整个消失（但报告本身新鲜）。
+    let mut vanished = sample_report_json();
+    vanished["courses"] = json!([{
+        "title": "另一门课",
+        "platform": "polymas",
+        "content_published": true,
+        "tasks": [{
+            "activity_task_id": "LIVE",
+            "title": "还在的作业",
+            "kind": "assignment",
+            "end_at": platform_time(1),
+            "completed": false,
+            "content": "另一门课的真实作业，正文足够长以通过实质作业判定。"
+        }]
+    }]);
+    std::fs::write(&path, serde_json::to_vec_pretty(&vanished).unwrap()).unwrap();
+    let tracker = make_tracker(&store, path.clone(), None);
+    let report = tracker.poll_once().await.unwrap();
+    assert_eq!(report.archived, 0, "第一轮消失只记缺失次数，不归档");
+
+    // 第三轮：连续第二轮消失 → 归档。
+    std::fs::write(&path, serde_json::to_vec_pretty(&vanished).unwrap()).unwrap();
+    let tracker = make_tracker(&store, path.clone(), None);
+    let report = tracker.poll_once().await.unwrap();
+    assert_eq!(report.archived, 1, "连续两轮消失后应归档僵尸快照");
+    let snap = store
+        .document("zhihuishu_task", "职业生涯规划#V1")
+        .unwrap()
+        .unwrap();
+    assert_eq!(
+        snap.value["archived"].as_bool(),
+        Some(true),
+        "快照应标记为已归档: {snap:?}"
+    );
+}

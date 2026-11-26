@@ -203,7 +203,18 @@ impl ZhihuishuTracker {
                     continue;
                 }
                 tasks += 1;
-                let key = format!("{}#{}", course.title, task.activity_task_id);
+                // ⚠️ 平台有作业**不给 activityTaskId**（2026-11-26 实测：
+                // 「程序设计基础2026年秋冬学期」「高等数学I(理)2026年秋冬学期」
+                // 各有一条空 id 作业）。空 id 会让 key 变成「课程名#」——
+                // 同一课程的不同作业撞进同一个 key，标题/截止时间互相覆盖，
+                // 而且整门课不再被采集时快照永不归档 → 清单里长期挂着
+                // 「⚠️已过期」的僵尸条目。空 id 用**标题**兜底（标题不同 → key 不同）。
+                let task_key = if task.activity_task_id.trim().is_empty() {
+                    format!("t:{}", task.title)
+                } else {
+                    task.activity_task_id.clone()
+                };
+                let key = format!("{}#{}", course.title, task_key);
                 seen_tasks.insert(key.clone(), (course.title.clone(), task.title.clone()));
                 let is_exam_style = task.exam_duration_minutes.unwrap_or(0) > 0
                     || task.video_invigilate == Some(true);
@@ -215,7 +226,11 @@ impl ZhihuishuTracker {
                 // 展示/兜底用: 未知按「未完成」提醒(宁可多提醒也别漏截止), 但不参与状态翻转。
                 let completed = completed_state.unwrap_or(false);
                 let end_ts = task.end_at.as_deref().and_then(parse_platform_time);
-                let is_overdue = end_ts.map(|end| end < now).unwrap_or(false);
+                // ⚠️ **已完成的作业不是「过期」**（2026-11-26 修）：截止时间在昨天
+                // 而作业今天已交 —— 这时候报「已过期」纯属噪音，用户看到的是
+                // 「我明明交了，怎么说过期了」。只有**没交**且截止已过才叫过期。
+                // 完成态未知(None)按未完成算（宁可多提醒也别漏截止）。
+                let is_overdue = !is_completed && end_ts.map(|end| end < now).unwrap_or(false);
                 let is_due_soon = end_ts
                     .map(|end| !is_overdue && end - now <= urgent_window)
                     .unwrap_or(false);
@@ -532,7 +547,7 @@ impl ZhihuishuTracker {
 
         // 归档僵尸快照：平台换掉/删掉作业后，旧 key 永远不再出现在报告里，
         // 但快照一直留着 completed=false —— /作业 会永远挂一条其实已完成(且已过期)的作业。
-        let archived = self.archive_stale_tasks(&report, &seen_tasks, now)?;
+        let archived = self.archive_stale_tasks(&report, &seen_tasks, now, !stale)?;
         // 同一条作业只留一条 active 待办（历史遗留的重开重复条目在这里收口）。
         let deduped = self.dedupe_task_todos(now)?;
 
@@ -702,12 +717,19 @@ impl ZhihuishuTracker {
     /// 判定（保守，宁可多留也不误删）：
     /// - 同课程同标题出现新 key → 平台重发了作业 → 立即归档，记 `superseded_by`；
     /// - 课程本轮仍采到任务、但该 key 连续 `STALE_MISSING_ROUNDS` 轮没出现 → 归档；
-    /// - 本轮整门课没采到任务（采集失败/页面改版）→ 整门课跳过，不做任何判定。
+    /// - 本轮整门课没采到任务（采集失败/页面改版）→ 整门课跳过，不做任何判定；
+    /// - **整门课在报告里完全消失**（平台不再返回它）且报告本身新鲜 →
+    ///   连续 `STALE_MISSING_ROUNDS` 轮消失后归档（2026-11-26 加）。
+    ///   之前这类快照永不归档 → `/作业` 里长期挂着「⚠️已过期」的僵尸
+    ///   （实测「程序设计基础2026年秋冬学期」整门课平台已不返回，
+    ///   快照里那条 11-23 截止的作业一直挂着已过期）。
+    ///   只在报告新鲜时做这个判定：报告过期说明是采集器挂了，不是平台变了。
     fn archive_stale_tasks(
         &self,
         report: &ZhihuishuReport,
         seen_tasks: &BTreeMap<String, (String, String)>,
         now: i64,
+        report_fresh: bool,
     ) -> Result<usize> {
         // 本轮至少采到一条任务的课程：只有这些课程的任务集合才可信。
         let live_courses: BTreeSet<&str> = report
@@ -719,6 +741,9 @@ impl ZhihuishuTracker {
         if live_courses.is_empty() {
             return Ok(0);
         }
+        // 报告里出现过的所有课程（哪怕这轮没采到任务）。
+        let report_courses: BTreeSet<&str> =
+            report.courses.iter().map(|c| c.title.as_str()).collect();
 
         let mut archived = 0usize;
         for doc in self.store.documents("zhihuishu_task", 500)? {
@@ -737,8 +762,13 @@ impl ZhihuishuTracker {
                 .and_then(serde_json::Value::as_str)
                 .unwrap_or_default();
             if !live_courses.contains(course) {
-                // 这门课本轮没采到任务（采集失败）→ 不判定，也不归档。
-                continue;
+                // 整门课在报告里**完全消失** + 报告新鲜 → 平台不再返回这门课，
+                // 走缺失轮次计数（连续 N 轮消失才归档，见下）。
+                let vanished = report_fresh && !report_courses.contains(course);
+                if !vanished {
+                    // 这门课本轮没采到任务（采集失败/页面改版）→ 不判定，也不归档。
+                    continue;
+                }
             }
             if doc
                 .value
@@ -1569,11 +1599,14 @@ print("\n".join(out))
 fn task_line(task: &ZhihuishuTask, now: i64) -> String {
     let date = task.end_at.as_deref().and_then(|s| s.get(..10));
     let exam = task.exam_duration_minutes.unwrap_or(0) > 0 || task.video_invigilate == Some(true);
-    let overdue = task
-        .end_at
-        .as_deref()
-        .and_then(parse_platform_time)
-        .is_some_and(|end| end < now);
+    // ⚠️ 已完成的作业**不标「已过期」**（2026-11-26 修）：截止时间在昨天、
+    // 作业今天已交 —— 「我明明交了，怎么说过期了」。同 service.rs 的 is_overdue。
+    let overdue = task.completed != Some(true)
+        && task
+            .end_at
+            .as_deref()
+            .and_then(parse_platform_time)
+            .is_some_and(|end| end < now);
     let mut line = String::new();
     if overdue {
         line.push_str("⚠️已过期 ");
