@@ -290,7 +290,9 @@ async fn finish(
     fallback_reason: Option<String>,
     engine: Option<&str>,
 ) -> Result<serde_json::Value> {
-    if text_only {
+    // --text-out 单独给也要生效（不要求同时给 --text-only）：
+    // 调用方要的是「文本写到这个文件」，stdout 形式是另一回事。
+    if text_only || text_out.is_some() {
         let text = transcript.full_text();
         if let Some(path) = text_out {
             // 子进程调用走文件：宿主 CLI 会把返回值打成 JSON，stdout 混不进纯文本。
