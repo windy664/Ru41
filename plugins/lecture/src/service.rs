@@ -243,6 +243,30 @@ impl LectureWorker {
     /// （长上下文里模型容易漏中段，失败重跑也要重付整段 token）。
     async fn transcribe(&self, item: &PendingItem) -> Result<Transcript> {
         let work = self.config.workspace.join(&item.msg_id);
+        // ── 听悟优先（2026-11-26）────────────────────────────────────────
+        // 注册表里若有人提供更强的转写能力（听悟：云端、**带说话人分离 + 时间戳**），
+        // 就先用它；它失败（配额用完 / cookie 过期 / 网络抽风）时自动回落到
+        // 下面的本地 ASR（切片 + whisper.cpp / paraformer，只有字）。
+        // 顺序是用户定的：**先走听悟，兜底本地**。
+        if let Some(transcriber) = ru41::ports::transcriber::find_transcriber("tingwu") {
+            let raw = work.join("raw").join(&item.filename);
+            match transcriber.transcribe(self.store.clone(), &raw).await {
+                Ok(text) if !text.trim().is_empty() => {
+                    let transcript_path = work.join("transcript.md");
+                    let _ = std::fs::write(&transcript_path, &text);
+                    return Ok(Transcript {
+                        text,
+                        path: transcript_path,
+                    });
+                }
+                Ok(_) => {
+                    eprintln!("[lecture] 听悟返回空文本，改用本地 ASR");
+                }
+                Err(error) => {
+                    eprintln!("[lecture] 听悟转写失败，改用本地 ASR：{error:#}");
+                }
+            }
+        }
         let slices_dir = work.join("slices");
         std::fs::create_dir_all(&slices_dir)
             .with_context(|| format!("创建工作目录失败 {}", slices_dir.display()))?;

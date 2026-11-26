@@ -77,7 +77,10 @@ fn output_dir(config: &ru41::bootstrap::config::Config, section: &TingwuSection)
 }
 
 /// 从凭据托管库取听悟 cookie（真值只在这里出现，不进模型上下文）。
-fn cookie_from_store(store: &dyn ru41::ports::storage::TaskStore, label: &str) -> Result<String> {
+pub fn cookie_from_store(
+    store: &dyn ru41::ports::storage::TaskStore,
+    label: &str,
+) -> Result<String> {
     let doc = ru41::domain::credential::resolve(store, label)?.ok_or_else(|| {
         anyhow::anyhow!(
             "凭据托管库里没有名为「{label}」的凭据（听悟 cookie）。\

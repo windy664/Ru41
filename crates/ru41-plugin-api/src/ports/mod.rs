@@ -3,3 +3,4 @@ pub mod consumers;
 pub mod events;
 pub mod media;
 pub mod storage;
+pub mod transcriber;

@@ -21,10 +21,12 @@
 pub mod cli;
 pub mod client;
 pub mod config;
+pub mod transcriber;
 
 pub use cli::{MODULE_NAME, tingwu_cli};
 pub use client::{TingwuClient, Transcript};
 pub use config::TingwuSection;
+pub use transcriber::TingwuTranscriber;
 
 /// 凭据托管库里存听悟 cookie 的那条凭据的名字（默认）。
 pub const CREDENTIAL_LABEL: &str = "tingwu-cookie";
@@ -43,10 +45,21 @@ pub static DEF: ru41::modules::ModuleDef = ru41::modules::ModuleDef {
     cli: tingwu_cli,
 };
 
+/// 宿主加载时注册转写能力（听悟优先 → 本地兜底）。
+///
+/// 每个 ru41 容器都会加载全部插件，所以每个进程的注册表里都有这一项；
+/// `lecture` 的 worker 转写前查表就能用上听悟。
+fn register_def() -> ru41::modules::ModuleDef {
+    ru41::ports::transcriber::register_transcriber(std::sync::Arc::new(
+        TingwuTranscriber::default(),
+    ));
+    DEF
+}
+
 /// 宿主加载入口（插件不用 linkme，走显式注册）。
 #[cfg(feature = "plugin-entry")]
 #[allow(improper_ctypes_definitions)]
 #[unsafe(no_mangle)]
 pub extern "C" fn ru41_plugin_entry() -> ru41::plugins::PluginEntry {
-    ru41::plugins::PluginEntry::new(MODULE_NAME, || DEF)
+    ru41::plugins::PluginEntry::new(MODULE_NAME, register_def)
 }
