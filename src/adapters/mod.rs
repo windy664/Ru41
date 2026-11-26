@@ -8,5 +8,7 @@ pub mod database;
 /// Embedding 适配器：ports::embedding::Embedder 的实现（本地 fastembed）。
 pub mod embedding;
 pub mod sources;
+/// 通义听悟转写客户端（音视频 → 带说话人分离的逐字稿）。
+pub mod tingwu;
 /// Vault 适配器：ports::Vault 的 git 工作副本实现。
 pub mod vault;

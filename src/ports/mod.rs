@@ -7,5 +7,4 @@ pub mod embedding;
 pub mod events;
 pub mod interaction;
 pub mod storage;
-pub mod transcriber;
 pub mod vault;

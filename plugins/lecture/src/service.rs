@@ -244,43 +244,60 @@ impl LectureWorker {
     async fn transcribe(&self, item: &PendingItem) -> Result<Transcript> {
         let work = self.config.workspace.join(&item.msg_id);
         // ── 听悟优先（2026-11-26）────────────────────────────────────────
-        // 注册表里若有人提供更强的转写能力（听悟：云端、**带说话人分离 + 时间戳**），
-        // 就先用它；它失败（配额用完 / cookie 过期 / 网络抽风）时自动回落到
-        // 下面的本地 ASR（切片 + whisper.cpp / paraformer，只有字）。
-        // 顺序是用户定的：**先走听悟，兜底本地**。配置 `transcriber = "local"`
-        // 可强制只用本地（不碰云端、不耗听悟额度）。
+        // 顺序是用户定的：**先走通义听悟，兜底本地**。
+        // 听悟客户端在宿主 crate（`ru41::adapters::tingwu`）—— 两个插件之间
+        // 没有共享状态的通道（各自静态链接的 cdylib，全局变量各存各的），
+        // 所以要让 lecture 用上听悟，客户端必须放在宿主侧。
+        // 听悟失败（配额用完 / cookie 过期 / 网络抽风）→ 回落下面的本地 ASR
+        // （切片 + whisper.cpp / paraformer，只有字，没有说话人分离）。
+        // 配置 `transcriber = "local"` 可强制只用本地（不碰云端、不耗额度）。
         let transcriber_id = self.config.transcriber.as_str();
-        if !transcriber_id.is_empty() {
-            if let Some(transcriber) = ru41::ports::transcriber::find_transcriber(transcriber_id) {
+        if !transcriber_id.is_empty() && transcriber_id != "local" {
+            let cookie = match ru41::domain::credential::resolve(
+                self.store.as_ref(),
+                &self.config.tingwu_credential,
+            ) {
+                Ok(Some(doc)) => doc.value["value"].as_str().unwrap_or("").trim().to_owned(),
+                Ok(None) => {
+                    eprintln!("[lecture] 凭据库里没有听悟 cookie，改用本地 ASR");
+                    String::new()
+                }
+                Err(error) => {
+                    eprintln!("[lecture] 取听悟 cookie 失败，改用本地 ASR：{error:#}");
+                    String::new()
+                }
+            };
+            if !cookie.is_empty() {
+                let config = ru41::adapters::tingwu::TingwuConfig::default();
                 let raw = work.join("raw").join(&item.filename);
-                match transcriber.transcribe(self.store.clone(), &raw).await {
-                    Ok(text) if !text.trim().is_empty() => {
-                        eprintln!(
-                            "[lecture] 走 {} 转写完成：{} 字（{}）",
-                            transcriber_id,
-                            text.chars().count(),
-                            item.filename
-                        );
-                        let transcript_path = work.join("transcript.md");
-                        let _ = std::fs::write(&transcript_path, &text);
-                        return Ok(Transcript {
-                            text,
-                            path: transcript_path,
-                        });
-                    }
-                    Ok(_) => {
-                        eprintln!("[lecture] {transcriber_id} 返回空文本，改用本地 ASR");
-                    }
+                let client = ru41::adapters::tingwu::TingwuClient::new(&cookie, &config);
+                match client {
+                    Ok(client) => match client.transcribe(&raw).await {
+                        Ok(transcript) if !transcript.full_text().trim().is_empty() => {
+                            let text = transcript.full_text();
+                            eprintln!(
+                                "[lecture] 走听悟转写完成：{} 字（{}）",
+                                text.chars().count(),
+                                item.filename
+                            );
+                            let transcript_path = work.join("transcript.md");
+                            let _ = std::fs::write(&transcript_path, &text);
+                            return Ok(Transcript {
+                                text,
+                                path: transcript_path,
+                            });
+                        }
+                        Ok(_) => {
+                            eprintln!("[lecture] 听悟返回空文本，改用本地 ASR");
+                        }
+                        Err(error) => {
+                            eprintln!("[lecture] 听悟转写失败，改用本地 ASR：{error:#}");
+                        }
+                    },
                     Err(error) => {
-                        eprintln!(
-                            "[lecture] {transcriber_id} 转写失败，改用本地 ASR：{error:#}"
-                        );
+                        eprintln!("[lecture] 建听悟客户端失败，改用本地 ASR：{error:#}");
                     }
                 }
-            } else {
-                eprintln!(
-                    "[lecture] 没找到转写能力 {transcriber_id}（插件未注册？），用本地 ASR"
-                );
             }
         }
         let slices_dir = work.join("slices");

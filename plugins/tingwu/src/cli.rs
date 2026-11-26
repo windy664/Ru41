@@ -23,7 +23,7 @@ use std::sync::Arc;
 
 use anyhow::{Context, Result, bail};
 
-use crate::client::{TingwuClient, Transcript, render_markdown, render_srt, render_text};
+use ru41::adapters::tingwu::{TingwuClient, Transcript, render_markdown, render_srt, render_text};
 use crate::config::TingwuSection;
 
 pub const MODULE_NAME: &str = "tingwu";
@@ -170,7 +170,7 @@ async fn dispatch(
                         "status": task.status,
                         "duration_secs": task.duration_secs,
                         "word_count": task.word_count,
-                        "show_time": crate::client::format_time(task.show_time_ms),
+                        "show_time": ru41::adapters::tingwu::format_time(task.show_time_ms),
                     })
                 })
                 .collect();
@@ -228,7 +228,7 @@ fn build_client(
     store: &dyn ru41::ports::storage::TaskStore,
 ) -> Result<TingwuClient> {
     let cookie = cookie_from_store(store, section.credential())?;
-    TingwuClient::new(&cookie, section)
+    TingwuClient::new(&cookie, &section.client_config())
 }
 
 /// 解析 `transcribe` 的参数：文件路径 + 可选 `--format`。

@@ -26,7 +26,7 @@ use std::time::{Duration, Instant};
 use anyhow::{Context, Result, bail};
 use serde_json::{Value, json};
 
-use crate::config::TingwuSection;
+use super::config::TingwuConfig;
 
 const BASE: &str = "https://tingwu.aliyun.com";
 /// 浏览器 UA —— 听悟对 UA 有校验。
@@ -167,7 +167,7 @@ pub struct TingwuClient {
 }
 
 impl TingwuClient {
-    pub fn new(cookie: &str, section: &TingwuSection) -> Result<Self> {
+    pub fn new(cookie: &str, section: &TingwuConfig) -> Result<Self> {
         let http = reqwest::Client::builder()
             .user_agent(UA)
             .timeout(Duration::from_secs(120))
@@ -180,12 +180,12 @@ impl TingwuClient {
         Ok(Self {
             http,
             cookie: cookie.to_owned(),
-            poll_timeout: section.poll_timeout(),
-            poll_interval: section.poll_interval(),
-            max_file_bytes: section.max_file_bytes(),
-            merge_gap_ms: section.merge_gap_ms(),
-            local_asr_base_url: section.local_asr_base_url(),
-            local_asr_api: section.local_asr_api(),
+            poll_timeout: section.poll_timeout,
+            poll_interval: section.poll_interval,
+            max_file_bytes: section.max_file_bytes,
+            merge_gap_ms: section.merge_gap_ms,
+            local_asr_base_url: section.local_asr_base_url.clone(),
+            local_asr_api: section.local_asr_api.clone(),
         })
     }
 
