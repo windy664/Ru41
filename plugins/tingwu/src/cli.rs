@@ -108,18 +108,13 @@ async fn dispatch(
 
     match command.as_str() {
         "transcribe" | "转写" | "转录" => {
-            let (path, format) = parse_transcribe_args(&rest)?;
+            let (path, format, text_out) = parse_transcribe_args(&rest)?;
             // --text-only：只出纯文本（给别的插件/脚本调），不落盘逐字稿。
             // --text-out <路径>：纯文本写到该文件（**子进程调用走这条**：
             //   宿主 CLI 会把插件返回值打成 JSON，stdout 混不进纯文本）。
             // --no-quota-check：跳过额度预检（默认要查）。
             // --no-fallback：听悟失败**不**在插件内回落本地（由调用方决定兜底）。
             let text_only = rest.iter().any(|arg| arg == "--text-only");
-            let text_out = rest
-                .iter()
-                .position(|arg| arg == "--text-out")
-                .and_then(|index| rest.get(index + 1))
-                .map(PathBuf::from);
             let quota_check = !rest.iter().any(|arg| arg == "--no-quota-check");
             let fallback = section.fallback_local()
                 && !rest.iter().any(|arg| arg == "--no-fallback");
@@ -351,14 +346,28 @@ fn build_client(
     TingwuClient::new(&cookie, section)
 }
 
-/// 解析 `transcribe` 的参数：文件路径 + 可选 `--format`。
-fn parse_transcribe_args(args: &[String]) -> Result<(PathBuf, Format)> {
+/// 解析 `transcribe` 的参数：文件路径 + 可选 `--format` + 可选 `--text-out`。
+///
+/// `--text-only` / `--no-fallback` / `--no-quota-check` 是**纯标志**：
+/// 这里跳过（dispatch 里再读），别当成未知参数拒掉。
+fn parse_transcribe_args(args: &[String]) -> Result<(PathBuf, Format, Option<PathBuf>)> {
     let mut path: Option<PathBuf> = None;
     let mut format = Format::Markdown;
+    let mut text_out: Option<PathBuf> = None;
     let mut index = 0;
     while index < args.len() {
         let arg = args[index].trim();
-        if let Some(value) = arg.strip_prefix("--format=") {
+        if arg == "--text-only" || arg == "--no-fallback" || arg == "--no-quota-check" {
+            // 纯标志：dispatch 里读。
+        } else if arg == "--text-out" {
+            let value = args
+                .get(index + 1)
+                .ok_or_else(|| anyhow::anyhow!("--text-out 后面要给文件路径"))?;
+            text_out = Some(PathBuf::from(value.trim()));
+            index += 1;
+        } else if let Some(value) = arg.strip_prefix("--text-out=") {
+            text_out = Some(PathBuf::from(value.trim()));
+        } else if let Some(value) = arg.strip_prefix("--format=") {
             format = Format::parse(value).ok_or_else(|| {
                 anyhow::anyhow!("未知格式 {value}（可用：markdown / text / srt）")
             })?;
@@ -380,7 +389,7 @@ fn parse_transcribe_args(args: &[String]) -> Result<(PathBuf, Format)> {
         index += 1;
     }
     let path = path.ok_or_else(|| anyhow::anyhow!("用法：ru41 tingwu transcribe <音视频文件>"))?;
-    Ok((path, format))
+    Ok((path, format, text_out))
 }
 
 /// 解析 `result` 的参数：任务 ID + 可选 `--format`。
@@ -712,7 +721,7 @@ mod tests {
             "--format".to_owned(),
             "srt".to_owned(),
         ];
-        let (path, format) = parse_transcribe_args(&args).expect("应解析成功");
+        let (path, format, _) = parse_transcribe_args(&args).expect("应解析成功");
         assert_eq!(path, PathBuf::from("/data/a.mp3"));
         assert_eq!(format, Format::Srt);
     }
@@ -720,8 +729,24 @@ mod tests {
     #[test]
     fn parses_transcribe_arguments_with_equals() {
         let args = vec!["/data/a.mp3".to_owned(), "--format=text".to_owned()];
-        let (_, format) = parse_transcribe_args(&args).expect("应解析成功");
+        let (_, format, _) = parse_transcribe_args(&args).expect("应解析成功");
         assert_eq!(format, Format::Text);
+    }
+
+    #[test]
+    fn parses_new_flags_for_other_plugins() {
+        // --text-out / --text-only / --no-fallback 是给「别的插件调用」用的，
+        // 不能被当成未知参数拒掉。
+        let args = vec![
+            "/data/a.mp3".to_owned(),
+            "--text-only".to_owned(),
+            "--no-fallback".to_owned(),
+            "--text-out".to_owned(),
+            "/tmp/out.txt".to_owned(),
+        ];
+        let (path, _, text_out) = parse_transcribe_args(&args).expect("应解析成功");
+        assert_eq!(path, PathBuf::from("/data/a.mp3"));
+        assert_eq!(text_out, Some(PathBuf::from("/tmp/out.txt")));
     }
 
     #[test]
