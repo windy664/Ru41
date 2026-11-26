@@ -148,20 +148,8 @@ impl ru41::ingress::schedule::SimplePollJob for CampusrunTracker {
 
     async fn poll(&self) -> anyhow::Result<Self::Report> {
         let client = self.client.clone();
-        let info = client
-            .semester()
-            .await
-            .map_err(|error| anyhow::anyhow!("{error}"))?;
-        let records = client
-            .records()
-            .await
-            .map_err(|error| anyhow::anyhow!("{error}"))?;
-        let cheat = client
-            .cheat()
-            .await
-            .map_err(|error| anyhow::anyhow!("{error}"))?;
-        // 事后复查：提交满 3 天的上一条，服务器有没有事后回扫判违规。
-        // 判了就在 QQ 上主动说一句 —— 别等几天后自己发现成绩没计进去。
+        // 事后复查放在**最前面**：它只依赖「上次提交的 rrid」，
+        // 不该被后面的取数失败连累（没登录/网络抽风时也要能查）。
         let review = match self.store.as_ref() {
             Some(store) => {
                 crate::review::review_last_submit(
@@ -177,6 +165,19 @@ impl ru41::ingress::schedule::SimplePollJob for CampusrunTracker {
             }
             None => None,
         };
+        let info = client
+            .semester()
+            .await
+            .map_err(|error| anyhow::anyhow!("{error}"))?;
+        let records = client
+            .records()
+            .await
+            .map_err(|error| anyhow::anyhow!("{error}"))?;
+        let cheat = client
+            .cheat()
+            .await
+            .map_err(|error| anyhow::anyhow!("{error}"))?;
+
         let km = |meters: Option<f64>| meters.map(|m| (m / 1000.0 * 100.0).round() / 100.0);
         Ok(serde_json::json!({
             "semester": info.summary_raw.sname,
