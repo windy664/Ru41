@@ -239,17 +239,7 @@ impl TingwuClient {
     /// 调用方应当直接改走本地 ASR。
     pub async fn quota_sufficient(&self, audio_secs: f64) -> Result<Option<String>> {
         let quota = self.quota().await?;
-        let remaining = quota.remaining_secs;
-        // 留 5% 余量：听悟的计费口径与服务端统计可能差几分钟。
-        let need = (audio_secs * 1.05).ceil() as i64;
-        if remaining < need {
-            return Ok(Some(format!(
-                "听悟剩余时长不足：剩 {:.1} 小时，这段音频要 {:.1} 小时",
-                remaining as f64 / 3600.0,
-                need as f64 / 3600.0
-            )));
-        }
-        Ok(None)
+        Ok(quota_gate(quota.remaining_secs, audio_secs))
     }
 
     /// 媒体时长（秒）：用 ffprobe 读容器里的音轨时长。
@@ -1102,5 +1092,59 @@ mod speaker_mode_tests {
     fn single_speaker_is_not_turn_index() {
         let sentences = vec![sentence(1, 0, 500, "甲"), sentence(1, 500, 1000, "乙")];
         assert!(!is_turn_index(&sentences));
+    }
+}
+
+
+/// 额度闸门（纯函数，便于单测）：剩余时长够不够这一段音频。
+///
+/// 听悟按**音频时长**计费。返回 `Some(原因)` = 不够（别上传），
+/// `None` = 够（可以传）。
+///
+/// - 留 5% 余量：听悟的计费口径与服务端统计可能差几分钟。
+/// - 音频时长读不到（0）时一律放行 —— 不知道时长就不该拦人。
+pub fn quota_gate(remaining_secs: i64, audio_secs: f64) -> Option<String> {
+    if audio_secs <= 0.0 {
+        return None;
+    }
+    let need = (audio_secs * 1.05).ceil() as i64;
+    if remaining_secs < need {
+        return Some(format!(
+            "听悟剩余时长不足：剩 {:.1} 小时，这段音频要 {:.1} 小时",
+            remaining_secs as f64 / 3600.0,
+            need as f64 / 3600.0
+        ));
+    }
+    None
+}
+
+#[cfg(test)]
+mod quota_gate_tests {
+    use super::quota_gate;
+
+    #[test]
+    fn enough_quota_passes() {
+        // 剩 400 小时，听 1 小时的音频 ⇒ 够
+        assert!(quota_gate(400 * 3600, 3600.0).is_none());
+    }
+
+    #[test]
+    fn short_quota_blocks_upload() {
+        // 剩 1 小时，听 2 小时的音频 ⇒ 不够，不该白上传
+        let reason = quota_gate(3600, 7200.0).expect("额度不够该拦住");
+        assert!(reason.contains("不足"), "{reason}");
+    }
+
+    #[test]
+    fn borderline_keeps_five_percent_margin() {
+        // 正好 100 分钟音频要 105 分钟额度 ⇒ 只剩 104 分钟时不够
+        assert!(quota_gate(104 * 60, 100.0 * 60.0).is_some());
+        assert!(quota_gate(105 * 60, 100.0 * 60.0).is_none());
+    }
+
+    #[test]
+    fn unknown_duration_does_not_block() {
+        // 读不到音频时长（0）时一律放行 —— 不知道就不拦人
+        assert!(quota_gate(0, 0.0).is_none());
     }
 }
