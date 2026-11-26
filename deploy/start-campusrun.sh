@@ -17,12 +17,26 @@ NAME="ru41-campusrun"
 
 docker rm -f "$NAME" >/dev/null 2>&1 || true
 
+# 令牌从**现有容器**直接取（真值只在主机内存里过一手，不落盘、不进 git、不进日志）。
+# 取不到再退到 pace-forge 的 compose（那里也有同一个值）。
+TOKEN="$(docker inspect ru41-qq --format '{{range .Config.Env}}{{println .}}{{end}}' 2>/dev/null \
+  | sed -n 's/^PACE_FORGE_TOKEN=//p' | head -1)"
+if [ -z "$TOKEN" ]; then
+  TOKEN="$(sed -n 's/^ *PACE_FORGE_TOKEN: *"\(.*\)" *$/\1/p' \
+    "$HOME/apps/pace-forge/compose.yaml" 2>/dev/null | head -1)"
+fi
+if [ -z "$TOKEN" ]; then
+  echo "[campusrun] 拿不到 PACE_FORGE_TOKEN —— 复查会一直失败（看 pace-forge/compose.yaml）" >&2
+  exit 1
+fi
+
 docker run -d --name "$NAME" \
   --network ru41-net \
   --restart unless-stopped \
   -e TZ=Asia/Shanghai \
   -e HOME=/home/node \
   -e CODEX_HOME=/data/codex \
+  -e PACE_FORGE_TOKEN="$TOKEN" \
   -v "$ROOT/plugins.d:/etc/ru41/plugins.d:ro" \
   -v "$ROOT/ru41.toml:/etc/ru41/ru41.toml:ro" \
   -v "$ROOT/skills:/usr/share/ru41/plugins:ro" \
