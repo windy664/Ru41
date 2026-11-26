@@ -148,11 +148,11 @@ impl ru41::ingress::schedule::SimplePollJob for CampusrunTracker {
 
     async fn poll(&self) -> anyhow::Result<Self::Report> {
         let client = self.client.clone();
-        // 事后复查放在**最前面**：它只依赖「上次提交的 rrid」，
+        // 事后复查放在**最前面**：它只依赖「服务端记录列表 + 记录详情」，
         // 不该被后面的取数失败连累（没登录/网络抽风时也要能查）。
-        let review = match self.store.as_ref() {
+        let reviews = match self.store.as_ref() {
             Some(store) => {
-                crate::review::review_last_submit(
+                crate::review::review_recent_records(
                     &client,
                     store.as_ref(),
                     self.notifier.as_ref(),
@@ -160,10 +160,9 @@ impl ru41::ingress::schedule::SimplePollJob for CampusrunTracker {
                     ru41::util::now() * 1000,
                 )
                 .await
-                .ok()
-                .flatten()
+                .unwrap_or_default()
             }
-            None => None,
+            None => Vec::new(),
         };
         let info = client
             .semester()
@@ -188,12 +187,16 @@ impl ru41::ingress::schedule::SimplePollJob for CampusrunTracker {
             "days_left": info.goal.as_ref().and_then(|g| g.days_left),
             "records": records.len(),
             "cheat_status": cheat.status,
-            "review": review.as_ref().map(|outcome| serde_json::json!({
-                "rrid": outcome.rrid,
-                "flagged": outcome.flagged,
-                "cheat_reasons": outcome.cheat_reasons,
-                "can_appeal": outcome.can_appeal,
-            })),
+            "review": {
+                "checked": reviews.len(),
+                "flagged": reviews.iter().filter(|o| o.flagged).count(),
+                "items": reviews.iter().map(|outcome| serde_json::json!({
+                    "rrid": outcome.rrid,
+                    "flagged": outcome.flagged,
+                    "cheat_reasons": outcome.cheat_reasons,
+                    "can_appeal": outcome.can_appeal,
+                })).collect::<Vec<_>>(),
+            },
             "markdown": render::render_all(&info, &records, &cheat),
         }))
     }

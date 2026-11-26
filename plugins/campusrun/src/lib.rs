@@ -1,7 +1,10 @@
-//! 校园跑附属：只读运动世界校园（pace-forge 控制台）的校园跑进度与记录。
+//! 校园跑附属：运动世界校园（pace-forge 控制台）的校园跑进度、记录与提交后复查。
 //!
 //! 数据源是生产机上已部署的 pace-forge 控制台（`http://<host>:9999`）。
-//! 本插件**只读**：学期进度、跑步记录、违规状态；不提交任何跑步记录。
+//! **读**：学期进度、跑步记录、违规状态。
+//! **写（受限）**：`submit` 登记待确认 → `confirm <口令>` 才真提交；
+//! 提交后第 3 天起自动复查有没有被服务端回扫判违规（判了就推 QQ）。
+//! **不自动提交**（定时任务永不提交）、不申诉、不改账号。
 //!
 //! 文档：docs/sources-campusrun.md
 
@@ -48,7 +51,8 @@ pub static DEF: ru41::modules::ModuleDef = ru41::modules::ModuleDef {
         }
         let section = config.sources.get::<CampusrunSection>(MODULE_NAME)?;
         let client = CampusrunClient::new(&section).map_err(|error| anyhow::anyhow!("{error}"))?;
-        // 复查需要凭据托管库（读上次提交的 rrid）与通知通道（判违规了主动告诉用户）。
+        // 复查需要本地台账（记已查过的 rrid，保证同一个 rrid 只推一次）
+        // 与通知通道（判违规了主动告诉用户）。
         let (notifier, target) = ru41::bootstrap::assembly::notify_pair(config, Some(true))?;
         Ok(Some(Box::new(CampusrunTracker::with_review(
             client,
