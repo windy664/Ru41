@@ -10,6 +10,7 @@ use crate::config::CampusrunSection;
 use crate::model::PlanData;
 use crate::render;
 use crate::submit::{LastSubmit, PendingSubmit, RunIntent, RunParams};
+use ru41::ports::channel::NotifyChannel;
 use ru41::ports::storage::TaskStore;
 use std::sync::Arc;
 
@@ -104,11 +105,37 @@ pub async fn fetch_markdown(
 #[derive(Clone)]
 pub struct CampusrunTracker {
     client: CampusrunClient,
+    /// 复查用：读「上次提交」的 rrid、记复查结果。
+    store: Option<Arc<dyn TaskStore>>,
+    /// 复查用：判违规了主动推一条。
+    notifier: Option<Arc<dyn NotifyChannel>>,
+    /// 复查用：推送目标（QQ openid）。
+    target: String,
 }
 
 impl CampusrunTracker {
     pub fn new(client: CampusrunClient) -> Self {
-        Self { client }
+        Self {
+            client,
+            store: None,
+            notifier: None,
+            target: String::new(),
+        }
+    }
+
+    /// 带「事后复查」能力的装配（见 [`crate::review`]）。
+    pub fn with_review(
+        client: CampusrunClient,
+        store: Arc<dyn TaskStore>,
+        notifier: Option<Arc<dyn NotifyChannel>>,
+        target: String,
+    ) -> Self {
+        Self {
+            client,
+            store: Some(store),
+            notifier,
+            target,
+        }
     }
 }
 
@@ -133,6 +160,23 @@ impl ru41::ingress::schedule::SimplePollJob for CampusrunTracker {
             .cheat()
             .await
             .map_err(|error| anyhow::anyhow!("{error}"))?;
+        // 事后复查：提交满 3 天的上一条，服务器有没有事后回扫判违规。
+        // 判了就在 QQ 上主动说一句 —— 别等几天后自己发现成绩没计进去。
+        let review = match self.store.as_ref() {
+            Some(store) => {
+                crate::review::review_last_submit(
+                    &client,
+                    store.as_ref(),
+                    self.notifier.as_ref(),
+                    &self.target,
+                    ru41::util::now() * 1000,
+                )
+                .await
+                .ok()
+                .flatten()
+            }
+            None => None,
+        };
         let km = |meters: Option<f64>| meters.map(|m| (m / 1000.0 * 100.0).round() / 100.0);
         Ok(serde_json::json!({
             "semester": info.summary_raw.sname,
@@ -143,6 +187,12 @@ impl ru41::ingress::schedule::SimplePollJob for CampusrunTracker {
             "days_left": info.goal.as_ref().and_then(|g| g.days_left),
             "records": records.len(),
             "cheat_status": cheat.status,
+            "review": review.as_ref().map(|outcome| serde_json::json!({
+                "rrid": outcome.rrid,
+                "flagged": outcome.flagged,
+                "cheat_reasons": outcome.cheat_reasons,
+                "can_appeal": outcome.can_appeal,
+            })),
             "markdown": render::render_all(&info, &records, &cheat),
         }))
     }

@@ -11,6 +11,7 @@ pub mod config;
 pub mod model;
 pub mod qq_command;
 pub mod render;
+pub mod review;
 pub mod service;
 pub mod submit;
 
@@ -41,13 +42,20 @@ pub static DEF: ru41::modules::ModuleDef = ru41::modules::ModuleDef {
             }),
         )]
     },
-    tracker: |config, _store, name| {
+    tracker: |config, store, name| {
         if name != MODULE_NAME {
             return Ok(None);
         }
         let section = config.sources.get::<CampusrunSection>(MODULE_NAME)?;
         let client = CampusrunClient::new(&section).map_err(|error| anyhow::anyhow!("{error}"))?;
-        Ok(Some(Box::new(CampusrunTracker::new(client))))
+        // 复查需要凭据托管库（读上次提交的 rrid）与通知通道（判违规了主动告诉用户）。
+        let (notifier, target) = ru41::bootstrap::assembly::notify_pair(config, Some(true))?;
+        Ok(Some(Box::new(CampusrunTracker::with_review(
+            client,
+            store,
+            notifier,
+            target,
+        ))))
     },
     qq_handlers: |config, _| {
         let section = config
