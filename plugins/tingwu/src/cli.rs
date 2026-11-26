@@ -645,7 +645,10 @@ async fn clean(
     let mut cloud: Vec<String> = Vec::new();
     let mut kept: Vec<String> = Vec::new();
     let mut skipped_imported: Vec<String> = Vec::new();
-    if options.cloud {
+    // ⚠️ 指定了任务 ID 就**默认**是删云端任务（不给 --cloud 也算）——
+    // 之前 --trans-id 被包在 if options.cloud 里，不给 --cloud 就静默什么都不删
+    // （2026-11-26 实测踩到：以为删掉了，其实一条没动）。
+    if options.cloud || !options.trans_ids.is_empty() {
         if !options.trans_ids.is_empty() {
             cloud = options.trans_ids.clone();
         } else {
