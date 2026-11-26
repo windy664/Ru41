@@ -90,16 +90,3 @@ impl TingwuSection {
     }
 }
 
-impl TingwuSection {
-    /// 转成宿主侧客户端参数（客户端已上移到 `ru41::adapters::tingwu`）。
-    pub fn client_config(&self) -> ru41::adapters::tingwu::TingwuConfig {
-        ru41::adapters::tingwu::TingwuConfig {
-            poll_timeout: self.poll_timeout(),
-            poll_interval: self.poll_interval(),
-            max_file_bytes: self.max_file_bytes(),
-            merge_gap_ms: self.merge_gap_ms(),
-            local_asr_base_url: self.local_asr_base_url(),
-            local_asr_api: self.local_asr_api(),
-        }
-    }
-}

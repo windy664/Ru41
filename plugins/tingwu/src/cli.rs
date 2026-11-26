@@ -23,7 +23,7 @@ use std::sync::Arc;
 
 use anyhow::{Context, Result, bail};
 
-use ru41::adapters::tingwu::{TingwuClient, Transcript, render_markdown, render_srt, render_text};
+use crate::client::{TingwuClient, Transcript, render_markdown, render_srt, render_text};
 use crate::config::TingwuSection;
 
 pub const MODULE_NAME: &str = "tingwu";
@@ -109,13 +109,73 @@ async fn dispatch(
     match command.as_str() {
         "transcribe" | "转写" | "转录" => {
             let (path, format) = parse_transcribe_args(&rest)?;
+            // --text-only：只出纯文本（给别的插件/脚本调），不落盘逐字稿。
+            // --text-out <路径>：纯文本写到该文件（**子进程调用走这条**：
+            //   宿主 CLI 会把插件返回值打成 JSON，stdout 混不进纯文本）。
+            // --no-quota-check：跳过额度预检（默认要查）。
+            // --no-fallback：听悟失败**不**在插件内回落本地（由调用方决定兜底）。
+            let text_only = rest.iter().any(|arg| arg == "--text-only");
+            let text_out = rest
+                .iter()
+                .position(|arg| arg == "--text-out")
+                .and_then(|index| rest.get(index + 1))
+                .map(PathBuf::from);
+            let quota_check = !rest.iter().any(|arg| arg == "--no-quota-check");
+            let fallback = section.fallback_local()
+                && !rest.iter().any(|arg| arg == "--no-fallback");
             let client = build_client(section, store)?;
+
+            // ── 额度预检（2026-11-26）：不够就别上传 ──────────────────────
+            // 听悟按**音频时长**计费。额度不够时上传 70MB + 云端排队跑完还是失败，
+            // 白跑一趟还占存储。先查额度，不够直接走本地 ASR。
+            if quota_check {
+                let duration = TingwuClient::media_duration_secs(&path);
+                match client.quota_sufficient(duration.unwrap_or(0.0)).await {
+                    Ok(Some(reason)) => {
+                        if !fallback {
+                            return Err(anyhow::anyhow!("{reason}"));
+                        }
+                        eprintln!("[tingwu] {reason}，改用本地 ASR");
+                        let transcript = client.transcribe_local(&path).await.map_err(|local| {
+                            anyhow::anyhow!("{reason}；本地兜底也失败：{local}")
+                        })?;
+                        return finish(
+                            text_only,
+                            text_out.as_deref(),
+                            output_dir,
+                            &transcript,
+                            format,
+                            Some(reason),
+                            Some("local-fallback"),
+                        )
+                        .await;
+                    }
+                    Ok(None) => {}
+                    Err(error) => {
+                        // 查额度本身失败（cookie 过期/网络问题）→ 让后面正常走，
+                        // 转写失败会自然回落本地。
+                        eprintln!("[tingwu] 查额度失败，继续尝试转写：{error:#}");
+                    }
+                }
+            }
+
             match client.transcribe(&path).await {
-                Ok(transcript) => write_outputs(output_dir, &transcript, format).await,
+                Ok(transcript) => {
+                    finish(
+                        text_only,
+                        text_out.as_deref(),
+                        output_dir,
+                        &transcript,
+                        format,
+                        None,
+                        None,
+                    )
+                    .await
+                }
                 Err(error) => {
                     // 听悟这条路挂了（配额用完 / cookie 过期 / 网络抽风）→ 回落本地 ASR。
                     // 本地没有说话人分离，但总比拿不到字强 —— 所以返回里标清楚是谁出的稿。
-                    if !section.fallback_local() {
+                    if !fallback {
                         return Err(anyhow::anyhow!("{error}"));
                     }
                     let reason = format!("{error}");
@@ -126,16 +186,16 @@ async fn dispatch(
                                  先跑 `ru41 tingwu quota` 看看剩余时长"
                         )
                     })?;
-                    let mut value = write_outputs(output_dir, &transcript, format).await?;
-                    if let Some(obj) = value.as_object_mut() {
-                        obj.insert("engine".to_owned(), serde_json::json!("local-fallback"));
-                        obj.insert("fallback_reason".to_owned(), serde_json::json!(reason));
-                        obj.insert(
-                            "note".to_owned(),
-                            serde_json::json!("本地兜底稿没有说话人分离和时间戳"),
-                        );
-                    }
-                    Ok(value)
+                    finish(
+                        text_only,
+                        text_out.as_deref(),
+                        output_dir,
+                        &transcript,
+                        format,
+                        Some(reason),
+                        Some("local-fallback"),
+                    )
+                    .await
                 }
             }
         }
@@ -170,7 +230,7 @@ async fn dispatch(
                         "status": task.status,
                         "duration_secs": task.duration_secs,
                         "word_count": task.word_count,
-                        "show_time": ru41::adapters::tingwu::format_time(task.show_time_ms),
+                        "show_time": crate::client::format_time(task.show_time_ms),
                     })
                 })
                 .collect();
@@ -204,6 +264,9 @@ async fn dispatch(
             "ok": true,
             "usage": [
                 "ru41 tingwu transcribe <音视频文件> [--format markdown|text|srt]",
+                "    [--text-out <路径>] [--no-fallback] [--no-quota-check]",
+                "    # 默认先查额度：剩余时长不够就直接走本地 ASR，不白上传",
+                "    # --text-out 把纯文本写到文件（给别的插件调用；宿主 CLI 会把返回值打成 JSON，stdout 混不进纯文本）",
                 "ru41 tingwu result <任务ID> [--format markdown|text|srt]",
                 "ru41 tingwu list [条数]",
                 "ru41 tingwu quota            # 剩余转写时长 / 存储",
@@ -217,6 +280,63 @@ async fn dispatch(
     }
 }
 
+/// 转写收尾：要么落盘并回 JSON，要么（`--text-only`）只把纯文本打到 stdout。
+///
+/// `--text-only` 是给**别的插件**调用的出口：lecture 想用听悟转写时，
+/// 跑 `ru41 tingwu transcribe <文件> --text-only`，从 stdout 拿纯文本 ——
+/// 走进程边界，插件之间不需要共享任何内存状态（各自静态链接的 cdylib
+/// 连全局变量都不共享）。
+async fn finish(
+    text_only: bool,
+    text_out: Option<&Path>,
+    output_dir: &Path,
+    transcript: &Transcript,
+    format: Format,
+    fallback_reason: Option<String>,
+    engine: Option<&str>,
+) -> Result<serde_json::Value> {
+    if text_only {
+        let text = transcript.full_text();
+        if let Some(path) = text_out {
+            // 子进程调用走文件：宿主 CLI 会把返回值打成 JSON，stdout 混不进纯文本。
+            if let Some(parent) = path.parent() {
+                tokio::fs::create_dir_all(parent).await.ok();
+            }
+            tokio::fs::write(path, &text)
+                .await
+                .with_context(|| format!("写文本文件 {} 失败", path.display()))?;
+            return Ok(serde_json::json!({
+                "ok": true,
+                "text_only": true,
+                "text_out": path.display().to_string(),
+                "chars": text.chars().count(),
+                "engine": engine.unwrap_or("tingwu"),
+                "fallback_reason": fallback_reason,
+            }));
+        }
+        println!("{text}");
+        return Ok(serde_json::json!({
+            "ok": true,
+            "text_only": true,
+            "chars": text.chars().count(),
+            "engine": engine.unwrap_or("tingwu"),
+            "fallback_reason": fallback_reason,
+        }));
+    }
+    let mut value = write_outputs(output_dir, transcript, format).await?;
+    if let Some(obj) = value.as_object_mut() {
+        if let Some(reason) = fallback_reason {
+            obj.insert("engine".to_owned(), serde_json::json!(engine.unwrap_or("local-fallback")));
+            obj.insert("fallback_reason".to_owned(), serde_json::json!(reason));
+            obj.insert(
+                "note".to_owned(),
+                serde_json::json!("本地兜底稿没有说话人分离和时间戳"),
+            );
+        }
+    }
+    Ok(value)
+}
+
 /// 保留两位小数（JSON 里别给一串 399.34444444444）。
 fn round2(value: f64) -> f64 {
     (value * 100.0).round() / 100.0
@@ -228,7 +348,7 @@ fn build_client(
     store: &dyn ru41::ports::storage::TaskStore,
 ) -> Result<TingwuClient> {
     let cookie = cookie_from_store(store, section.credential())?;
-    TingwuClient::new(&cookie, &section.client_config())
+    TingwuClient::new(&cookie, section)
 }
 
 /// 解析 `transcribe` 的参数：文件路径 + 可选 `--format`。

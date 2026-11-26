@@ -19,6 +19,7 @@
 //! 输出落在 `output_dir`（默认 state.db 同级的 `tingwu/`，容器内 `/data/tingwu`）。
 
 pub mod cli;
+pub mod client;
 pub mod config;
 
 pub use cli::{MODULE_NAME, tingwu_cli};

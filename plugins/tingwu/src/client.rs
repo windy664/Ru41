@@ -26,7 +26,7 @@ use std::time::{Duration, Instant};
 use anyhow::{Context, Result, bail};
 use serde_json::{Value, json};
 
-use super::config::TingwuConfig;
+use crate::config::TingwuSection;
 
 const BASE: &str = "https://tingwu.aliyun.com";
 /// 浏览器 UA —— 听悟对 UA 有校验。
@@ -167,7 +167,7 @@ pub struct TingwuClient {
 }
 
 impl TingwuClient {
-    pub fn new(cookie: &str, section: &TingwuConfig) -> Result<Self> {
+    pub fn new(cookie: &str, section: &TingwuSection) -> Result<Self> {
         let http = reqwest::Client::builder()
             .user_agent(UA)
             .timeout(Duration::from_secs(120))
@@ -180,12 +180,12 @@ impl TingwuClient {
         Ok(Self {
             http,
             cookie: cookie.to_owned(),
-            poll_timeout: section.poll_timeout,
-            poll_interval: section.poll_interval,
-            max_file_bytes: section.max_file_bytes,
-            merge_gap_ms: section.merge_gap_ms,
-            local_asr_base_url: section.local_asr_base_url.clone(),
-            local_asr_api: section.local_asr_api.clone(),
+            poll_timeout: section.poll_timeout(),
+            poll_interval: section.poll_interval(),
+            max_file_bytes: section.max_file_bytes(),
+            merge_gap_ms: section.merge_gap_ms(),
+            local_asr_base_url: section.local_asr_base_url(),
+            local_asr_api: section.local_asr_api(),
         })
     }
 
@@ -230,6 +230,53 @@ impl TingwuClient {
     }
 
     /// 上传文件并转写，等到出结果。
+    /// 上传前先看额度够不够。
+    ///
+    /// 听悟按**音频时长**计费（不是转写耗时），所以判据是「剩余秒数 ≥ 音频秒数」。
+    /// 不够就别上传 —— 白跑一次 70MB 上传 + 一次云端排队，最后还是失败。
+    ///
+    /// 返回 `Ok(None)` = 额度够（可以传）；`Ok(Some(原因))` = 不够，
+    /// 调用方应当直接改走本地 ASR。
+    pub async fn quota_sufficient(&self, audio_secs: f64) -> Result<Option<String>> {
+        let quota = self.quota().await?;
+        let remaining = quota.remaining_secs;
+        // 留 5% 余量：听悟的计费口径与服务端统计可能差几分钟。
+        let need = (audio_secs * 1.05).ceil() as i64;
+        if remaining < need {
+            return Ok(Some(format!(
+                "听悟剩余时长不足：剩 {:.1} 小时，这段音频要 {:.1} 小时",
+                remaining as f64 / 3600.0,
+                need as f64 / 3600.0
+            )));
+        }
+        Ok(None)
+    }
+
+    /// 媒体时长（秒）：用 ffprobe 读容器里的音轨时长。
+    ///
+    /// 读不到就返回 `None`（调用方按「不知道」处理，不因缺时长而拒绝转写）。
+    pub fn media_duration_secs(path: &Path) -> Option<f64> {
+        let output = std::process::Command::new("ffprobe")
+            .args([
+                "-v",
+                "error",
+                "-show_entries",
+                "format=duration",
+                "-of",
+                "default=noprint_wrappers=1:nokey=1",
+            ])
+            .arg(path)
+            .output()
+            .ok()?;
+        let text = String::from_utf8_lossy(&output.stdout);
+        let value: f64 = text.trim().parse().ok()?;
+        if value.is_finite() && value > 0.0 {
+            Some(value)
+        } else {
+            None
+        }
+    }
+
     pub async fn transcribe(&self, path: &Path) -> Result<Transcript> {
         let meta = tokio::fs::metadata(path)
             .await

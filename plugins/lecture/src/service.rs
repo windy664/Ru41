@@ -8,7 +8,7 @@ use crate::pending::{
     PENDING_KIND, PENDING_SCAN_LIMIT, PendingItem, STATUS_DOWNLOADING, oldest_unfinished,
     sanitize_name,
 };
-use anyhow::{Context, Result};
+use anyhow::{Context, Result, bail};
 use chrono::{Local, TimeZone};
 use ru41::app::schedule::ScheduleService;
 use ru41::domain::todo::TodoOptions;
@@ -245,58 +245,38 @@ impl LectureWorker {
         let work = self.config.workspace.join(&item.msg_id);
         // ── 听悟优先（2026-11-26）────────────────────────────────────────
         // 顺序是用户定的：**先走通义听悟，兜底本地**。
-        // 听悟客户端在宿主 crate（`ru41::adapters::tingwu`）—— 两个插件之间
-        // 没有共享状态的通道（各自静态链接的 cdylib，全局变量各存各的），
-        // 所以要让 lecture 用上听悟，客户端必须放在宿主侧。
-        // 听悟失败（配额用完 / cookie 过期 / 网络抽风）→ 回落下面的本地 ASR
-        // （切片 + whisper.cpp / paraformer，只有字，没有说话人分离）。
+        //
+        // 听悟是**独立插件**（自己带客户端、自己的 CLI），这里通过
+        // **命令调用**它 —— 插件之间不能共享内存：各自静态链接的 cdylib
+        // 连全局变量都不共享（注册表那套试过，宿主查不到插件注册的）。
+        // 进程边界是唯一干净的通道：
+        //   ru41 tingwu transcribe <文件> --text-out <路径> --no-fallback
+        // 插件侧自己做**额度预检**（剩余时长 < 音频时长 ⇒ 不上传，直接失败），
+        // 失败时 lecture 回落自己的本地 ASR（切片 + whisper.cpp / paraformer）。
         // 配置 `transcriber = "local"` 可强制只用本地（不碰云端、不耗额度）。
         let transcriber_id = self.config.transcriber.as_str();
         if !transcriber_id.is_empty() && transcriber_id != "local" {
-            let cookie = match ru41::domain::credential::resolve(
-                self.store.as_ref(),
-                &self.config.tingwu_credential,
-            ) {
-                Ok(Some(doc)) => doc.value["value"].as_str().unwrap_or("").trim().to_owned(),
-                Ok(None) => {
-                    eprintln!("[lecture] 凭据库里没有听悟 cookie，改用本地 ASR");
-                    String::new()
+            let raw = work.join("raw").join(&item.filename);
+            let text_out = work.join("tingwu-transcript.txt");
+            match self.call_tingwu(&raw, &text_out) {
+                Ok(text) if !text.trim().is_empty() => {
+                    eprintln!(
+                        "[lecture] 走听悟转写完成：{} 字（{}）",
+                        text.chars().count(),
+                        item.filename
+                    );
+                    let transcript_path = work.join("transcript.md");
+                    let _ = std::fs::write(&transcript_path, &text);
+                    return Ok(Transcript {
+                        text,
+                        path: transcript_path,
+                    });
+                }
+                Ok(_) => {
+                    eprintln!("[lecture] 听悟返回空文本，改用本地 ASR");
                 }
                 Err(error) => {
-                    eprintln!("[lecture] 取听悟 cookie 失败，改用本地 ASR：{error:#}");
-                    String::new()
-                }
-            };
-            if !cookie.is_empty() {
-                let config = ru41::adapters::tingwu::TingwuConfig::default();
-                let raw = work.join("raw").join(&item.filename);
-                let client = ru41::adapters::tingwu::TingwuClient::new(&cookie, &config);
-                match client {
-                    Ok(client) => match client.transcribe(&raw).await {
-                        Ok(transcript) if !transcript.full_text().trim().is_empty() => {
-                            let text = transcript.full_text();
-                            eprintln!(
-                                "[lecture] 走听悟转写完成：{} 字（{}）",
-                                text.chars().count(),
-                                item.filename
-                            );
-                            let transcript_path = work.join("transcript.md");
-                            let _ = std::fs::write(&transcript_path, &text);
-                            return Ok(Transcript {
-                                text,
-                                path: transcript_path,
-                            });
-                        }
-                        Ok(_) => {
-                            eprintln!("[lecture] 听悟返回空文本，改用本地 ASR");
-                        }
-                        Err(error) => {
-                            eprintln!("[lecture] 听悟转写失败，改用本地 ASR：{error:#}");
-                        }
-                    },
-                    Err(error) => {
-                        eprintln!("[lecture] 建听悟客户端失败，改用本地 ASR：{error:#}");
-                    }
+                    eprintln!("[lecture] 听悟转写失败，改用本地 ASR：{error:#}");
                 }
             }
         }
@@ -343,6 +323,36 @@ impl LectureWorker {
         Ok(Transcript {
             text: joined,
             path: transcript_path,
+        })
+    }
+
+    /// 调用**听悟插件**转写（进程边界）。
+    ///
+    /// 为什么是子进程而不是直接调函数：听悟是独立插件（自己带客户端与 CLI），
+    /// 而插件之间**不能共享内存** —— 各自静态链接的 cdylib 连全局变量都不共享
+    /// （2026-11-26 实测：注册表方案在生产机报「没找到转写能力 tingwu」）。
+    /// 命令调用是唯一干净的跨插件通道。
+    ///
+    /// 插件侧自己做额度预检（剩余时长不够就不上传）；`--no-fallback` 表示
+    /// 听悟失败时**不要**在插件内回落本地 —— 由 lecture 自己兜底（它有切片逻辑）。
+    fn call_tingwu(&self, raw: &std::path::Path, text_out: &std::path::Path) -> Result<String> {
+        let binary = std::env::var("RU41_BINARY").unwrap_or_else(|_| "/usr/local/bin/ru41".to_owned());
+        let output = std::process::Command::new(&binary)
+            .arg("tingwu")
+            .arg("transcribe")
+            .arg(raw)
+            .arg("--text-out")
+            .arg(text_out)
+            .arg("--no-fallback")
+            .output()
+            .with_context(|| format!("调用听悟插件失败（{}）", binary))?;
+        if !output.status.success() {
+            let stderr = String::from_utf8_lossy(&output.stderr);
+            let tail: String = stderr.chars().rev().take(400).collect::<Vec<_>>().into_iter().rev().collect();
+            bail!("听悟插件返回 {:?}：{}", output.status.code(), tail.trim());
+        }
+        std::fs::read_to_string(text_out).with_context(|| {
+            format!("读听悟输出 {} 失败", text_out.display())
         })
     }
 
