@@ -42,6 +42,10 @@ pub struct LectureSection {
     pub fallback_course: Option<String>,
     /// 原始录音保留天数（转写完成后不立刻删，过期再清）。默认 7 天，0 = 立刻删。
     pub retain_audio_days: Option<u64>,
+    /// 用哪个插件提供的转写能力（注册表 id）。默认 `tingwu`（通义听悟：
+    /// 云端、带说话人分离），它失败时自动回落到本地 ASR。
+    /// 设成 `local` 就只用本地 ASR（不碰云端、不耗听悟额度）。
+    pub transcriber: Option<String>,
 }
 
 impl LectureSection {
@@ -52,6 +56,8 @@ impl LectureSection {
     pub const DEFAULT_SLICE_SECS: u64 = 600;
     /// 原始录音默认保留 7 天（转写产出后不立刻删，转写有疑问还能重跑 ASR）。
     pub const DEFAULT_RETAIN_AUDIO_DAYS: u64 = 7;
+    /// 默认用通义听悟转写（云端、带说话人分离；失败自动回落本地 ASR）。
+    pub const DEFAULT_TRANSCRIBER: &str = "tingwu";
     pub const DEFAULT_WORKSPACE: &str = "/data/lecture";
     pub const DEFAULT_VAULT_DIR: &str = "01-Courses-课程";
     pub const DEFAULT_VAULT_ROOT: &str = "/vault";
@@ -175,6 +181,12 @@ impl LectureSection {
             retain_audio_days: self
                 .retain_audio_days
                 .unwrap_or(Self::DEFAULT_RETAIN_AUDIO_DAYS),
+            transcriber: self
+                .transcriber
+                .clone()
+                .map(|value| value.trim().to_ascii_lowercase())
+                .filter(|value| !value.is_empty() && value != "local")
+                .unwrap_or_else(|| Self::DEFAULT_TRANSCRIBER.into()),
             backend: self
                 .backend
                 .clone()
@@ -202,6 +214,8 @@ pub struct LectureConfig {
     /// 原始录音保留天数：切片立刻删（它是磁盘大头），原始音频留一段时间，
     /// 这样转写有疑问还能重新跑 ASR。0 表示转写完立刻删原始音频。
     pub retain_audio_days: u64,
+    /// 优先用哪个转写能力（注册表 id）；`local` = 只用本地 ASR。
+    pub transcriber: String,
 }
 
 #[cfg(test)]
