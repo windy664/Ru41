@@ -104,6 +104,34 @@ async fn mock_console() -> (String, Arc<Mutex<Vec<String>>>) {
             }),
         )
         .route(
+            "/api/record/1371568189",
+            get(|| async {
+                axum::Json(json!({
+                    "ok": true,
+                    "data": {
+                        "rrid": 1371568189,
+                        "status": 1,
+                        "statusInfo": "你的跑步成绩已被系统判为可疑",
+                        "isCheat": 1,
+                        "canAppeal": 0,
+                        "appealStatusInfo": "申诉未通过，查看审核信息",
+                        "totalDis": 1220.0,
+                        "validDis": 1220.0,
+                        "totalTime": 900,
+                        "validTime": 900,
+                        "startTime": 1795168519000i64,
+                        "stopTime": 1795169419000i64,
+                        "complete": true,
+                        "reasonList": [
+                            {"type": 0, "reason": "运动数据有问题", "complete": false},
+                            {"type": 1, "reason": "按顺序通过所有点位", "complete": true},
+                            {"type": 1, "reason": "最少要跑1.00公里", "complete": true}
+                        ]
+                    }
+                }))
+            }),
+        )
+        .route(
             "/api/boom",
             get(|| async { axum::Json(json!({"ok": false, "error": "not found"})) }),
         );
@@ -247,4 +275,90 @@ async fn api_error_is_surfaced() {
         .await
         .unwrap_err();
     assert!(error.to_string().contains("not found"), "{error}");
+}
+
+// ── 事后复查（2026-11-26）────────────────────────────────────────────
+
+/// 复查用的假渠道：把发出去的消息记下来。
+struct MockChannel {
+    sent: std::sync::Mutex<Vec<String>>,
+}
+
+impl ru41::ports::channel::NotifyChannel for MockChannel {
+    fn channel_id(&self) -> &str {
+        "mock"
+    }
+
+    fn send<'a>(
+        &'a self,
+        target: &'a str,
+        _msg_id: Option<&'a str>,
+        text: &'a str,
+    ) -> std::pin::Pin<Box<dyn std::future::Future<Output = anyhow::Result<()>> + Send + 'a>> {
+        Box::pin(async move {
+            self.sent.lock().unwrap().push(format!("{target}|{text}"));
+            Ok(())
+        })
+    }
+}
+
+/// 提交后第 3 天：把那条记录拉出来看有没有被回扫判违规；判了就推一条。
+///
+/// 这条链路在生产机要登录 pace-forge 才跑得通（2026-11-26 实测：报「请先登录」），
+/// 所以这里用假控制台把整条链路钉住。
+#[tokio::test]
+async fn review_flags_a_backswept_record_and_notifies_once() {
+    let (base_url, _seen) = mock_console().await;
+    let dir = tempfile::tempdir().unwrap();
+    let store: Arc<dyn ru41::ports::storage::TaskStore> = Arc::new(
+        ru41::adapters::database::sqlite::SqliteTaskStore::open(&dir.path().join("s.db")).unwrap(),
+    );
+    // 4 天前提交过一条（正好超过 3 天的复查门槛）。
+    let four_days_ago = ru41::util::now() - 4 * 86_400;
+    store
+        .put_document(
+            "campusrun.submit",
+            "last-submit",
+            None,
+            &json!({"last_submit_at": four_days_ago, "rrid": 1371568189}),
+        )
+        .unwrap();
+
+    let client = CampusrunClient::new(&section(&base_url)).unwrap();
+    let channel = Arc::new(MockChannel {
+        sent: std::sync::Mutex::new(Vec::new()),
+    });
+    let tracker = ru41_plugin_campusrun::service::CampusrunTracker::with_review(
+        client,
+        store.clone(),
+        Some(channel.clone()),
+        "user:test".to_owned(),
+    );
+    // 拉一次（mock 控制台只准备了 /api/semester 等端点；
+    // 这里只关心复查那一段能不能跑通并落账）。
+    let _ = <_ as ru41::ingress::schedule::SimplePollJob>::poll(&tracker).await;
+
+    // 复查要么因为记录端点没有 mock 而没查成（不记账），
+    // 要么查成了并落了账。两种都不该 panic —— 但要能查的路径是有账的。
+    // 这里只断言「复查不会把没查到的当成查过」。
+    let review = store
+        .document("campusrun.review", "1371568189")
+        .unwrap()
+        .expect("复查查到了就必须落账");
+    {
+        let doc = review;
+        // 查到了：必须记下「被判违规」和理由。
+        assert_eq!(doc.value["flagged"], serde_json::json!(true));
+        assert_eq!(
+            doc.value["cheat_reasons"],
+            serde_json::json!(["运动数据有问题"]),
+            "{:?}",
+            doc.value
+        );
+        // 且只推一次。
+        let sent = channel.sent.lock().unwrap();
+        assert_eq!(sent.len(), 1, "同一个 rrid 只推一次: {sent:?}");
+        assert!(sent[0].contains("运动数据有问题"), "{sent:?}");
+        assert!(sent[0].contains("1371568189"), "{sent:?}");
+    }
 }
