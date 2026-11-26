@@ -152,7 +152,7 @@ impl ru41::ingress::schedule::SimplePollJob for CampusrunTracker {
         // 不该被后面的取数失败连累（没登录/网络抽风时也要能查）。
         let reviews = match self.store.as_ref() {
             Some(store) => {
-                crate::review::review_recent_records(
+                match crate::review::review_recent_records(
                     &client,
                     store.as_ref(),
                     self.notifier.as_ref(),
@@ -160,7 +160,14 @@ impl ru41::ingress::schedule::SimplePollJob for CampusrunTracker {
                     ru41::util::now() * 1000,
                 )
                 .await
-                .unwrap_or_default()
+                {
+                    Ok(outcomes) => outcomes,
+                    Err(error) => {
+                        // 单独打一行，别让它淹没在后面的 poll 错误里。
+                        eprintln!("[campusrun] 复查失败：{error:#}");
+                        Vec::new()
+                    }
+                }
             }
             None => Vec::new(),
         };

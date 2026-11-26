@@ -151,7 +151,7 @@ pub async fn review_recent_records(
         // `flagged=false`，后面判了违规也改不掉（2026-11-27 测试抓到：
         // 与 submit.rs 的 `save_pending` 同一类坑）。
         let revision = existing.as_ref().map(|doc| doc.revision);
-        store.put_document(
+        let written = store.put_document(
             REVIEW_KIND,
             &review_id,
             revision,
@@ -163,6 +163,13 @@ pub async fn review_recent_records(
                 "rrid": rrid,
             }),
         )?;
+
+        // ⚠️ **落账失败就不推**：台账没写进去 ⇒ 下一轮还会再查一次、再推一次
+        // ⇒ 同一条记录会被推两遍。宁可这轮不推（下一轮补推），也不要推两遍。
+        if !written {
+            eprintln!("[campusrun] 复查 {rrid} 落账失败（版本冲突），这轮不通知");
+            continue;
+        }
 
         if outcome.flagged
             && let Some(notifier) = notifier
