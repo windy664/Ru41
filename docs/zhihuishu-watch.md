@@ -423,3 +423,69 @@ passport 建会话 → 拿到 `haoke-token`。
 | 19:00 | `zhihuishu-brush.timer` | 智慧树挂机(整轮 120 分钟, 21:00 前收工) |
 | 21:15 | `zhihuishu-ahk-brush.timer` | 学习平台(在线好课)挂机 |
 | 23:30 | `zhihuishu-collector.timer` | 作业采集(独占 cookies 续期) |
+
+---
+
+## 9. 作业状态这条线：两个出口对不上（2026-11-27 实测并修好）
+
+作业状态有**两个出口**，它们各自聚合 `records` 快照渲染同一份清单：
+
+| 出口 | 谁渲染 | 何时写 |
+|---|---|---|
+| QQ `/作业` | `plugins/homework/src/qq_command.rs` 的 `render` | 用户问的时候现算 |
+| Vault `作业总表.md` | `src/app/homework_work.rs` 的 `render_homework_dashboard` | 学习通作业轮询顺带覆写 |
+
+两边**曾经各写各的判据**，分叉出两处不一致（2026-11-27 用生产库副本同窗复验才发现）：
+
+| # | 分叉点 | 现象 | 根因 |
+|---|---|---|---|
+| 1 | 已归档快照 | 总表挂 9 条未完成，QQ 卡片只有 6 条 | QQ 侧过滤 `archived`，总表侧只看 `completed` |
+| 2 | 截止时间格式 | 总表里智慧树的行**永远**没有「⚠️已过期」 | QQ 侧认 `"%Y-%m-%d %H:%M:%S"` + `"%Y-%m-%d %H:%M"`，总表侧只认后者；而智慧树的 `end_at` 一律带秒，chrono 的 `parse_from_str` 要求整串消费完 ⇒ 解析失败**静默**返回 `None` |
+
+多挂的那 3 条是「僵尸快照」（平台换 id / 删除作业后的旧 key）：
+`德法第一次线上作业`(已被 completed 的新 key 取代)、`程序设计基础2026年秋冬学期｜第一次作业`、
+`高等数学I(理)｜第一次作业-01,15`。**归档判定本身没错**——平台自己的未交视图
+(`findNoFinishTaskTotal`)里都没有它们，错的是总表没跟着过滤。
+
+修法：时间格式收成共享常量 `homework_work::DEADLINE_FORMATS` 两处共用；总表过滤 `archived`。
+改后两边都是 6 条、逐条一致，生产上由学习通作业轮询重写（`vault_files: 2`）验证过。
+
+### 9.1 时区：一份报告里两种钟
+
+sidecar 容器没设 TZ（playwright 基础镜像是 UTC）。三处踩过：
+
+| 位置 | 原写法 | 后果 | 现在 |
+|---|---|---|---|
+| `collector.now_ts()` | `datetime.now()` | `report.generated_at` 是 UTC，与同一份报告里经 `normalize_time` 归一化的北京时间平台时间混在一起（实测：04:37 写出的报告，`generated_at` 却是 `2026-11-26 20:32:14`） | 按 CST |
+| `serve.py` 的 `/status` | 原样透出 `brush_log.generated_at`（容器本地=UTC） | 「上一轮：2026-11-26 12:49:00」实际是 20:49 跑的那轮 | 边界上 `cst_stamp()` 转 CST |
+| `plan_targets.py` → `targets.json` | 抄 `report.generated_at` | 跟着一起错 | collector 修好后自动跟着对 |
+
+**只转 brush_log 派生的字段**：`report.generated_at` / `targets.generated_at` 来自 collector，
+已经是北京时间，再转一次就多 8 小时。
+
+### 9.2 复现用的三个容器内自测
+
+```bash
+docker run --rm -v "$PWD/scripts:/scripts:ro" zhihuishu-sidecar:local \
+    python -u /scripts/test_timezones.py            # now_ts() 是北京时间, 且与 epoch 归一化同一口钟
+docker run --rm -v "$PWD/scripts:/scripts:ro" zhihuishu-sidecar:local \
+    python -u /scripts/test_serve_status_stamp.py   # cst_stamp() 把 UTC 转 +8, 空值/脏值原样透传
+docker run --rm -v "$PWD/scripts:/scripts:ro" zhihuishu-sidecar:local \
+    python -u /scripts/test_serve_due_decision.py   # 凌晨那轮不占用当天的刷课窗口
+```
+
+一个文件只守一条判据——合在一起时，前一个模块缺失会让后面的断言**因错误原因失败**。
+
+### 9.3 sidecar 镜像不用重建
+
+`scripts/` 是 **bind mount** 进容器的（`-v %h/Projects/zhihuishu-sidecar/scripts:/scripts:ro`），
+改文件 + 重启容器即生效；镜像 `zhihuishu-sidecar:local` 只装 Autovisor 本体与 playwright。
+`docker compose build` 只在改了镜像里的东西（Autovisor 源码 / Dockerfile）时才需要。
+
+### 9.4 两个容器的挂载不一样（踩过）
+
+`ru41-zhihuishu` 挂了 `~/Projects/zhihuishu-sidecar/data -> /data/zhihuishu`，
+**`ru41-mimo-worker` 没挂**。在 worker 里跑 `ru41 zhihuishu poll` 会报
+「读取智慧树报告失败：/data/zhihuishu/report.json」——文件在，只是那个容器看不见。
+更糟的是它会记一条 `collect-failed:<日期>` 告警并**真的给用户推一条「采集失败」提醒**。
+轮询要在 `ru41-zhihuishu` 容器里跑。
