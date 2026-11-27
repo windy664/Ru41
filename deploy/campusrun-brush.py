@@ -43,6 +43,30 @@ MIN_INTERVAL_DAYS = 2
 SCHEDULE = [("2026-11-30", 18.0), ("2026-12-31", 36.0)]
 STATE_PATH = os.path.expanduser("~/.local/state/ru41/campusrun-brush.json")
 
+# ── 提交前自检的门限（2026-11-27 加）────────────────────────────────
+#
+# 为什么需要：自动提交出来的成绩**被判过 3 次违规**（11-16 / 11-17 / 11-21），
+# 三条唯一挂掉的规则都是 type=0「运动数据有问题」，而点位顺序、距离、时长、
+# 步频、配速**全部通过**。
+#
+# 把那 11 条记录的逐条判定和里程/步数摊开对比后，唯一能把「被判违规」和
+# 「被判干净」**完全分开**的指标是**步幅**（距离 ÷ 步数）：
+#
+#   被判违规 3 条：1.085 / 1.077 / 1.064 m
+#   被判干净 8 条：0.911 ~ 1.007 m
+#
+# 中间是空的（1.007 与 1.064 之间没有任何记录）。配速分不开（被判违规的
+# 6'02"/km 与干净的 6'03"/km 几乎一样），起跑时刻、连续天数也分不开。
+#
+# ⚠️ 这是**统计推断**（11 条记录、3 个正样本），不是协议规则。所以：
+#   · 只用来「不提交」，不用来「保证通过」；
+#   · 越界就**跳过这一天**——少跑一次的代价远小于多一条违规
+#     （申诉通道已关，多一条只会让账号更坏）。
+MIN_STRIDE_M = 0.85
+MAX_STRIDE_M = 1.03
+# 读不到任务规则时的兜底：3 公里那条任务实测要「跑18分钟以上」。
+FALLBACK_MIN_MINUTES = 18.0
+
 
 def log(message: str) -> None:
     print(f"[{datetime.datetime.now():%F %T}] {message}", flush=True)
@@ -250,13 +274,111 @@ def campusrun(*args: str) -> str:
     return (result.stdout or "") + (result.stderr or "")
 
 
-def run_once() -> tuple[bool, str]:
+def parse_plan(plan: str) -> dict:
+    """从预演文本里抠出质量指标。
+
+    插件的 `plan` 输出是 Markdown（CLI 外面还套了一层 JSON 字符串，所以换行是
+    字面的 ``\\n``）——正则按「字段之间用 · 分隔」写，不怕换行。
+    """
+    out: dict = {}
+    match = re.search(r"实际里程：([\d.]+) km", plan)
+    if match:
+        out["km"] = float(match.group(1))
+    match = re.search(r"步数 (\d+)", plan)
+    if match:
+        out["steps"] = int(match.group(1))
+    match = re.search(r"参数：[\d.]+ km / ([\d.]+) 分钟", plan)
+    if match:
+        out["minutes"] = float(match.group(1))
+    match = re.search(r"工具自检：(\d+) 致命 / (\d+) 警告", plan)
+    if match:
+        out["fatal"] = int(match.group(1))
+        out["warn"] = int(match.group(2))
+    match = re.search(r"打卡点：(\d+)/(\d+) 全过", plan)
+    if match:
+        out["points_ok"] = match.group(1) == match.group(2)
+    return out
+
+
+def quality_gate(plan: str, min_minutes: float | None) -> str | None:
+    """预演不达标就返回原因；达标返回 None。
+
+    判据见文件头 MIN_STRIDE_M 那段注释（步幅是唯一能分开「被判违规」与
+    「被判干净」的指标）。**只用来不提交，不用来保证通过。**
+    """
+    quality = parse_plan(plan)
+    if not quality:
+        return "预演输出里读不出质量指标（插件输出格式变了？）"
+    if quality.get("fatal", 0) > 0:
+        return f"预演有 {quality['fatal']} 条致命自检没过"
+    if quality.get("warn", 0) > 0:
+        return f"预演有 {quality['warn']} 条警告（步幅/步频一类，被判违规的就是这种形态）"
+    if quality.get("points_ok") is False:
+        return "打卡点没全过"
+    km = quality.get("km")
+    steps = quality.get("steps")
+    if km and steps:
+        stride = km * 1000.0 / steps
+        if not (MIN_STRIDE_M <= stride <= MAX_STRIDE_M):
+            return (f"步幅 {stride:.2f} m 不在 {MIN_STRIDE_M}~{MAX_STRIDE_M} m"
+                    "（被判违规的记录是 1.06~1.09）")
+    if min_minutes and quality.get("minutes"):
+        if quality["minutes"] < min_minutes:
+            return f"时长 {quality['minutes']:.1f} 分钟 < 任务要求 {min_minutes:.0f} 分钟"
+    return None
+
+
+def required_minutes(token: str | None = None) -> float | None:
+    """当前任务要求的最短时长（分钟）——从最近一条记录的逐条规则里读。
+
+    规则文本形如「跑18分钟以上」。读不到就返回 None（调用方用兜底值）。
+    """
+    token = token or console_token()
+    if not token:
+        return None
+    try:
+        request = urllib.request.Request(
+            f"{CONSOLE}/api/records", headers={"X-Pace-Token": token}
+        )
+        with urllib.request.urlopen(request, timeout=25) as response:
+            records = json.load(response)["data"].get("records") or []
+    except Exception as error:  # noqa: BLE001
+        log(f"读跑步记录失败：{error}")
+        return None
+    for record in records:
+        rrid = record.get("rrid")
+        if not rrid:
+            continue
+        try:
+            request = urllib.request.Request(
+                f"{CONSOLE}/api/record/{rrid}", headers={"X-Pace-Token": token}
+            )
+            with urllib.request.urlopen(request, timeout=25) as response:
+                detail = json.load(response)["data"]
+        except Exception as error:  # noqa: BLE001
+            log(f"读记录详情失败（rrid={rrid}）：{error}")
+            return None
+        for item in detail.get("reasonList") or []:
+            match = re.search(r"跑\s*(\d+(?:\.\d+)?)\s*分钟以上", str(item.get("reason") or ""))
+            if match:
+                return float(match.group(1))
+        return None
+    return None
+
+
+def run_once(min_minutes: float | None = None) -> tuple[bool, str]:
     """登记 + 确认。拿不到口令或预演被拦就不提交。返回 (成功, 说明)。"""
     plan = campusrun("submit", "--km", "3", "--rand", "--days", "1")
     if "预演被拦下" in plan or "不能提交" in plan:
         log("预演被拦下，不提交：")
         log(plan[-600:])
         return False, "预演被拦下（工具自检没过）"
+    # ★ 提交前自检：预演里读出来的步幅/告警/时长不达标就**跳过这一天**，
+    #   不把可能又被判「运动数据有问题」的成绩交上去。
+    reason = quality_gate(plan, min_minutes)
+    if reason:
+        log(f"自检不通过，不提交：{reason}")
+        return False, f"自检不通过（{reason}）"
     match = re.search(r"campusrun confirm ([0-9a-fA-F]+)", plan)
     if not match:
         log("没拿到待确认口令，不提交：")
@@ -301,7 +423,11 @@ def main() -> int:
     if not should_run:
         return 0
 
-    ok, detail = run_once()
+    # 当前任务的最短时长（读服务端规则；读不到用兜底值）。
+    min_minutes = required_minutes(token) or FALLBACK_MIN_MINUTES
+    log(f"任务最短时长 {min_minutes:.0f} 分钟")
+
+    ok, detail = run_once(min_minutes)
     if ok:
         record = fetch_record(detail) if detail else {}
         after = current_km(token)
