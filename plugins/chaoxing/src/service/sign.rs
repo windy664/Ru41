@@ -57,6 +57,13 @@ const CLASS_WINDOW_EXTEND_SECS: i64 = 15 * 60;
 const OFF_WINDOW_POLL_SECS: i64 = 30 * 60;
 /// 命中「请勿频繁操作」后窗口外轮询的冷却时长；窗口内不受影响（签到时效优先）。
 const RATE_LIMIT_COOLDOWN_SECS: i64 = 2 * 3600;
+/// 命中「请勿频繁操作」后**窗口内**也要退避多久。
+///
+/// 2026-11-27 生产实测：平台已经在拒收 activelist 时，窗口内仍每 61 秒重试，
+/// 重试不会让平台放行，只会把封禁拖长 ⇒ 整个签到窗口都签不到（sign_activities
+/// 恒 0）⇒ 监控失明。窗口内也要喘气，但给短冷却（签到窗口本身只有 1-2 分钟，
+/// 5 分钟后重试一次，平台一放行就还能赶上）。
+const RATE_LIMIT_WINDOW_COOLDOWN_SECS: i64 = 5 * 60;
 
 /// 一轮轮询的报告。
 #[derive(Debug, Serialize)]
@@ -77,6 +84,8 @@ pub struct ChaoxingPollReport {
     pub missed: usize,
     /// 本轮是否因不在课表窗口而跳过（未发任何网络请求）。
     pub window_skipped: bool,
+    /// 本轮是否因平台限流冷却而跳过（在课表窗口内，但平台正在拒收）。
+    pub rate_limit_backoff: bool,
     /// 活动列表拉取失败的课程数（限流/接口变更时 >0）；>0 说明监控部分或全部失明。
     pub course_errors: usize,
     /// 最近一次活动列表失败的原因（限流恢复自查用）。
@@ -207,15 +216,27 @@ impl ChaoxingTracker {
             .map(|_| ())
     }
 
+    /// 限流冷却状态：(窗口外冷却截止, 窗口内冷却截止)。
+    ///
+    /// `rate_limited_until` 文档里存两个时间：`ts` 是窗口外冷却（2 小时），
+    /// `window_ts` 是窗口内短冷却（5 分钟）。旧版本只写 `ts`——缺失 `window_ts`
+    /// 时回退到 `ts`（保守：宁可多等，别在封禁里硬撞）。
+    fn rate_limit_state(&self) -> Result<(Option<i64>, Option<i64>)> {
+        let doc = self.store.document("chaoxing_meta", "rate_limited_until")?;
+        let ts = doc
+            .as_ref()
+            .and_then(|d| d.value.get("ts").and_then(serde_json::Value::as_i64));
+        let window_ts = doc
+            .as_ref()
+            .and_then(|d| d.value.get("window_ts").and_then(serde_json::Value::as_i64));
+        Ok((ts, window_ts))
+    }
+
     /// 窗口外每 30 分钟允许一轮实轮询（以进入实轮询记账，失败也占用配额）；
     /// 命中平台限流后进入冷却期，冷却未过不允许窗口外轮询，给账号喘息。
     fn off_window_poll_due(&self, now: i64) -> Result<bool> {
-        let cooling = self
-            .store
-            .document("chaoxing_meta", "rate_limited_until")?
-            .and_then(|d| d.value.get("ts").and_then(serde_json::Value::as_i64))
-            .is_some_and(|ts| now < ts);
-        if cooling {
+        let (cooldown, _) = self.rate_limit_state()?;
+        if cooldown.is_some_and(|ts| now < ts) {
             return Ok(false);
         }
         let last = self
@@ -223,6 +244,17 @@ impl ChaoxingTracker {
             .document("chaoxing_meta", "last_full_poll")?
             .and_then(|d| d.value.get("ts").and_then(serde_json::Value::as_i64));
         Ok(last.is_none_or(|ts| now - ts >= OFF_WINDOW_POLL_SECS))
+    }
+
+    /// 窗口内是否允许发请求：平台正在拒收（「请勿频繁操作」）时要歇一会儿。
+    ///
+    /// 平台已经拒收时，每 61 秒重试不会让它放行，只会把封禁拖长 ⇒ 整个签到
+    /// 窗口都签不到。所以窗口内也要退避，但用短冷却（5 分钟）：平台一放行
+    /// 就能马上补签，不至于把整个窗口赔进去。
+    fn window_poll_allowed(&self, now: i64) -> Result<bool> {
+        let (cooldown, window_cooldown) = self.rate_limit_state()?;
+        let until = window_cooldown.or(cooldown);
+        Ok(!until.is_some_and(|ts| now < ts))
     }
 
     /// 手动签到：按活动 ID 在全部课程中找到活动，按类型自动选择签到方式：
@@ -708,6 +740,7 @@ impl ChaoxingTracker {
                 signed: 0,
                 missed: 0,
                 window_skipped: false,
+                rate_limit_backoff: false,
                 course_errors: 0,
                 last_course_error: None,
                 notified: alerted,
@@ -718,8 +751,12 @@ impl ChaoxingTracker {
         // 会被平台「请勿频繁操作」掐死，且失败被静默跳过导致整天失明）。
         // 窗口 = 当天课表每节课 前后各 15 分钟；窗口内正常轮询；窗口外完全不发
         // 网络请求，仅每 30 分钟兜底一轮，防课表外的临时签到漏检。
+        //
+        // 窗口内也要尊重限流冷却：平台已经在拒收时每 61 秒重试只会把封禁拖长
+        // （2026-11-27 实测：整个签到窗口都签不到 ⇒ 监控失明）。
         let in_window = self.in_class_window(now)?;
-        if !in_window && !self.off_window_poll_due(now)? {
+        let rate_limit_backoff = in_window && !self.window_poll_allowed(now)?;
+        if rate_limit_backoff || (!in_window && !self.off_window_poll_due(now)?) {
             return Ok(ChaoxingPollReport {
                 login_ok: true,
                 realname: None,
@@ -731,6 +768,7 @@ impl ChaoxingTracker {
                 signed: 0,
                 missed: 0,
                 window_skipped: true,
+                rate_limit_backoff,
                 course_errors: 0,
                 last_course_error: None,
                 notified: false,
@@ -961,11 +999,15 @@ impl ChaoxingTracker {
         }
 
         let mut notified = false;
-        // 命中平台限流：窗口外轮询进入冷却期，降低请求压力给账号喘息。
+        // 命中平台限流：窗口外进长冷却（2 小时），窗口内进短冷却（5 分钟）。
+        // 两个时间一起写，窗口内冷却才不会因为「窗口内不受影响」而落空。
         if rate_limited {
             self.put_meta(
                 "rate_limited_until",
-                serde_json::json!({ "ts": now + RATE_LIMIT_COOLDOWN_SECS }),
+                serde_json::json!({
+                    "ts": now + RATE_LIMIT_COOLDOWN_SECS,
+                    "window_ts": now + RATE_LIMIT_WINDOW_COOLDOWN_SECS,
+                }),
             )?;
         }
         // 全部课程活动列表都拉取失败（登录态却正常）：签到监控处于失明状态，
@@ -1059,6 +1101,7 @@ impl ChaoxingTracker {
             signed,
             missed,
             window_skipped: false,
+            rate_limit_backoff: false,
             course_errors,
             last_course_error,
             notified,
@@ -1230,6 +1273,39 @@ mod tests {
         assert!(!tracker.off_window_poll_due(now + 7199)?);
         // 冷却结束后恢复（同时满足 30 分钟配额）
         assert!(tracker.off_window_poll_due(now + 7201)?);
+        Ok(())
+    }
+
+    /// 窗口内也要尊重限流冷却：平台正在拒收时每 61 秒重试只会把封禁拖长
+    /// （2026-11-27 生产实测：整个签到窗口都签不到 ⇒ sign_activities 恒 0 ⇒
+    /// 监控失明）。窗口内用短冷却（5 分钟），长冷却（2 小时）只挡窗口外。
+    #[test]
+    fn window_poll_respects_short_cooldown_after_rate_limit() -> Result<()> {
+        let (_dir, _store, tracker) = tracker_with_store()?;
+        let now = 1_000_000;
+        // 没限流时窗口内随便发
+        assert!(tracker.window_poll_allowed(now)?);
+        tracker.put_meta(
+            "rate_limited_until",
+            serde_json::json!({
+                "ts": now + 7200,
+                "window_ts": now + 300,
+            }),
+        )?;
+        // 窗口内：短冷却期内不允许，过了就允许（长冷却不挡窗口内）
+        assert!(!tracker.window_poll_allowed(now + 60)?);
+        assert!(tracker.window_poll_allowed(now + 301)?);
+        // 窗口外：长冷却仍然挡着
+        assert!(!tracker.off_window_poll_due(now + 60)?);
+        assert!(tracker.off_window_poll_due(now + 7201)?);
+
+        // 旧数据只有 ts（没有 window_ts）⇒ 回退到 ts，宁可多等别硬撞
+        tracker.put_meta(
+            "rate_limited_until",
+            serde_json::json!({ "ts": now + 7200 }),
+        )?;
+        assert!(!tracker.window_poll_allowed(now + 60)?);
+        assert!(tracker.window_poll_allowed(now + 7201)?);
         Ok(())
     }
 

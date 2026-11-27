@@ -192,3 +192,25 @@ mitm 环境已就绪：`.223` `mitm-zhs.service`（0.0.0.0:8888，捕获插件�
 产出 `sidecar/data/app_traffic.jsonl`。
 
 **待回填**：签到端点路径、请求签名/JWT 刷新方式、上课时段判定（课表已由 jwxt 模块提供）。
+
+## 两个出口的一致性（2026-11-27 实测并修好）
+
+作业状态有**两个出口**：QQ `/作业`（`plugins/homework`，用户问时现算）与 Vault
+`01-Courses-课程/2026-Fall-大一上/作业总表.md`（学习通作业轮询顺带覆写）。
+两边曾各写各的判据，分叉出两处不一致：
+
+| # | 分叉点 | 现象 | 根因 |
+|---|---|---|---|
+| 1 | 已归档快照 | 总表挂 9 条未完成，QQ 卡片只有 6 条 | QQ 侧过滤 `archived`，总表侧只看 `completed` |
+| 2 | 截止时间格式 | 总表里智慧树的行**永远**没有「⚠️已过期」 | QQ 侧认 `"%Y-%m-%d %H:%M:%S"` + `"%Y-%m-%d %H:%M"`，总表侧只认后者；智慧树的 `end_at` 一律带秒，chrono 的 `parse_from_str` 要求整串消费完 ⇒ 解析失败**静默**返回 `None` |
+
+修法：时间格式收成共享常量 `homework_work::DEADLINE_FORMATS` 两处共用；总表过滤
+`archived`。改后两边都是 6 条、逐条一致。
+
+时区方面：sidecar 容器没设 TZ（playwright 基础镜像是 UTC），`collector.now_ts()` 曾用
+`datetime.now()` ⇒ `report.generated_at` 是 UTC，与同一份报告里的北京时间混在一起；
+`serve.py` 也原样透出 `brush_log.generated_at`（容器本地=UTC）。两处都已改成北京时间，
+容器内自测见 `sidecar/zhihuishu-sidecar/scripts/test_timezones.py`、
+`test_serve_status_stamp.py`、`test_serve_due_decision.py`。
+
+> 复现细节（两个容器的挂载差异、sidecar 镜像不用重建的原因）见 `zhihuishu-watch.md` §9。
