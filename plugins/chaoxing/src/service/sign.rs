@@ -187,6 +187,26 @@ impl ChaoxingTracker {
         Ok(titles)
     }
 
+    /// 覆盖写 `chaoxing_meta` 的一个键（带 revision 的 CAS 更新）。
+    ///
+    /// `put_document` 的 `expected=None` 是 **insert-or-ignore**：第二次写不覆盖，
+    /// 时间戳会永远停在第一次写的那天。2026-11-27 生产实测：
+    /// `last_full_poll` 停在 10-29 ⇒ 窗口外「每 30 分钟兜底一轮」的退避判定
+    /// `now - last >= 30min` 恒真 ⇒ 退避完全失效 ⇒ 每 61 秒撞一次 activelist
+    /// ⇒ 平台「请勿频繁操作」⇒ `sign_activities` 恒 0 ⇒ 签到监控整天失明。
+    /// `rate_limited_until` 同理停在 10-31（冷却键也废了，限流后没有喘息期）。
+    ///
+    /// 更新必须带 revision；智慧树那边 `write_meta` 是同样的写法。
+    fn put_meta(&self, key: &str, value: serde_json::Value) -> Result<()> {
+        let revision = self
+            .store
+            .document("chaoxing_meta", key)?
+            .map(|doc| doc.revision);
+        self.store
+            .put_document("chaoxing_meta", key, revision, &value)
+            .map(|_| ())
+    }
+
     /// 窗口外每 30 分钟允许一轮实轮询（以进入实轮询记账，失败也占用配额）；
     /// 命中平台限流后进入冷却期，冷却未过不允许窗口外轮询，给账号喘息。
     fn off_window_poll_due(&self, now: i64) -> Result<bool> {
@@ -717,21 +737,14 @@ impl ChaoxingTracker {
             });
         }
         // 进入实轮询即记账：失败也占用兜底配额，限流时不会每 30 分钟反复撞。
-        self.store.put_document(
-            "chaoxing_meta",
-            "last_full_poll",
-            None,
-            &serde_json::json!({ "ts": now }),
-        )?;
+        self.put_meta("last_full_poll", serde_json::json!({ "ts": now }))?;
 
         let courses = self.client.course_list().await?;
         // 缓存学习通课程名单供课表窗口模糊过滤；空名单不写（异常响应不清空缓存）。
         if !courses.is_empty() {
-            self.store.put_document(
-                "chaoxing_meta",
+            self.put_meta(
                 "course_titles",
-                None,
-                &serde_json::json!({
+                serde_json::json!({
                     "ts": now,
                     "titles": courses.iter().map(|c| c.title.clone()).collect::<Vec<_>>(),
                 }),
@@ -950,11 +963,9 @@ impl ChaoxingTracker {
         let mut notified = false;
         // 命中平台限流：窗口外轮询进入冷却期，降低请求压力给账号喘息。
         if rate_limited {
-            self.store.put_document(
-                "chaoxing_meta",
+            self.put_meta(
                 "rate_limited_until",
-                None,
-                &serde_json::json!({ "ts": now + RATE_LIMIT_COOLDOWN_SECS }),
+                serde_json::json!({ "ts": now + RATE_LIMIT_COOLDOWN_SECS }),
             )?;
         }
         // 全部课程活动列表都拉取失败（登录态却正常）：签到监控处于失明状态，
@@ -1173,8 +1184,8 @@ mod tests {
         assert!(!course_title_match("心理健康", ""));
     }
 
-    #[test]
-    fn off_window_poll_respects_rate_limit_cooldown() -> Result<()> {
+    /// 造一个 tracker + 它的 store（测试共用）。
+    fn tracker_with_store() -> Result<(tempfile::TempDir, Arc<dyn TaskStore>, ChaoxingTracker)> {
         let dir = tempfile::tempdir()?;
         let store: Arc<dyn TaskStore> =
             Arc::new(SqliteTaskStore::open(&dir.path().join("state.db"))?);
@@ -1190,7 +1201,12 @@ mod tests {
             dir.path().join("cookies.json"),
         );
         let tracker = ChaoxingTracker::new(store.clone(), client, None, config);
+        Ok((dir, store, tracker))
+    }
 
+    #[test]
+    fn off_window_poll_respects_rate_limit_cooldown() -> Result<()> {
+        let (_dir, store, tracker) = tracker_with_store()?;
         let now = 1_000_000;
         // 冷启动允许兜底轮询
         assert!(tracker.off_window_poll_due(now)?);
@@ -1214,6 +1230,35 @@ mod tests {
         assert!(!tracker.off_window_poll_due(now + 7199)?);
         // 冷却结束后恢复（同时满足 30 分钟配额）
         assert!(tracker.off_window_poll_due(now + 7201)?);
+        Ok(())
+    }
+
+    /// meta 键必须能**覆盖**写。
+    ///
+    /// `put_document(..., expected=None)` 是 insert-or-ignore：第二次写不覆盖，
+    /// 时间戳永远停在第一次写的那天 ⇒ 窗口外「每 30 分钟兜底一轮」的退避判定
+    /// `now - last >= 30min` 恒真 ⇒ 退避完全失效 ⇒ 每 61 秒撞一次 activelist
+    /// ⇒ 平台「请勿频繁操作」⇒ `sign_activities` 恒 0 ⇒ 签到监控整天失明。
+    /// 2026-11-27 生产实测：`last_full_poll` 停在 10-29，`rate_limited_until`
+    /// 停在 10-31（限流后连冷却期都没有）。
+    #[test]
+    fn meta_keys_are_overwritten_not_insert_only() -> Result<()> {
+        let (_dir, store, tracker) = tracker_with_store()?;
+        tracker.put_meta("last_full_poll", serde_json::json!({ "ts": 1000 }))?;
+        tracker.put_meta("last_full_poll", serde_json::json!({ "ts": 2000 }))?;
+        let doc = store.document("chaoxing_meta", "last_full_poll")?.unwrap();
+        assert_eq!(doc.value["ts"], 2000, "第二次写必须覆盖");
+
+        // 退避判定跟着走：刚轮询过 ⇒ 30 分钟内不再兜底轮询。
+        assert!(!tracker.off_window_poll_due(2061)?);
+        assert!(tracker.off_window_poll_due(2000 + 1800)?);
+
+        // 限流冷却键同样要能覆盖写（否则冷却期永远停在第一次那次）。
+        tracker.put_meta("rate_limited_until", serde_json::json!({ "ts": 9000 }))?;
+        tracker.put_meta("rate_limited_until", serde_json::json!({ "ts": 12000 }))?;
+        let doc = store.document("chaoxing_meta", "rate_limited_until")?.unwrap();
+        assert_eq!(doc.value["ts"], 12000, "第二次写必须覆盖");
+        assert!(!tracker.off_window_poll_due(10000)?);
         Ok(())
     }
 }
