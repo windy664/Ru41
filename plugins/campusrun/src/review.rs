@@ -170,59 +170,74 @@ pub async fn review_recent_records(
             eprintln!("[campusrun] 复查 {rrid} 落账失败（版本冲突），这轮不通知");
             continue;
         }
-
-        if outcome.flagged
-            && let Some(notifier) = notifier
-            && !target.trim().is_empty()
-        {
-            let text = render_review_notice(&outcome);
-            if let Err(error) = notifier.send(target, None, &text).await {
-                eprintln!("[campusrun] 复查通知发送失败：{error:#}");
-            }
-        }
         outcomes.push(outcome);
+    }
+
+    // 一轮里可能查出多条违规（历史积压时尤其明显）⇒ **汇总成一条**推，
+    // 别一条记录一条消息把用户刷屏。落账是逐条做的（幂等），推送是汇总的。
+    let flagged: Vec<&ReviewOutcome> = outcomes.iter().filter(|o| o.flagged).collect();
+    if !flagged.is_empty()
+        && let Some(notifier) = notifier
+        && !target.trim().is_empty()
+    {
+        let text = render_review_notice(&flagged);
+        if let Err(error) = notifier.send(target, None, &text).await {
+            eprintln!("[campusrun] 复查通知发送失败：{error:#}");
+        }
     }
     Ok(outcomes)
 }
 
 /// 复查通知的正文（只转述服务端给的，不编因果）。
-fn render_review_notice(outcome: &ReviewOutcome) -> String {
-    let mut lines = vec![
-        "⚠️ 校园跑事后复查：你的一条跑步记录被服务端判违规".to_owned(),
-        String::new(),
-        format!("- 记录 id：{}", outcome.rrid),
-    ];
-    if let Some(distance) = outcome.distance_km {
-        lines.push(format!("- 距离：{distance:.2} km"));
-    }
-    if let Some(status_info) = &outcome.status_info {
-        lines.push(format!("- 服务端结论：{status_info}"));
-    }
-    if outcome.cheat_reasons.is_empty() {
-        lines.push("- 判违规依据：服务端未在逐条规则里给出".to_owned());
-    } else {
-        lines.push("- 判违规依据：".to_owned());
-        for reason in &outcome.cheat_reasons {
-            lines.push(format!("  · {reason}"));
+///
+/// 一轮里查出多条违规就汇总成一条（别一条记录一条消息刷屏），
+/// 每条都带上**跑的时间**——不然用户看到「被判违规」会以为是刚刚发生的。
+fn render_review_notice(outcomes: &[&ReviewOutcome]) -> String {
+    let mut lines = vec![format!(
+        "⚠️ 校园跑事后复查：{} 条记录被服务端判违规",
+        outcomes.len()
+    )];
+    for outcome in outcomes {
+        lines.push(String::new());
+        let mut head = format!(
+            "· {} 跑的（记录 id {}",
+            crate::render::fmt_datetime(outcome.start_time),
+            outcome.rrid
+        );
+        if let Some(distance) = outcome.distance_km {
+            head.push_str(&format!("，{distance:.2} km"));
         }
-    }
-    if !outcome.incomplete_reasons.is_empty() {
-        lines.push("- 没达标（不算违规）的项：".to_owned());
-        for reason in &outcome.incomplete_reasons {
-            lines.push(format!("  · {reason}"));
+        head.push('）');
+        lines.push(head);
+        if let Some(status_info) = &outcome.status_info {
+            lines.push(format!("  - 服务端结论：{status_info}"));
         }
-    }
-    match outcome.can_appeal {
-        Some(0) => lines.push("- 申诉：**通道已关闭**（不能再申诉）".to_owned()),
-        Some(_) => lines.push("- 申诉：可以申诉（App 里点）".to_owned()),
-        None => lines.push("- 申诉：服务端未说明".to_owned()),
-    }
-    if let Some(appeal_info) = &outcome.appeal_info {
-        lines.push(format!("- 申诉说明：{appeal_info}"));
+        if outcome.cheat_reasons.is_empty() {
+            lines.push("  - 判违规依据：服务端未在逐条规则里给出".to_owned());
+        } else {
+            lines.push("  - 判违规依据：".to_owned());
+            for reason in &outcome.cheat_reasons {
+                lines.push(format!("    · {reason}"));
+            }
+        }
+        if !outcome.incomplete_reasons.is_empty() {
+            lines.push("  - 没达标（不算违规）的项：".to_owned());
+            for reason in &outcome.incomplete_reasons {
+                lines.push(format!("    · {reason}"));
+            }
+        }
+        match outcome.can_appeal {
+            Some(0) => lines.push("  - 申诉：**通道已关闭**（不能再申诉）".to_owned()),
+            Some(_) => lines.push("  - 申诉：可以申诉（App 里点）".to_owned()),
+            None => lines.push("  - 申诉：服务端未说明".to_owned()),
+        }
+        if let Some(appeal_info) = &outcome.appeal_info {
+            lines.push(format!("  - 申诉说明：{appeal_info}"));
+        }
     }
     lines.push(String::new());
     lines.push(
-        "这条是**提交之后**被回扫判的（提交当时六项规则都过了）—— 服务端的跑批是事后做的。\
+        "这些是**提交之后**被回扫判的（提交当时六项规则都过了）—— 服务端的跑批是事后做的。\
          记着一条：提交成功不等于安全。"
             .to_owned(),
     );
@@ -249,7 +264,8 @@ mod tests {
 
     #[test]
     fn notice_transcribes_server_facts_only() {
-        let text = render_review_notice(&outcome());
+        let outcome = outcome();
+        let text = render_review_notice(&[&outcome]);
         assert!(text.contains("运动数据有问题"), "{text}");
         assert!(text.contains("通道已关闭"), "{text}");
         assert!(text.contains("1371568189"), "{text}");
@@ -257,6 +273,23 @@ mod tests {
         // 不许自己编因果：正文里不该出现「因为轨迹」这类解释。
         assert!(!text.contains("因为轨迹"), "{text}");
         assert!(!text.contains("说明轨迹"), "{text}");
+    }
+
+    /// 汇总成一条：两条违规 ⇒ **一条**消息、两条都在里面、条数写对。
+    #[test]
+    fn notice_batches_multiple_records_into_one_message() {
+        let first = outcome();
+        let mut second = outcome();
+        second.rrid = 1367213418;
+        second.start_time = Some(1_794_870_446_000);
+        second.distance_km = Some(1.21);
+        let text = render_review_notice(&[&first, &second]);
+        assert!(text.contains("2 条记录被服务端判违规"), "{text}");
+        assert!(text.contains("1371568189"), "{text}");
+        assert!(text.contains("1367213418"), "{text}");
+        // 两条都要带「跑的时间」——不然用户以为是刚刚发生的。
+        assert!(text.contains("11-21 06:57"), "{text}");
+        assert!(text.contains("11-17 07:07"), "{text}");
     }
 
     /// 复查的三个时间常量必须自洽：
