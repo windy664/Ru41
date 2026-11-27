@@ -661,3 +661,62 @@ bash deploy/start-campusrun.sh     # 起/重建 ru41-campusrun 容器
   不落盘、不进 git、不进日志）；取不到会直接报错退出，别让它静默跑成一个坏容器；
 - 容器 `--restart unless-stopped`，宿主重启后自己回来。
 
+
+## pace-forge 版本与上游同步（2026-11-27 下午）
+
+生产跑的 pace-forge 是我们的 fork（`windy664/pace-forge`）。上游 IRmsk/pace-forge
+在 11-26~11-27 跑了一轮**大重构**（typed errors / web 拆分 / config crate 化 /
+lint 基线 / flow 阶段抽取 / golden payload 测试），一天 13 个提交。逐个核过：
+**全是结构性改动，没动轨迹/步态/提交算法**（`preflight` 只是把 `inspect_at` 拆成
+`check_*` 子函数；`submit.rs` 新增的是测试辅助，抹掉每次变的 `geeToken`/`signature`
+才能逐字节比对报文）。
+
+| 版本 | fork 提交 | 说明 |
+|---|---|---|
+| `pace-forge:0.1.11-ru41.3` | `db432d95` | 上一版（issue#37 形状判据 + `PACE_CAD_*` 能力 + 步幅告警） |
+| `pace-forge:0.1.11-ru41.4` | `215268b` | **合并上游 main** + `PACE_CAD_*` 迁进新的配置层 |
+
+合并只有 **1 个冲突**：`src/config.rs` 被上游删除（拆成 `crates/pace-forge-config`）。
+处理：取上游的删除；fork 在该文件里只是把两个 `PACE_CAD_*` 登记进旧的 ENTRIES 清单
+（纯登记，读取在 `biomech.rs`），按新层的三处规矩重做登记
+（`registry.rs` + `model.rs` + `load.rs` + `parser.rs`，上游的
+`registry_matches_config_keys` 测试会守住一致性）。
+
+**新配置层是 fail-fast**（非法值启动就报错，不再静默回落默认）。生产不受影响：
+- data 目录**没有** `config.toml` ⇒ 走全默认；
+- compose 里只设了 `PACE_FORGE_TOKEN`（已注册）；
+- `server.data_dir` 默认仍是 `$HOME/.pace-forge` ⇒ 账号库/设备标识/会话原位，
+  `/api/me` 实测 `loggedIn: true` 没掉登录态。
+
+### 形状不变的验证（两轮，都不提交）
+
+`/api/plan` **不是确定性**（坐标、步数每次都变），所以逐字节对比没意义，只能比形状统计量。
+
+1. **离线**（`pace-forge check 2.0 12.4`，不联网不登录），新旧各 12 次：
+   轨迹点数 402=402、绕圈 5.00=5.00、实际里程中位 1989=1989、总步数 2065 vs 2074、
+   平均步频 166.6 vs 167.2、步幅 0.963 vs 0.959 ⇒ 一致。
+2. **在线**（真实账号的 `/api/plan`，各 10 次，不提交）：
+
+   | 指标 | ru41.3 | ru41.4 |
+   |---|---|---|
+   | 实际里程(m) | 1819（中位） | 1894 |
+   | 平均步频 | 161.9 | 163.3 |
+   | 总步数 | 2007 | 2024 |
+   | 步幅(m) | 0.915 | 0.942 |
+   | 转角>25° | 14 | 14.5 |
+   | 外框长宽比 | 1.805 | 1.796 |
+   | 打卡点通过 | 5/5 | 5/5 |
+
+   中位差全部 ≤4.2%（随机性范围内），离散量完全一致 ⇒ **轨迹形状没变**。
+
+### 本次只做同步，没提交
+
+`data/.pace-forge/submissions/17846942.jsonl` 仍是 12 行、mtime 停在 11-25 ⇒
+**没有产生任何新提交**。账号仍有 3 次违规未解除，提交本来也会被 pace-forge 的
+cheat 闸硬拦。
+
+### 上游 PR #66
+
+形状判据（长宽比下限 1.5 + 小场形状一致性）已作为 PR 提给上游：
+<https://github.com/IRmsk/pace-forge/pull/66>。分支已 rebase 到最新 upstream/main，
+diff 仍**只有 `src/api/flow.rs`（+116/-1）**，状态 MERGEABLE。
