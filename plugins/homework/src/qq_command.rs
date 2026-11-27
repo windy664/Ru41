@@ -362,7 +362,7 @@ fn parse_beijing(raw: &str) -> Option<i64> {
     ru41::app::homework_work::platform_ts(
         raw,
         BEIJING_OFFSET,
-        &["%Y-%m-%d %H:%M:%S", "%Y-%m-%d %H:%M"],
+        ru41::app::homework_work::DEADLINE_FORMATS,
     )
 }
 

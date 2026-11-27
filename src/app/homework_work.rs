@@ -16,6 +16,18 @@ pub fn local_stamp(now: i64, offset_seconds: i32) -> String {
         .unwrap_or_default()
 }
 
+/// 平台截止时间的常见形态：带秒优先，其次不带秒。
+///
+/// 智慧树的 `end_at` 一律带秒（`"%Y-%m-%d %H:%M:%S"`，采集器 `normalize_time`
+/// 的契约格式），学习通/微助教有的只到分钟。chrono 的 `parse_from_str` 要求
+/// **整串消费完**，多出来的 `:00` 会让它直接返回 Err——只给一种格式时，另一平台的
+/// 那一半会被静默判成「没有截止时间」（2026-11-27 实测：Vault 作业总表里
+/// 智慧树的行因此永远不带「⚠️已过期」，同一份数据在 QQ `/作业` 里是有的）。
+///
+/// 收成一处共享常量：两个出口（QQ `/作业` 与 Vault 作业总表）曾经各写各的格式表，
+/// 分叉出来的就是上面这个 bug。
+pub const DEADLINE_FORMATS: &[&str] = &["%Y-%m-%d %H:%M:%S", "%Y-%m-%d %H:%M"];
+
 /// 平台时间串 → 本机固定偏移时间戳：按给定格式表逐个宽容尝试，
 /// 第一个解析成功的格式生效。各平台的格式表留在调用侧。
 pub fn platform_ts(raw: &str, offset_seconds: i32, formats: &[&str]) -> Option<i64> {
@@ -218,6 +230,17 @@ pub fn render_homework_dashboard(
             .get("completed")
             .and_then(serde_json::Value::as_bool)
             .unwrap_or(false);
+        // 已归档的快照（平台换 id / 删除作业后的旧 key）不再计入清单——
+        // 与 QQ `/作业` 同一口径（见 plugins/homework/src/qq_command.rs）。
+        // 不过滤的话，僵尸作业会在总表里一直挂着「未完成」（2026-11-27 实测多挂 3 条）。
+        let archived = doc
+            .value
+            .get("archived")
+            .and_then(serde_json::Value::as_bool)
+            .unwrap_or(false);
+        if archived {
+            continue;
+        }
         rows.push((
             end_at,
             "智慧树".into(),
@@ -264,7 +287,7 @@ pub fn render_homework_dashboard(
     for (end_at, platform, dir, course, title, _) in &open {
         let overdue = end_at
             .as_deref()
-            .and_then(|s| platform_ts(s, offset_seconds, &["%Y-%m-%d %H:%M"]))
+            .and_then(|s| platform_ts(s, offset_seconds, DEADLINE_FORMATS))
             .is_some_and(|ts| ts < now);
         let mark = if overdue { "⚠️已过期 " } else { "" };
         out.push_str(&format!(
@@ -616,5 +639,99 @@ mod reminder_tests {
         )
         .unwrap();
         assert_eq!(action, ReminderAction::Quiet);
+    }
+}
+
+#[cfg(test)]
+mod dashboard_tests {
+    use super::*;
+    use crate::adapters::database::sqlite::SqliteTaskStore;
+
+    fn store() -> (tempfile::TempDir, Arc<dyn TaskStore>) {
+        let dir = tempfile::tempdir().unwrap();
+        let store = SqliteTaskStore::open(&dir.path().join("state.db")).unwrap();
+        (dir, Arc::new(store) as Arc<dyn TaskStore>)
+    }
+
+    /// 2026-11-27 00:00:00（UTC+8）的 epoch。
+    const DEADLINE_11_27: i64 = 1_795_708_800;
+
+    /// 智慧树的 end_at 带秒；总表必须能判出「已过期」。
+    /// 旧实现只认 "%Y-%m-%d %H:%M"，chrono 整串消费要求不满足 → 静默返回 None
+    /// → 智慧树的行在总表里永远不带「⚠️已过期」（2026-11-27 实测）。
+    #[test]
+    fn zhihuishu_deadline_with_seconds_marks_overdue() {
+        let (_dir, store) = store();
+        store
+            .put_document(
+                "zhihuishu_task",
+                "思政#T1",
+                None,
+                &json!({
+                    "course": "思想道德与法治",
+                    "title": "实践作业",
+                    "end_at": "2026-11-27 00:00:00",
+                    "completed": false,
+                }),
+            )
+            .unwrap();
+        // now = 截止后 1 小时
+        let text = render_homework_dashboard(&store, DEADLINE_11_27 + 3600, 8 * 3600).unwrap();
+        assert!(
+            text.contains("⚠️已过期 智慧树｜思想道德与法治｜实践作业"),
+            "{text}"
+        );
+        assert!(text.contains("## 未完成（1）"), "{text}");
+    }
+
+    /// 已归档的僵尸快照不进总表（与 QQ `/作业` 同一口径）。
+    /// 不过滤的话，平台换 id / 删除作业留下的旧 key 会在总表里长期挂着「未完成」
+    /// （2026-11-27 生产实测多挂 3 条）。
+    #[test]
+    fn archived_zhihuishu_snapshot_is_hidden() {
+        let (_dir, store) = store();
+        store
+            .put_document(
+                "zhihuishu_task",
+                "思政#LIVE",
+                None,
+                &json!({
+                    "course": "思想道德与法治",
+                    "title": "活着的作业",
+                    "end_at": "2026-12-01 00:00:00",
+                    "completed": false,
+                }),
+            )
+            .unwrap();
+        store
+            .put_document(
+                "zhihuishu_task",
+                "思政#ZOMBIE",
+                None,
+                &json!({
+                    "course": "思想道德与法治",
+                    "title": "僵尸作业",
+                    "end_at": "2026-11-08 00:00:00",
+                    "completed": false,
+                    "archived": true,
+                }),
+            )
+            .unwrap();
+        let text = render_homework_dashboard(&store, DEADLINE_11_27 + 3600, 8 * 3600).unwrap();
+        assert!(text.contains("活着的作业"), "{text}");
+        assert!(!text.contains("僵尸作业"), "{text}");
+        assert!(text.contains("## 未完成（1）"), "{text}");
+    }
+
+    /// 截止时间格式表两处出口共用，避免再次分叉。
+    #[test]
+    fn deadline_formats_cover_both_platform_shapes() {
+        assert_eq!(DEADLINE_FORMATS, &["%Y-%m-%d %H:%M:%S", "%Y-%m-%d %H:%M"]);
+        for raw in ["2026-11-27 00:00:00", "2026-11-27 00:00"] {
+            assert!(
+                platform_ts(raw, 8 * 3600, DEADLINE_FORMATS).is_some(),
+                "{raw} 应能解析"
+            );
+        }
     }
 }
