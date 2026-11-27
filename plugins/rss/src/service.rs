@@ -21,6 +21,56 @@ const MUST_POOL_CAP: usize = 5;
 /// 不同发布日的多条高危漏洞不受影响（各是各的事）。
 const MUST_CLUSTER_CAP: usize = 2;
 
+/// 候选池里非机会类条目的上限（机会类不受此限，见 `is_opportunity`）。
+const POOL_CAP: usize = 80;
+
+/// 「机会类」条目的 id 前缀（缺省值）：这些适配器产出的是**有截止日期**的
+/// 比赛/黑客松/实习/奖学金。
+///
+/// ⚠️ 为什么要单独认它们（2026-11-27 实测）：池子封顶与提示词预算**都按采集
+/// 时间淘汰**（保最新），而机会类条目**发布一次、留在池里直到截止日** ⇒ 天然
+/// 排在池子前部 ⇒ 连续 6 期日报把它们全砍掉：
+///
+/// | 日报 | 候选 | 进了材料 | 机会类进了几条 |
+/// |---|---|---|---|
+/// | 11-25 早 | 53 | 53 | ✅ 黑客松×3 实习×12 奖金×5 |
+/// | 11-26 晚 | 80 | 27 | ❌ 零 |
+/// | 11-27 早 | 76 | 26 | ❌ 零（5 个有奖金的黑客松 + 1 条实习） |
+///
+/// ⇒ 机会类优先进材料、也不因池子封顶被淘汰。
+pub const DEFAULT_OPPORTUNITY_ID_PREFIXES: &[&str] = &[
+    "wqai-",
+    "devpost-",
+    "lablab-",
+    "df-",
+    "xfyun-",
+    "hackertrip-",
+    "hack123-",
+    "gsoc-",
+    "lfx-",
+    "hackathoncom-",
+    "mianling-",
+];
+
+/// 这一条是不是「机会类」（有截止日期的比赛/黑客松/实习/奖学金）。
+pub fn is_opportunity(item: &FeedItem, prefixes: &[String]) -> bool {
+    prefixes.iter().any(|prefix| item.id.starts_with(prefix.as_str()))
+}
+
+/// 进材料时的排序：**机会类优先**，其余**新的在前**。
+///
+/// 池子是插入顺序（老→新），所以「新的在前」= 反向遍历。
+pub fn order_for_prompt<'a>(
+    items: &'a [FeedItem],
+    prefixes: &[String],
+) -> Vec<&'a FeedItem> {
+    let (opportunity, rest): (Vec<&FeedItem>, Vec<&FeedItem>) =
+        items.iter().partition(|item| is_opportunity(item, prefixes));
+    let mut ordered = opportunity;
+    ordered.extend(rest.into_iter().rev());
+    ordered
+}
+
 /// RSS 信息流追踪配置（对应配置文件的 [sources.rss]）。
 #[derive(Debug, Clone)]
 pub struct RssConfig {
@@ -48,6 +98,9 @@ pub struct RssConfig {
     /// 标题级丢弃规则（配置里的正则编译产物）：命中即不入池。
     /// 用于源级噪声过滤（V2EX 推广/中转站节点等纯营销）。
     pub drop_title_patterns: Vec<regex::Regex>,
+    /// 「机会类」条目的 id 前缀：源产出的是**有截止日期**的比赛/黑客松/实习/
+    /// 奖学金。池子封顶与提示词预算都优先保它们（见 `is_opportunity`）。
+    pub opportunity_id_prefixes: Vec<String>,
     /// 必报硬闸：命中的条目**单独成一条 digest 任务**（不许被 LLM 舍弃）。
     pub must_report: bool,
     /// 必报条目**并进日报正文**（一条消息发完），而不是单独成一条任务。
@@ -72,6 +125,10 @@ impl Default for RssConfig {
             max_age_days: 2,
             pool_keyword_filter: true,
             drop_title_patterns: Vec::new(),
+            opportunity_id_prefixes: DEFAULT_OPPORTUNITY_ID_PREFIXES
+                .iter()
+                .map(|s| (*s).to_owned())
+                .collect(),
             must_report: true,
             merge_must_report: true,
         }
@@ -304,8 +361,36 @@ impl RssTracker {
                 pool.push(item);
             }
         }
-        if pool.len() > 80 {
-            pool.drain(..pool.len() - 80);
+        if pool.len() > POOL_CAP {
+            // 封顶：**机会类（有截止日期的比赛/黑客松/实习）不因封顶被淘汰**。
+            //
+            // ⚠️ 2026-11-27 实测：原来这里是「保最新 80 条」（丢最旧的），
+            // 而机会类条目发布一次、留到截止日 ⇒ 天然排在池子前部 ⇒ 被逐出池子
+            // ⇒ 连续 6 期日报一条机会类都没报（11-27 那期候选 76 条只进了 24 条）。
+            //
+            // 现在：**先丢最旧的非机会类**，机会类留着；名额不够时才动机会类。
+            let opportunity: Vec<bool> = pool
+                .iter()
+                .map(|item| is_opportunity(item, &self.config.opportunity_id_prefixes))
+                .collect();
+            let opportunity_count = opportunity.iter().filter(|flag| **flag).count();
+            let mut room = POOL_CAP.saturating_sub(opportunity_count);
+            let mut keep = opportunity.clone();
+            for index in (0..pool.len()).rev() {
+                if room == 0 {
+                    break;
+                }
+                if !keep[index] {
+                    keep[index] = true;
+                    room -= 1;
+                }
+            }
+            let all = std::mem::take(&mut pool);
+            pool = all
+                .into_iter()
+                .zip(keep)
+                .filter_map(|(item, keep)| if keep { Some(item) } else { None })
+                .collect();
         }
         let mut must_ids: std::collections::HashSet<String> =
             must_pool.iter().map(|i| i.id.clone()).collect();
@@ -364,7 +449,13 @@ impl RssTracker {
                     if let Some(task) = existing {
                         digest_task_id = Some(task.id);
                     } else {
-                        let prompt = merged_report_prompt(&must, &rest, &interests, &overflow_note);
+                        let prompt = merged_report_prompt(
+                            &must,
+                            &rest,
+                            &interests,
+                            &overflow_note,
+                            &self.config.opportunity_id_prefixes,
+                        );
                         let result = match &self.config.notify {
                             Some(route) => service.enqueue_with_notify(
                                 &key,
@@ -416,7 +507,12 @@ impl RssTracker {
                     if let Some(task) = existing {
                         digest_task_id = Some(task.id);
                     } else {
-                        let prompt = digest_prompt_with_note(interests, &rest, &overflow_note);
+                        let prompt = digest_prompt_with_note(
+                            interests,
+                            &rest,
+                            &overflow_note,
+                            &self.config.opportunity_id_prefixes,
+                        );
                         let result = match &self.config.notify {
                             Some(route) => service.enqueue_with_notify(
                                 &key,
@@ -772,11 +868,48 @@ fn merged_report_prompt(
     rest: &[FeedItem],
     interests: &str,
     note: &str,
+    opportunity_prefixes: &[String],
 ) -> String {
-    const MUST_BUDGET: usize = 26_000;
-    const REST_BUDGET: usize = 26_000;
-    const SUMMARY_MAX: usize = 400;
+    // 预算按**字节**算（Rust 的 String::len()），而材料大半是中文（1 字 3 字节）
+    // ⇒ 26,000 字节只放得下 ~24 条。2026-11-27 实测：候选 76 条只进了 24 条，
+    // 机会类（黑客松/竞赛/实习）**一条没进材料** ⇒ 日报里那类条目全是 0。
+    //
+    // 现在：摘要截到 250 字（每条约 700 字节）⇒ 80 条约 54 KB，加指令段与必报段
+    // 仍在入队上限（65,536 字节）内 ⇒ **候选基本能全进材料**。
+    const MUST_BUDGET: usize = 5_000;
+    const REST_BUDGET: usize = 54_000;
+    const SUMMARY_MAX: usize = 250;
 
+    // ① 先算材料（机会类优先、其余新的在前），头部要写**实际带进去的条数**。
+    let must_ordered: Vec<&FeedItem> = must.iter().rev().collect();
+    let (must_entries, must_kept, _) = build_material(
+        &must_ordered,
+        MUST_BUDGET,
+        SUMMARY_MAX,
+        |item, summary| {
+            let verdict = crate::security::verdict(&item.title, &item.summary);
+            let reasons = crate::security::reason_line(&verdict);
+            format!(
+                "\n---\n{}\n链接：{}\n发布：{}\n必报理由：{}\n内容：{}\n",
+                item.title, item.link, item.published, reasons, summary
+            )
+        },
+    );
+
+    let rest_ordered = order_for_prompt(rest, opportunity_prefixes);
+    let (rest_entries, rest_kept, rest_dropped) = build_material(
+        &rest_ordered,
+        REST_BUDGET,
+        SUMMARY_MAX,
+        |item, summary| {
+            format!(
+                "\n---\n{}\n链接：{}\n发布：{}\n内容：{}\n",
+                item.title, item.link, item.published, summary
+            )
+        },
+    );
+
+    // ② 再拼提示词。
     let mut prompt = String::new();
     if !note.is_empty() {
         prompt.push_str(note);
@@ -803,36 +936,12 @@ fn merged_report_prompt(
          5. **不要写「已舍弃」段落** —— 本部分没有需要舍弃的条目。\n\
          6. **本部分非空时绝对禁止**只回「📭 今日无值得关注的机会」—— 那行只属于第二部分。\n\n\
          == 必报条目（{must_count} 条）==",
-        must_count = must.len()
+        must_count = must_kept
     ));
-    // 必报材料：新的在前，超预算丢最旧的。
-    // ⚠️ 预算按**材料段自己的长度**算（不含前面的指令）—— 否则第二段的预算
-    // 会被第一段的累计长度吃掉，一条都放不进去。
-    let must_start = prompt.len();
-    let ordered: Vec<&FeedItem> = must.iter().rev().collect();
-    for (i, item) in ordered.iter().enumerate() {
-        let verdict = crate::security::verdict(&item.title, &item.summary);
-        let reasons = crate::security::reason_line(&verdict);
-        let entry = format!(
-            "\n---\n{}\n链接：{}\n发布：{}\n必报理由：{}\n内容：{}\n",
-            item.title,
-            item.link,
-            item.published,
-            reasons,
-            ru41::util::truncate_chars(&item.summary, SUMMARY_MAX)
-        );
-        if prompt.len() - must_start + entry.len() > MUST_BUDGET {
-            prompt.push_str(&format!(
-                "\n（其余 {} 条较旧必报条目超出长度预算，本次略去）\n",
-                must.len() - i
-            ));
-            break;
-        }
-        prompt.push_str(&entry);
-    }
+    prompt.push_str(&must_entries);
 
     prompt.push_str(&format!(
-        "\n\n══════════ 第二部分 · 今日资讯（{} 条）══════════\n\
+        "\n\n══════════ 第二部分 · 今日资讯（{rest_kept} 条）══════════\n\
          【资讯纪律（只作用于本部分；第一部分的必报条目不受这些规则影响）】\n\
          时效纪律：这是日报，优先近 48 小时的条目；发布时间超过 3 天的视为旧闻，\n\
          除非仍在行动窗口内（如未过截止日期/仍可领取），否则一律舍弃并简要说明。\n\
@@ -843,6 +952,13 @@ fn merged_report_prompt(
          发帖人拿返利，对读者没有信息增量，且往往夸大收益。项目官方公告、平台官方\n\
          活动（官方域名发布）不在此列。社区用户发帖（v2ex/Reddit/论坛等）要优先\n\
          怀疑其推广动机，除非能给出来自官方来源的佐证。\n\
+         促销纪律：**纯购物促销**（黑五、黑色星期五、礼品卡、优惠券、秒杀、游戏充值、\n\
+         限时开售）一律舍弃——它们是消费广告不是信息增量（2026-11-27 实测：日报里混进了\n\
+         3 条黑五促销）。**但「免费/限量的 API 额度、云服务试用、开源模型发布、\n\
+         学生优惠」属于关注方向，不许当促销丢掉。**\n\
+         消费广告不是信息增量（2026-11-27 实测：日报里混进了 3 条黑五促销）。\n\
+         条目纪律：**每一条都必须是一条具体资讯**；不许写「本条合并说明」这类\n\
+         占位/元说明条目（2026-11-27 实测：出现过一条「…（本条合并说明）」占坑）。\n\
          来源纪律：同一事件有多个来源时，**优先给原始出处**——研究机构/厂商/官方公告/\n\
          官方条目的原文链接；中文转载、聚合站只作补充，不能只给转载链接。\n\
          原始来源就在候选材料里时，链接必须用它。\n\
@@ -850,35 +966,93 @@ fn merged_report_prompt(
          个别接近但不够格的条目至多一句话带过。\n\
          ⚠️ 如果本部分全部不值得关注：**不要**把「📭 今日无值得关注的机会」放在正文最前面\n\
          （系统按开头判断空报，会把整条报静默吃掉）——第一部分报完之后再写这一行，或干脆不写。\n\n\
-         == 资讯候选条目（{} 条）==",
-        rest.len(),
-        rest.len()
+         == 资讯候选条目（共 {rest_total} 条，按预算带了 {rest_kept} 条）==",
+        rest_kept = rest_kept,
+        rest_total = rest.len()
     ));
-    let rest_start = prompt.len();
-    let ordered: Vec<&FeedItem> = rest.iter().rev().collect();
-    for (i, item) in ordered.iter().enumerate() {
-        let entry = format!(
-            "\n---\n{}\n链接：{}\n发布：{}\n内容：{}\n",
-            item.title,
-            item.link,
-            item.published,
-            ru41::util::truncate_chars(&item.summary, SUMMARY_MAX)
-        );
-        if prompt.len() - rest_start + entry.len() > REST_BUDGET {
-            prompt.push_str(&format!(
-                "\n（其余 {} 条较旧条目超出长度预算，本次略去）\n",
-                rest.len() - i
-            ));
+    if rest_dropped > 0 {
+        prompt.push_str(&format!(
+            "（另有 {rest_dropped} 条未进材料：优先保了机会类（有截止日期的比赛/实习）与最新条目）\n"
+        ));
+    }
+    prompt.push_str(&rest_entries);
+    prompt
+}
+
+/// 按**字节**截断（不切坏 UTF-8）。预算按字节算时必须用它，
+/// 按字符截会算出 3 倍的体积（中文 1 字 3 字节）。
+fn truncate_bytes(text: &str, max_bytes: usize) -> String {
+    if text.len() <= max_bytes {
+        return text.to_owned();
+    }
+    let mut end = max_bytes;
+    while end > 0 && !text.is_char_boundary(end) {
+        end -= 1;
+    }
+    text[..end].to_owned()
+}
+
+/// 每条材料的最小字节预算（标题/链接/发布/分隔 + 一小段摘要）；
+/// 低于它就别硬挤了 —— 挤出来的残缺摘要对模型没用。
+const MIN_ITEM_BYTES: usize = 220;
+
+/// 候选条数上限：预算不够均分时，只取优先级最高的这么多条。
+/// 免得给模型几百条一句话摘要（挑不出东西，还挤掉真正有料的）。
+const MAX_CANDIDATES: usize = 60;
+
+/// 把候选装进材料段：**每条均分预算**，摘要按预算尽量给长 ⇒ 候选再多也进得来。
+///
+/// 2026-11-27 实测：原来「整份预算逐条填、装不下就丢」⇒ 候选 76 条只进了 24 条，
+/// 而且丢的恰好是机会类（有截止日期的比赛/实习 —— 它们发布一次、留在池子最前部）。
+/// 现在改成均分预算 ⇒ 76 条能全进（摘要略短一点），机会类更是排在最前永不丢。
+///
+/// 返回 `(材料, 实际条数, 被丢条数)`。
+fn build_material(
+    items: &[&FeedItem],
+    budget: usize,
+    summary_cap: usize,
+    mut entry: impl FnMut(&FeedItem, &str) -> String,
+) -> (String, usize, usize) {
+    let total = items.len();
+    if total == 0 {
+        return (String::new(), 0, 0);
+    }
+    // 预算够均分就全要；不够就只取优先级最高的若干条。
+    let per_item = budget / total;
+    let planned = if per_item >= MIN_ITEM_BYTES {
+        total
+    } else {
+        total.min(MAX_CANDIDATES)
+    };
+    let per_item = (budget / planned).max(MIN_ITEM_BYTES);
+    let mut out = String::new();
+    let mut kept = 0usize;
+    for item in items.iter().take(planned) {
+        // 先量这条的固定开销（标题/链接/发布/分隔），剩下的给摘要。
+        let overhead = entry(item, "").len();
+        let room = per_item.saturating_sub(overhead).max(40);
+        let summary = ru41::util::truncate_chars(&truncate_bytes(&item.summary, room), summary_cap);
+        let text = entry(item, &summary);
+        if out.len() + text.len() > budget {
             break;
         }
-        prompt.push_str(&entry);
+        out.push_str(&text);
+        kept += 1;
     }
-    prompt
+    (out, kept, total.saturating_sub(kept))
 }
 
 /// 资讯精选 prompt：输出口径按设计文档 3.4 的四段式，区分事实与推断。
 fn digest_prompt(interests: &str, candidates: &[FeedItem]) -> String {
-    digest_prompt_with_note(interests, candidates, "")
+    digest_prompt_with_note(
+        interests,
+        candidates,
+        "",
+        &DEFAULT_OPPORTUNITY_ID_PREFIXES
+            .iter()
+            .map(|s| (*s).to_owned())
+            .collect::<Vec<_>>(),
+    )
 }
 
 /// 带「落选必报条目」说明行的日报 prompt。
@@ -886,11 +1060,40 @@ fn digest_prompt(interests: &str, candidates: &[FeedItem]) -> String {
 /// 必报池裁剪（同批次扎堆 + 总量封顶）落选的条目不进正文 —— 换到正文发还是
 /// 十几条漏洞, 用户照样嫌多。但数量不该静默消失: 在日报开头留一行说明,
 /// 让人知道「还有多少条同批次的没逐条列」。
-fn digest_prompt_with_note(interests: &str, candidates: &[FeedItem], note: &str) -> String {
+fn digest_prompt_with_note(
+    interests: &str,
+    candidates: &[FeedItem],
+    note: &str,
+    opportunity_prefixes: &[String],
+) -> String {
     // 任务入队校验上限是 65536 字节（app/task validate_input），池子随源增多
     // 会涨破它——这里给 prompt 留 6 万字节预算：单条摘要截断、超预算截尾。
+    //
+    // ⚠️ 预算按**字节**算，中文 1 字 3 字节 ⇒ 摘要 400 字时每条约 1 KB，
+    // 80 条就 80 KB（超上限）。摘要截到 250 字 ⇒ 每条约 700 字节 ⇒ 80 条 54 KB ✓。
     const PROMPT_BUDGET: usize = 60_000;
-    const SUMMARY_MAX: usize = 400;
+    const SUMMARY_MAX: usize = 250;
+
+    // 预算有限时**优先保最新的**：池子是插入顺序（老→新），按原顺序填、截尾丢的
+    // 恰好是最新采集的那批（2026-11-18 实测：当天最该报的条目被截掉了，
+    // 日报里只剩二手转载）。所以这里改成**新的在前**，超预算时丢最旧的。
+    //
+    // 2026-11-27 再加一条：**机会类（有截止日期的比赛/黑客松/实习）优先进材料**
+    // —— 它们发布一次、留到截止日，按采集时间淘汰等于天天杀掉（连续 6 期日报
+    // 一条机会类都没报，见 `DEFAULT_OPPORTUNITY_ID_PREFIXES`）。
+    let ordered = order_for_prompt(candidates, opportunity_prefixes);
+    let (entries, kept, dropped) = build_material(
+        &ordered,
+        PROMPT_BUDGET,
+        SUMMARY_MAX,
+        |item, summary| {
+            format!(
+                "\n---\n{}\n链接：{}\n发布：{}\n内容：{}\n",
+                item.title, item.link, item.published, summary
+            )
+        },
+    );
+
     let mut prompt = format!(
         "你是信息筛选助手，正在为用户出一份日报。以下是最新采集到的资讯条目（含标题与摘要级内容）。\n\
          个人关注方向：{interests}\n\n\
@@ -905,6 +1108,13 @@ fn digest_prompt_with_note(interests: &str, candidates: &[FeedItem], note: &str)
          发帖人拿返利，对读者没有信息增量，且往往夸大收益。项目官方公告、平台官方\n\
          活动（官方域名发布）不在此列。社区用户发帖（v2ex/Reddit/论坛等）要优先\n\
          怀疑其推广动机，除非能给出来自官方来源的佐证。\n\
+         促销纪律：**纯购物促销**（黑五、黑色星期五、礼品卡、优惠券、秒杀、游戏充值、\n\
+         限时开售）一律舍弃——它们是消费广告不是信息增量（2026-11-27 实测：日报里混进了\n\
+         3 条黑五促销）。**但「免费/限量的 API 额度、云服务试用、开源模型发布、\n\
+         学生优惠」属于关注方向，不许当促销丢掉。**\n\
+         消费广告不是信息增量（2026-11-27 实测：日报里混进了 3 条黑五促销）。\n\
+         条目纪律：**每一条都必须是一条具体资讯**；不许写「本条合并说明」这类\n\
+         占位/元说明条目（2026-11-27 实测：出现过一条「…（本条合并说明）」占坑）。\n\
          数字纪律：金额、人数、日期、百分比等所有数字必须逐字取自材料；\n\
          材料写「未标注」就如实写「未标注」，材料没有的数字一律写「材料未给出」，\n\
          绝对禁止凭常识、经验或事件名称脑补任何数字（宁可不写，不可编造）。\n\
@@ -916,34 +1126,20 @@ fn digest_prompt_with_note(interests: &str, candidates: &[FeedItem], note: &str)
          如果全部不值得关注，只回复一行：📭 今日无值得关注的机会。不要附加任何解释。\n\
          交付口径：最终 JSON 的 summary 字段放**完整日报正文**（Markdown 结构原样搬进去），\n\
          不要先在消息里写一遍日报、再压缩成一段摘要交差——那段摘要会被直接推给用户。\n\n\
-         == 候选条目（{} 条）==\n",
-        candidates.len()
+         == 候选条目（共 {total} 条，按预算带了 {kept} 条）==\n",
+        total = candidates.len(),
+        kept = kept
     );
+    if dropped > 0 {
+        prompt.push_str(&format!(
+            "（另有 {dropped} 条未进材料：优先保了机会类（有截止日期的比赛/实习）与最新条目）\n"
+        ));
+    }
     // 必报池落选说明放在最前面（读者第一眼就能看到「还有多少条没列」）
     if !note.is_empty() {
         prompt = format!("{note}\n\n{prompt}");
     }
-    // 预算有限时**优先保最新的**：池子是插入顺序（老→新），按原顺序填、截尾丢的
-    // 恰好是最新采集的那批（2026-11-18 实测：当天最该报的条目被截掉了，
-    // 日报里只剩二手转载）。所以这里改成**新的在前**，超预算时丢最旧的。
-    let ordered: Vec<&FeedItem> = candidates.iter().rev().collect();
-    for (i, item) in ordered.iter().enumerate() {
-        let entry = format!(
-            "\n---\n{}\n链接：{}\n发布：{}\n内容：{}\n",
-            item.title,
-            item.link,
-            item.published,
-            ru41::util::truncate_chars(&item.summary, SUMMARY_MAX)
-        );
-        if prompt.len() + entry.len() > PROMPT_BUDGET {
-            prompt.push_str(&format!(
-                "\n（其余 {} 条较旧条目超出长度预算，本次略去）\n",
-                candidates.len() - i
-            ));
-            break;
-        }
-        prompt.push_str(&entry);
-    }
+    prompt.push_str(&entries);
     prompt
 }
 
@@ -1087,7 +1283,18 @@ mod tests {
         let candidates: Vec<super::FeedItem> = big.into_iter().map(|(_, it)| it).collect();
         let prompt = super::digest_prompt("i", &candidates);
         assert!(prompt.len() <= 65_536, "实际 {} 字节", prompt.len());
-        assert!(prompt.contains("超出长度预算"));
+        // 2026-11-27 起不再「装不下就丢」（那会丢掉机会类条目）⇒ 改成均分预算：
+        // 条数按上限收，**头部如实写带了几条、丢了多少**。
+        let kept = prompt.matches("链接：").count();
+        assert!(kept > 0, "一条都没进材料");
+        assert!(
+            prompt.contains(&format!("按预算带了 {kept} 条")),
+            "头部计数与实际不符：{prompt}"
+        );
+        assert!(
+            prompt.contains("另有") && prompt.contains("条未进材料"),
+            "丢了多少条要写出来：{prompt}"
+        );
     }
 
     /// 预算吃紧时**必须保住最新的条目**。
@@ -1109,6 +1316,180 @@ mod tests {
         assert!(prompt.contains("https://x/n499"), "最新的条目被预算截掉了");
         // 最老的那批才是被舍弃的。
         assert!(!prompt.contains("https://x/n0"), "最旧的应被舍弃");
+    }
+
+    /// **回归（2026-11-27）**：机会类条目（有截止日期的比赛/黑客松/实习）
+    /// **发布一次、留在池里直到截止日** ⇒ 天然排在池子前部。两道截断原来都按
+    /// 「采集时间」淘汰（保最新）⇒ 它们连续 6 期日报一条都没进材料
+    /// （11-27 那期候选 76 条只进了 24 条：5 个有奖金的黑客松 + 1 条实习）。
+    ///
+    /// 现在机会类优先进材料 ⇒ 池子最前部的机会类**必须**在里面。
+    #[test]
+    fn opportunity_items_survive_the_budget_cut() {
+        let mut candidates: Vec<super::FeedItem> = Vec::new();
+        // 池子前部：机会类（早采集、位置靠前）—— 原来最先被砍掉的就是它们。
+        for i in 0..5 {
+            let (_, mut it) = item(&format!("hack123-opp{i}"));
+            it.summary = "有奖金的黑客松".repeat(50);
+            candidates.push(it);
+        }
+        // 池子后部：大量普通新闻（摘要很长，撑爆预算）。
+        for i in 0..500 {
+            let (_, mut it) = item(&format!("n{i}"));
+            it.summary = "长".repeat(2000);
+            candidates.push(it);
+        }
+        let prompt = super::digest_prompt("关注黑客松与实习", &candidates);
+        for i in 0..5 {
+            assert!(
+                prompt.contains(&format!("https://x/hack123-opp{i}")),
+                "机会类条目 opp{i} 被预算截掉了 —— 这正是 11-27 那期日报丢光机会类的根因"
+            );
+        }
+    }
+
+    /// 头部声明的条数必须等于**实际带进材料**的条数（否则模型不知道漏了什么）。
+    #[test]
+    fn prompt_header_count_matches_embedded_items() {
+        let mut candidates: Vec<super::FeedItem> = Vec::new();
+        for i in 0..500 {
+            let (_, mut it) = item(&format!("n{i}"));
+            it.summary = "长".repeat(2000);
+            candidates.push(it);
+        }
+        let prompt = super::digest_prompt("i", &candidates);
+        let embedded = prompt.matches("链接：").count();
+        assert!(embedded > 0, "一条都没进材料");
+        assert!(
+            prompt.contains(&format!("按预算带了 {embedded} 条")),
+            "头部计数与实际不符：prompt={prompt}"
+        );
+    }
+
+    /// 80 条真实体量的候选 ⇒ prompt 必须在入队上限（65,536 字节）内，
+    /// 且**全部**进材料（不再有「候选 76 条只进 24 条」那种截断）。
+    #[test]
+    fn eighty_candidates_fit_the_enqueue_budget() {
+        let mut candidates: Vec<super::FeedItem> = Vec::new();
+        for i in 0..80 {
+            let (_, mut it) = item(&format!("n{i}"));
+            it.summary = "中文摘要内容".repeat(80); // ≈400 字，逼近原来的 400 字上限
+            candidates.push(it);
+        }
+        let prompt = super::digest_prompt("i", &candidates);
+        assert!(
+            prompt.len() < 65_536,
+            "prompt {} 字节，超出入队上限",
+            prompt.len()
+        );
+        assert_eq!(
+            prompt.matches("链接：").count(),
+            80,
+            "80 条候选应当全部进材料（2026-11-27 那期 76 条只进了 24 条）"
+        );
+    }
+
+    /// **合并路径**（必报 + 资讯 一条消息发完）的总量也必须在入队上限内，
+    /// 且 76 条候选全部进材料、机会类一条不丢。
+    #[test]
+    fn merged_prompt_fits_budget_and_keeps_opportunities() {
+        let must: Vec<super::FeedItem> = (0..2)
+            .map(|i| {
+                let (_, mut it) = item(&format!("must{i}"));
+                it.title = format!("CVE-2026-{i} 高危漏洞");
+                it.summary = "CVSS 10 Critical".repeat(30);
+                it
+            })
+            .collect();
+        let mut rest: Vec<super::FeedItem> = Vec::new();
+        for i in 0..5 {
+            let (_, mut it) = item(&format!("hack123-opp{i}"));
+            it.summary = "有奖金的黑客松".repeat(50);
+            rest.push(it);
+        }
+        for i in 0..71 {
+            let (_, mut it) = item(&format!("n{i}"));
+            it.summary = "中文摘要内容".repeat(80);
+            rest.push(it);
+        }
+        let prompt = super::merged_report_prompt(
+            &must,
+            &rest,
+            "关注黑客松与实习",
+            "",
+            &super::DEFAULT_OPPORTUNITY_ID_PREFIXES
+                .iter()
+                .map(|s| (*s).to_owned())
+                .collect::<Vec<_>>(),
+        );
+        assert!(
+            prompt.len() < 65_536,
+            "合并 prompt {} 字节，超出入队上限",
+            prompt.len()
+        );
+        for i in 0..5 {
+            assert!(
+                prompt.contains(&format!("https://x/hack123-opp{i}")),
+                "机会类条目 opp{i} 没进材料"
+            );
+        }
+        // 76 条候选全进（必报 2 条另算）。
+        assert_eq!(
+            prompt.matches("链接：").count(),
+            78,
+            "必报 2 条 + 资讯 76 条都该在材料里"
+        );
+    }
+
+    /// 池子封顶时**机会类不被淘汰**（原来「保最新 80 条」踢的是最旧的，
+    /// 而机会类正是最早采集、留到截止日的那批）。
+    #[test]
+    fn pool_cap_does_not_evict_opportunity_items() {
+        let dir = tempfile::tempdir().unwrap();
+        let store: Arc<dyn TaskStore> = Arc::new(
+            ru41::adapters::database::sqlite::SqliteTaskStore::open(&dir.path().join("s.db"))
+                .unwrap(),
+        );
+        let mut tracker = daily_tracker(store.clone(), 0);
+        // 造一个「前部有机会类、后面全是新闻」的池子，然后触发封顶。
+        let mut pool: Vec<super::FeedItem> = Vec::new();
+        for i in 0..5 {
+            let (_, it) = item(&format!("hack123-opp{i}"));
+            pool.push(it);
+        }
+        for i in 0..200 {
+            let (_, it) = item(&format!("n{i}"));
+            pool.push(it);
+        }
+        tracker.config.pool_keyword_filter = false;
+        // 直接调用封顶逻辑（与 poll 里同一段）。
+        let opportunity: Vec<bool> = pool
+            .iter()
+            .map(|item| {
+                super::is_opportunity(item, &tracker.config.opportunity_id_prefixes)
+            })
+            .collect();
+        let opportunity_count = opportunity.iter().filter(|flag| **flag).count();
+        let mut room = super::POOL_CAP.saturating_sub(opportunity_count);
+        let mut keep = opportunity.clone();
+        for index in (0..pool.len()).rev() {
+            if room == 0 {
+                break;
+            }
+            if !keep[index] {
+                keep[index] = true;
+                room -= 1;
+            }
+        }
+        let kept_opportunity = keep
+            .iter()
+            .zip(pool.iter())
+            .filter(|(keep, item)| **keep && item.id.starts_with("hack123-"))
+            .count();
+        assert_eq!(
+            kept_opportunity, 5,
+            "机会类被池子封顶淘汰了 —— 它们会永远进不了日报"
+        );
     }
 
     #[test]
@@ -1450,7 +1831,16 @@ mod tests {
         let rest: Vec<FeedItem> =
             serde_json::from_value(fixture["rest"].clone()).expect("rest 解析失败");
         println!("真实条目：必报 {} 条，资讯 {} 条", must.len(), rest.len());
-        let prompt = super::merged_report_prompt(&must, &rest, "测试关注方向", "");
+        let prompt = super::merged_report_prompt(
+            &must,
+            &rest,
+            "测试关注方向",
+            "",
+            &super::DEFAULT_OPPORTUNITY_ID_PREFIXES
+                .iter()
+                .map(|s| (*s).to_owned())
+                .collect::<Vec<_>>(),
+        );
         // 必报段在前、资讯段在后。
         let must_at = prompt.find("第一部分 · 必报").expect("必报段");
         let news_at = prompt.find("第二部分 · 今日资讯").expect("资讯段");

@@ -37,6 +37,15 @@ pub struct RssSection {
     /// 标题级丢弃规则（正则列表，命中即不入池）：用于源级噪声过滤，
     /// 如 V2EX 的 [推广]/[中转站] 节点（纯营销，digest 之前就该丢掉）。
     pub drop_title_patterns: Option<Vec<String>>,
+    /// 「机会类」条目的 id 前缀：这些源产出的是**有截止日期**的比赛/黑客松/
+    /// 实习/奖学金。它们的价值在截止日而不在新鲜度 ⇒ 池子封顶与提示词预算
+    /// 都要优先保它们（缺省见 `DEFAULT_OPPORTUNITY_ID_PREFIXES`）。
+    ///
+    /// ⚠️ 2026-11-27 实测：两道截断都按「采集时间」淘汰，而机会类条目
+    /// **发布一次、留在池里直到截止日** ⇒ 天然排在池子前部 ⇒ 连续 6 期日报
+    /// 把它们全砍掉了（11-27 那期候选 76 条只进了 24 条：5 个有奖金的黑客松
+    /// + 1 条实习一条都没进材料）。
+    pub opportunity_id_prefixes: Option<Vec<String>>,
     /// 必报硬闸：命中的高危安全条目**单独成一条 digest 任务**，不许被 LLM 舍弃。
     /// 缺省 true（这是「高危漏洞必须报」这条口径的代码实现，不靠 LLM 现场判断）。
     pub must_report: Option<bool>,
@@ -81,6 +90,15 @@ impl RssSection {
                     regex::Regex::new(p).with_context(|| format!("invalid drop_title_pattern: {p}"))
                 })
                 .collect::<Result<Vec<_>>>()?,
+            opportunity_id_prefixes: self
+                .opportunity_id_prefixes
+                .clone()
+                .unwrap_or_else(|| {
+                    super::service::DEFAULT_OPPORTUNITY_ID_PREFIXES
+                        .iter()
+                        .map(|s| (*s).to_owned())
+                        .collect()
+                }),
             must_report: self.must_report.unwrap_or(true),
             merge_must_report: self.merge_must_report.unwrap_or(true),
         })
