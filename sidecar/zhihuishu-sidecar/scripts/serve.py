@@ -58,6 +58,8 @@ except Exception:  # noqa: BLE001
 
 # 每天几点开始刷(CST 本地时间)。之前 sidecar 的 systemd timer 是 19:00。
 DEFAULT_DAILY_HOUR = int(os.environ.get("SIDECAR_DAILY_HOUR", "19"))
+# 凌晨几点之前的那一轮算「昨天深夜的」，不占用当天的刷课窗口（见 due_decision）。
+LATE_NIGHT_CUTOFF_HOUR = int(os.environ.get("SIDECAR_LATE_NIGHT_CUTOFF_HOUR", "6"))
 
 # 进程内锁: 一次只跑一轮
 BRUSH_LOCK = threading.Lock()
@@ -120,6 +122,20 @@ def parse_generated_at(raw: str | None) -> datetime | None:
     return naive.replace(tzinfo=timezone.utc).astimezone(LOCAL_TZ)
 
 
+def cst_stamp(raw: str | None) -> str | None:
+    """容器本地(UTC)时间串 → 本地时间(CST)串，给 /status 暴露用。
+
+    brush_log.generated_at 由 brush_courses 用 time.strftime 写(容器本地=UTC),
+    原样透出去会被读成北京时间, 差 8 小时(2026-11-27 实测: 实际 20:49 跑完的
+    那轮, /status 显示成 12:49)。
+
+    只用于 brush_log 派生的字段; report.generated_at / targets.generated_at
+    来自 collector, 已经是北京时间(见 collector.now_ts), 不能再转一次。
+    """
+    parsed = parse_generated_at(raw)
+    return parsed.strftime("%Y-%m-%d %H:%M:%S") if parsed else raw
+
+
 def due_decision(brush_log: dict) -> tuple[bool, str]:
     """今天该不该刷一轮。返回 (该刷, 理由)。
 
@@ -128,16 +144,23 @@ def due_decision(brush_log: dict) -> tuple[bool, str]:
       2. 最后一轮就是今天(CST)→ 不该(一天一轮, 够了);
       3. 现在还没到每天的开工点 → 不该;
       4. 其余 → 该刷。
+    ⚠️ 「凌晨那一轮」不算今天刷过(2026-11-26 实测踩到):
+    上一轮跑在 23:52→00:52 跨了零点, generated_at 落在 00:52,
+    于是「今天已经刷过一轮」成立 → 当天 19:00 的窗口被吃掉,
+    整天不再刷。判据收紧成: 最后一轮的**时刻**落在凌晨(默认 06:00 前)
+    时, 视作「昨天深夜那轮」, 不占用今天的窗口。
     """
     if BRUSH_LOCK.locked():
         return False, "上一轮还没跑完"
     now = local_now()
     last = parse_generated_at(brush_log.get("generated_at"))
-    if last is not None and last.date() == now.date():
+    if last is not None and last.date() == now.date() and last.hour >= LATE_NIGHT_CUTOFF_HOUR:
         return False, f"今天已经刷过一轮（{last:%m-%d %H:%M}）"
     if now.hour < DEFAULT_DAILY_HOUR:
         return False, f"还没到开工点（{DEFAULT_DAILY_HOUR} 点，现在 {now:%H:%M}）"
     if last is not None:
+        if last.date() == now.date():
+            return True, f"凌晨 {last:%m-%d %H:%M} 那轮不算今天，今天该刷"
         return True, f"上次是 {last:%m-%d %H:%M}，今天该刷"
     return True, "还没刷过，今天该刷"
 
@@ -158,11 +181,11 @@ def status_payload() -> dict:
         "due": due,
         "due_reason": due_reason,
         "daily_hour": DEFAULT_DAILY_HOUR,
-        "generated_at": brush_log.get("generated_at"),
+        "generated_at": cst_stamp(brush_log.get("generated_at")),
         "targets_generated_at": targets.get("generated_at"),
         "courses": course_summary(),
         "last_round": {
-            "generated_at": brush_log.get("generated_at"),
+            "generated_at": cst_stamp(brush_log.get("generated_at")),
             "results": [
                 {
                     "title": r.get("title"),

@@ -98,14 +98,20 @@ CLICK_LEAF_JS = """(label) => {
 }"""
 
 
-def now_ts() -> str:
-    return datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-
-
 # 平台时间是北京时间(UTC+8)。sidecar 容器没设 TZ(playwright 基础镜像是 UTC),
 # datetime.now() 拿到的是 UTC——epoch 换算绝不能用容器本地时区, 会差 8 小时。
 # 中国自 1991 年起不再使用夏令时, 固定 +8 与 Asia/Shanghai 完全等价。
 CST = timezone(timedelta(hours=8))
+
+
+def now_ts() -> str:
+    """当前时间(北京时间)。
+
+    别用 datetime.now()——容器本地时区是 UTC, 写进报告的 generated_at 会比
+    同一份报告里其余时间戳少 8 小时(2026-11-27 实测: 04:37 写出的报告,
+    generated_at 却是 "2026-11-26 20:32:14", 一份文件两种时区)。
+    """
+    return datetime.now(CST).strftime("%Y-%m-%d %H:%M:%S")
 
 # epoch 合理区间: 2001-09-09 ~ 2100-01-01。区间外的纯数字(如 "20261114" 这种
 # 紧凑日期)不当 epoch 处理, 原样透传, 避免把日期串误解析成 1970 年的时间。
