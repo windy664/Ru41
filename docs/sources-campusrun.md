@@ -929,3 +929,74 @@ reasonList：6 项全部 complete=true, completeStatus=1
 **提交完立刻看返回里的 `isCheat` / `stepFreqStatus` / `validDis`**：今天这条是
 `isCheat=0 / stepFreqStatus=0 / validDis=2262=totalDis` ⇒ 全绿；要是哪一项不对，
 立刻知道要修（提交不可撤销，只能记档）。
+
+## 上游归属核查（2026-11-28）
+
+**问题**：上游（`IRmsk/pace-forge`）有没有更新？我们自己改的那些，到底是上游的锅
+还是我们 fork 自己的锅？
+
+### 上游状态
+
+`git fetch upstream` **两次确认**：上游 `main` 没有新提交（`git log upstream/main ^main`
+为空 ⇒ 上游每个提交我们都已合入）。上游 HEAD = `2756c63`。
+
+上游最近的动作（PR #40「stadium opt-in switch + point-order gate + isFixed auto rule
+(#37)」）已经在上游 main 里 ⇒ **上游已经有「点位顺序闸」了**（`stadium_point_order_ok`，
+20m 半径，plan 层）。我们 PR #66 补的是它**没有的那一半**（长宽比下限）。
+
+### 逐条归属
+
+| 我们改的东西 | 上游有没有同源代码 | 谁的锅 |
+|---|---|---|
+| 日上限统计 `v.as_array()` 恒不进分支 | **有**（上游 `flow.rs:2475` 逐字节一致） | **上游的真 bug** ⇒ 已提 PR #69 |
+| 形状闸「太圆」没拦（长宽比只有上限 2.5） | **有**（上游无下限） | **上游的缺口** ⇒ 已在 PR #66 |
+| `run_mode` 默认 2（户外跑） | **有**（上游 `model.rs:105`） | 上游的设计选择，**不是 bug** ⇒ 留 fork |
+| `prefer_stadium` 默认 false 但注释写「CLI 默认试操场轨迹」 | **有**（上游 `model.rs:116`） | 上游的**注释与代码自相矛盾** ⇒ 留 fork |
+| `compress_startup` 仿射重铺把打卡点甩到别的圈 | **有**（上游 `compress_startup` 就是仿射重铺） | **上游的 latent bug** ⇒ 留 fork |
+| `nearest_arc_on` 用「全局最近」而非「首次经过」 | **有**（上游函数逐字同源） | **上游的 latent bug** ⇒ 留 fork |
+| `sample_by_time` 的 corner override 挪点进打卡点邻域 | **有**（上游同款 override） | **上游的 latent bug** ⇒ 留 fork |
+| `nudge_to_corners` 挪走钉在打卡点上的采样点 | **有**（上游无 `pinned` 概念） | **上游的 latent bug** ⇒ 留 fork |
+| `align_samples_to_checkpoints` 的 `lo >= hi` 就放弃 | **有**（上游同款） | **上游的 latent bug** ⇒ 留 fork |
+| 闭合 Hermite 环（`src/track/spline.rs`） | **没有**（上游只有椭圆 `campus_oval_track`） | **我们自己的** ⇒ 留 fork |
+| `PACE_IGNORE_CHEAT_FLAG` | 没有 | **我们自己的** ⇒ 留 fork |
+
+### 「日上限死代码」为什么确定是上游的锅（不是我们的回归）
+
+上游**自己**的 `src/api/semester.rs::derived_count` 读的是**同一份数据**、用的却是
+「数组或 `records` 字段」两解：
+
+```rust
+// `list_records` 回 `{"records": [...]}`，也兼容直接给数组。
+let arr = match v.as_array() {
+    Some(a) => a.clone(),
+    None => v.get("records").and_then(|x| x.as_array()).cloned().unwrap_or_default(),
+};
+```
+
+而 `flow.rs` 里的日上限统计只判 `v.as_array()` ⇒ **同一个仓库里两边口径不一致**
+⇒ 是笔误，不是设计。上游 `list_records` 走 `normalize_list`、返回**对象**，
+所以那个分支**永远不进** ⇒ 「今日已跑」恒为 0 ⇒ 日上限从来没有真正拦过任何一次提交。
+
+⇒ 修法抽成共用 helper `records::records_of`，两边都走它。
+**上游 PR #69**（3 个文件 / 1 个提交 / 不含我们 fork 的任何其它改动）；
+fork 侧同步为 `6d033cc`（`refactor(run)`）。门禁：fmt ✓ / clippy -D warnings ✓ /
+`cargo test --locked` 564 passed / 0 failed / 4 ignored ✓；另加两条回归测试
+（对象形态 / 数组形态双向）。
+
+### 为什么「上报层首次经过序」那一族留 fork、不提上游
+
+这几处的**根因**（`nearest_arc_on` 全局最近、`compress_startup` 仿射重铺）确实是上游的，
+但它们在**上游的场景里不会显形**：
+
+- 上游的「点位顺序闸」查的是**几何层**（`stadium_point_order_ok` 在 plan 层看折线），
+  而服务端判的是**上报层**（采样后的点）⇒ 上游的闸与判据不在同一层，这是**架构盲区**，
+  不是低级错误；
+- 上游的校园是「标准 400m / 280m 小场」，点位数组序恰好等于凸包环序 ⇒ 椭圆绕圈
+  天然满足「按顺序通过所有点位」；
+- 我们这所学校的外框 131×93m（长宽比 1.4）+ 数组序 `1→4→5→2→3` ≠ 环序
+  `1→2→3→4→5` ⇒ 椭圆必被顺序闸拒 ⇒ 上游的 fallback（退回路线规划）产出「一团交叠乱线」。
+
+⇒ 顺带一条实测结论：**「首次经过乱序」在服务端历史上从未被判失败过** ——
+今晚那条全绿的 route 兜底轨迹首过序其实是乱的（[0,100,106,51,85]）而服务端照样全绿。
+所以这些是**潜伏 bug**：只在「点位数组序 ≠ 环序」的场地布局下才咬人。
+上游作者大概率碰不到这个场景 ⇒ 提上去也是「大改」⇒ 留 fork。
