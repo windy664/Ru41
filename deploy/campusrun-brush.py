@@ -266,6 +266,31 @@ def notify(text: str) -> None:
     log("通知没发出去（网关容器都不可用）")
 
 
+def cheat_status(token: str | None = None) -> tuple[str | None, int | None]:
+    """账号的违规状态：('flagged' / 'no_record' / …, 违规条数)。
+
+    ⚠️ 2026-11-27: 被标记违规时 pace-forge 的提交前检查会**直接拒绝**
+    （「服务端已把当前账号标记为违规（违规 N 次）：先处理，别继续提交」，
+    见 pace-forge src/api/flow.rs 的 cheat 闸）⇒ 提交根本不会发生。
+    所以脚本先查这个：省掉一次注定失败的登记 + 确认，也省掉每天一条
+    「今天没跑成」的通知（只在违规条数变化时提醒一次）。
+    """
+    token = token or console_token()
+    if not token:
+        return None, None
+    try:
+        request = urllib.request.Request(
+            f"{CONSOLE}/api/cheat", headers={"X-Pace-Token": token}
+        )
+        with urllib.request.urlopen(request, timeout=25) as response:
+            data = json.load(response).get("data") or {}
+    except Exception as error:  # noqa: BLE001
+        log(f"读违规状态失败：{error}")
+        return None, None
+    count = data.get("count")
+    return data.get("status"), (int(count) if isinstance(count, (int, float)) else None)
+
+
 def campusrun(*args: str) -> str:
     result = subprocess.run(
         ["docker", "exec", CONTAINER, "ru41", "campusrun", *args],
@@ -329,9 +354,15 @@ def quality_gate(plan: str, min_minutes: float | None) -> str | None:
 
 
 def required_minutes(token: str | None = None) -> float | None:
-    """当前任务要求的最短时长（分钟）——从最近一条记录的逐条规则里读。
+    """当前任务要求的最短时长（分钟）——从最近几条记录的逐条规则里读。
 
     规则文本形如「跑18分钟以上」。读不到就返回 None（调用方用兜底值）。
+
+    ⚠️ **取近几条里的最大值**，不只看最新一条：
+    实测「跑N分钟以上」会随任务变（11-21 那条 3 km 的记录要求 18 分钟，
+    11-25 那条 1.98 km 的只要求 12 分钟）。只取最新一条会漏掉更严的要求 ⇒
+    提交一条时长不够的 ⇒ 那一条成绩不合格（次数不涨）。
+    宁可按最严的要求跳一天，也不要交一条不合格的。
     """
     token = token or console_token()
     if not token:
@@ -345,7 +376,8 @@ def required_minutes(token: str | None = None) -> float | None:
     except Exception as error:  # noqa: BLE001
         log(f"读跑步记录失败：{error}")
         return None
-    for record in records:
+    best: float | None = None
+    for record in records[:5]:
         rrid = record.get("rrid")
         if not rrid:
             continue
@@ -357,13 +389,13 @@ def required_minutes(token: str | None = None) -> float | None:
                 detail = json.load(response)["data"]
         except Exception as error:  # noqa: BLE001
             log(f"读记录详情失败（rrid={rrid}）：{error}")
-            return None
+            break
         for item in detail.get("reasonList") or []:
             match = re.search(r"跑\s*(\d+(?:\.\d+)?)\s*分钟以上", str(item.get("reason") or ""))
             if match:
-                return float(match.group(1))
-        return None
-    return None
+                value = float(match.group(1))
+                best = value if best is None else max(best, value)
+    return best
 
 
 def run_once(min_minutes: float | None = None) -> tuple[bool, str]:
@@ -422,6 +454,24 @@ def main() -> int:
     log(f"当前有效里程 {km:.2f} km；{reason}")
     if not should_run:
         return 0
+
+    # 账号被标记违规时，提交会被 pace-forge 的提交前检查直接拒绝 ⇒ 跑不成。
+    # 先查出来：省一次注定失败的登记 + 确认，也别每天推一条「今天没跑成」。
+    # 只在违规条数变化时提醒一次（条数变了 = 状态有变化，值得说）。
+    status, count = cheat_status(token)
+    if status == "flagged":
+        log(f"账号被标记违规（{count} 次），提交会被服务端直接拒绝，今天不跑")
+        if state.get("blocked_count") != count:
+            state["blocked_count"] = count
+            save_state(state)
+            notify(f"⚠️ 校园跑自动跑**跳过**\n"
+                   f"· 原因：账号被服务端标记违规（{count} 次），提交会被直接拒绝\n"
+                   f"· 需要你在运动世界校园 App 里处理（申诉通道可能已关）\n"
+                   f"· 当前有效里程 {km:.2f} km（目标 36 km，还差 {max(36.0 - km, 0.0):.2f} km）")
+        return 0
+    if state.get("blocked_count") is not None:
+        state.pop("blocked_count", None)
+        save_state(state)
 
     # 当前任务的最短时长（读服务端规则；读不到用兜底值）。
     min_minutes = required_minutes(token) or FALLBACK_MIN_MINUTES
