@@ -23,3 +23,8 @@ plugins/.target-docker-shared/
 
 # 本地协作契约：只在工作区保留，不进公开仓库（内容已沉淀到 docs/conventions.md）
 /AGENTS.md
+
+# 本地遗留的模拟器目录与 Python 字节码（不入库）
+scripts/ai-planner-sim/
+__pycache__/
+*.pyc
