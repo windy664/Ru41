@@ -1350,8 +1350,13 @@ isPass/position 与「经过必经点位 / 至少通过2个普通点位」这类
 逆序提示的措辞同时从断言语气改成「本地推断：服务端是否按数组序比对
 「按顺序通过所有点位」**未坐实**」。
 
-⇒ 生产滚到 `pace-forge:0.1.11-ru41.26`，dry 3 km/18 min：
-0 致命 / 0 警告，首过序 `#0@35→#1@45→#2@50→#3@53→#4@58` 严格递增、无同一下标。
+⇒ 生产滚到 `pace-forge:0.1.11-ru41.27`（措辞改对后的版本），dry 3 km/18 min：
+0 致命 / 0 警告，首过序 `#0@35→#1@43→#2@47→#3@51→#4@55` 严格递增、无同一下标。
+
+⇒ 已把上面的实测与改动贴到**上游 issue #37**
+（[comment](https://github.com/IRmsk/pace-forge/issues/37#issuecomment-7236372450)），
+并开了**上游 PR #72**「fix(self-check): 点位自检的证据等级 + 补「同一下标」形态」
+（+127/-2，只动 `src/api/flow.rs` 的日志与措辞 + 3 条测试，门禁 552 passed / 0 failed）。
 
 ### 顺手核对了上游 #51 / #68：命中我们吗
 
@@ -1386,7 +1391,9 @@ isPass/position 与「经过必经点位 / 至少通过2个普通点位」这类
 
 ### 提交
 
-pace-forge fork `main` → `0ff4da3`（自检补「同一下标」+ 措辞标证据等级）
-→ `f110ed2`（把 type=9 的说法改回「未坐实」，理由换成命中归属）；
-两次都只改日志与措辞、**不改轨迹/上报行为**，容器门禁 575 passed / 0 failed / 9 ignored；
-生产 `pace-forge:0.1.11-ru41.26`（healthy，dry 0 致命 / 0 警告）。
+- pace-forge fork `main` → `0ff4da3`（自检补「同一下标」+ 措辞标证据等级）
+  → `f110ed2`（把 type=9 的说法改回「未坐实」，理由换成命中归属）；
+  两次都只改日志与措辞、**不改轨迹/上报行为**，容器门禁 575 passed / 0 failed / 9 ignored。
+- 上游 **PR #72**（`pr/point-order-evidence`，基线 upstream/main `2756c63`）：
+  +127/-2，只动 `src/api/flow.rs`，门禁 552 passed / 0 failed / 3 ignored。
+- 生产 `pace-forge:0.1.11-ru41.27`（healthy，dry 0 致命 / 0 警告）。
